@@ -79,6 +79,9 @@ READONLY_REASONS: dict[str, str] = {
     "dashboard.qr_session_until_restart": WHY_SIGN_IN,
     "dashboard.qr_session_persist_across_restart": WHY_SIGN_IN,
     "wakatime.oauth_client_id": WHY_SIGN_IN,
+    # Off, a vault read leaves no row in the security event log
+    # (secrets/read_audit.py note_reads), so only the operator turns it.
+    "dashboard.audit_secret_reads": WHY_SIGN_IN,
     # The decision judge's provider timeout: its owner control lives behind the
     # consent route, not in config.json.
     "decisions.provider.timeout_ms": WHY_OWNED,
@@ -119,6 +122,10 @@ READONLY_REASONS: dict[str, str] = {
     # environment names (tracing/otlp.py:206-237); this route refuses the same
     # for telemetry.enabled (core_config_patch.py:664-690).
     "telemetry.traces_enabled": WHY_SHARE,
+    # On, a webhook caller that sends wait gets the agent's answer back
+    # (dashboard/handlers/hooks.py _answer_fields): agent output leaves to an
+    # outside system.
+    "hooks.return_answer": WHY_SHARE,
     # Markers the product sets; flipping one by hand skips a step a person must see.
     "dashboard.privacy_acked": WHY_MARKER,
     "dashboard.privacy_ack_version": WHY_MARKER,

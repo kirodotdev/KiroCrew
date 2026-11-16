@@ -133,8 +133,8 @@ def test_every_conductor_prompt_states_the_ledger_flow_once(
     tmp_path, monkeypatch, installer, filename, charter
 ):
     """The pipeline and security charters get the shared protocol block appended;
-    the goal conductor's charter already states the flow, so it is left as is and
-    carries no second copy."""
+    the goal conductor's charter already states the flow, so it gets only the ask
+    policy (``conductor_agents.with_conductor_ask``) and no second copy."""
     data = _install(tmp_path, monkeypatch, installer, filename)
     # Every conductor auto-approves the create and not the send, so the governed
     # tail closes its prompt with the one line that says so.
@@ -142,7 +142,8 @@ def test_every_conductor_prompt_states_the_ledger_flow_once(
     assert data["prompt"].endswith(f"\n\n{seed_rule}")
     prompt = data["prompt"].removesuffix(seed_rule)
     if charter == "_CONDUCTOR_SYSTEM_PROMPT":
-        assert prompt == agent._CONDUCTOR_SYSTEM_PROMPT
+        expected = conductor_agents.with_conductor_ask(agent._CONDUCTOR_SYSTEM_PROMPT)
+        assert prompt.rstrip("\n") == expected.rstrip("\n")
         assert agent._CONDUCTOR_WORK_LEDGER_PROTOCOL not in prompt
         assert "`work_ledger_record` `action=create`" in prompt
     else:

@@ -143,7 +143,8 @@ def _find_python_via_launcher(version: str) -> str | None:
 
 
 #: The interpreter floor, ``requires-python`` in ``pyproject.toml`` (pinned by
-#: ``test_pod``). A worktree venv on any newer minor is as valid as one on this.
+#: ``test_pod_provision.py::test_min_python_is_pyproject_requires_python``). A worktree
+#: venv on any newer minor is as valid as one on this.
 MIN_PYTHON = (3, 12)
 
 #: Minor versions asked for by name (``python3.N``), after the gateway's own.
@@ -1088,7 +1089,7 @@ def build_dist(checkout: Path) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     # A LINK is checked before is_dir()/is_file() so a DANGLING one is still
     # replaced -- and via is_link_or_junction because this very path is
-    # published as a link by `frontend._ensure_tree_dist`, through
+    # published as a link by `frontend.ensure_dev_dist_symlink`, through
     # `platform_compat.symlink_or_junction`, which falls back to a directory
     # JUNCTION on Windows (a directory symlink there needs
     # SeCreateSymbolicLinkPrivilege). A dangling junction answers False to

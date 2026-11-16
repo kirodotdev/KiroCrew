@@ -53,6 +53,10 @@ from kiro_crew.dashboard.handlers.usage import (
     resolve_window,
     slot_turn_usage,
 )
+from kiro_crew.dashboard.handlers.usage_outcome import (
+    attach_session_outcomes,
+    respond_with_session_outcomes,
+)
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
@@ -247,6 +251,9 @@ class _TelemetryState(NamedTuple):
     # destination does not count (``kiro_export.egress_needs_written_opt_in``).
     # True when unresolvable, the refusal direction.
     enable_refused: bool = True
+    # Off only by a written false older builds put in every new config
+    # (``kiro_export.off_offer_due``). False when unreadable: no offer.
+    off_offer: bool = False
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -270,6 +277,7 @@ def _telemetry_cfg() -> _TelemetryState:
     retention_days = 0
     export_permitted = True
     enable_refused = True
+    off_offer = False
     directory = config_dir() / "metrics"
     try:
         full_cfg = KiroCrewConfig.load()
@@ -277,6 +285,7 @@ def _telemetry_cfg() -> _TelemetryState:
         # An unparseable config file holds consent as unknown: no recorder is
         # built, but a live one keeps running. Report what this process records.
         held = _held_consent(full_cfg, bool(cfg.enabled))
+        off_offer = kiro_export.off_offer_due(full_cfg)
         live_recording, live_exporting = live_recorder_state()
         enabled = live_recording if held is None else bool(held)
         retention_days = max(0, int(getattr(cfg, "retention_days", 0) or 0))
@@ -345,6 +354,7 @@ def _telemetry_cfg() -> _TelemetryState:
         destinations,
         export_permitted,
         enable_refused,
+        off_offer,
     )
 
 
@@ -1534,7 +1544,7 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     separate page. Both are independent of the telemetry main switch — those rows
     are always written — so they are fetched even when OTEL export is off.
     """
-    state = _telemetry_cfg()
+    state = await asyncio.to_thread(_telemetry_cfg)
     window = _request_window(request, _WINDOW_DAYS)
     # No window named: each block keeps main's default (spend 7d, the rest 14d).
     defaulted = not any((request.query.get(k) or "").strip() for k in ("days", "since", "until"))
@@ -1542,11 +1552,19 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     data = await asyncio.to_thread(_parse_startup_metrics, window, whole_shards=defaulted)
     context = await asyncio.to_thread(_context_block, window)
     cost = await asyncio.to_thread(_cost_block, cost_window)
+    contributors: dict[tuple[str, str], tuple[str, ...]] = {}
     if cost:
+        # Before the titles: they take the transcript map off the payload.
+        cost = await attach_session_outcomes(request, cost, cost_window, contributors)
+        if isinstance(cost.get("usd"), dict):
+            usd = await attach_session_outcomes(request, cost["usd"], cost_window, contributors)
+            cost = {**cost, "usd": usd}
         cost = await _with_conversation_titles(request, cost)
         if isinstance(cost.get("usd"), dict):
             cost = {**cost, "usd": await _with_conversation_titles(request, cost["usd"])}
-    return web.json_response(
+    # Built while every chain that gave an outcome is held: a tightened one is dropped.
+    return await respond_with_session_outcomes(
+        request,
         {
             "enabled": state.enabled,
             "env_pinned": state.env_pinned,
@@ -1567,7 +1585,8 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "context": context,
             "cost": cost,
             "other": data.get("other", []),
-        }
+        },
+        contributors,
     )
 
 
@@ -1969,6 +1988,9 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "export_permitted": state.export_permitted,
             # Whether the switch's ENABLE direction is refused (409) here.
             "enable_refused": state.enable_refused,
+            # Off only by a written false older builds put in every new config:
+            # the Privacy chapter's off form offers Turn on once.
+            "off_offer": state.off_offer,
             "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }

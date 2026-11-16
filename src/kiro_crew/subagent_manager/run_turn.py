@@ -467,6 +467,11 @@ async def _run_inner_impl(
     # run never spends a turn discovering the absence for itself. Empty for a
     # healthy session, which leaves this prompt exactly as it was.
     message = self._spawn_mcp_notice(mcp_problems) + message
+    # A spec field the claude session does not apply is named the same way.
+    notice = await _session.spec_builtin_tools_notice(
+        client, info, session_key, fresh=is_new and not _resumed
+    )
+    message = notice + message
     # Scale the injected-context budget to this subagent's model window (a
     # subagent can be pinned to a smaller model). Resolved from the live
     # client; None ⇒ 1M reference.
@@ -550,13 +555,17 @@ async def _run_inner_impl(
     _result_file_started = False
     # Cache tool names by tool_call_id so PostToolUse can recover the tool name
     # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
-    # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
+    # Mirrors the chat turn's ``turn._pending_tools`` (dashboard/chat_turn).
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
     from kiro_crew.hooks import pre_tool_match_names
+    from kiro_crew.subagent_manager.card_tool_titles import CardToolTitles
 
     _pending_tool_ids: dict[str, PostToolIdentity] = {}
+    # The card rows a call's ``tool_call_update`` renames.
+    _card_titles = CardToolTitles(client)
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
@@ -998,6 +1007,8 @@ async def _run_inner_impl(
                                 try:
                                     setattr(exc, FALLBACK_STORY_ATTR, _story)
                                 except Exception:
+                                    # An exception type that refuses attributes cannot carry the
+                                    # story.
                                     pass
                             raise
                     _fb_delay = transient_retry_delay(1)
@@ -1241,6 +1252,7 @@ async def _run_inner_impl(
             info.last_tool = event.title or ""
             info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
+            _card_titles.note_call(event)
             # Persist turn state for orphan recovery diagnostics. Off-loop
             # and drained on cancellation via _write_state_off_loop — the
             # highest-frequency of the three off-loop state
@@ -1251,6 +1263,7 @@ async def _run_inner_impl(
                     info, "diagnostics", turns=turns, last_tool=event.title or ""
                 )
             except Exception:
+                # Diagnostics only: a failed write must not stop the tool event.
                 pass
             await self._manager._fire_event(
                 "subagent_tool",
@@ -1334,6 +1347,7 @@ async def _run_inner_impl(
             if event.title:
                 info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
+            _card_titles.note_call(event)
             await self._manager._fire_event(
                 "subagent_tool",
                 info,
@@ -1382,6 +1396,8 @@ async def _run_inner_impl(
                     parent_session_key=info.parent_session_key or None,
                     agent_role=info.agent or None,
                 )
+        elif event.kind == EVENT_TOOL_CALL_UPDATE:
+            await _card_titles.refine(self._manager, info, event)
         elif event.kind == EVENT_TOOL_RESULT:
             # A FINAL result means the tool is done: drop the attribution
             # snapshot so a later idle stretch is not judged against a

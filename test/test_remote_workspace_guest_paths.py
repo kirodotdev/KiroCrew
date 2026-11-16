@@ -239,7 +239,7 @@ def test_a_local_call_through_a_server_named_workspace_keeps_the_gateway_reading
     monkeypatch, reading
 ):
     # Same frame, but the runtime attached no remote workspace: no tag, so the
-    # target is matched as this gateway's path, exactly as before this change.
+    # target is matched as this gateway's path.
     event = _event("read_file", "read", {"path": "/workspace/app/x"}, remote=False)
     assert type(event.raw_tool_params) is dict
     remote = _event("read_file", "read", {"path": "/workspace/app/x"})

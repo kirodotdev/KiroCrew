@@ -206,7 +206,6 @@ src/kiro_crew/service/macos.py
 src/kiro_crew/skill_usage.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
-src/kiro_crew/subagent_scale.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py

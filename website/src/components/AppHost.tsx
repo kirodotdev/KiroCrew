@@ -19,6 +19,7 @@ import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
 import { appBundleReplacedSinceImport, noteAppBundleImport } from './appBundleFreshness'
+import { refusedDeclaredOrigin } from './appFrameSources'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 
@@ -33,6 +34,8 @@ import { useAppSlotPush } from '../utils/appSlotPush'
 export interface AppHostProps {
   /** Installed app metadata (from /api/apps). */
   app: {
+    /** Declared `ui.frameSources` origins the owner approved, and those an update or edit holds back. */
+    frameSourcesGrant?: { approved: string[]; staged: string[] }
     name: string
     version?: string
     displayName?: string
@@ -57,6 +60,8 @@ export interface AppHostProps {
          *  Typed `unknown` on purpose: it is read straight from `app.json` and
          *  `AppLoadingFallback` validates it against a closed set. */
         loading?: unknown
+        /** Exact https origins the app's pages frame (validated by the gateway). */
+        frameSources?: string[]
       }
       permissions?: {
         api?: string[]
@@ -288,6 +293,26 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
     return () => window.removeEventListener('mc:app-reload', handler)
   }, [app.name])
 
+  // The document's CSP is fixed at load. A declared frame origin the gateway
+  // admitted later (the app was enabled, trusted or approved since) is refused here
+  // until a reload, so a refusal of an approved one asks the owner to refresh the
+  // page; one still waiting for approval points to the details page instead, since a
+  // reload would be refused again. Neither acts by itself: the page may hold input
+  // the owner has not saved.
+  const frameSourcesKey = (app.manifest?.ui?.frameSources || []).join(' ')
+  const [blockedFrameOrigin, setBlockedFrameOrigin] = useState('')
+  const blockedFrameNeedsApproval = !!blockedFrameOrigin && !!app.frameSourcesGrant?.staged.includes(blockedFrameOrigin)
+  useEffect(() => {
+    if (!frameSourcesKey) return
+    const declared = frameSourcesKey.split(' ')
+    const onViolation = (e: SecurityPolicyViolationEvent) => {
+      const origin = refusedDeclaredOrigin(e, declared)
+      if (origin) setBlockedFrameOrigin(origin)
+    }
+    document.addEventListener('securitypolicyviolation', onViolation)
+    return () => document.removeEventListener('securitypolicyviolation', onViolation)
+  }, [frameSourcesKey])
+
   const entry = entryOverride || app.manifest?.ui?.entry
   const permissions = app.manifest?.permissions || {}
   const allowedApi = permissions.api || []
@@ -387,6 +412,20 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
         sessionKey={sessionKey}
         slotPush={slotPush}
       >
+        {/* No agent hand-off: it navigates away and unmounts the app, whose own
+            page may hold input it has not saved. The fix is a refresh the owner starts. */}
+        <ErrorNotice
+          impact="partial"
+          testId="app-host-frame-blocked"
+          className="m-3"
+          message={!blockedFrameOrigin ? '' : blockedFrameNeedsApproval
+            ? i18nT('components.appHost.frame_needs_approval', { origin: blockedFrameOrigin })
+            : i18nT('components.appHost.frame_blocked_refresh', { origin: blockedFrameOrigin })}
+          onDismiss={() => setBlockedFrameOrigin('')}
+          footer={blockedFrameNeedsApproval
+            ? <Btn onClick={() => navigate(`/apps/detail/${encodeURIComponent(app.name)}`)}>{i18nT('components.appHost.open_app_details')}</Btn>
+            : <Btn onClick={() => window.location.reload()}><RefreshCw size={14} /> {i18nT('components.appHost.reload_page')}</Btn>}
+        />
         {/* Delayed and shaped: nothing for the first 300 ms, then the layout the
             manifest declares in `ui.loading` (default "page"). See AppLoadingFallback. */}
         {/* `ui.loading` describes the app's routed page. A side-panel tab mounts

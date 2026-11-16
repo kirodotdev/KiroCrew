@@ -1,8 +1,9 @@
 """Answer an ``AcpClient`` session's permission requests and enforce its tool restrictions.
 
 The permission event and its answer (approve, reject, the auto-approve identity gate),
-the zero-tools and spec-disabled refusals, identity-drift refusals, the pi, DeepSeek and
-goose-mode tripwires, and the routing read-back, each with its SEL record.
+the zero-tools and spec-disabled refusals, identity-drift refusals, the pi and DeepSeek
+tripwires and the dispatch to a client class's own mode tripwire, and the routing
+read-back of a session-config harness, each with its SEL record.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -35,15 +36,17 @@ from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
+    REFUSAL_FOREIGN_SERVER,
+    REFUSAL_UNCLASSIFIED_CALL,
     _loggable_request_id,
     build_permission_event,
+    foreign_server_refused,
     gate_envelope,
 )
 from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
 from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
 from kiro_crew.acp._dispatch import (
-    meta_builtin_server_names,
-    parse_session_modes,
+    unclassified_call_refused,
 )
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.copilot import COPILOT_IDENTITY_OVERFLOW
@@ -58,7 +61,6 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
-    UPDATE_CURRENT_MODE,
     AcpEvent,
     JsonRpcMessage,
     rejection_reason_meta,
@@ -101,18 +103,6 @@ PI_ACP_VERIFIED_VERSION = "0.0.34"
 # Versions already named this process, so a gateway on a newer adapter says so
 # once, not on every session.
 _pi_adapter_versions_noted: set[str] = set()
-# goose's VERIFIED RANGE (the note beside ``ACP_BACKEND_GOOSE`` in
-# ``agent_sdk/backends.py``) is 1.50.x. Of the three wire facts it names, the
-# ``current_mode_update`` emission the mid-session tripwire rests on is the one that
-# fails OPEN: a release that stopped emitting it would narrow enforcement back to the
-# open/restore read-back with no frame saying so. ``agentInfo.version`` on the
-# ``initialize`` reply is the one signal before the first prompt, so a release outside
-# the range is named there. The trailing dot keeps ``1.500.x`` outside it. A warning,
-# not a refusal: the two closed facts still hold on any release, and a newer goose is
-# the common case.
-GOOSE_VERIFIED_VERSION_PREFIX = "1.50."
-# Same once-per-process memo as the pi note above.
-_goose_versions_noted: set[str] = set()
 
 
 def _scrub_observed(value: object) -> object:
@@ -216,55 +206,6 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
         value,
         acp_tool_gate.label_for(backend),
     )
-
-
-def _verify_goose_routing(self: AcpClient, resp: dict) -> None:
-    """Read this harness's OWN resolved mode back off the session response.
-
-    This is the half that makes the routing VERIFIED rather than seeded, and on
-    this harness it costs no second child: the mode goose resolved is reported in
-    the ``modes`` block of the very response that opens or restores the session,
-    so what comes back is the mode the session will actually use and it arrives on
-    the session's own connection. A precedence change in a future release
-    therefore surfaces as a refusal here rather than as a session that silently
-    stops asking.
-
-    Called on BOTH paths, and the restore path is the one that needs it most: the
-    environment seed governs a session goose CREATES, but a session goose RESTORES
-    carries the mode it was last left in, and ``session/set_mode`` accepts the
-    auto-approving one. So a session resumed after any actor moved it would come
-    back permissive, and only this read can tell.
-
-    What it does NOT establish is that the harness HONOURS the mode per tool call;
-    that is the harness's own contract and no client-side read can prove it. The
-    scope is the precondition, and the frame corpus carries the observation of the
-    emission.
-
-    Raises ``AcpToolGateUnroutable`` when the required mode is not in force.
-    """
-    if not self._is_goose:
-        return
-    _ids, current_mode, advertised = parse_session_modes(resp)
-    # An omitted modes block is INDETERMINATE rather than a pass: this harness
-    # always reports one, so its absence means the response is not the shape this
-    # read was verified against and no claim can be made from it.
-    observed = current_mode if advertised else ""
-    issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
-    if not issue:
-        return
-    try:
-        acp_tool_gate.enforce_runtime_routing(
-            self.backend,
-            issue,
-            remedy=acp_tool_gate.remediation_for(self.backend),
-        )
-    except acp_tool_gate.ToolGateUnroutable as exc:
-        # Translated to the ACP-layer type like the sibling refusal sites, and
-        # that is not cosmetic: ``ensure_ready`` catches ``AcpToolGateUnroutable``,
-        # so a bare gate exception would escape both of its handlers and skip
-        # ``_cleanup_failed_live_spawn`` -- leaving the refusal untyped and the
-        # failed spawn unreaped.
-        raise AcpToolGateUnroutable(str(exc)) from None
 
 
 async def approve_tool(
@@ -714,7 +655,7 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         self._audit_spec_restriction(
             tool_name="tool__unclassified",
             outcome="denied",
-            reason="spec_disabled_tool_unclassified_call",
+            reason=REFUSAL_UNCLASSIFIED_CALL,
         )
         await self.reject_tool(event.request_id)
         return True
@@ -730,7 +671,7 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         self._audit_spec_restriction(
             tool_name=f"mcp__{event.mcp_server_name}__{event.tool_name or 'unknown'}",
             outcome="denied",
-            reason="spec_disabled_tool_foreign_server",
+            reason=REFUSAL_FOREIGN_SERVER,
         )
         await self.reject_tool(event.request_id)
         return True
@@ -758,11 +699,11 @@ def _foreign_mcp_identity(self: AcpClient, event: AcpEvent) -> bool:
     if not (event.mcp_identity_trusted and event.mcp_server_name):
         return False
     placed = {
-        element.get("name")
+        element["name"]
         for element in self._session_mcp_servers()
         if isinstance(element, dict) and isinstance(element.get("name"), str)
     }
-    return event.mcp_server_name not in placed | meta_builtin_server_names()
+    return foreign_server_refused(event, placed)
 
 
 def _unclassified_tool_call(self: AcpClient, event: AcpEvent) -> bool:
@@ -797,9 +738,11 @@ def _unclassified_tool_call(self: AcpClient, event: AcpEvent) -> bool:
         # of the harness's own legitimate call.
         return False
     recorded = getattr(self, "_tool_call_unclassified", None)
-    if not isinstance(recorded, dict) or not recorded.get(event.tool_call_id, False):
+    if not isinstance(recorded, dict):
         return False
-    return _identified_mcp_call(event) is None
+    return unclassified_call_refused(
+        event, frame_unclassified=bool(recorded.get(event.tool_call_id, False))
+    )
 
 
 def _tripwire_spec_disabled_tool(self: AcpClient, result: AcpEvent) -> None:
@@ -868,104 +811,19 @@ def _note_pi_adapter_version(self: AcpClient) -> None:
     )
 
 
-def _note_goose_version(self: AcpClient) -> None:
-    """Log a goose release outside the verified range, at the handshake.
-
-    Complements :meth:`_tripwire_goose_mode` the way :meth:`_note_pi_adapter_version`
-    complements the pi tripwire. The two wire facts that fail closed (the mode
-    read-back, the ``_meta.goose.toolCall`` identity) announce their own loss as
-    refusals; the ``current_mode_update`` emission the tripwire fires on fails open,
-    so its loss on a newer release would be silent. This names the release the
-    session actually RUNS -- ``agentInfo.version`` off ``initialize``, not the file on
-    disk -- once per process per version, so the operator knows where to look if a
-    session that left the required mode is later found still running.
-    """
-    if not self._is_goose:
-        return
-    version = self.agent_version
-    if version.startswith(GOOSE_VERIFIED_VERSION_PREFIX) or version in _goose_versions_noted:
-        return
-    _goose_versions_noted.add(version)
-    logger.warning(
-        "goose reports version %r; the routing contract (mode read-back, "
-        "_meta.goose.toolCall identity, mid-session current_mode_update) was verified "
-        "on %sx. The read-back and the identity check still refuse on their own; the "
-        "mid-session mode tripwire rests on an emission this release may not make.",
-        version or "unknown",
-        GOOSE_VERIFIED_VERSION_PREFIX,
-    )
-
-
-async def _tripwire_goose_mode(self: AcpClient, msg: JsonRpcMessage) -> None:
-    """Refuse to continue a goose session that reports leaving the required mode.
-
-    The read-back on ``session/new`` and ``session/load`` proves the mode the session
-    STARTED in. It does not hold the session there: ``session/set_mode`` accepts the
-    auto-approving mode, goose's own slash commands can move it, and 1.50.1 reports
-    every such move as a ``current_mode_update`` on the session's own connection --
-    captured live in ``session-load-live.jsonl``, where one names ``auto`` after a
-    ``set_mode``. In ``auto`` goose asks about nothing, so no permission request
-    reaches Crew to refuse; the notification is the last frame Crew sees before the
-    harness starts saying yes on its own. So it is treated exactly as the read-back
-    treats the same mode on open: the harness is stopped and the turn fails with the
-    gate's own reason. Every frame that is not this one, or that names the required
-    mode (goose re-emits the current mode on load), is a no-op. Gated on the same
-    predicate as the read-back, so the kiro path gains no call (harness-parity H13).
-    """
-    if not self._is_goose:
-        return
-    params = msg.params if isinstance(msg.params, dict) else {}
-    update = params.get("update")
-    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_CURRENT_MODE:
-        return
-    mode_id = update.get("currentModeId")
-    observed = mode_id if isinstance(mode_id, str) else ""
-    issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
-    if not issue:
-        return
-    logger.error(
-        "goose routing: session reported mode %r mid-session, which is not the "
-        "required one; stopping the harness before it approves on its own [session=%s]",
-        _scrub_observed(observed),
-        self._session_id,
-    )
-    try:
-        sel_module.sel().log_tool_invocation(
-            session_key=self._session_key or "",
-            source="acp",
-            tool_name="session/set_mode",
-            tool_kind="other",
-            outcome="denied",
-            metadata={
-                "reason": "goose_mode_tripwire",
-                "backend": self.backend,
-                "mode": _scrub_observed(observed),
-            },
-        )
-    except Exception:  # pragma: no cover - audit is best-effort
-        logger.debug("goose routing: audit of the mode tripwire failed", exc_info=True)
-    await self._kill_process(force=True)
-    try:
-        acp_tool_gate.enforce_runtime_routing(
-            self.backend,
-            issue,
-            remedy=acp_tool_gate.remediation_for(self.backend),
-        )
-    except acp_tool_gate.ToolGateUnroutable as exc:
-        raise AcpToolGateUnroutable(str(exc)) from None
-
-
 async def _tripwire_permission_state(self: AcpClient, msg: JsonRpcMessage) -> None:
     """The one frame-path check that a harness's own permission state has not moved.
 
     Each enforced harness whose asking a session-level state can turn off names that
-    state in exactly one place: goose its seeded mode (``_tripwire_goose_mode``), a
+    state in exactly one place: a harness whose session answers report its mode, its
+    client class's ``_tripwire_session_mode`` (goose: ``client_goose``), a
     session-config harness with a ``ACP_BACKEND_FORBIDDEN_MODES`` row its permission
-    option and forbidden modes (``_tripwire_session_config``). Both are membership
-    tests, so every other backend -- kiro-cli included -- reads the frame and returns.
+    option and forbidden modes (``_tripwire_session_config``). Both are flag or
+    membership tests, so every other backend -- kiro-cli included -- reads the frame
+    and returns.
     """
-    if self._is_goose:
-        await self._tripwire_goose_mode(msg)
+    if self._reads_back_session_mode:
+        await self._tripwire_session_mode(msg)
     elif self.backend in ACP_BACKEND_FORBIDDEN_MODES:
         await self._tripwire_session_config(msg)
 
@@ -1287,19 +1145,7 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
             "can no longer trust it to ask before running tools; the harness was "
             f"stopped. {remedy}"
         )
-    if self._is_deepseek:
-        remedy = (
-            "Start a new chat, and if it recurs check the harness version: its "
-            "launcher must keep applying the --patch overlay that composes the "
-            "gate plugin, and its tools core must keep resolving an `ask` through "
-            "its approval service."
-        )
-    else:
-        remedy = (
-            "Start a new chat, and if it recurs check the pi-acp and pi versions: "
-            "the adapter must run the command named by PI_ACP_PI_COMMAND and forward "
-            "extension dialogs, and pi must honour an extension's block."
-        )
+    remedy = self._gate_tripwire_remedy
     raise AcpToolGateUnroutable(
         f"{acp_tool_gate.label_for(self.backend)} ran tool call {tool_call_id} {what}, "
         "so the gate extension is no longer in force for this session; the harness was "
@@ -1645,6 +1491,8 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         # A native sub-agent's request: the dashboard keeps the parent's deny
         # overrides away from it (``dashboard.deny_override.slot_may_override``).
         event.native_child_call = True
+        # And a Stop on that child's card settles it (``client_native_children``).
+        self._note_native_child_request(msg)
     if getattr(self, "backend", None) in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
         # The spec's `toolsSettings` shell and write allowlists: the gate's
         # `spec-shell-allowlist` and `spec-write-allowlist` rows refuse what they do

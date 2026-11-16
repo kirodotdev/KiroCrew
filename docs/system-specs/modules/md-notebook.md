@@ -89,8 +89,11 @@ does not mask the moved token** below.
 
 **This move waits for older sandboxes.** A sandbox's masks are fixed when it starts, and one
 started by the previous build masks `md-notebook-staging/` but not `data/state/`, so it would
-read the token the moment it landed there. The move therefore runs only from the shipped
-backend's start (`sealed_default_legacy_state`), and only while
+read the token the moment it landed there. The move therefore runs only in the gateway,
+through Notes' row in `apps/legacy_state_moves` (`sealed_default_legacy_state`): at the
+start of the shipped backend or of a record adopted from the wheel's pin, and, once Notes
+is pinned, before adoption swaps the record (whether or not Notes is enabled) and at every
+boot for a record adopted under pin trust; and only while
 `older_sandboxes.sandboxes_masking_only` names no live process that masks the old directory
 and not the new one (or cannot read the process table). On Linux that is the kernel's own
 record: each same-uid process's `/proc/<pid>/mountinfo` (each live thread's, when its main
@@ -111,12 +114,19 @@ off; every later start of the backend checks again. Spawn prep runs only the fir
 the empty `data/state/` before each spawn so that every sandbox of this build masks it. It
 never makes a `data/` while an install, update or keep-data uninstall holds the tree at
 `apps/.md-notebook-data-tmp/` (the restore's rename would land inside it); the generic
-materialiser makes `state/` inside the moved-aside tree then, and the move itself waits. A
-Notes backend that is not the shipped one starts without that wait.
+materialiser makes `state/` inside the moved-aside tree then, and the move itself waits.
+Adoption waits too: APPLY swaps the record onto its repository only once the move has
+sealed, so an adopted backend never opens an empty `data/state/` while the state sits in
+`md-notebook-staging/`, which it cannot read
+([app-kit-platform §33](app-kit-platform.md#33-former-built-in-adoption), "A legacy state
+move holds the swap"). A Notes backend that is neither the shipped one nor a record adopted
+under pin trust (a third-party app under the name) gets neither the move nor the wait, so
+the token is never written into its data directory.
 
 **Legacy move.** `kiro_crew.md_notebook_state.migrate_legacy_state` moves real state from the
-old bare names into this directory, in one pass. Sandbox spawn prep runs it first, and the
-Notes backend spawn runs it for a host with no sandbox wrap. A failed pass in spawn prep is
+old bare names into this directory, in one pass. Sandbox spawn prep runs it first, the
+Notes backend spawn runs it for a host with no sandbox wrap, and adoption runs it before the
+second move through Notes' row (above). A failed pass in spawn prep is
 logged and the spawn goes on: the stubs planted right after keep every bare name masked, so
 no agent can plant state for a later pass to promote. The Notes backend does not start until
 the pass is sealed, so no backend write can race it, and passes hold
@@ -125,9 +135,11 @@ one at once. The pass reads each source once (regular file, no link followed) an
 those bytes with `atomic_write` only over an absent or stub destination. It syncs this
 directory, and only then empties the legacy `pat` in place (truncated through an
 `O_NOFOLLOW` descriptor, never unlinked, so a live namespace's mask stays on its inode); if
-the sync fails nothing is emptied. A legacy directory reached through a link is sealed with
-nothing moved, because an agent could swap that link for a directory of its own; Notes
-could not write state on that layout before either.
+the sync fails nothing is emptied. A destination `pat` already holding the legacy bytes (a
+pass stopped after copying it and before its seal) is not copied again, and the legacy `pat`
+is emptied as after a copy, so the token does not stay at a second name. A legacy directory
+reached through a link is sealed with nothing moved, because an agent could swap that link
+for a directory of its own; Notes could not write state on that layout before either.
 The pass ends by writing `.migrated`, which closes promotion for good. A copy that fails
 stops the pass unsealed, so the next spawn copies it again (so does a source it cannot
 read for a reason other than being absent), and a PAT with a second hard
@@ -192,7 +204,8 @@ Two properties keep the mask meaningful now that the backend can create these fi
   a non-regular file at a state name. A link at `workspace/md-notebook` (an
   operator who moved `workspace/` to another disk) DEGRADES instead of refusing: the whole
   `workspace/md-notebook` directory is masked (`_md_notebook_degraded_mask_dirs`), and
-  `apps/backend.py` does not start the Notes backend, so nothing clones into the
+  `apps/backend.py` does not start the Notes backend (the row's start gate,
+  `md_notebook_state.backend_start_refusal`), so nothing clones into the
   namespace-only stand-in and lose notes on restart.
 * **The backend spawn starts isolated.** It launches with `-I` and runs the module through
   `runpy` with an explicit import root, so interpreter startup hooks (`sitecustomize`,
@@ -690,6 +703,9 @@ auto-sync loop), with shared fixtures in `test/md_notebook_helpers.py`.
 `test/test_core_md_notebook_decoupling.py` pins that no core module imports the app and
 lists, with a reason each, the core strings that still name it,
 `test/test_sandbox_md_notebook_carveout.py` pins the state-file carve-out and orphan sweep,
+`test/test_legacy_state_moves.py` pins that adoption waits for the state move (and runs it
+for a disabled app and for a record adopted under pin trust),
+`test/test_app_backend_spawn_env.py` pins on which provenance the backend spawn waits for it,
 and `src/kiro_crew/apps/builtins/md_notebook/tests/test_md_notebook_windows.py` covers the
 native Windows branches. All are collected because `setup.cfg` includes both `test` and
 `src/kiro_crew/apps/builtins` in `testpaths`.

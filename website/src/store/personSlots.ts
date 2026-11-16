@@ -23,7 +23,7 @@ export function selectPersonSlots(state: Parameters<typeof selectSlotsWithLiveLa
   // Memoized on the live-row array itself, not on the state object, so a reader
   // re-renders only when the rows change and a stale state can never answer.
   const slots = selectSlotsWithLiveLastTs(state)
-  // And on the Crew Mode preview, which decides whether crew members are left out.
+  // And on whether this build offers conductor mode, which decides whether crew members are left out.
   const crewMode = crewModeEnabled()
   const mates = mateSessionsHidden()
   if (slots !== personSlotsOf || crewMode !== personSlotsCrewMode || mates !== personSlotsMates) {

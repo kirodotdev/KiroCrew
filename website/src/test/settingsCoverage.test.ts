@@ -421,6 +421,14 @@ describe('settings coverage gate — bare controls', () => {
  * skipped"; this pins each one so a new silent skip fails the build.
  */
 const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> = {
+  'ChatRuntimeSharingHarnessRows.tsx': {
+    count: 1,
+    reason:
+      'one switch per harness that may share a chat runtime, labelled from the ' +
+      'CHAT_SHARING_HARNESSES table so each later harness is one row; the switches show ' +
+      'only inside the ACP runtime sharing preview row while it is on, and that indexed ' +
+      'row is the search hit that reaches them',
+  },
   'BrowserLiveSection.tsx': {
     count: 1,
     reason:

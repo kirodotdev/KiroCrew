@@ -198,7 +198,7 @@ KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 KIROCREW_ALLOWED_LOOPBACK_PORTS=3
 # Terminal 2 — start the frontend dev server (hot-reloads .tsx changes)
 cd website
 KIROCREW_PORT=6777 npm run dev
-# → Vite starts at http://localhost:3000, proxies /api/* to backend on port 6777
+# → Vite starts at http://localhost:3000, proxies /api/* and /v1/crew/* to backend on port 6777
 
 # Terminal 3 — generate an auth token
 KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew token

@@ -649,15 +649,23 @@ def interactive_guidance(
                         "Do not enable generation, spawn a builder or publish a duplicate "
                         "status artifact.)"
                     )
+                # A conductor's offer to let workers grill a costly choice, and the
+                # ``[GRILL:]`` card line it answers a pick with: only while the
+                # ``worker_grill`` feature preview is on. Off, nothing is added.
+                from kiro_crew.worker_grill_preview import guidance_for
+
+                _grill = guidance_for(agent, current_config)
+                if _grill:
+                    _interactive_guidance.append(_grill)
             _interactive_guidance.append(
                 "\n\n(The ask_question tool shows a dashboard card and BLOCKS until the "
                 "user responds; the answers are its tool result. "
                 "DEFAULT TO SILENCE: use it only when work cannot continue without a "
-                "human-only decision (permission, irreversible/costly action, or an "
-                "uninferable preference). Decide anything you can read, run, search "
+                "human-only decision (one of the ask cases (a)-(e) in CRITICAL "
+                "RULES). Decide anything you can read, run, search "
                 "or infer yourself; never ask to reconfirm an authorized plan or "
                 "merely because a choice exists. Do not end your turn after calling "
-                "unless the result says so. When ending anyway, [OPTIONS:] is cheaper.)"
+                "unless the result says so.)"
             )
             # A follow-up card is distinct from both: it offers concrete NEXT
             # tasks after work is done, optionally handing one to a worktree.

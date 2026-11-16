@@ -213,6 +213,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         if isinstance(raw_keep, list):
             keep_specific = [k for k in raw_keep if isinstance(k, str) and k]
     except Exception:
+        # A missing or malformed body keeps the safe defaults set above.
         pass
 
     return await _run_uninstall(

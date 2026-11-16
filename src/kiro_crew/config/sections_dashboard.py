@@ -55,7 +55,6 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
-    "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
@@ -68,6 +67,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "session_environments",
     "session_harness",
     "webhooks",
+    "worker_grill",
 )
 
 
@@ -255,6 +255,18 @@ class DashboardConfig:
             "Use the background model to update session-owned HTML cards after activity. "
             "Off by default. One call at a time, at most one per session every two minutes "
             "and 60 per gateway hour. Live status and native decisions work without it.",
+        ),
+    )
+    audit_secret_reads: bool = field(
+        default=False,
+        metadata=_meta(
+            "Audit secret reads",
+            "Write a security log row when the gateway reads a vault secret: the secret's "
+            "name, the module that read it and the function that asked (unknown when the "
+            "read runs on a worker thread with no calling code of its own), never the value. "
+            "Repeat reads of one secret by one caller share a row per 10 minutes, which "
+            "counts them. Off by default. Takes effect on the next read; no restart (within "
+            "30 seconds in the MCP gateway process).",
         ),
     )
     crewmate_threads: bool = field(
@@ -521,8 +533,7 @@ class DashboardConfig:
             "Start new chats in conductor mode",
             "Open each new dashboard chat with conductor mode already on. It can "
             "still be turned off before the first message. Applies only where "
-            "conductor mode is offered: a Persistent chat on the default agent, "
-            "with the conductor mode preview on.",
+            "conductor mode is offered: a Persistent chat on the default agent.",
         ),
     )
     widget_density: str = field(
@@ -1002,6 +1013,16 @@ class DashboardConfig:
             "Open the Command Bar launcher on the quick-search shortcut (Cmd+K or "
             "Ctrl+K). Off opens the search palette instead, which also searches "
             "knowledge, skills and prompts.",
+        ),
+    )
+    channels_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Channels Enabled",
+            "Show Channels, where several agents work a problem together in one shared "
+            "room, in the sidebar and in Search Everywhere. Off by default; off only "
+            "hides the sidebar row and the search result, so the channels you made "
+            "and the Channels page itself are kept.",
         ),
     )
     # Literal enum rather than FOLDER_SORT_MODES: that constant lives in

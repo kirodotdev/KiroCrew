@@ -5,8 +5,9 @@
  *
  * Loaded only into windows app-window-host.js creates, which run sandboxed with
  * context isolation and no Node. It exposes `window.kirocrewDesktopWindow`: a few
- * fire-and-forget calls, one answered call (`showSession`), a few events and (level
- * 2) the capability calls, nothing else. Every capability call is answered only for
+ * fire-and-forget calls, one answered call (`showSession`), a few events, (level
+ * 2) the capability calls and (level 3) the app's shortcuts on this computer,
+ * nothing else. Every capability call is answered only for
  * a window whose app declares and holds that capability; elsewhere a reveal does
  * nothing and the others resolve to `false` or `null`. The identity and
  * `capabilities` it reports are
@@ -40,6 +41,8 @@ const CHANNELS = {
   openImage: "app-window:open-image",
   listGateways: "app-window:list-gateways",
   chooseGateway: "app-window:choose-gateway",
+  shortcuts: "app-window:shortcuts",
+  setShortcut: "app-window:set-shortcut",
 };
 const CAPABILITIES = ["screenCapture", "localFiles", "gatewayChoice"];
 
@@ -178,6 +181,24 @@ function createBridge(ipc, identity) {
      * computer's gateway). Resolves `{ok, chosen, showing}` once the windows moved.
      */
     chooseGateway: (id) => ipc.invoke(CHANNELS.chooseGateway, String(id)).catch(() => ({ ok: false })),
+    /**
+     * Level 3: this app's declared shortcuts on this computer, each
+     * `{id, window, defaultAccelerator, accelerator, custom, registered}`
+     * (`accelerator` "" when the user unbound it). Resolves null when refused.
+     */
+    shortcuts: () => ipc.invoke(CHANNELS.shortcuts).catch(() => null),
+    /**
+     * Level 3: rebind a declared shortcut to *accelerator*, "" to unbind it, null for
+     * its default. Answered only while the user is acting in this window, and a chord
+     * other than the declared default only when it is the one the user just pressed
+     * there. Resolves `{ok, reason?, shortcuts?}`; a chord that cannot be had keeps the
+     * old binding.
+     */
+    setShortcut: (id, accelerator) => ipc.invoke(
+      CHANNELS.setShortcut,
+      String(id),
+      accelerator === null || accelerator === undefined ? null : String(accelerator),
+    ).catch(() => ({ ok: false })),
   });
 }
 

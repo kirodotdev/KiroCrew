@@ -14,6 +14,10 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any
+
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -112,14 +116,35 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 # turns of different sessions in parallel, and names the session on every
 # ``session/update`` (``acp.chat_runtime_sharing.kas_chat_sharing_ready``).
 #
+# codex: the shared teardown ends the session with the harness's own teardown
+# verb, ``session/close``, which evicts the thread and keeps its rollout under
+# ``CODEX_HOME``; a persistent session's rollout is never deleted by Crew
+# (``delete_disposable_record`` runs for incognito and temporary sessions only, and
+# those never share). codex-acp keeps one thread per session on its one
+# ``app-server`` and runs their turns in parallel, so a chat waits for no other
+# chat. The lane covers both, through the verb Crew sends:
+# ``test_codex_chat_runtime_sharing_real.py``.
+#
 # kiro-cli is NOT a member although it shares subagent sessions: some of its
 # session-control frames (compaction, ``/clear``, an agent switch) name no
 # session, so chats sharing one kiro-cli process would have to take turns to keep
 # each frame's owner unambiguous, and a shared chat must never wait for another
-# chat. codex is not a member either: its chat teardown's record preservation has
-# no lane cover. Every other backend is out because it is not served by
-# ``AcpRuntime`` (one process per session).
-ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KAS})
+# chat. Every other backend is out because it is not served by ``AcpRuntime``
+# (one process per session).
+#
+# The members are the keys of ``CHAT_RUNTIME_SHARING_HARNESSES`` just below, so
+# letting a harness share chats is one row there.
+ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
+
+# One row per member of ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``: the backend and the
+# default of its own switch under the preview (``agent.chat_runtime_sharing_harnesses``,
+# Settings > Developer > Feature previews > ACP runtime sharing). KAS defaults on:
+# it shared before the per-harness switches existed, so an upgrade keeps it
+# sharing. codex defaults off: it is new to chat sharing, so an operator turns it
+# on deliberately. ``test_chat_runtime_sharing`` pins that the keys equal the set.
+CHAT_RUNTIME_SHARING_HARNESSES: Mapping[str, bool] = MappingProxyType(
+    {ACP_BACKEND_KAS: True, ACP_BACKEND_CODEX: False}
+)
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
 # (kiro-cli and KAS) whose single process hosts N sessions via demux.
@@ -383,6 +408,27 @@ ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset(
 # set is the record, and adding a harness to it is a deliberate edit with a capture
 # behind it (harness-parity H6, the same reason every capability here is opt-in).
 ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK})
+
+
+def can_restore_session(backend: str, agent_capabilities: Mapping[str, Any]) -> bool:
+    """Whether a host that answered ``initialize`` with *agent_capabilities* restores
+    a saved session. The one reading both ACP drivers use (``AcpClient`` and
+    ``AcpRuntime``).
+
+    Both spellings are standard ACP v1: ``loadSession`` is the flag for
+    ``session/load``, and ``sessionCapabilities.resume`` is the object -- an empty
+    one means supported -- for ``session/resume``. Keyed on
+    ``ACP_BACKENDS_RESUME_WITHOUT_LOAD`` rather than probing both, so a harness
+    cannot be read as restorable through a capability it never advertised and then
+    sent a verb it does not serve.
+    """
+    if backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD:
+        session_capabilities = agent_capabilities.get("sessionCapabilities")
+        return isinstance(session_capabilities, dict) and isinstance(
+            session_capabilities.get("resume"), dict
+        )
+    return bool(agent_capabilities.get("loadSession", False))
+
 
 # Harnesses that keep a saved session on the directory it was created in, so it is
 # restored only in that directory. opencode 1.x runs one instance per directory and

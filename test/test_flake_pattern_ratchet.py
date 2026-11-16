@@ -32,6 +32,12 @@ from pathlib import Path
 import pytest
 import yaml
 from flake_pattern_js_detectors import JS_DETECTORS
+from flake_pattern_shared_total import (
+    K21_CASES,
+    K21_FIXTURE_WALK,
+    K21_TRIGGERS,
+    k21_shared_total_pin,
+)
 from source_corpus import repo_files, repo_root
 from test_ratchet_scope import (
     _GIT_COMMAND_LINE_CONFIG,
@@ -119,7 +125,21 @@ _CLOCK_ATTRS = {
     "asyncio": frozenset({"sleep"}),
     "datetime": frozenset({"datetime", "date"}),
 }
-_CLOCK_CALLS = frozenset({"monotonic", "perf_counter", "time", "monotonic_ns", "perf_counter_ns"})
+#: A CPU clock is a clock too: coverage's tracer multiplies the CPU every traced line
+#: costs, so a ``thread_time`` budget reads the shard's instrumentation, not the code.
+_CLOCK_CALLS = frozenset(
+    {
+        "monotonic",
+        "perf_counter",
+        "time",
+        "monotonic_ns",
+        "perf_counter_ns",
+        "thread_time",
+        "thread_time_ns",
+        "process_time",
+        "process_time_ns",
+    }
+)
 _DELTA_NAMES = re.compile(r"(elapsed|duration|took|delta|wall)", re.IGNORECASE)
 _STAMP_NAMES = re.compile(
     r"^(start|started|end|ended|before|after|began|finished|now|then|t\d|t_\w+|\w+_at)$"
@@ -938,10 +958,13 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K18-xfail-strict-false": ("xfail",),
     "K19-short-literal-duration-arg": ("(",),
     "K20-on-loop-session-write": ("update_metadata",),
+    "K21-shared-total-pin": K21_TRIGGERS,
 }
 
 #: The classes whose detector also reads the source text.
-_READS_SOURCE = frozenset({"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree"})
+_READS_SOURCE = frozenset(
+    {"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree", "K21-shared-total-pin"}
+)
 
 #: class -> detector.
 PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
@@ -958,6 +981,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K18-xfail-strict-false": _k18_xfail_strict_false,
     "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
     "K20-on-loop-session-write": _k20_on_loop_session_write,
+    "K21-shared-total-pin": k21_shared_total_pin,
 }
 
 
@@ -1263,6 +1287,8 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
             "def test_x():\n    assert (\n        elapsed < 5.0\n    ), 'took too long'\n",
             "def test_x():\n    assert 0.15 < elapsed < 1.0\n",
             "def test_x():\n    assert after - before < 0.05\n",
+            "import time\ndef test_x():\n    start = time.thread_time()\n    run()\n"
+            "    assert time.thread_time() - start < 0.5\n",
         ),
         "import time\ndef test_x():\n    t = time.monotonic()\n    run()\n"
         "    assert time.monotonic() - t < LOST_RUN_SECS\n    assert elapsed > 0.1\n",
@@ -1427,7 +1453,15 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(lambda: log.update_metadata(k, {}))\n"
         "    def seed():\n        log.update_metadata(k, {})\n",
     ),
+    "K21-shared-total-pin": K21_CASES,
 }
+
+
+def test_k21_reads_only_a_module_that_walks_the_product_tree() -> None:
+    assert count_python(K21_FIXTURE_WALK)[0]["K21-shared-total-pin"] == 0
+    tree = K21_FIXTURE_WALK.replace("parent / 'fixtures'", "parents[1] / 'src'")
+    assert count_python(tree)[0]["K21-shared-total-pin"] == 2
+
 
 #: Sources the pinned semgrep reads no line of, each holding one ``time`` patch.
 _UNREAD = (

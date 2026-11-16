@@ -798,10 +798,15 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // folded either. Density relief is per-card (the fold chip below) plus the
   // size caps in presentToolDiff.
   const denied = isRejected || isAutoDenied
-  // Images an image-mode read looked at, previewed under the row. Not for a
-  // rejected or auto-denied call: the agent never read them, and a preview
-  // would say it had.
-  const imagePaths = useMemo(() => (denied ? [] : extractToolImagePaths(input)), [denied, input])
+  // Images a read looked at, previewed under the row. Not for a rejected or
+  // auto-denied call: the agent never read them, and a preview would say it had.
+  // `read_path_arg` is the backend's mark naming the argument a read call's one
+  // file is in (Claude Code's Read), written with the row and never by the agent.
+  const readPathArg = typeof message.meta?.read_path_arg === 'string' ? message.meta.read_path_arg : ''
+  const imagePaths = useMemo(
+    () => (denied ? [] : extractToolImagePaths(input, readPathArg)),
+    [denied, input, readPathArg],
+  )
   // An edit run's diffs, one per call in order, read from each member's
   // persisted input: editRuns admitted every member on exactly that input as a
   // card-sized, untruncated diff. A run the lead's own log entry calls denied

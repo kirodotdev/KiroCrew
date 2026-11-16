@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../../../types'
 import { applyRunningState, createTurnGrouper } from '../groupDisplayItems'
 import type { DisplayItem } from '../types'
-import { grewOnlyAtTail } from './transcriptRows'
+import { grewOnlyAtTail, isFirstTurnOfEmptyChat } from './transcriptRows'
 
 const msg = (role: string, content: string, ts: string) => ({ role, content, ts, cls: '' }) as ChatMessage
 const single = (m: ChatMessage, idx: number): DisplayItem => ({ kind: 'single', msg: m, idx })
@@ -105,5 +105,38 @@ describe('grewOnlyAtTail', () => {
 
   it('fails for the first rows of an empty transcript, which land as a page', () => {
     expect(grewOnlyAtTail({ messages: [], displayItems: [] }, before)).toBe(false)
+  })
+})
+
+describe('isFirstTurnOfEmptyChat', () => {
+  const empty = { messages: [] as ChatMessage[], loaded: true }
+
+  it('holds for the first send into a loaded empty chat, its reply and a tool row', () => {
+    expect(isFirstTurnOfEmptyChat(empty, { messages: [user] })).toBe(true)
+    expect(isFirstTurnOfEmptyChat(empty, { messages: [user, tail] })).toBe(true)
+    const withTool = [user, msg('assistant', 'looking', 't2'), msg('tool', 'ran', 't3'), msg('streaming', 'answer', 't4')]
+    expect(isFirstTurnOfEmptyChat(empty, { messages: withTool })).toBe(true)
+  })
+
+  it('holds when the running turn takes a steer or a parked send', () => {
+    const steer = { ...msg('user', 'also this', 't3'), meta: { steer: true } } as ChatMessage
+    expect(isFirstTurnOfEmptyChat(empty, { messages: [user, tail, steer] })).toBe(true)
+    const parked = { ...msg('user', 'and then', 't3'), meta: { queuedEntryId: 'q1' } } as ChatMessage
+    expect(isFirstTurnOfEmptyChat(empty, { messages: [user, tail, parked] })).toBe(true)
+  })
+
+  it('fails for rows that hold a second turn, which is a page of history', () => {
+    const page = [user, msg('assistant', 'answer', 't2'), msg('user', 'next question', 't3')]
+    expect(isFirstTurnOfEmptyChat(empty, { messages: page })).toBe(false)
+  })
+
+  it('fails while the empty transcript is still loading', () => {
+    expect(isFirstTurnOfEmptyChat({ messages: [], loaded: false }, { messages: [user] })).toBe(false)
+    expect(isFirstTurnOfEmptyChat({ messages: [] }, { messages: [user] })).toBe(false)
+  })
+
+  it('fails when rows are already on screen, and when there is nothing to draw', () => {
+    expect(isFirstTurnOfEmptyChat({ messages: [user], loaded: true }, { messages: [user, tail] })).toBe(false)
+    expect(isFirstTurnOfEmptyChat(empty, { messages: [] })).toBe(false)
   })
 })

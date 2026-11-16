@@ -1741,4 +1741,5 @@ def _maybe_setup_custom_domain() -> None:
                 " && sudo mv /tmp/hosts.clean /etc/hosts\n"
             )
     except Exception:
+        # An unreadable /etc/hosts only skips this hint.
         pass

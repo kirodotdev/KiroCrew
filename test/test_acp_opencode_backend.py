@@ -819,20 +819,12 @@ def test_a_resumed_session_is_not_gated_on_a_kiro_transcript() -> None:
     assert (
         "self.backend in ACP_BACKENDS_HARNESS_OWNED_SESSIONS" in body
     ), "the resume pre-check must be a membership test, not a chain of identities"
-    # The resume gate itself must carry no identity test. The ONE identity branch
-    # this path legitimately holds is the per-harness MCP-array splice, which every
-    # member of ACP_BACKENDS_SESSION_MCP_ARRAY has and which
-    # test_harness_parity.test_each_mcp_seam_is_spliced_only_for_its_own_harness
-    # requires to be gated -- an ungated splice would hand an opencode session
-    # claude's or codex's entries. So this asserts the branch is only ever that
-    # splice, rather than that the name is absent: a blanket absence check passed
-    # only while this harness had no MCP channel at all, and would have had to be
-    # deleted rather than narrowed the moment it got one.
-    stray = [
-        line.strip()
-        for line in body.splitlines()
-        if "self._is_opencode" in line and "_opencode_session_mcp_servers()" not in line
-    ]
+    # The resume gate itself must carry no identity test. opencode's own MCP array
+    # reaches this path through the ``_harness_session_mcp_servers`` hook its client
+    # class (``OpencodeAcpClient``) fills, so the shared init path names no opencode
+    # identity at all, and ``AcpClient`` has none to name.
+    assert not hasattr(AcpClient, "_is_opencode")
+    stray = [line.strip() for line in body.splitlines() if "_is_opencode" in line]
     assert not stray, (
         "an opencode identity test that is not the MCP-array splice sits on the shared "
         f"init path (harness-parity H13): {stray}"

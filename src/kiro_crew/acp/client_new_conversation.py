@@ -1,10 +1,10 @@
-"""Start a fresh ``AcpClient`` conversation on the live adapter: ``new_conversation``.
+"""Start a fresh ``ClaudeAcpClient`` conversation on the live adapter: ``new_conversation``.
 
 The cheap reset a reused workflow-pool worker and a history consolidation pass ask for.
 Only a member of ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` has it; every other backend on
 its own client raises ``NotImplementedError`` and is reset by kill and respawn.
 
-Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
+Each function here whose first parameter is ``self`` is a ``ClaudeAcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
@@ -39,12 +39,12 @@ from kiro_crew.agent_sdk.backends import (
 )
 
 if TYPE_CHECKING:
-    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.client import ClaudeAcpClient
 
 logger = logging.getLogger("kiro_crew.acp.client")
 
 
-async def new_conversation(self: AcpClient) -> None:
+async def new_conversation(self: ClaudeAcpClient) -> None:
     """Replace this session with a fresh one on the SAME adapter process.
 
     Skips the spawn and the ``initialize`` handshake a kill-and-respawn pays. The

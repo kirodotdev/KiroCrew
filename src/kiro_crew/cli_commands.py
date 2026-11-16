@@ -1013,6 +1013,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_install_source,
         _run_app_action_through_gateway,
         _run_app_mcp_server,
+        _set_folded_app_switch,
         _shell_quoted,
         _warn_backend_not_stopped,
         _warn_hooks_need_restart,

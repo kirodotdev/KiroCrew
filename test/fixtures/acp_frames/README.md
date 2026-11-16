@@ -181,6 +181,40 @@ carries that second proof.
 carrier -- the directory's live file already reaches all seven, and this one pins
 `_kiro.dev/*` members no capture here reaches. Its row says which.
 
+`claude/` keeps eight synthesized files beside its live captures, none a
+required-class carrier, all on claude-agent-acp 0.107.0. Four are synthesized
+from the adapter's source, whose lines each `_meta.note` cites. Four are live
+frames off it, marked synthesized because a live claude capture is held to the
+lane's 0.94.0 pin; each note names what was normalized.
+
+- `plan-checklist.jsonl` (source): the legacy `plan` updates of one TodoWrite
+  turn, ending `entries: []`, as sent to a client that declares no
+  `clientCapabilities.plan`. `plan-checklist-tasks.jsonl` (live frames): the
+  eight `plan` frames of a turn whose model used the Task* tools, each change
+  sent twice. Replayed by `test/test_claude_plan_checklist.py`.
+- `harness-notices.jsonl` (source): the `notice` updates sent to a client that
+  declares `clientCapabilities.session.notices`, and the `current_mode_update` /
+  `config_option_update` pairs of plan mode. Replayed by
+  `test/test_claude_harness_notices.py`.
+- `raw-sdk-workflow.jsonl` and `raw-sdk-background-shell.jsonl` (live frames): a
+  Workflow run and a `run_in_background` Bash command on a session that asked
+  for `_meta.claudeCode.emitRawSDKMessages`, with their `_claude/sdkMessage`
+  task frames and the cycle Claude Code runs on its own when the task ends.
+  Replayed by `test/test_claude_raw_sdk_tasks.py`, with
+  `raw-sdk-tasks-live.jsonl`, the live 0.94.0 capture behind
+  `ACP_BACKENDS_RAW_SDK_TASKS`.
+- `read-image.jsonl` (live frames): a Read of a PNG whose completed
+  `tool_call_update` carries an image block. Replayed by
+  `test/test_claude_read_image_rows.py`.
+- `fast-mode.jsonl` (source): the `fast` on/off select, its
+  `session/set_config_option` reply, and a turn that turned Fast mode off, sent
+  as a warning `notice` and a `config_option_update`. Replayed by
+  `test/test_claude_fast_mode_toggle.py`.
+- `compaction-summary.jsonl` (source): a `/compact` whose `completed`
+  `compaction_update` carries the summary, and an in-turn compaction whose
+  summary streams as `compaction_summary_chunk` updates. Replayed by
+  `test/test_claude_compaction_summary.py`.
+
 ### The rule
 
 **Any host-derived enumeration is unshippable unless every entry in it is

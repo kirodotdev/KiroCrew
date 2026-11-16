@@ -14,7 +14,6 @@ import {
   useRecentsProvider,
   type HistorySession,
 } from './recentsProvider'
-import { crewModePreviewOn, turnOnCrewModePreview } from '../../../test/crewModePreview'
 
 type MockState = {
   dashboard: { slots: ChatSlot[]; unreadSlots: string[] }
@@ -343,7 +342,6 @@ describe('sessionStatus — running detail', () => {
 describe('useRecentsProvider — live status bridge', () => {
   beforeEach(() => {
     localStorage.clear()
-    turnOnCrewModePreview()
     vi.clearAllMocks()
     mocks.state.dashboard.slots = []
     mocks.state.dashboard.unreadSlots = []
@@ -459,7 +457,6 @@ describe('useRecentsProvider — Older dedupe against live slots', () => {
 
   beforeEach(() => {
     localStorage.clear()
-    turnOnCrewModePreview()
     vi.clearAllMocks()
     mocks.state.dashboard.slots = []
     mocks.state.dashboard.unreadSlots = []
@@ -571,6 +568,3 @@ describe('useRecentsProvider — Older is the full History inventory', () => {
     expect(apiMock.sessions).toHaveBeenLastCalledWith(20, 0, true)
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

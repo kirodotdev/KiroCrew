@@ -216,6 +216,9 @@ with no row here.
    * - ``ACP_BACKENDS_ULTRACODE_CONFIG_OPTION``
      - driver-internal (whether the session's advertised ``ultracode`` switch is
        read and written, by ``AcpProvider.ultracode_enabled`` / ``set_ultracode``)
+   * - ``ACP_BACKENDS_FAST_MODE_CONFIG_OPTION``
+     - driver-internal (whether the session's advertised ``fast`` switch is read
+       and written, by ``AcpProvider.fast_mode_enabled`` / ``set_fast_mode``)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -231,6 +234,39 @@ with no row here.
        the kiro-cli / KAS branch), and the card's kiro-family marker
    * - ``ACP_BACKENDS_NATIVE_TODOS``
      - semantic question (``SessionCapabilities.supports_native_todos``)
+   * - ``ACP_BACKENDS_PLAN_CHECKLIST``
+     - semantic question (``SessionCapabilities.keeps_own_checklist``: the dashboard
+       sends such a harness no ``todo_list`` sync or recovery block), and
+       driver-internal everywhere else (whether ``AcpClient`` reads an ACP ``plan``
+       update as the agent's read-only checklist, ``EVENT_TODO_UPDATE``, and whether
+       the claude launch asks Claude Code for its checklist tools)
+   * - ``ACP_BACKENDS_HARNESS_NOTICES``
+     - driver-internal (whether ``AcpClient`` declares ``session.notices``, reads
+       the harness's ``notice`` and ``current_mode_update`` updates as notice rows,
+       and lets a ``notice`` between prompts start an agent-started turn)
+   * - ``ACP_BACKENDS_RAW_SDK_TASKS``
+     - driver-internal (whether a claude session asks for the raw SDK messages of
+       its background tasks and API retries, and ``AcpClient`` reads them as
+       Workflow agent cards and notice rows)
+   * - ``ACP_BACKENDS_READ_PATH_ARG``
+     - driver-internal (whether ``AcpClient`` marks a ``read`` tool call with the
+       argument naming its file, ``AcpEvent.read_path_arg``, which the dashboard
+       keeps on the tool row for its image thumbnails)
+   * - ``ACP_BACKENDS_SUMMARIZED_THINKING``
+     - driver-internal (whether the claude launch asks the harness for summarized
+       thinking text, ``CLAUDE_CODE_THINKING_DISPLAY``, when nothing else decides it)
+   * - ``ACP_BACKENDS_NATIVE_CHILD_CANCEL``
+     - driver-internal (whether ``AcpClient.cancel_native_child`` sends
+       ``session/cancel`` naming a native child whose announce granted
+       ``capabilities.cancel``; the dashboard's card Stop asks the client, never
+       the set)
+   * - ``ACP_BACKENDS_COMPACTION_SUMMARY``
+     - driver-internal (whether ``AcpClient`` carries a native compaction's
+       summary, streamed or on its ``completed`` update, on the compaction event
+       the dashboard's compaction card folds)
+   * - ``ACP_BACKENDS_TOOL_TITLE_REFINEMENT``
+     - semantic question (``SessionCapabilities.refines_tool_call_titles``: whether
+       a Crew-spawned subagent's card takes a ``tool_call_update``'s title)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.runs_own_slash_commands``)
    * - ``ACP_BACKENDS_NATIVE_WORKFLOWS``
@@ -434,7 +470,7 @@ ACP_BACKEND_PI = "pi"
 # ``session-load-live.jsonl``). Re-verify all three against a fresh capture before raising
 # this range, and re-capture the mode move deliberately -- it is the one a routine
 # re-record would not exercise. A session on a release outside the range is named at the
-# handshake (``AcpClient._note_goose_version`` reads ``agentInfo.version`` off
+# handshake (``GooseAcpClient._note_goose_version`` reads ``agentInfo.version`` off
 # ``initialize``), so the one silent loss has a signal before the first prompt.
 ACP_BACKEND_GOOSE = "goose"
 # DeepSeek Harness: a plugin host whose ``acp`` profile serves ACP v1 over stdio
@@ -1353,6 +1389,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_FAST_MODE_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
@@ -1368,6 +1405,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
+    FAST_MODE_CONFIG_OPTION_ID,
     ULTRACODE_CONFIG_OPTION_ID,
     effort_config_option_clear_value,
     effort_config_option_id,
@@ -1435,21 +1473,29 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_SHARING,
+    CHAT_RUNTIME_SHARING_HARNESSES,
+    can_restore_session,
 )
 from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_COMPACTION_REPORTED,
+    ACP_BACKENDS_COMPACTION_SUMMARY,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
+    ACP_BACKENDS_HARNESS_NOTICES,
     ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
+    ACP_BACKENDS_NATIVE_CHILD_CANCEL,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_PLAN_CHECKLIST,
+    ACP_BACKENDS_RAW_SDK_TASKS,
+    ACP_BACKENDS_READ_PATH_ARG,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_STEER,
@@ -1457,6 +1503,8 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    ACP_BACKENDS_SUMMARIZED_THINKING,
+    ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     CLAUDE_PROMPT_CACHE_TTL_ENV,

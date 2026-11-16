@@ -306,6 +306,7 @@ class McpToolClient:
             self._proc.kill()
             self._proc.wait()
         except Exception:
+            # Whatever stopped the shutdown, the cleanup in ``finally`` still runs.
             pass
         finally:
             stderr_file = getattr(self, "_stderr_file", None)

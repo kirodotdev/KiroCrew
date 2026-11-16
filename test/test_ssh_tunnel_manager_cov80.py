@@ -724,10 +724,14 @@ class TestMonitor:
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates(self) -> None:
-        tunnel = _tunnel()
+        notified: list[str] = []
+        tunnel = _tunnel(on_exit=notified.append)
         tunnel._proc = _FakeProc(wait_raises=asyncio.CancelledError())  # type: ignore[assignment]
         with pytest.raises(asyncio.CancelledError):
             await tunnel._monitor()
+        # Cancelling the watcher is not the child dying: no ERROR, no self-heal.
+        assert tunnel.status.state is not TunnelState.ERROR
+        assert notified == []
 
 
 class TestTerminate:

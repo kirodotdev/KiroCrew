@@ -1341,7 +1341,8 @@ async def _rollback_secret(
     stale snapshot. Returns whether a rollback happened. The log names the SLUG,
     never the vault entry or a value.
     """
-    current = await asyncio.to_thread(vault.get, name)
+    # A function of this module, so a secret-read audit row names this handler.
+    current = await asyncio.to_thread(lambda: vault.get(name))
     current_value = current.reveal() if current is not None else None
     if current_value != written:
         logger.warning(
@@ -1376,7 +1377,7 @@ async def _write_oauth_client(
     name = client_secret_name(slug)
     previous_secret = None
     if secret is not None or clear:
-        previous_secret = await asyncio.to_thread(vault.get, name)
+        previous_secret = await asyncio.to_thread(lambda: vault.get(name))
         if secret is not None:
             await vault.set(name, secret)
         else:
@@ -1600,7 +1601,7 @@ async def api_connections_oauth_client_delete(request: web.Request) -> web.Respo
             # secret-less id the vendor rejects on every authorization.
             vault = SecretVault(config_dir())
             name = client_secret_name(slug)
-            previous_secret = await asyncio.to_thread(vault.get, name)
+            previous_secret = await asyncio.to_thread(lambda: vault.get(name))
             await vault.delete(name)
             try:
                 await run_config_write(update_config_locked, mutate=_drop_client)

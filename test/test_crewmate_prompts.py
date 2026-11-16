@@ -271,7 +271,9 @@ def test_the_conductor_prompt_hedges_a_gated_action_instead_of_promising_it() ->
     prompt = _conductor_prompt()
     assert "Promise only what you can do." in prompt
     assert "say you will try" in prompt
-    assert "Never offer to ask for a permission or a card to get past a safety rule." in prompt
+    # The no-loosening clause moved to ASK_CORE, which the Bot conductor gets at
+    # agent rank (test_ask_core_guidance.py pins it in the rendered block).
+    assert "Never offer to ask for a permission or a card" not in prompt
 
 
 def test_a_blocked_command_is_handed_over_as_the_run_yourself_card() -> None:
@@ -280,6 +282,9 @@ def test_a_blocked_command_is_handed_over_as_the_run_yourself_card() -> None:
     assert "```run-yourself" in prompt
     assert '```run-yourself summary="<what it installs or does, and from where>"' in prompt
     assert "facts only, no persuasion" in prompt
+    assert "If a rule blocks a command and no allowed path reaches the goal" in " ".join(
+        prompt.split()
+    )
     card = (ROOT / "website" / "src" / "components" / "RunYourselfCard.tsx").read_text(
         encoding="utf-8"
     )
@@ -314,7 +319,8 @@ def test_no_piece_carries_an_example_chip_with_jargon() -> None:
 def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
     text = crewmate_prompts.text("worker.principles")
     assert "When a safety rule blocks a command" in text
-    assert "do not look for a way around it" in text
+    assert "do not look for a way around it" not in text
+    assert "and no allowed path is left, say so in your report" in text
     assert "exact command in a code block" in text
     assert "what it installs or does, and from where" in text
     assert "no persuasion" in text
@@ -464,6 +470,37 @@ def test_a_render_without_the_ledger_is_the_text_every_crewmate_had(
     assert member.operating_mode_block("Atlas") == crewmate_prompts.fill(
         "conductor.operating_mode", agent_label="Atlas"
     )
+
+
+@pytest.mark.parametrize("mounted, backend_can_dispatch", [(False, True), (None, False)])
+def test_a_turn_without_the_dispatch_tools_is_not_told_to_track_its_hand_offs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mounted: bool | None,
+    backend_can_dispatch: bool,
+) -> None:
+    """The ledger is mounted but the operating-mode block is withheld (this session
+    lacks the ``session_*`` mount, or the backend cannot mount it): the tracking
+    sentence is the plain one, not the one about tasks handed to workers."""
+    from types import SimpleNamespace
+
+    from kiro_crew import context as ctx
+    from kiro_crew import member_mate_tools
+    from kiro_crew.context_assembly import member
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    cfg = ctx.KiroCrewConfig()
+    cfg.agents["Atlas"] = SimpleNamespace(
+        description="", triggers="", kiro_agent="", workspace="", member_id=""
+    )
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(member_mate_tools, "binding_has_ledger_tools", lambda _b: True)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda *_a: backend_can_dispatch)
+    text = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=mounted)
+    assert crewmate_prompts.text("conductor.tracking") in text
+    assert crewmate_prompts.text("conductor.tracking_ledger") not in text
+    held = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=True)
+    assert crewmate_prompts.text("conductor.tracking_ledger") in held
 
 
 # -- which spec counts as having the ledger ---------------------------------- #

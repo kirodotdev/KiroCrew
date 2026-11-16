@@ -223,7 +223,7 @@ const keyMap = (relPath, name) => {
 
 const { BUILTIN_SURFACE_NAV, CAPABILITY_SUB_ITEM_NAV, capabilitySubItemNav } = await loadTs('src/surfaces/surfaceData.ts')
 const { EXTRA_PAGES, EXTRA_PAGE_TITLE_KEY } = await loadTs('src/components/commandPalette/providers/pagesData.ts')
-const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SETTING_PREVIEW, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
+const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SETTING_PREVIEW, SETTING_CONDITION, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
 // The registered locations live one file per area; every file there is an
 // input whether or not git tracks it, and the merge refuses an id
 // two areas declare or an area file the aggregator does not list.
@@ -352,6 +352,7 @@ const indexInputs = {
   settingsSubs,
   settingsTabPreview: SETTINGS_TAB_PREVIEW,
   settingPreview: SETTING_PREVIEW,
+  settingCondition: SETTING_CONDITION,
   settingsEntries,
   agentSettings,
   descriptors: UI_LOCATIONS,

@@ -136,7 +136,8 @@ class Instance:
 #: Keyed by the STATE STRING, which is what lets this table live here rather than in
 #: :mod:`kiro_crew.dashboard_package`: the Model type travels from this module to that
 #: one, so a type import back would close a cycle. The two halves are pinned against
-#: each other by ``test_dashboard_package`` -- a state added there with no row here
+#: each other by ``test_every_state_the_reader_can_answer_with_has_a_refusal_beside_it``
+#: (``test/test_dynamic_dashboard.py``) -- a state added there with no row here
 #: would reach an agent as a bare "no package", which is the wrong instruction for two
 #: of the three.
 #:
@@ -1691,7 +1692,7 @@ def session_turn_block(slot_key: str) -> str:
 
 
 #: The rule that keeps the board's Overview (the work-ledger goal) current. The same
-#: words are in the team-lead prompt and the team-lead / goal-conductor skills.
+#: words are in the conductor and team-lead prompts and the team-lead / goal-conductor skills.
 GOAL_FIRST_RULE: Final[str] = (
     "When the person gives a new goal or changes the scope, call `work_ledger_record` "
     "`action=goal` FIRST, before you dispatch or reply: `new_goal=true` for a new goal, "

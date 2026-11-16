@@ -35,8 +35,12 @@ permissions:
   contents: read
   pull-requests: write
 
+# One group per COMMENT: GitHub keeps one pending run per group and cancels
+# the older pending one when a newer run joins, and every comment on a PR fires
+# this workflow, so a per-PR group let a plain comment evict a pending
+# approval. Same rule as ai-review-human-override.yml.
 concurrency:
-  group: pr-size-override-${{ github.event.issue.number }}
+  group: pr-size-override-${{ github.event.issue.number }}-${{ github.event.comment.id }}
   cancel-in-progress: false
 
 jobs:

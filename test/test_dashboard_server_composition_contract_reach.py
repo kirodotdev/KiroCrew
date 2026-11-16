@@ -19,7 +19,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import functools
-import hashlib
 import importlib
 import inspect
 import re
@@ -660,7 +659,8 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: outermost, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
 #: layer reads a client-sent relay header, the
-#: deny-audit boundary is outer to every barrier that can refuse, the SEL request
+#: deny-audit boundary is outer to every barrier that can refuse, the app web origin
+#: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
 #: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
 #: and the audit record, and the workflow and crewmate-prune gates, the Shared Crew
 #: team-config gate and the change-card hook (innermost, after auth has classified
@@ -671,6 +671,7 @@ _DASHBOARD_CHAIN = (
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
+    ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
@@ -843,7 +844,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
-    T:cleanup_migrated_builtin T:cleanup_migrated_builtin
+    T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
     T:migrate_channel_transcripts T:migrate_existing_crewmates T:newest_dump_with_stacks T:open_dump_file
     T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
     T:refresh_materialized_agents
@@ -1119,19 +1120,28 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
     ]
 
 
-#: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
-#: registration order, and their count. The table is shared by both entrypoints, so a
-#: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 352
-_MCP_TABLE_DIGEST = "0ae9f68843a5652d7a2ef3a87511400a0d5763ba5cc02839f26a6f9aaa93f07a"
+#: The MCP route table's ``"<method> <path> <handler>"`` rows in registration order,
+#: one per line. The table is shared by both entrypoints, so a route added to it on
+#: purpose edits its own row there; a stored count or digest of the whole table would
+#: make every such change rewrite one shared line (see testing-conventions.md
+#: § Merge-safe ratchets and counts).
+_MCP_TABLE_FILE = Path(__file__).resolve().parent / "fixtures" / "dashboard_mcp_route_table.txt"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
     app = web.Application()
     server._register_mcp_routes(app)
     rows = [" ".join(row) for row in _routes(app)]
-    digest = hashlib.sha256("\n".join(rows).encode()).hexdigest()
-    assert (len(rows), digest) == (_MCP_TABLE_ROWS, _MCP_TABLE_DIGEST), "\n".join(rows)
+    recorded = [
+        line
+        for line in _MCP_TABLE_FILE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert recorded, f"{_MCP_TABLE_FILE} holds no rows"
+    assert rows == recorded, (
+        f"the MCP route table changed; if on purpose, write these rows to {_MCP_TABLE_FILE}:\n"
+        + "\n".join(rows)
+    )
 
 
 def test_a_literal_mcp_route_precedes_the_pattern_that_would_swallow_it() -> None:

@@ -76,3 +76,48 @@ describe('first run: Ask the agent from the importer', () => {
     expect(await screen.findByRole('heading', { name: 'We could not scan agent setup' })).toBeInTheDocument()
   })
 })
+
+/** First run with Import done and Privacy due, whose ack write always fails. */
+function PrivacyDueHost() {
+  const firstRun = useFirstRunChapters({
+    onboarded: false,
+    importOnboarded: true,
+    privacyAcked: false,
+    themeBootReady: true,
+    markOnboarded,
+  })
+  return (
+    <FirstRunChapters
+      firstRun={firstRun}
+      onboarded={false}
+      privacyAcked={false}
+      markOnboarded={markOnboarded}
+      markImportOnboarded={markImportOnboarded}
+      markPrivacyAcked={markPrivacyAcked}
+    />
+  )
+}
+
+describe('first run: closing Privacy after a failed save', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    markPrivacyAcked.mockRejectedValue(new Error('403'))
+  })
+
+  it('hides it without finishing first run, and the next load shows it again', async () => {
+    const first = renderWithProviders(<PrivacyDueHost />)
+    // The status reads are not mocked here, so the chapter shows its unknown-status form.
+    await userEvent.click(await screen.findByRole('button', { name: 'Continue without changes' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Close' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument())
+    expect(markOnboarded).not.toHaveBeenCalled()
+    expect(markPrivacyAcked).toHaveBeenCalledTimes(1)
+
+    // Nothing was recorded, so a fresh page load derives the chapter again.
+    first.unmount()
+    renderWithProviders(<PrivacyDueHost />)
+    expect(await screen.findByRole('dialog', { name: 'Privacy' })).toBeInTheDocument()
+  })
+})

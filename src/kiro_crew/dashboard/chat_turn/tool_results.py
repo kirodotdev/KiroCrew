@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.tool_rows import (
         _persist_tool_result_rows,
         _tcid_identity_key,
+        _withdraw_read_path_arg,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _directive_producer_is_channel
     from kiro_crew.dashboard.chat_turn.turn_ledgers import (
@@ -755,6 +756,9 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     # tool entries (🔧 pre-approval + ✅ post-approval) with the same
     # tool_call_id, and both pills should reflect the same output.
     if _tcid:
+        # A read that ended without completing read no file: its rows preview none.
+        if _tool_terminal and (event.refusal is not None or not event.tool_final):
+            _withdraw_read_path_arg(state, slot, _tcid)
         for m in slot.messages:
             if m.get("role") == "tool" and m.get("meta", {}).get("tool_call_id") == _tcid:
                 _meta = m.setdefault("meta", {})

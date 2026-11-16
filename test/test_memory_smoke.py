@@ -500,7 +500,7 @@ class TestMMRReranking:
         """Episodic search applies MMR by default (keyword fallback path)."""
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        # Write several topically similar entries
+        # Three entries on different topics; only the first matches the query.
         store.write_episodic("deployed the app to production successfully")
         store.write_episodic("user prefers dark mode for all editors")
         store.write_episodic("database migration completed for PostgreSQL")

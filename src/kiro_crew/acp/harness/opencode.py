@@ -676,6 +676,8 @@ def _verify_opencode_routing(
         return servers_issue, _opencode_config_mcp_servers_remedy()
     read_back = session._harness_read_back()
     read_back.config_mcp_servers = config_servers
+    configured_model = resolved.get("model")
+    read_back.config_model = configured_model.strip() if isinstance(configured_model, str) else ""
     seeded_denies = _opencode_seeded_deny_rules(config_content, setting_key)
     # Which of Crew's deny rules the harness's own resolution keeps in force. A rule
     # that lost is normally not a refusal: the projection withholds its server.
@@ -935,10 +937,6 @@ class OpencodeLaunch(ProcessAdapter):
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
         )
-
-    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
-        """The opencode session's own ``mcpServers`` entries, warmed by the spawn."""
-        return session._opencode_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Apply the seed the read-back verified, unconditionally.

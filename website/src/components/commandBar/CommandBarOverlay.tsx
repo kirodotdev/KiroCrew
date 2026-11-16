@@ -189,7 +189,7 @@ export default function CommandBarOverlay({
   // tool approval is counted on its conductor over the FULL slot set, so Needs
   // You still names it (the fleet page counts the same way, `crewWaitingApprovals`).
   const crewMode = useCrewMode()
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewWaitingApprovals reads
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the conductor mode read crewWaitingApprovals makes
   const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots, crewMode])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})

@@ -35,8 +35,8 @@ about one turn.
 **Outcome is passed in, never guessed.** The ``event`` argument those callers
 pass is heterogeneous (an ``LLMEvent`` from the chat path, a bare ``TurnUsage``
 from the helper sites), so a stop reason cannot be read off it reliably. Each
-surface states its own outcome instead, and ``test_turn_duration_recorded.py``
-holds every call site to that. Defaulting to ``ok`` would have been the harmful
+surface states its own outcome instead: ``emit_turn_duration`` takes ``outcome`` as a
+required keyword, so no call site can leave it out. Defaulting to ``ok`` would have been the harmful
 alternative: it would bury exactly the failing background turns the metric is
 being widened to expose.
 """

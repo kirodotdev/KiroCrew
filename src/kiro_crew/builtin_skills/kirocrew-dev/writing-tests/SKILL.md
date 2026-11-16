@@ -83,6 +83,8 @@ of anything. The floor helps, but it is not your discipline: the rootdir conftes
 set `KIROCREW_TMP_RESIDUE_STRICT=1`, so a leak of yours turns that shard red; a local run
 only warns unless you set it. Need a data home? Use the conftest's per-test `KIROCREW_HOME`
 pin, not a private temp home: a background worker can re-create a home you removed.
+The same goes for a store root that its own reads `mkdir` (the Issue Radar store does):
+in a `unittest` class, set it from `tmp_path` in an autouse fixture method.
 (Details: testing-conventions.md § Rules.)
 
 Running the suite from a Kiro Crew agent needs no setup. The agent's shell inherits the
@@ -164,6 +166,17 @@ Six shapes escape the env var:
   `identity_stores.sqlite_dbs()`, so their anchor rule is pinned by
   `test_identity_stores.py::TestUsageTuplesAnchorTheRealHome` instead. Read
   `_EXCLUDED` for the live list rather than a copy here.
+
+**A faked host condition and the check that reads it are one contract.** A test
+that fakes the default home (`beacon.is_default_home`), the platform or a
+privilege depends on the production check it answers. Change the fake and the
+check in the same pull request: a new check means searching `test/` for the
+tests that reach it, and removing a fake means searching for every assertion that
+still relies on it. Two parallel pull requests, one dropping the `home` fixture's
+default-home fake and one adding a default-home check to `off_offer_due()`, were
+each green alone and red together on every run of `main`. Keep the fake scoped to
+the class that needs it. Full telling:
+[testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md#a-faked-host-condition-changes-with-the-check-that-reads-it).
 
 ### 1c. A child process inherits pytest's CWD, which is the repo root
 
@@ -299,6 +312,15 @@ between two writes makes a tie less likely, never impossible. Set the stamps (`o
 clock, an explicit `created_at`), assert strictly, and pin a time-sorted output's
 tie-break with an equal-stamp pair.
 
+The fifth class looks fixable by tuning and is not: **a performance assert in seconds
+reads the runner.** `thread_time` hides scheduling but not coverage's tracer, which
+multiplies the CPU of every traced line about fivefold on the instrumented Linux
+shards, so a 0.5 s budget the code meets bare in 0.07 s fails there on every rerun.
+Taking the minimum of N readings or pausing the tracer only moves the line. Count the
+work instead and bound its GROWTH between equally spaced input sizes:
+`_interpreter_work` and `_linear_work` in `test/denied_commands_security_helpers.py`
+are the model (testing-conventions § Determinism 5).
+
 Prove a test rather than trusting a green run: 20 repeats at `-n0`, 10 at `-n 4` beside
 its neighbours, and a shuffled order. A FIX to a flaky test also shows the forced
 condition (a coarse clock, a late executor, a delay at the named seam) red on the parent
@@ -377,6 +399,15 @@ test must first establish the concurrency it is asserting about.
   hold and an ordinary shell does not, so a blanket `skipif(IS_WINDOWS)` would drop the
   assertion exactly where it needs to run. Use the `make_escaping_link` /
   `make_dir_link` helpers, which fall back to a junction.
+- **Probe with the program under test, not a stand-in.** When a live test picks its
+  expected branch from a host probe, the probe makes the same check the program makes,
+  with the binary it runs (codex's own bubblewrap preflight, not Crew's
+  `userns_available()`). AppArmor judges each binary by its own profile, so one
+  process's refusal does not predict another's: on the `ubuntu-26.04` runner Crew's
+  probe was refused while codex's sandbox ran, and the codex inner-sandbox tests were
+  red on every PR that runner served. A second probe answers only where the program's
+  own check gives no verdict, never as a veto ahead of it (testing-conventions § A host
+  probe that asks a different program than the one under test).
 - **arm64 vs x86_64** rarely matters for test logic, but check it when you touch memory
   or page arithmetic (`SC_PAGE_SIZE` is 16K on some arm64 configurations) or a
   dependency with per-architecture wheels.
@@ -534,6 +565,9 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       absent key records no undo, and a `delenv` AFTER the write puts the written value back
 - [ ] No `monkeypatch.undo()` in a test body: it reverts every fixture's records too. A
       patch you need to drop early lives in `with pytest.MonkeyPatch.context() as patched:`
+- [ ] A fake of a host condition (default home, platform, privilege) lives on the tests
+      that need it, not a shared fixture; adding a production check on that condition, or
+      removing the fake, comes with a `git grep` for every test that reaches the check
 - [ ] No module-level `skipif` probe that reads `KiroCrewConfig` / `config_dir()` /
       `Path.home()` — it runs before any pin and observes the operator's real config
 - [ ] A collection-time probe that can construct a process singleton (`sel()`, a config
@@ -570,6 +604,12 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       pristine value
 - [ ] A source ratchet strips docstrings with `ast`, not by subtracting `__doc__` from
       `inspect.getsource` (3.13 dedents docstrings)
+- [ ] A ratchet or count test survives two changes merging untested: its record is one
+      line per file, site or change, never one shared total that two changes would
+      both rewrite to the same number; a budget grows by per-change rows holding the
+      change's own delta, not the amount over (testing-conventions § Merge-safe
+      ratchets and counts; the flake-pattern ratchet's K21 refuses a new count pinned
+      `==` a literal or a `_BASELINE`/`_TOTAL`-style constant in a tree-scanning test)
 - [ ] A test whose contract IS a real symlink is listed in `test/requires-real-symlinks.txt`;
       one that needs a directory that resolves elsewhere uses `make_dir_link`
 - [ ] No `AsyncMock` standing in for a synchronous method; every `cancel()` awaited. A

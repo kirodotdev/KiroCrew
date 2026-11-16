@@ -18,6 +18,7 @@ loopback receiver standing in for the endpoint.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import http.server
@@ -59,8 +60,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(kiro_export, "_suppressed_for_tests", False)
     monkeypatch.setattr(kiro_export, "_session", None)
-    # The private home is not the default one, which hides the destination.
-    monkeypatch.setattr(beacon, "is_default_home", lambda: True)
     monkeypatch.setattr(pm, "_telemetry_provider", DefaultTelemetryProvider)
     monkeypatch.setattr(pm, "_policy_ceiling", lambda: None)
     _write_config(tmp_path, {})
@@ -388,6 +387,125 @@ class TestNotice:
         assert kiro_export.notice_shown() is False
 
 
+class TestOffOffer:
+    """Off only by a written false older builds put in every new config."""
+
+    @pytest.fixture(autouse=True)
+    def _default_home(self, _floor_monkeypatch):
+        # The offer is asked only on the default data home, and the private test home
+        # is not one, so these tests fake it. The shared ``home`` fixture does not:
+        # ``destinations()`` lists the destination on any home.
+        _floor_monkeypatch.setattr(beacon, "is_default_home", lambda: True)
+
+    def _old_default(self, home, **telemetry):
+        _write_config(home, {"enabled": False, **telemetry}, ack=2, kiro_ack=0)
+
+    def test_it_is_due_and_changes_nothing(self, home, monkeypatch):
+        from kiro_crew.dashboard.handlers import core as core_handlers
+
+        self._old_default(home)
+        cfg = KiroCrewConfig.load()
+        assert kiro_export.off_offer_due(cfg) is True
+        # The chapter shows: the boot payload reports the stored, older version.
+        assert core_handlers._theme_payload(cfg)["privacy_ack_version"] < kiro_export.NOTICE_VERSION
+        assert _built(monkeypatch, home) == (False, [])
+
+    def test_the_collection_status_reports_it(self, home):
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.handlers import telemetry as tel
+
+        self._old_default(home)
+        resp = asyncio.run(tel.api_collection_status(make_mocked_request("GET", "/x")))
+        assert json.loads(resp.body)["off_offer"] is True
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "dnt",
+            "env",
+            "heartbeat_env",
+            "heartbeat_off",
+            "acked",
+            "unset",
+            "lts",
+            "ci",
+            "home",
+            "collector",
+            "overlay",
+            "policy",
+        ],
+    )
+    def test_it_is_not_due(self, home, monkeypatch, case):
+        from kiro_crew.dashboard.handlers import core as core_handlers
+
+        self._old_default(home)
+        if case == "dnt":
+            monkeypatch.setenv("DO_NOT_TRACK", "1")
+        elif case == "env":
+            monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+        elif case == "heartbeat_env":
+            monkeypatch.setenv("KIROCREW_TELEMETRY_DISABLED", "1")
+        elif case == "heartbeat_off":
+            self._old_default(home, beacon_enabled=False)
+        elif case == "acked":
+            _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
+        elif case == "unset":
+            _write_config(home, {}, ack=2, kiro_ack=0)
+            monkeypatch.setattr(pm, "_consent_enabled", lambda tel: False)
+        elif case == "lts":
+            monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        elif case == "ci":
+            monkeypatch.setenv("CI", "true")
+        elif case == "home":
+            # Dev homes still export (destinations() stays listed); they are not asked.
+            listed_rows = kiro_export.destinations()
+            assert listed_rows
+            monkeypatch.setattr(kiro_export, "destinations", lambda: listed_rows)
+            monkeypatch.setattr(beacon, "is_default_home", lambda: False)
+        elif case == "collector":
+            self._old_default(home, otlp_endpoints=[{"name": "ops", "endpoint": OPS}])
+        elif case == "overlay":
+            (home / "config.local.json").write_text(json.dumps({"telemetry": {"enabled": False}}))
+        else:
+            monkeypatch.setattr(beacon, "is_governance_pinned_off", lambda **kw: True)
+        cfg = KiroCrewConfig.load()
+        assert kiro_export.off_offer_due(cfg) is False
+        if case not in ("unset", "lts"):
+            assert core_handlers._theme_payload(cfg)["privacy_ack_version"] >= 3
+
+    def test_turn_on_records_and_exports(self, home, monkeypatch):
+        _write_config(home, {"enabled": True}, ack=kiro_export.NOTICE_VERSION)
+        assert kiro_export.off_offer_due() is False
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
+
+    def test_keep_off_is_not_asked_again_and_sends_nothing(self, home, monkeypatch):
+        _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
+        assert kiro_export.off_offer_due() is False
+        assert _built(monkeypatch, home) == (False, [])
+
+    def test_a_headless_terminal_start_prints_the_line_once(self, home):
+        from kiro_crew.metrics import notice
+
+        self._old_default(home)
+        out = _Terminal()
+        assert notice.maybe_print_notice(stream=out, headless=True) is True
+        assert out.getvalue().strip() == notice.OFFER_TEXT
+        assert "kirocrew telemetry enable" in notice.OFFER_TEXT
+        assert notice.maybe_print_notice(stream=_Terminal(), headless=True) is False
+        stored = json.loads((home / "config.json").read_text(encoding="utf-8"))
+        assert stored["telemetry"]["enabled"] is False
+
+    @pytest.mark.parametrize("headless", [True, False])
+    def test_no_line_into_a_log_or_on_a_dashboard_start(self, home, headless):
+        from kiro_crew.metrics import notice
+
+        self._old_default(home)
+        stream = io.StringIO() if headless else _Terminal()
+        assert notice.maybe_print_notice(stream=stream, headless=headless) is False
+        assert stream.getvalue() == ""
+
+
 class TestProvider:
     def test_it_follows_the_operator_entries_and_is_narrowed(self, home):
         dests = DefaultTelemetryProvider().otlp_destinations(TelemetryConfig(otlp_endpoint=OPS))
@@ -423,18 +541,21 @@ class TestProvider:
         assert "Collectors:  kiro-telemetry (included by this build)" in text
         assert "also sent to the metrics destination" in text
 
-    @pytest.mark.parametrize("hidden_by", ["ci", "home", "lts", "tests"])
+    @pytest.mark.parametrize("hidden_by", ["ci", "lts", "tests"])
     def test_it_is_not_listed_where_it_must_not_send(self, home, monkeypatch, hidden_by):
         if hidden_by == "ci":
             monkeypatch.setenv("GITHUB_ACTIONS", "true")
-        elif hidden_by == "home":
-            monkeypatch.setattr(beacon, "is_default_home", lambda: False)
         elif hidden_by == "lts":
             monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         else:
             monkeypatch.setattr(kiro_export, "_suppressed_for_tests", True)
         assert kiro_export.destinations() == ()
         assert DefaultTelemetryProvider().otlp_destinations(TelemetryConfig()) == ()
+
+    def test_a_non_default_home_gets_it(self, home):
+        """A dev home, a pod or a worktree preview exports like any other home."""
+        assert beacon.is_default_home() is False
+        assert [d.name for d in kiro_export.destinations()] == ["kiro-telemetry"]
 
     def test_an_lts_policy_collector_is_the_only_destination(self, home, monkeypatch):
         from kiro_crew import edition_locks

@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-two apps ship inside the Kiro Crew package (Meetings,
+backend process. Twenty-one apps ship inside the Kiro Crew package (Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -42,10 +42,15 @@ registry, or install a local directory from a path.
 - **Pin** and **Unpin**, in a Library tile's ⋯ menu, control whether an enabled app
   shows in the sidebar; the tile's caption says which. They do not disable anything.
 
-No shipped app is on from a fresh install: everything waits for you. Two parts of
-the dashboard used to be apps: the Command Bar that `Cmd+K` / `Ctrl+K` opens, and
-[Task Runner](task-runner.md). Turn either off or back on in
-**Settings → Display → View**.
+No shipped app is on from a fresh install: everything waits for you. Three parts of
+the dashboard used to be apps: the Command Bar that `Cmd+K` / `Ctrl+K` opens,
+[Task Runner](task-runner.md), and Channels. Turn the first two off or back on in
+**Settings → Display → View**. Channels, a shared room where several agents work one
+problem in the open with no private agent-to-agent messaging, is off until you turn
+it on with `kirocrew app enable channels` (or
+`kirocrew config set dashboard.channels_enabled true`); while it is on, the same
+Settings page has its switch. `kirocrew app enable` and `app disable` work for all
+three, and change the setting.
 
 ## What ships
 
@@ -79,7 +84,6 @@ Each line below is drawn from the app's own manifest description.
 |---|---|
 | **Workflows** (`workflows`) | Author, run and watch multi-phase agent runs written from a plain-language goal. See [workflows.md](workflows.md). |
 | **Research Lab** (`auto-research`) | Multi-cycle research campaigns that keep working after you walk away. See [research-lab.md](research-lab.md). |
-| **Channels** (`channels`) | A shared room where several agents work one problem in the open, with no private agent-to-agent messaging. |
 | **Ops Mission Control** (`ops-mission-control`) | An autonomous ops first responder: claims what fires, investigates it, proposes a fix, and keeps what it learns. |
 
 ### Your machine and your cloud
@@ -99,9 +103,9 @@ Each line below is drawn from the app's own manifest description.
 | **Personal Shopper** (`personal-shopper`) | A personal advisor that researches real stores. It never buys anything — you do. |
 
 Mochi and Crew Companion need the Kiro Crew **desktop app** for their own windows;
-enabling them from a browser works, but the window does not appear. Channels and
-Workflows are deliberately hidden from Discover and Library while disabled — reach
-them through the features that use them, or enable them from the CLI.
+enabling them from a browser works, but the window does not appear. Workflows is
+deliberately hidden from Discover and Library while disabled; reach it through the
+features that use it, or enable it from the CLI.
 
 ## Where an app's pages live
 

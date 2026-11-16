@@ -325,9 +325,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The conductor mode default is shown only while its preview is on: off, no chat
-  // offers conductor mode, so the setting would change nothing.
-  const crewModePreview = useCrewMode()
+  // The conductor mode default is shown wherever conductor mode is: in an LTS build
+  // no chat offers it, so the setting would change nothing.
+  const crewModeOffered = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
   // is what the pane shows by default. Every setting the old single scroll held
@@ -1131,7 +1131,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={dashDisabled || defaultModeMut.isPending}
             configKey="dashboard.default_memory_mode"
           />
-          {crewModePreview && (
+          {crewModeOffered && (
             <SettingsToggle label={i18nT('pages.settings.chatPanel.new_chat_crew_mode')} description={i18nT('pages.settings.chatPanel.new_chat_crew_mode_description')} hint={i18nT('pages.settings.chatPanel.new_chat_crew_mode_hint')} configKey="dashboard.new_chat_crew_mode" checked={dashCfg.new_chat_crew_mode ?? false} onChange={v => setDash({ new_chat_crew_mode: v })} disabled={dashDisabled} />
           )}
           <SettingsInput

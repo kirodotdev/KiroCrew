@@ -39,7 +39,6 @@ const APPS = [
   ['agent-worlds', 'agent_worlds', 'worlds', '/worlds'],
   ['auto-improvement', 'auto_improvement', 'auto-improvement', '/auto-improvement'],
   ['auto-research', 'auto_research', 'auto-research', '/auto-research'],
-  ['channels', 'channels', 'channels', '/channels'],
   ['code-review-sage', 'code_review_sage', 'code-review-sage', '/code-review-sage'],
   ['command-bar', 'command_bar', 'command-bar', '/chat'],
   ['crew-companion', 'crew_companion', 'crew-companion', '/crew-companion'],

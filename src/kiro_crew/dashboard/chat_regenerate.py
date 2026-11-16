@@ -1190,18 +1190,17 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             # failure (exception OR a save refused by its own guards) means
             # nothing persisted: no live mutation and no dispatch.
             #
-            # The worker thread cannot be interrupted: once the rewrite starts it
-            # WILL finish, whether or not this handler is still alive. A client
-            # disconnect cancels the handler task, and a bare await here would
-            # then abandon a completed destructive rewrite -- persisted history
-            # truncated, the live slot still holding the full original window,
-            # and the next periodic dirty-slot flush re-serializing that stale
-            # window back over the truncated file. That is exactly the "live
-            # window desynchronized from disk" failure this change set out to
-            # close, so shield the save; on cancellation, wait for the worker's
-            # real outcome and, if the rewrite landed on the transcript we
-            # authorized, commit the live slot to match disk and let the reserved
-            # dispatch run the edited prompt before propagating the cancellation.
+            # The worker thread cannot be interrupted: once the rewrite starts it WILL
+            # finish, whether or not this handler is still alive. A client disconnect
+            # cancels the handler task, and a bare await here would then abandon a
+            # completed destructive rewrite -- persisted history truncated, the live
+            # slot still holding the full original window, and the next periodic
+            # dirty-slot flush re-serializing that stale window back over the truncated
+            # file: the "live window desynchronized from disk" failure. So shield the
+            # save; on cancellation, wait for the worker's real outcome and, if the
+            # rewrite landed on the transcript we authorized, commit the live slot to
+            # match disk and let the reserved dispatch run the edited prompt before
+            # propagating the cancellation.
             # Through ``save_slot_off_loop``, not a bare ``to_thread``, and the
             # difference is load-bearing rather than stylistic. Because the live
             # slot keeps the FULL window until the commit, the periodic

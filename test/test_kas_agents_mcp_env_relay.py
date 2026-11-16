@@ -94,8 +94,8 @@ _NOT_BOOLEAN = [
     ("ONE_FLAG", "1"),
     ("BASE_URL", "https://api.example.com/v1"),
     ("WORKSPACE_ROOT", "/home/user/projects/demo"),
-    # Short secrets under names that earlier rounds of review found no key list
-    # could cover: run-together, acronym-prefixed, or simply innocent.
+    # Short secrets under names no key list can cover: run-together,
+    # acronym-prefixed, or simply innocent.
     ("DBPASS", "hunter3"),
     ("SMTPPASS", "hunter3"),
     ("MYSQLPWD", "hunter3"),

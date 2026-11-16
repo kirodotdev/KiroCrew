@@ -1185,6 +1185,8 @@ class TestNewConversation:
         runtime.create_session.assert_awaited_once_with(
             cwd="/tmp/ws",
             agent="kirocrew",
+            crew_agent=None,
+            member_context=None,
             memory_mode="persistent",
             session_key="",
             member_session_key="",
@@ -1193,6 +1195,45 @@ class TestNewConversation:
         # Handle swapped to the fresh session → next prompt starts clean.
         assert provider._handle is new_handle
         assert provider.session_id == "fresh-session-2"
+
+    @pytest.mark.asyncio
+    async def test_a_joiner_on_a_shared_process_keeps_its_own_agent(self):
+        # On a shared chat runtime the process agent is the founder's (the lead);
+        # Edit & Resend on the conductor must not start it under the lead's spec.
+        old = _make_handle(session_id="old-session-1")
+        old.active_agent = "kirocrew-conductor"
+        runtime, _new_handle = self._runtime_with_new_session()
+        runtime._agent = "kirocrew-team-lead"
+        provider = AcpSessionProvider(
+            old,
+            runtime,
+            owns_runtime=True,
+            shared_runtime=True,
+            agent="kirocrew-conductor",
+            crew_agent="kirocrew-conductor",
+            member_context=False,
+        )
+
+        assert provider._agent == "kirocrew-conductor"
+        await provider.new_conversation()
+
+        kwargs = runtime.create_session.await_args.kwargs
+        assert kwargs["agent"] == "kirocrew-conductor"
+        assert kwargs["crew_agent"] == "kirocrew-conductor"
+        assert kwargs["member_context"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_pooled_provider_claimed_by_a_crew_keeps_that_crew_on_reset(self):
+        # A warm-pool provider is built before any crew claims it; the claim's
+        # rekey must reach the identity new_conversation passes, not only the runtime.
+        old = _make_handle(session_id="old-session-1")
+        runtime, _new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime, crew_agent="")
+
+        provider.rekey("dashboard:claimer", crew_agent="crew-ada")
+        await provider.new_conversation()
+
+        assert runtime.create_session.await_args.kwargs["crew_agent"] == "crew-ada"
 
     @pytest.mark.asyncio
     async def test_owning_shutdown_stops_in_flight_hook_executions(self):

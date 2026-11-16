@@ -1576,7 +1576,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # ``KeyError`` for a provider id with no launch engine. The row exists and
         # the request is well formed, so this is a 400, not an unaudited 500 that
         # would also leave the running crew undeletable from the panel. Same arm
-        # ``api_launch_task`` carries for the same resolution.
+        # ``api_cloud_launch_task`` carries for the same resolution.
         _audit(op, "denied", request_id=tag, error=f"no engine for lane {lane!r}")
         return web.json_response(
             {"error": f"lane {lane!r} has no teardown engine", "code": "unknown_provisioner"},

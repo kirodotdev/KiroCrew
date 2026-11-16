@@ -1,5 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { Btn, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { api } from '../api/client'
@@ -62,7 +63,7 @@ const WHERE_BODY_KEY = {
  * MANDATORY, which here means exactly one thing — there is no way past it but
  * forward:
  *   - no "Skip all" (the shell renders none when no handler is passed),
- *   - no Escape-to-dismiss (the Tab trap below deliberately omits it),
+ *   - no Escape-to-dismiss while a choice can still be saved,
  *   - and the paths that abandon the flows on EITHER side still route through
  *     it: skipping Import setup lands here, and "Skip all" from Import setup
  *     shows this screen before the user reaches the product (see
@@ -79,6 +80,9 @@ const WHERE_BODY_KEY = {
  *     both are really off records the ack. An env var or a `config.local.json`
  *     entry that keeps either on leaves the chapter open and says so.
  * A failed write leaves the chapter open with an error and marks nothing as seen.
+ * From then on Close (and Escape) hides it the way Ask the agent does: no choice
+ * is recorded, so it opens again at the next load. Without it a caller whose
+ * writes are always refused had no way off the screen but the hand-off.
  *
  * The text follows what is actually on. With local recording on it lists what is
  * recorded. With only the heartbeat on (recording is off by default today) it
@@ -97,9 +101,16 @@ export default function PrivacyChapter({
   open,
   onContinue,
   onAskAgent,
+  onClose,
   passWhenOff,
 }: {
   open: boolean
+  /**
+   * Offered once a save has failed (Keep on, or Turn off before the read-back):
+   * hides the chapter WITHOUT recording a choice, like `onAskAgent`, so it
+   * returns at the next dashboard load. Unset, no close is offered.
+   */
+  onClose?: () => void
   /**
    * Hides the chapter WITHOUT recording a choice when the user hands an error to
    * the agent: the hand-off opens a chat this mandatory overlay would cover. The
@@ -124,26 +135,58 @@ export default function PrivacyChapter({
   // An unreadable status still shows the "on" text: Turn off works without it,
   // and saying "off" when that cannot be proven would be the worse claim.
   const showOff = usage.status === 'ready' && !usage.on
+  // Recording off only by a written false an older build wrote: the off form
+  // names Kiro telemetry and asks once (Turn on / Keep off). Nothing changes
+  // unless the person turns it on.
+  const offer = usage.status === 'ready' && usage.on && !usage.recordingOn && !!usage.offerOn
   // Heartbeat on, local recording off: say only what is true.
-  const heartbeatOnly = usage.status === 'ready' && usage.on && !usage.recordingOn
+  const heartbeatOnly = usage.status === 'ready' && usage.on && !usage.recordingOn && !offer
   // The status could not be read: say nothing about what is on.
   const statusUnknown = usage.status === 'error'
   // The buttons wait for the status: a choice made before the screen can say
   // what is on would be a choice about a statement the screen never made.
-  const [busy, setBusy] = useState<'keep' | 'off' | null>(null)
+  const [busy, setBusy] = useState<'keep' | 'off' | 'on' | null>(null)
   // `pinned` names what still holds usage data on, read back from the gateway.
   const [failure, setFailure] = useState<
     | { kind: 'save' }
     | { kind: 'unconfirmed' }
+    | { kind: 'onPartial' }
+    | { kind: 'onLanded' }
+    | { kind: 'keepUnconfirmed' }
     | { kind: 'pinned'; where: 'env'; envVar: string }
     | { kind: 'pinned'; where: 'overlay' | 'unknown' }
     | null
   >(null)
+  // A pinned Turn off still leaves Keep on, which saves; a failed write may
+  // fail every time (a caller the gateway refuses), so only that offers a way out.
+  const closeAfterFailure = onClose && (failure?.kind === 'save' || failure?.kind === 'unconfirmed') ? onClose : undefined
+  const closeRef = useRef(closeAfterFailure)
+  closeRef.current = closeAfterFailure
 
-  const choose = async (choice: 'keep' | 'off') => {
+  const choose = async (choice: 'keep' | 'off' | 'on') => {
     setBusy(choice)
     setFailure(null)
     try {
+      if (offer) {
+        // Turn on writes the switch FIRST, then confirms it took effect: the
+        // notice ack that lets Kiro telemetry export is recorded only for a
+        // person whose recording is really on. Keep off writes the switch off
+        // too (already off unless an earlier Turn on half-landed), then records
+        // that the notice was shown, so it is not asked again.
+        if (choice === 'on') {
+          await api.patchConfig('telemetry.enabled', true)
+          const collection = await (api.collectionStatus() as Promise<{ enabled?: boolean }>)
+          if (!collection?.enabled) {
+            setFailure({ kind: 'save' })
+            return
+          }
+          await onContinue({ noticeVersion: true, kiroTelemetry: true })
+        } else {
+          await api.patchConfig('telemetry.enabled', false)
+          await onContinue({ noticeVersion: true })
+        }
+        return
+      }
       if (choice === 'off') {
         // Off keys FIRST: a user who said no must not be left on because the
         // ack write landed and the off write did not.
@@ -187,11 +230,27 @@ export default function PrivacyChapter({
     } catch {
       // Keep writes only the ack, so its failure changed nothing. A Turn off
       // failure can land after one write, both, or an overlay refusal, so it
-      // claims neither "off" nor "nothing changed".
-      setFailure(choice === 'off' ? { kind: 'unconfirmed' } : { kind: 'save' })
+      // claims neither "off" nor "nothing changed". In the offer form a write
+      // may land even when its response is lost, so "nothing changed" needs a
+      // read-back that shows recording still off.
+      if (offer) {
+        const readBack = await (api.collectionStatus() as Promise<{ enabled?: boolean }>)
+          .then(c => c?.enabled, () => undefined)
+        // Recording on (a Turn on that landed): the status refresh shows the
+        // on form, so the message says on rather than naming a button.
+        setFailure(
+          readBack === false
+            ? { kind: 'save' }
+            : readBack === true
+              ? { kind: 'onLanded' }
+              : choice === 'on' ? { kind: 'onPartial' } : { kind: 'keepUnconfirmed' },
+        )
+      } else {
+        setFailure(choice === 'off' ? { kind: 'unconfirmed' } : { kind: 'save' })
+      }
     } finally {
       setBusy(null)
-      if (choice === 'off') {
+      if (choice !== 'keep' || offer) {
         qc.invalidateQueries({ queryKey: ['beaconStatus'] })
         qc.invalidateQueries({ queryKey: ['telemetryCollection'] })
         qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
@@ -219,14 +278,19 @@ export default function PrivacyChapter({
   crewHiddenRef.current = crewHidden
 
   // Move focus to the heading on open, then trap Tab inside the dialog
-  // (website/AGENTS.md modal a11y). Escape is NOT wired: this chapter cannot be
-  // dismissed, and a key that silently does nothing is better than one that
-  // looks like it should close the screen.
+  // (website/AGENTS.md modal a11y). Escape closes only once Close is offered (a
+  // failed save); before that this chapter cannot be dismissed, and a key that
+  // silently does nothing is better than one that looks like it should close it.
   useEffect(() => {
     if (!open) return
     headingRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (crewHiddenRef.current) return
+      if (event.key === 'Escape' && closeRef.current && !event.isComposing) {
+        event.preventDefault()
+        closeRef.current()
+        return
+      }
       if (event.key !== 'Tab') return
       const focusable = Array.from(
         dialogRef.current?.querySelectorAll<HTMLElement>(
@@ -287,6 +351,16 @@ export default function PrivacyChapter({
       panelFootnote={i18nT('components.privacyChapter.panelFootnote')}
       eyebrow={i18nT('components.privacyChapter.eyebrow')}
       dialogRef={dialogRef}
+      headerAction={closeAfterFailure && (
+        <button
+          type="button"
+          aria-label={i18nT('app.close')}
+          onClick={closeAfterFailure}
+          className="inline-flex items-center rounded p-1 text-muted transition-colors hover:text-text focus-ring-accent"
+        >
+          <X size={16} aria-hidden="true" />
+        </button>
+      )}
       header={
         <div className="mt-6">
           <h1
@@ -300,7 +374,9 @@ export default function PrivacyChapter({
               ? i18nT('components.privacyChapter.titleUnknown')
               : showOff
                 ? i18nT('components.privacyChapter.titleOff')
-                : heartbeatOnly
+                : offer
+                  ? i18nT('components.privacyChapter.titleOffer')
+                  : heartbeatOnly
                   ? i18nT('components.privacyChapter.titleHeartbeatOnly')
                   : i18nT('components.privacyChapter.titleOn')}
           </h1>
@@ -312,9 +388,19 @@ export default function PrivacyChapter({
             <p className="mt-2 text-sm leading-relaxed text-muted">
               {statusUnknown
                 ? i18nT('components.privacyChapter.introUnknown')
-                : heartbeatOnly
+                : offer
+                  ? i18nT('components.privacyChapter.introOffer')
+                  : heartbeatOnly
                   ? i18nT('components.privacyChapter.introHeartbeatOnly')
                   : i18nT('components.privacyChapter.intro')}
+            </p>
+          )}
+          {/* The offer is shown once, so what is sent while it stays off is in
+              view before either button, not only in the scrolled details. */}
+          {offer && (
+            <p className="mt-1.5 flex flex-wrap gap-x-2 text-[12px] leading-relaxed text-muted" data-testid="privacy-offer-heartbeat-fields">
+              <span className="font-medium text-text">{i18nT('privacyDisclosure.anonymousHeartbeatTitle')}</span>
+              <span>{i18nT('privacyDisclosure.payloadFields')}</span>
             </p>
           )}
         </div>
@@ -339,10 +425,16 @@ export default function PrivacyChapter({
                   ? i18nT('components.privacyChapter.saveFailed')
                   : failure?.kind === 'unconfirmed'
                     ? i18nT('components.privacyChapter.turnOffUnconfirmed')
-                    : null
+                    : failure?.kind === 'onPartial'
+                      ? i18nT('components.privacyChapter.turnOnPartial')
+                      : failure?.kind === 'onLanded'
+                        ? i18nT('components.privacyChapter.turnOnLanded')
+                        : failure?.kind === 'keepUnconfirmed'
+                          ? i18nT('components.privacyChapter.keepOffUnconfirmed')
+                          : null
             }
           />
-          {!showOff && (
+          {!showOff && !offer && (
             <p className="text-[12px] text-muted text-right" data-testid="privacy-turn-off-scope">
               {heartbeatOnly
                 ? i18nT('components.privacyChapter.turnOffScopeHeartbeatOnly')
@@ -352,7 +444,21 @@ export default function PrivacyChapter({
             </p>
           )}
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {showOff ? (
+            {offer ? (
+              <>
+                <SendBtn type="button" className="focus-ring-accent" onClick={() => void choose('on')} disabled={busy !== null}>
+                  {i18nT('components.privacyChapter.turnOn')}
+                </SendBtn>
+                <Btn
+                  type="button"
+                  className="min-h-9 px-4 text-sm"
+                  onClick={() => void choose('keep')}
+                  disabled={busy !== null}
+                >
+                  {i18nT('components.privacyChapter.keepOff')}
+                </Btn>
+              </>
+            ) : showOff ? (
               <SendBtn type="button" className="focus-ring-accent" onClick={() => void choose('keep')} disabled={busy !== null || usage.status === 'loading'}>
                 {i18nT('components.privacyChapter.continue')}
               </SendBtn>
@@ -418,12 +524,19 @@ export default function PrivacyChapter({
               ? i18nT('components.privacyChapter.whereBodyUnknown')
               : showOff
                 ? i18nT('components.privacyChapter.whereBodyOff')
-                : heartbeatOnly
+                : offer
+                  ? i18nT('components.privacyChapter.whereBodyHeartbeatOffer')
+                  : heartbeatOnly
                   ? i18nT('components.privacyChapter.whereBodyHeartbeatOnly')
                   : i18nT(WHERE_BODY_KEY[usage.exportOn ? 'export' : usage.kiroTelemetryOn ? 'recorded' : 'local'][usage.heartbeatOn ? 'heartbeat' : 'none'])}
           </p>
           {/* Named on its own line: this notice is what lets the build's own
               destination export under the recording default. */}
+          {offer && (
+            <p className="mt-2 text-sm leading-relaxed text-muted" data-testid="privacy-kiro-telemetry-offer">
+              {i18nT('components.privacyChapter.whereBodyOffer')}
+            </p>
+          )}
           {!statusUnknown && !showOff && usage.kiroTelemetryOn && (
             <p className="mt-2 text-sm leading-relaxed text-muted" data-testid="privacy-kiro-telemetry">
               {i18nT('components.privacyChapter.whereBodyKiro')}
@@ -454,6 +567,9 @@ export default function PrivacyChapter({
         </p>
         <PrivacyCommandList />
       </div>
+      {/* "More below" cue: sticks to the bottom of the scrolling body while
+          content remains, and rests on blank space once the end is reached. */}
+      {offer && <div aria-hidden="true" data-testid="privacy-scroll-cue" className="pointer-events-none sticky bottom-0 hidden h-10 bg-gradient-to-t from-card to-transparent sm:block" />}
     </OnboardingChapterShell>
   )
 }

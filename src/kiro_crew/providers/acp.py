@@ -522,12 +522,19 @@ class AcpProvider(LLMProvider):
     @property
     def tested_version_notice(self) -> str:
         """The notice when this session's harness reports a release outside the one
-        Crew tested it on (goose, codex, claude and pi today), else ``""``. A warning, never a refusal.
+        Crew tested it on (goose, codex, claude, pi and kiro-cli today, and the kiro-cli
+        a KAS relay runs under), else ``""``. A warning, never a refusal.
         """
         from kiro_crew.acp.client_turn_control import untested_version_issue
 
-        backend = str(getattr(self._client, "backend", "") or "")
-        return untested_version_issue(backend, self.agent_version)
+        # No default: a client with no backend is not kiro-cli, whose id is "".
+        backend = getattr(self._client, "backend", None)
+        if isinstance(backend, str) and (
+            notice := untested_version_issue(backend, self.agent_version)
+        ):
+            return notice
+        notice = getattr(self._client, "kas_untested_version_notice", "")
+        return notice if isinstance(notice, str) else ""
 
     @property
     def known_limitation_notice(self) -> str:
@@ -1426,6 +1433,9 @@ class AcpProvider(LLMProvider):
     _apply_initial_effort = _acp_model_effort._apply_initial_effort
     ultracode_enabled = _acp_model_effort.ultracode_enabled
     set_ultracode = _acp_model_effort.set_ultracode
+    fast_mode_enabled = _acp_model_effort.fast_mode_enabled
+    fast_mode_unavailable = _acp_model_effort.fast_mode_unavailable
+    set_fast_mode = _acp_model_effort.set_fast_mode
     # A cold start on a shared ``AcpRuntime``: ``kiro_crew.providers.acp_runtime_start``.
     _start_kiro_runtime = _acp_runtime_start._start_kiro_runtime
     _emit_kiro_startup_metric = _acp_runtime_start._emit_kiro_startup_metric

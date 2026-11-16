@@ -55,6 +55,59 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_acp_config_options": ("property", False, "7eb96c2fda05", "session_handle_class"),
+    "_harness_mode": ("data", False, "", ""),
+    "_harness_mode_names": ("data", False, "", ""),
+    "backend": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "_claude_children_declared": (
+        "function",
+        False,
+        "a6632a57e602",
+        "session_handle_claude_children",
+    ),
+    "_native_child_roster": (
+        "function",
+        False,
+        "58ee5ea89856",
+        "session_handle_claude_children",
+    ),
+    "_native_child_of": (
+        "function",
+        False,
+        "b1aa20258b70",
+        "session_handle_claude_children",
+    ),
+    "_reset_claude_child_turn": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "session_handle_claude_children",
+    ),
+    "_claude_child_events": (
+        "function",
+        False,
+        "aeeca3d9cefe",
+        "session_handle_claude_children",
+    ),
+    "_note_native_child_request": (
+        "function",
+        False,
+        "87459833bc5c",
+        "session_handle_claude_children",
+    ),
+    "native_child_requests": (
+        "function",
+        False,
+        "eaf9ac925104",
+        "session_handle_claude_children",
+    ),
+    "cancel_native_child": (
+        "function",
+        True,
+        "c809563db429",
+        "session_handle_claude_children",
+    ),
+    "_raw_sdk": ("property", False, "b028d93ed84c", "session_handle_class"),
     "__init__": ("function", False, "a01004fc4c51", "session_handle_class"),
     "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
     "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
@@ -143,7 +196,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "5f796c64544c",
         "session_handle_native_children",
     ),
-    "_handle_update": ("function", False, "74878d3f1402", "session_handle_updates"),
+    "_handle_update": ("function", False, "74878d3f1402", "session_handle_harness_surfaces"),
+    "_handle_update_frame": ("function", False, "74878d3f1402", "session_handle_updates"),
     "_held_calls": ("function", False, "335484fda27a", "session_handle_tool_silence"),
     "_held_state": ("function", False, "4a8fa3c2de12", "session_handle_tool_silence"),
     "_identity_unreadable_cache_for_wire": (
@@ -182,6 +236,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
     "_note_native_child": ("function", False, "09a8133eda4c", "session_handle_native_children"),
     "_note_native_roster": ("function", False, "7a20326749ff", "session_handle_native_children"),
+    "_note_permission_state": ("function", False, "aa7b59b6efad", "session_handle_permissions"),
     "_note_status_rejected": ("function", False, "a9ff3d5a4447", "session_handle_updates"),
     "_note_steering_denial": ("function", False, "b60c5fea256e", "session_handle_steering"),
     "_offer_mcp_sign_in": ("function", False, "b60c5fea256e", "session_handle_mcp"),
@@ -200,6 +255,13 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_model_selection",
     ),
     "_reattempt_failed_mcp_servers": ("function", False, "b60c5fea256e", "session_handle_mcp"),
+    "_refuse_by_harness": ("function", True, "2dfacffa6279", "session_handle_permissions"),
+    "_refuse_moved_permission_state": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "session_handle_permissions",
+    ),
     "_refuse_unidentifiable_mcp_approval": (
         "function",
         True,
@@ -274,6 +336,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_updates",
     ),
     "_tool_kind_cache_for_wire": ("function", False, "b7b9268c0112", "session_handle_updates"),
+    "_tool_call_unclassified": ("function", False, "2dfacffa6279", "session_handle_permissions"),
     "_track_metadata": ("function", False, "87459833bc5c", "session_handle_compaction"),
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "session_handle_compaction"),
     "_tripwire_spec_disabled_tool": (
@@ -318,7 +381,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "flush_native_child_text": (
         "function",
         False,
-        "58ee5ea89856",
+        "cd7af0b62a79",
         "session_handle_native_children",
     ),
     "get_valid_effort_levels": (
@@ -404,12 +467,14 @@ _DECLARED = frozenset({"_compaction_terminal_seen", "_kas_compact_turn"})
 
 #: The owner modules, lowest layer first.
 _OWNERS = (
+    "kiro_crew.acp.session_handle_harness_surfaces",
     "kiro_crew.acp.session_handle_runtime_contract",
     "kiro_crew.acp.session_handle_watchdog",
     "kiro_crew.acp.session_handle_tool_silence",
     "kiro_crew.acp.session_handle_mcp",
     "kiro_crew.acp.session_handle_kas",
     "kiro_crew.acp.session_handle_native_children",
+    "kiro_crew.acp.session_handle_claude_children",
     "kiro_crew.acp.session_handle_model_selection",
     "kiro_crew.acp.session_handle_steering",
     "kiro_crew.acp.session_handle_lifecycle",

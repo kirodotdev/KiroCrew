@@ -287,7 +287,13 @@ jobs:
       # acquire fraudulent provenance from the trusted release workflow.
       # The existing-tag re-run path is handled by the VERIFY step below.
       - name: Attest image provenance (fresh build)
+        id: attest_image
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
+        # A network failure minting the attestation (Sigstore Fulcio/Rekor)
+        # gets one paused retry of the identical step below; the retry has no
+        # continue-on-error, so two failures fail the job before the alias
+        # moves. Pinned by test/test_workflow_attest_retry.py.
+        continue-on-error: true
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
@@ -301,6 +307,19 @@ jobs:
           # and a soft failure is still a fresh annotation on the one lane
           # holding a registry-push credential. Adopt records deliberately, not
           # as a side effect of clearing a Node 20 deprecation warning.
+          create-storage-record: false
+
+      - name: Pause before retrying image provenance
+        if: ${{ (steps.existing.outputs.exists == 'false' && !inputs.promote) && steps.attest_image.outcome == 'failure' }}
+        run: sleep 45
+
+      - name: Attest image provenance (fresh build) (retry)
+        if: ${{ (steps.existing.outputs.exists == 'false' && !inputs.promote) && steps.attest_image.outcome == 'failure' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.digest.outputs.value }}
+          push-to-registry: true
           create-storage-record: false
 
       # Existing-tag re-run path: require that the already-published digest

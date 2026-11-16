@@ -468,6 +468,17 @@ describe('App routing', () => {
       vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
     })
 
+    it('shows the off form once to a user off only by an older build\'s written false', async () => {
+      const api = await existingUser(0)
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false, off_offer: true } as never)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+      expect(within(dialog).getByRole('heading', { name: 'Performance metrics are off' })).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Turn on performance metrics' })).toBeInTheDocument()
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+    })
+
     it('does not re-show the notice to an existing user with only the heartbeat on', async () => {
       // The changed text is the one that says recording is on; nothing new to tell.
       const api = await existingUser(0)

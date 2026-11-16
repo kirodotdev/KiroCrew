@@ -17,6 +17,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, rehypeStableRootKeys, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { wearsRefusedLinkCue } from '../../../../components/markdown/refusedLinkCue'
+import { ImgWithFallback } from '../../../../components/markdown/ImgWithFallback'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { WidgetFrame, parseWidgets, hasWidgets } from './WidgetFrame'
@@ -292,6 +293,21 @@ const mdComponents: Components = {
       // opens a file, and openLightbox rejects data: URLs for that reason.
       return <LocalImage path={src} onClickImage={() => api?.openLightbox?.(src)} />
     }
+    // A remote http(s) image goes through the core renderer's click-to-load
+    // gate, imported rather than copied, so nothing is fetched from another
+    // host before the reader clicks. The chip and image are styled with
+    // Tailwind classes this panel does not load, so the scoped rules below
+    // give them the panel's own look: one line per fact on the chip, and the
+    // loaded image capped at the bubble width.
+    const remote = remoteImageHref(src)
+    if (remote) {
+      return (
+        <span className="mochi-remote-media" style={{ display: 'block', maxWidth: '100%', color: 'var(--text)', fontSize: 11 }}>
+          <style>{`.mochi-remote-media button{display:block;max-width:100%;margin:4px 0;padding:4px 8px;font:inherit;color:inherit;text-align:start;background:var(--bubble-assistant);border:1px solid var(--border, currentColor);border-radius:6px;cursor:pointer;}.mochi-remote-media button:hover{border-color:var(--accent);}.mochi-remote-media button>svg{vertical-align:-2px;margin-inline-end:4px;}.mochi-remote-media button>span~span{display:block;color:var(--text-muted);}.mochi-remote-media img{max-width:100%;height:auto;border-radius:4px;margin-top:4px;}`}</style>
+          <ImgWithFallback {...p} src={remote} />
+        </span>
+      )
+    }
     // The markdown author's own alt text, defaulting to '' — an image written
     // without one is decorative, and an explicit empty alt is what tells a screen
     // reader to skip it instead of falling back to reading out the URL.
@@ -309,6 +325,20 @@ const mdComponents: Components = {
 function isLocalFilePath(src: unknown): src is string {
   if (typeof src !== 'string' || !src.startsWith('/')) return false
   return /^\/(?:Users|home|tmp|var|private|etc)\//.test(src) || src.includes('.kiro/crew/')
+}
+
+/**
+ * The absolute URL of a src that makes the browser contact a host other than
+ * the gateway, or null. Parsed with the browser's own URL parser, as the fetch
+ * would be, so `//host/x.png` and `HTTPS://host` count too, and the gate is
+ * handed the absolute form (it reads a leading `/` as a local path).
+ * Same-origin URLs such as `/assets/logo.png` keep rendering as a plain <img>.
+ */
+function remoteImageHref(src: unknown): string | null {
+  if (typeof src !== 'string' || !src.trim()) return null
+  let u: URL
+  try { u = new URL(src.trim(), window.location.href) } catch { return null }
+  return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== window.location.origin ? u.href : null
 }
 
 /** Inline file chip — shows shortened path with preview + reveal buttons */

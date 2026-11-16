@@ -12,7 +12,7 @@ Instance fields written: ``_announced_subagent_roster``, ``_kas_subagent_roster`
 ``_legacy_subagent_tool_ids``, ``_native_child_overflow``, ``_native_child_redactors``,
 ``_native_child_sids``, ``_prompt_or_tool_seen``.
 
-Instance fields read: ``_session_id``.
+Instance fields read: ``_native_child_rows``, ``_native_child_turn``, ``_session_id``.
 """
 
 from __future__ import annotations
@@ -358,11 +358,12 @@ def _child_text_activity(self: AcpSessionHandle, child_sid: str, text: str) -> l
     An announced child's text goes through that child's own ``StreamRedactor``:
     a chunk redacted alone would let a credential split across two chunks reach
     the card, so the redactor holds back a tail that could still be the start of
-    one, and an empty list means it held the whole chunk. Only children in this
-    turn's announced roster get a redactor, so the store is bounded by
+    one, and an empty list means it held the whole chunk. Only a child in this
+    turn's announced roster, or a claude child with a row
+    (``session_handle_claude_children``), gets a redactor, so the store is bounded by
     ``NATIVE_CHILD_ROSTER_CAP``. Any other child's chunk passes as it came.
     """
-    if child_sid in self._announced_subagent_roster:
+    if child_sid in self._announced_subagent_roster or child_sid in self._native_child_rows:
         redactor = self._native_child_redactors.get(child_sid)
         if redactor is None:
             redactor = self._native_child_redactors[child_sid] = StreamRedactor()
@@ -381,18 +382,57 @@ def _flush_announced_child_text(self: AcpSessionHandle, child_sid: str) -> list[
     return [AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=tail)]
 
 
-def flush_native_child_text(self: AcpSessionHandle) -> list[AcpEvent]:
+def flush_native_child_text(
+    self: AcpSessionHandle, *, keep_working_claude: bool = False
+) -> list[AcpEvent]:
     """The text every announced child's redactor still holds, flushed as activity events.
 
     For a turn cut short (a Stop, a timeout, a provider error): the state frame
     that flushes a child's tail never arrives, and the cards close.
     ``native_cards._native_flush_cut_short`` calls this through the provider,
     as it calls ``AcpClient.flush_native_child_text`` for a Claude turn.
+
+    *keep_working_claude* keeps the redactor of a claude child still working: it
+    outlives a parent turn that ended normally, so a credential its text splits
+    across that boundary is still read whole. Its own end flushes it.
     """
     out: list[AcpEvent] = []
     for child_sid in list(self._native_child_redactors):
+        if keep_working_claude and _is_working_claude_child(self, child_sid):
+            continue
         out.extend(self._flush_announced_child_text(child_sid))
     return out
+
+
+def _is_working_claude_child(handle: AcpSessionHandle, child_sid: str) -> bool:
+    """Whether *child_sid* is a claude child of this session that is still working."""
+    row = handle._native_child_rows.get(child_sid)
+    return (
+        row is not None
+        and handle._claude_children_declared()
+        and row["status"].get("type") == "working"
+    )
+
+
+def _keep_working_claude_redactors(handle: AcpSessionHandle) -> None:
+    """The turn-start reset of the child redactors: a working claude child keeps its
+    own, every other one goes with the card the last turn closed."""
+    for child_sid in list(handle._native_child_redactors):
+        if not _is_working_claude_child(handle, child_sid):
+            del handle._native_child_redactors[child_sid]
+
+
+def _is_claude_subagent_update(handle: AcpSessionHandle, msg: Any) -> bool:
+    """Whether *msg* is a claude child's ``subagent_update`` on a session that reads them."""
+    from kiro_crew.acp.client_native_children import UPDATE_SUBAGENT_UPDATE
+
+    params = getattr(msg, "params", None)
+    update = params.get("update") if isinstance(params, dict) else None
+    return (
+        isinstance(update, dict)
+        and update.get("sessionUpdate") == UPDATE_SUBAGENT_UPDATE
+        and handle._claude_children_declared()
+    )
 
 
 #: ``rawInput.activityKind`` of codex-acp's legacy subagent activity rows.
@@ -516,11 +556,22 @@ def native_child_resume_refusal(self: NativeChildIds, conversation_id: str) -> s
     :data:`NATIVE_CHILD_NOT_RESUMABLE`) so a caller can act on it rather
     than on the generic ``conversation_gone`` a lookup miss would produce.
     """
-    if conversation_id not in self._native_child_sids:
+    # Imported here: ``raw_sdk_tasks`` imports this module's roster cap.
+    from kiro_crew.acp.raw_sdk_tasks import workflow_card_ids
+
+    if conversation_id not in self._native_child_sids and conversation_id.removeprefix(
+        "native:"
+    ) not in workflow_card_ids(self):
         return None
+    return native_child_refusal(conversation_id, self._session_id)
+
+
+def native_child_refusal(conversation_id: str, session_id: str | None) -> str:
+    """The ``native_child_not_resumable`` reason for *conversation_id*, a harness-native
+    child of the session *session_id*."""
     return (
         f"{NATIVE_CHILD_NOT_RESUMABLE}: {conversation_id} is a harness-native "
-        f"child of session {self._session_id}; it has no conversation of its "
+        f"child of session {session_id}; it has no conversation of its "
         "own and cannot be resumed, steered or cancelled independently -- "
         "continue or cancel the parent session instead"
     )
@@ -536,7 +587,15 @@ def report_native_children(self: AcpSessionHandle, budget: Any) -> int:
     typed on ``report_uncharged(kind, count)`` so the daemon's budget and
     a gateway-side health mirror take the same call.
     """
-    count = len(self._native_child_sids) + self._native_child_overflow
+    # Imported here, as in ``native_child_resume_refusal``.
+    from kiro_crew.acp.raw_sdk_tasks import live_card_ids
+
+    # Claude child ids outlive the turn (``_run_turn`` keeps them), so a claude
+    # session counts this turn's children, as the per-chat client does.
+    children = (
+        self._native_child_turn if self._claude_children_declared() else self._native_child_sids
+    )
+    count = len(children) + self._native_child_overflow + len(live_card_ids(self))
     report = getattr(budget, "report_uncharged", None)
     if callable(report):
         report(NATIVE_CHILDREN_UNCHARGED_KIND, count, label=self._session_id)

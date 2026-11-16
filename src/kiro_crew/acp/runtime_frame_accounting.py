@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import redact_backend_text
 from kiro_crew.acp.client import _loggable_request_id
+from kiro_crew.acp.client_native_children import UPDATE_SUBAGENT_UPDATE
 from kiro_crew.acp.codex_subagent_wire import (
     SUBAGENT_TERMINAL_STATES,
     UPDATE_SUBAGENT_SPAWNED,
@@ -226,7 +227,8 @@ def _note_announced_child(self: AcpRuntime, frame_sid: str, params: dict) -> boo
 
     codex-acp announces each native subagent with a lifecycle ``session/update``
     on its PARENT's session (``subagent_spawned`` keyed on ``subagentSessionId``)
-    and then streams the child's own work under the child's id. The announcing frame
+    and then streams the child's own work under the child's id; claude-agent-acp
+    does the same with ``subagent_update``, keyed on the update's ``sessionId``. The announcing frame
     names its owner, so the owner is the registered session it arrived on, or,
     for a nested child announced on a child's session, that child's owner. A
     frame on any other session announces nothing.
@@ -267,9 +269,16 @@ def _note_announced_child(self: AcpRuntime, frame_sid: str, params: dict) -> boo
         ):
             del self._announced_children[child]
         return True
-    if kind != UPDATE_SUBAGENT_SPAWNED:
+    if kind == UPDATE_SUBAGENT_SPAWNED:
+        child = update.get("subagentSessionId")
+    elif kind == UPDATE_SUBAGENT_UPDATE:
+        # claude-agent-acp's announcement names the child in the update's own
+        # ``sessionId`` (``client_native_children``). Its later reports keep the
+        # same id and an idle child can still be messaged, so its route is kept
+        # until the owner leaves, under the same cap.
+        child = update.get("sessionId")
+    else:
         return True
-    child = update.get("subagentSessionId")
     if not isinstance(child, str) or not child or len(child) > MAX_ACP_SESSION_ID_LEN:
         return True
     if child in self._session_queues or child in self._announced_children:

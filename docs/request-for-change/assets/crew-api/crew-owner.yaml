@@ -13,8 +13,7 @@ info:
       (list and revoke a grant) and 9 in phase 2. Manifests are written over a control channel into
       the gateway, which is Internal and not in this file.
     - One more route wraps an existing one and is not counted in the 11: GET /v1/crew/owner/bots,
-      which wraps GET /api/members. Its code is in PR #34104, not merged, under the path
-      /v1/crew/owner/members; naming the resource bots in both tiers is a proposal.
+      which wraps GET /api/members from the same handler.
     - x-crew-reused-routes lists the 96 existing routes the inventory assigns to the Owner tier (98
       registrations, 96 distinct method+path once 2 duplicates are removed), with only path, method,
       summary and source, no full schema; all are x-crew-stability: experimental. They are candidates,
@@ -98,10 +97,7 @@ paths:
         returns the same data as GET /api/members, from the same handler. The Public GET /v1/crew/bots is the cut-down
         view apps get: only id, name, description, avatar and status, only the grant''s Bot range, and never private
         chat, briefing or rules. While the gateway is still tidying the Bot roster it answers 503 prune_in_progress.
-        Where the code stands: this route is in PR #34104, not merged, and its path there is GET /v1/crew/owner/members;
-        it keeps the name members because it wraps the body of the existing GET /api/members. Naming the resource
-        bots in both tiers is a proposal.'
-      x-crew-pr: '#34104 (not merged; the path in that PR is /v1/crew/owner/members)'
+        The response keeps the members field because it wraps the body of the existing GET /api/members unchanged.'
   /v1/crew/owner/grants:
     get:
       operationId: get_v1_crew_owner_grants

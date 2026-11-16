@@ -239,14 +239,14 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # The current segment's text as the model wrote it, before any
     # redaction. The run loop redacts each streamed delta on its own, which
     # can leave pieces of a value a delta boundary cut; the flush saves THIS
-    # copy redacted as one text instead (``chat_runner._redact_segment``).
+    # copy redacted as one text instead (``chat_turn.segment_flush._redact_segment``).
     # Memory only, never persisted, dropped at each flush.
     self.segment_raw_text = ""
     # The hash of the same segment as it streamed (each delta after its own
     # redaction), and each value that redaction replaced, with its tag. The
     # flush saves the raw copy redacted as one text only when the hash
     # proves it is the copy of the streamed text, and withholds it when it
-    # still holds one of these values (``chat_runner._redact_segment``). Memory only,
+    # still holds one of these values (``chat_turn.segment_flush._redact_segment``). Memory only,
     # dropped with the raw copy.
     self.segment_shown_sha = hashlib.sha256()
     self.segment_removed = {}

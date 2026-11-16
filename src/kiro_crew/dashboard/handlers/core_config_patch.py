@@ -377,6 +377,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # Store the member that matched, not the value sent: ``15.0`` equals the
         # choice ``15``, but the loader reads only the int and would run the default.
         value = allowed[allowed.index(value)]
+    elif spec["type"] == "int" and spec.get("allow_auto") and value == "auto":
+        pass  # the one word an ``int | str`` field takes besides a number
     elif spec["type"] == "int":
         raw = value
         try:

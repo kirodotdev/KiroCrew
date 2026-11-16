@@ -69,10 +69,14 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
 
 
 def _settle_approval_rejected(
-    slot: _ChatSlot, aid: str, fut: asyncio.Future[str], outcome: str
+    slot: _ChatSlot, aid: str, fut: asyncio.Future[str], outcome: str, *, result: str = "rejected"
 ) -> None:
-    """Reject the pending approval *aid*, mark its card resolved and audit *outcome*."""
-    fut.set_result("rejected")
+    """Reject the pending approval *aid*, mark its card resolved and audit *outcome*.
+
+    *result* is what the future resolves to: ``rejected``, or ``rejected_once`` for a
+    rejection the runner must not carry to the rest of the tool batch.
+    """
+    fut.set_result(result)
     if _mark_permission_resolved(slot.messages, aid, "rejected"):
         slot._dirty = True
     sel().log_tool_invocation(

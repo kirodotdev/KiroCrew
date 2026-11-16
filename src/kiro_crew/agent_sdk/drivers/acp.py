@@ -1345,6 +1345,7 @@ def pi_cached_negative() -> bool:
         try:
             found, _searched = cached  # type: ignore[misc]
         except Exception:
+            # A cache value that is not a (found, searched) pair is skipped.
             continue
         if not found:
             return True

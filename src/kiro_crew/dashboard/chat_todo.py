@@ -9,7 +9,9 @@ how the person ticks a remaining row.
 This route lets the person flip one row. It writes the slot's copy only. The
 agent learns of it on its next turn: a warm turn carries
 ``Slot.todo_sync_prompt`` prepended to the message, and a fresh native session
-carries ``Slot.todo_recovery_prompt`` instead.
+carries ``Slot.todo_recovery_prompt`` instead. A list the harness keeps itself
+(``read_only`` in the payload, an ACP ``plan``) is refused with 409
+``todo_read_only``: neither block reaches such a harness.
 """
 
 from __future__ import annotations
@@ -95,6 +97,17 @@ async def api_chat_slot_todo(request: web.Request) -> web.Response:
     if payload is None:
         return web.json_response(
             {"error": "this session has no checklist", "code": "todo_absent"}, status=404
+        )
+    # A list the harness keeps itself (an ACP ``plan``, ``acp.plan_checklist``):
+    # no prompt block can carry a tick to it, so the copy is not written.
+    if payload.get("read_only") is True:
+        return web.json_response(
+            {
+                "error": "the agent keeps this checklist itself; it changes only when the agent updates it",
+                "code": "todo_read_only",
+                "todo": payload,
+            },
+            status=409,
         )
     stored_text = slot.todo_task_text(str(task_id))
     if stored_text is None:

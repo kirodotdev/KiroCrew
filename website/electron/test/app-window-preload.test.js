@@ -57,7 +57,7 @@ test("the bridge exposes exactly the host calls, under one global", () => {
     "app", "beginDrag", "broadcast", "capabilities", "chooseGateway", "close", "closeAll", "endDrag",
     "kind", "level", "listGateways", "onActive", "onDrag", "onMessage", "onPlaced", "onShortcut",
     "onWindowChange", "open", "openExternal", "openImage", "ready", "revealFile", "send",
-    "setFocusable", "setHitRegions", "showSession", "window",
+    "setFocusable", "setHitRegions", "setShortcut", "shortcuts", "showSession", "window",
   ]);
   assert.deepStrictEqual(
     { app: bridge.app, window: bridge.window, kind: bridge.kind, level: bridge.level },
@@ -100,6 +100,31 @@ test("a refused capability call resolves to its empty answer instead of throwing
   assert.strictEqual(await bridge.openImage("/tmp/a.png"), false);
   assert.strictEqual(await bridge.listGateways(), null);
   assert.deepStrictEqual(await bridge.chooseGateway("crew"), { ok: false });
+});
+
+test("the level 3 shortcut calls reach only their own channels, coerced", async () => {
+  const answers = {
+    "app-window:shortcuts": [{ id: "toggle" }],
+    "app-window:set-shortcut": { ok: true },
+  };
+  const { exposed, sent } = loadPreload(["--kc-app-window=pets/panel/panel/3/"], (c) => answers[c]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(bridge.level, 3);
+  assert.deepStrictEqual(await bridge.shortcuts(), [{ id: "toggle" }]);
+  await bridge.setShortcut({ toString: () => "toggle" }, { toString: () => "Alt+Shift+J" });
+  await bridge.setShortcut("toggle", undefined);
+  assert.deepStrictEqual(sent, [
+    ["invoke", "app-window:shortcuts"],
+    ["invoke", "app-window:set-shortcut", "toggle", "Alt+Shift+J"],
+    ["invoke", "app-window:set-shortcut", "toggle", null],
+  ]);
+});
+
+test("a refused level 3 call resolves to its empty answer instead of throwing", async () => {
+  const { exposed } = loadPreload(["--kc-app-window=pets/panel/panel/3/"], () => Promise.reject(new Error("no")));
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(await bridge.shortcuts(), null);
+  assert.deepStrictEqual(await bridge.setShortcut("toggle", ""), { ok: false });
 });
 
 test("each call sends its own channel with coerced arguments", () => {

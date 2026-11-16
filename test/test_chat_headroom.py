@@ -504,3 +504,237 @@ def test_no_field_holds_credential_content_or_a_path(monkeypatch, host):
     for key, value in snap.items():
         assert value is None or isinstance(value, (int, float)) or key == "posture"
     assert snap["posture"] in ("ample", "tight", "critical", "unknown")
+
+
+# -- open hub workers reserve an estimate each (D3) ----------------------------------
+
+
+def _hub_worker(n: int, *, board: str = "chat-hub") -> tuple[str, str]:
+    """Open one ``hub:`` mailbox item bound to worker slot ``chat-w<n>``."""
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+
+    request = mailbox.parse_work_item(
+        {**WORK_ITEM, "item_id": f"it_{n:08x}", "conductor_key": board}
+    )
+    mailbox.open_mailbox(request, f"chat-w{n}")
+    return request.board, request.item_id
+
+
+def _memory_is(monkeypatch, free_gb: float) -> None:
+    """A host whose memory check compares *free_gb* against what it is asked for."""
+    monkeypatch.setattr(
+        subagent_facade,
+        "check_memory_available",
+        lambda min_gb=2.0, **_: (free_gb >= min_gb, free_gb),
+    )
+
+
+@pytest.mark.parametrize("n", [0, 1, 3])
+@pytest.mark.parametrize(("delta", "short"), [(0.01, ""), (-0.01, "memory")])
+def test_each_open_hub_worker_reserves_one_memory_estimate(monkeypatch, host, n, delta, short):
+    for i in range(n):
+        _hub_worker(i + 1)
+    _memory_is(monkeypatch, (n + 1) * 5.0 + delta)
+    snap, got = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 5.0, 1.0))
+    assert snap["open_workers"] == n
+    assert got == short
+
+
+@pytest.mark.parametrize(("delta", "short"), [(0.01, ""), (-0.01, "disk")])
+def test_each_open_hub_worker_reserves_one_disk_estimate(monkeypatch, host, delta, short):
+    for i in range(2):
+        _hub_worker(i + 1)
+    host.disk_gb = 3 * 10.0 + delta
+    _, got = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0))
+    assert got == short
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("delta", "status"), [(0.01, 200), (-0.01, 503)])
+async def test_a_create_is_admitted_or_refused_on_reserved_memory(
+    tmp_path, monkeypatch, host, delta, status
+):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    for i in range(2):
+        _hub_worker(i + 1)
+    _memory_is(monkeypatch, 3 * 5.0 + delta)
+    state = _make_state(tmp_path)
+    before = set(state._slots)
+    bindable = {**WORK_ITEM, "item_id": "it_000000ff", "conductor_key": "chat-hub"}
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json={"work_item": bindable})
+        body = await resp.json()
+    assert resp.status == status, body
+    assert body["headroom"]["open_workers"] == 2
+    if status == 503:
+        assert body["code"] == "crew_busy" and body["short"] == "memory"
+        assert set(state._slots) == before
+    else:
+        assert body["key"] in state._slots
+
+
+@pytest.mark.asyncio
+async def test_a_create_without_work_item_ignores_reservations(tmp_path, monkeypatch, host):
+    _flag(monkeypatch, True, memory_gb=5.0)
+    for i in range(2):
+        _hub_worker(i + 1)
+    _memory_is(monkeypatch, 5.0)
+    state = _make_state(tmp_path)
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json={"name": "plain"})
+        assert resp.status == 200
+        assert (await resp.json())["headroom"]["open_workers"] == 2
+    assert "plain" in state._slots
+
+
+def test_closed_accepted_and_non_hub_items_reserve_nothing(monkeypatch, host):
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+    from kiro_crew import work_ledger as wl
+
+    _hub_worker(1)  # the one that counts
+    _hub_worker(2)
+    assert mailbox.close_mailbox("chat-w2") is not None  # its slot was deleted
+    board, item_id = _hub_worker(3)
+    wl.apply_worker_report(board, item_id, status="done", summary="x", artifacts={"pr": "1"})
+    wl.apply_conductor_action(board, "verdict", item_id=item_id, verdict="pass")
+    wl.apply_conductor_action(board, "close", item_id=item_id, state="accepted")
+    board, _ = _hub_worker(5)
+    wl.apply_worker_report(board, "it_00000005", status="progress", summary="x")
+    assert mailbox.close_mailbox("chat-w5") is not None  # reported, so kept abandoned
+    wl.ensure_conductor("chat-local")
+    wl.create_bound_item(
+        "chat-local",
+        "it_0000aaaa",
+        title="t",
+        acceptance={"kind": "manual"},
+        decision="",
+        worker_session_key="chat-w4",
+    )
+    snap, _ = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0))
+    assert snap["open_workers"] == 1
+
+
+def test_a_torn_binding_counts_nothing(monkeypatch, host):
+    from kiro_crew import work_ledger as wl
+
+    _hub_worker(1)
+    wl.bindings_dir().joinpath("torn.json").write_text("{not json", encoding="utf-8")
+    snap, _ = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0))
+    assert snap["open_workers"] == 1
+
+
+def test_an_unreadable_store_reserves_nothing(monkeypatch, host):
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+
+    def boom():
+        raise OSError("store unreadable")
+
+    monkeypatch.setattr(mailbox, "open_mailbox_workers", boom)
+    _memory_is(monkeypatch, 5.0)
+    snap, short = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 5.0, 1.0))
+    assert snap["open_workers"] is None
+    assert short == ""
+
+
+def _bindable(n: int) -> dict:
+    return {**WORK_ITEM, "item_id": f"it_{n:08x}", "conductor_key": "chat-hub"}
+
+
+_ROOM_FOR_ONE = headroom_mod.RemoteDispatchSettings(True, 5.0, 1.0)
+
+
+def _open() -> int:
+    return headroom_mod.measure(_ROOM_FOR_ONE)[0]["open_workers"]
+
+
+async def _post(state, body) -> tuple[int, dict]:
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json=body)
+        return resp.status, await resp.json()
+
+
+def test_the_bind_measures_again_and_the_second_of_two_is_refused(monkeypatch, host):
+    """Room for one: the first bind is stored, the second sees it and stores nothing."""
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    first = mailbox.parse_work_item(_bindable(1))
+    second = mailbox.parse_work_item(_bindable(2))
+    assert headroom_mod.bind_if_room(_ROOM_FOR_ONE, first, "chat-w1")[1] == ""
+    snap, short = headroom_mod.bind_if_room(_ROOM_FOR_ONE, second, "chat-w2")
+    assert (snap["open_workers"], short) == (1, "memory")
+    assert not mailbox.item_exists(second)
+    assert _open() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_worker_bound_after_the_early_gate_refuses_the_create(tmp_path, monkeypatch, host):
+    """Two creates pass the early gate together; the bind refuses the later one."""
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+    from kiro_crew.dashboard.handlers import remote_work_item
+
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    real = remote_work_item.work_item_for_create
+
+    async def another_hub_binds_meanwhile(request, body):
+        got = await real(request, body)
+        _hub_worker(9)
+        return got
+
+    monkeypatch.setattr(remote_work_item, "work_item_for_create", another_hub_binds_meanwhile)
+    state = _make_state(tmp_path)
+    before = set(state._slots)
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 503, body
+    assert body["code"] == "crew_busy" and body["short"] == "memory"
+    assert set(state._slots) == before
+    assert not mailbox.item_exists(mailbox.parse_work_item(_bindable(1)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [{"name": "w1"}, {"memory_mode": "temporary"}, {"work_item": {**WORK_ITEM, "title": 5}}],
+    ids=["name-refused", "memory-mode-refused", "bad-work-item"],
+)
+async def test_a_create_refused_after_admission_reserves_nothing(
+    tmp_path, monkeypatch, host, extra
+):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    state = _make_state(tmp_path)
+    got, body = await _post(state, {"work_item": _bindable(1), **extra})
+    assert got == 400, body
+    assert _open() == 0
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 200, body
+
+
+@pytest.mark.asyncio
+async def test_a_failed_mint_reserves_nothing(tmp_path, monkeypatch, host):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    state = _make_state(tmp_path)
+    real = state.get_or_create_slot
+
+    def boom(*a, **k):
+        raise RuntimeError("mint failed")
+
+    monkeypatch.setattr(state, "get_or_create_slot", boom)
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json={"work_item": _bindable(1)})
+        assert resp.status == 500
+    assert _open() == 0
+    monkeypatch.setattr(state, "get_or_create_slot", real)
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 200, body
+
+
+@pytest.mark.asyncio
+async def test_a_created_worker_counts_once(tmp_path, monkeypatch, host):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    state = _make_state(tmp_path)
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 200, body
+    assert _open() == 1

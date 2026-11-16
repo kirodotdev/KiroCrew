@@ -773,7 +773,6 @@ def test_warm_store_non_blocking_under_contention_serves_prior_snapshot(profiles
     # passes even when the served snapshot is empty (a fail-open; see
     # test_cold_store_contention_never_serves_ungoverned_permit).
     import os
-    import time
 
     path = profiles_dir / "cron.json"
     path.write_text(
@@ -791,19 +790,41 @@ def test_warm_store_non_blocking_under_contention_serves_prior_snapshot(profiles
     store = gp._STORE
     assert store._snap.loaded
 
-    # Bump mtime so the fingerprint differs (forcing the reload path), then hold the
-    # reload lock as if another thread were mid-reload.
+    # Bump mtime to force the reload path, with the reload lock held by "another thread".
     st = path.stat()
     os.utime(path, (st.st_atime, st.st_mtime + 5))
-    assert store._lock.acquire(blocking=False)
-    try:
-        started = time.monotonic()
-        prof = gp.resolve_active_scope("cron:j:r")
-        elapsed = time.monotonic() - started
-    finally:
-        store._lock.release()
+    real_lock = store._lock
+    acquires: list[tuple[bool, float]] = []
+    caller = threading.get_ident()
 
-    assert elapsed < 1.0, f"a warm caller must not block on the reload lock ({elapsed:.2f}s)"
+    class _HeldElsewhere:
+        """The reload lock as another thread holds it; other threads get the real one."""
+
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            if threading.get_ident() != caller:
+                return real_lock.acquire(blocking, timeout)
+            acquires.append((blocking, timeout))
+            assert not blocking, f"a warm caller blocked on the reload lock ({timeout=})"
+            return False
+
+        def release(self) -> None:
+            if threading.get_ident() != caller:
+                return real_lock.release()
+            raise AssertionError("released a reload lock it never took")
+
+        def __enter__(self) -> bool:
+            return self.acquire()
+
+        def __exit__(self, *exc: object) -> None:
+            self.release()
+
+    store._lock = _HeldElsewhere()
+    try:
+        prof = gp.resolve_active_scope("cron:j:r")
+    finally:
+        store._lock = real_lock
+
+    assert acquires == [(False, -1)], "a warm caller must try the reload lock once, non-blocking"
     # And it served the PRIOR (coherent, still-restrictive) snapshot — not nothing.
     assert (
         prof is not None

@@ -389,7 +389,7 @@ class TestStatus:
         assert status.remaining_secs > 0
         assert status.activated_at_iso is not None
         assert status.expires_at_iso is not None
-        # Verify ISO 8601 format
+        # ISO 8601 date-time strings put a "T" between the date and the time.
         assert "T" in status.activated_at_iso
         assert "T" in status.expires_at_iso
 

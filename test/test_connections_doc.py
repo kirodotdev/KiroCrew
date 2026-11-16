@@ -1,8 +1,8 @@
 """Pin the numbers and tool names in ``docs/connections.md`` to their sources.
 
-The shipped Connections page states counts a reader will act on — how many
-providers the catalogue holds, how many render a card, which providers get tool
-renames, and the consecutive-failure threshold before a server is quarantined.
+The shipped Connections page states facts a reader will act on — which
+providers render a card, which providers get tool renames, and the
+consecutive-failure threshold before a server is quarantined.
 Every one of those moves when someone edits ``registry.json`` or a config
 default, and a stale number in a user-facing doc is worse than no number: it
 reads as authoritative.
@@ -89,19 +89,31 @@ def _names_listed_in_row(doc: str, key: str) -> set[str]:
 
 
 class TestCatalogueCounts:
-    def test_total_provider_count_is_stated(self, doc: str, entries: list[dict]) -> None:
-        total = len(entries)
-        assert total in _bold_ints(doc), (
-            f"connections.md does not state the catalogue size ({total}) as a bold count; "
-            "update the prose when registry.json gains or loses an entry"
-        )
+    def test_catalogue_size_and_card_count_are_not_stated(self, doc: str) -> None:
+        """The page names providers per row and never states how many there are.
 
-    def test_visible_card_count_is_stated(self, doc: str) -> None:
-        visible = len(registry_mod.get_visible_providers())
-        assert visible in _bold_ints(doc), (
-            f"connections.md does not state how many providers render a card ({visible}); "
-            "get_visible_providers() moved and the prose did not"
+        A total is one line every PR that registers a provider edits, and two such PRs
+        merge into a page neither tested. The rows below pin each provider exactly
+        (testing-conventions.md § Merge-safe ratchets and counts).
+        """
+        stated = re.compile(r"\*\*\d+\*\* (?:curated providers|render a card)")
+        assert not stated.search(doc), "connections.md states a catalogue total again"
+        index = (_DOC.parent / "index.md").read_text(encoding="utf-8")
+        assert not re.search(
+            r"\b\d+-provider catalogue", index
+        ), "index.md's Connections row states a catalogue total again"
+
+    def test_the_card_rows_are_exactly_the_visible_providers(self, doc: str) -> None:
+        """The page says the first two rows are what renders a card; that is the code's set."""
+        visible = {e["name"] for e in registry_mod.get_visible_providers()}
+        shown = _names_listed_in_row(doc, "gate_passed") | _names_listed_in_row(
+            doc, "preregistered"
         )
+        assert visible and shown == visible, (
+            "connections.md's Connect and Set-up rows together must list exactly the "
+            f"providers get_visible_providers() renders: {sorted(visible)}"
+        )
+        assert "the entries in the first two rows below render a card" in doc
 
     def test_launch_gate_passed_row_lists_exactly_those_providers(
         self, doc: str, entries: list[dict]
@@ -153,7 +165,7 @@ class TestToolAliases:
     #: The one clause naming which providers declare renames. Anchored because
     #: each of these names also appears in the collision example beside it.
     _CLAUSE = re.compile(
-        r"declared in the catalogue for (?P<count>\w+) providers today — (?P<names>[^—]+) —"
+        r"declared in the catalogue for these providers today — (?P<names>[^—]+) —"
     )
 
     def test_clause_lists_exactly_the_alias_declaring_providers(
@@ -164,7 +176,7 @@ class TestToolAliases:
         match = self._CLAUSE.search(flat)
         assert match, (
             "connections.md no longer carries the clause 'declared in the catalogue for "
-            "<N> providers today — A, B and C —'; update this test's anchor with the "
+            "these providers today — A, B and C —'; update this test's anchor with the "
             "rewording so the list stays pinned"
         )
         assert _split_names(match.group("names")) == expected, (
@@ -172,27 +184,11 @@ class TestToolAliases:
             f"registry.json declares tool_aliases for {sorted(expected)}"
         )
 
-    def test_clause_count_word_matches(self, flat: str, entries: list[dict]) -> None:
-        declaring = [e for e in entries if e.get("tool_aliases")]
-        words = {
-            1: "one",
-            2: "two",
-            3: "three",
-            4: "four",
-            5: "five",
-            6: "six",
-            7: "seven",
-            8: "eight",
-            9: "nine",
-            10: "ten",
-            11: "eleven",
-        }
-        match = self._CLAUSE.search(flat)
-        assert match, "the alias clause anchor is gone; see the sibling test's message"
-        assert match.group("count").lower() == words.get(len(declaring)), (
-            f"{len(declaring)} providers declare tool_aliases but connections.md says "
-            f"'{match.group('count')} providers today'"
-        )
+    def test_clause_states_no_count(self, flat: str) -> None:
+        # The names above pin the set exactly. A count word beside them is one more
+        # thing every PR that adds a rename edits (testing-conventions.md § Merge-safe
+        # ratchets and counts).
+        assert not re.search(r"declared in the catalogue for (?!these )\w+ providers today", flat)
 
     def test_every_alias_the_doc_shows_is_the_derived_spelling(
         self, doc: str, entries: list[dict]

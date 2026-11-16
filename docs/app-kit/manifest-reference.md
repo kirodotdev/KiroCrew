@@ -430,6 +430,7 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
 | `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
+| `ui.frameSources` | string[] | `[]` | Sites your pages may show in an `<iframe>`, at most 8. Each is an exact origin, `https://` plus one hostname: no path (not even `/`), port, query, user info or wildcard, and no IP address, `localhost` or public suffix such as `co.uk` or `github.io`. Install refuses anything else, and a repeated entry. The dashboard allows these origins in its `frame-src` only while your app is enabled and trusted, and only the ones the owner approved: install approves what it declares, and an origin a later update or edit adds waits for the owner on the app's page. The origins are allowed for the whole dashboard, not only your pages |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
@@ -1580,6 +1581,7 @@ popover says the app did not respond.
 | `backend.routes` | string | | Base route path for the backend |
 | `backend.type` | string | `""` | Backend runtime: `"python"`, `"asgi"`, `"node"`, `"exec"` (execute the entry point file as-is), or `""` (auto-detect from `entryPoint` — a `.sh` file or an extensionless executable with a non-Python shebang is treated as a shell launcher) |
 | `backend.signedPrincipal` | boolean | `false` | Add a signed `X-KiroCrew-Principal` claim to every request the reverse proxy forwards to this backend. Only the JSON boolean `true` turns it on. The claim says whether the gateway authenticated an `owner-session`, an `app-token`, an `agent-tool` call, or `none`. |
+| `backend.webOrigin` | boolean | `false` | Serve this backend on its own origin, `http://<name>.apps.localhost:<dashboard port>`, so a page the app frames rides the dashboard's own connection. Only the JSON boolean `true` turns it on, and the name must be at most 63 characters. The gateway forwards no credential and signs nothing on that origin, `Authorization` included, so the app authenticates its own pages; a framed site that signs in with bearer or Basic auth needs the backend to add that header itself. Every app origin can count as the one site `apps.localhost`, so `SameSite` cookies do not keep another app's page out: check `Origin` or a CSRF token on every route that changes state. Read the origin with `appWebOrigin(name)` from `@kirocrew/app-sdk` (level 8). |
 
 > **Note:** the shell-launcher auto-detect reads the entry point's shebang
 > line, so a compiled/binary launcher (e.g. an ELF executable) cannot be
@@ -1833,10 +1835,12 @@ packages at all.
     "proposeCrewmate": false,
     "agentTurns": false,
     "chatSlots": false,
+    "hiddenSessions": false,
     "workerAutoApprove": false,
     "reachableByUserSessions": [],
     "desktopCapabilities": [],
     "webhookSource": false,
+    "bots": [],
     "exposeToApps": []
   }
 }
@@ -1855,9 +1859,11 @@ packages at all.
 | `permissions.memberThreads` | boolean | Widens `sessionApproval` to a Bot's pinned DM thread (the live `member-*` slot the owner opened): the same actions, nothing else about the Bot. Grants nothing without `sessionApproval`; see [the scope below](#permissionsmemberthreads--a-bots-own-thread) |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
+| `permissions.bots` | string[] | Bot scopes, `"read"` and `"wake"`; any other entry is dropped. `read` lists the Bots the owner ticked for this app with their status and goals; `wake` sends one of them a fixed line the gateway writes. The owner ticks Bots in the app's detail page, and a fresh install reaches none. Also declare `/api/members` in `permissions.api`. A scope an update adds waits for the owner's approval. Never reaches a Bot's chats, briefing or rules. Called from the app's backend with its app token ([api-reference](api-reference.md#bots-permissionsbots-from-your-backend)) |
 | `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
 | `permissions.agentTurns` | boolean | May run agent turns on sessions keyed `<app>-<id>` through `ctx.turns`: every tool goes through the host's tool gate under this app's identity, and every turn is admitted as Crew automation. Gates a real capability like `spawn`: `ctx.turns` is absent unless the value is literally `true` ([api-reference](api-reference.md#agent-turns-ctxturns)) |
 | `permissions.chatSlots` | boolean | May open and drive dashboard chat slots keyed `<app>-<id>` through `ctx.chat_slots`: turns through the host's own chat runner under this app's identity, the slot's queue, stop, archive, transcript and the AutoNudge loops on those slots, never another slot. Shown at the trust prompt. `ctx.chat_slots` is absent unless the value is literally `true` (App Kit seam level 7, [api-reference](api-reference.md#chat-slots-ctxchat_slots)) |
+| `permissions.hiddenSessions` | boolean | Keeps the chats this app creates out of the session lists: the chat sidebar, the Sessions page, recently closed and Older sessions. The app creates such a chat with `mode` set to its own app id on `POST /api/chat/slots`, from its backend (app token) or its page (the SDK adds `embed_app`); any other mode is refused with `invalid_mode`, so it never hides another app's chat or yours, and an existing chat keeps its mode. Taken only while the app is installed, enabled and trusted, and only as the literal `true`; once that stops, its closed chats are listed in Older sessions again. Hides the list row only: the chat's approvals and questions still chime and notify like any chat's, and nothing is deleted. Open them from the app's page (an embedded `ChatPanel` shows its own bound chat). Shown at the trust prompt and on the app's detail page |
 | `permissions.workerAutoApprove` | boolean | May hold a bounded, audited auto-approve grant on the app's OWN worker slots through `ctx.auto_approve`, so an unattended session's tool calls run without a prompt. Absent unless the value is literally `true`; shown at the trust prompt; an update that adds it waits for the owner's approval; never above the approval-mode policy; ended when the app is disabled or removed ([api-reference](api-reference.md#worker-auto-approve-ctxauto_approve)) |
 | `permissions.reachableByUserSessions` | string[] | What the owner's own chats may do, through the session tools, to the sessions this app owns: `"read"` (`session_read_message`, `session_summary`) and `"send"` (`session_send`). Empty by default, which keeps every app session refused as `app_scoped_target`. Other entries are ignored. Shown at the trust prompt; an update that adds a verb waits for the owner's approval on the app's page. Only a persistent chat the owner opened is admitted, never an incognito, scheduled, agent-created, channel-linked or Bot session, and stop, close and revive stay refused ([session control](../system-specs/modules/session-control.md#app-sessions-the-owners-chats-may-reach)) |
 | `permissions.desktopCapabilities` | string[] | What the app's [desktop windows](#desktop--windows-and-global-shortcuts-in-the-desktop-app) may ask the desktop app for: `"screenCapture"` (be granted a screen through `getDisplayMedia`), `"localFiles"` (reveal a local file in the system file manager, open a local image in the system viewer) and `"gatewayChoice"` (list the operator's gateways, remote ones over SSH or SSM included, and load the app's windows from the one picked). Empty by default, which refuses all three. Other entries are ignored. Shown at the trust prompt and on the app's page; an update that adds one waits for the owner's approval there. The desktop app serves a capability only to a window of an enabled app that declares it and whose owner approved it |
@@ -2343,10 +2349,20 @@ Pair it with `platform.requiresDesktopApp` when the window is the app's own inte
 | `desktop.shortcuts[]` | object[] | 0 to 4 global shortcuts |
 | `desktop.shortcuts[].id` | string | Delivered to the page when pressed |
 | `desktop.shortcuts[].accelerator` | string | An Electron accelerator with two different modifier keys on every platform (`CommandOrControl+Control` is one key on Windows), one of them not `Shift`, and one letter, digit, `F1`-`F24`, arrow or `Space` key |
+| `desktop.shortcuts[].platformAccelerators` | object | Optional, App Kit seam level 8. A different default on the platforms it names: `macos`, `windows` and `linux`, each an accelerator held to the same rule. `accelerator` is the default elsewhere. No two of your shortcuts may share a chord on any one platform |
 | `desktop.shortcuts[].window` | string | The window the press is delivered to; it is opened first if closed |
 
 Any other key or value is an install refusal. A shortcut whose chord another
-program, the desktop app or another app already holds is not registered.
+program, the desktop app or another app already holds is not registered. The user
+may rebind a shortcut on their computer (below); the desktop app keeps that binding
+per app per computer and uses your default for every shortcut without one.
+
+```json
+"shortcuts": [
+  { "id": "toggle-panel", "accelerator": "Alt+Shift+M",
+    "platformAccelerators": { "macos": "CommandOrControl+Shift+M" }, "window": "panel" }
+]
+```
 
 In the window, your module reads `window.kirocrewDesktopWindow` (absent in a browser):
 call `ready()` once your first frame is painted (the window stays hidden until then),
@@ -2390,6 +2406,23 @@ the ones this window was opened with:
 
 When the owner withdraws a capability, every window opened with it is closed (an
 `openOnEnable` one reopens without it).
+
+Level 3 of the bridge (App Kit seam level 8) adds, for every window of your app:
+
+- `shortcuts()`: resolves your declared shortcuts on this computer, each `{ id,
+  window, defaultAccelerator, accelerator, custom, registered }` (`accelerator` is `""`
+  when the user unbound it, `custom` says the user changed it, `registered` that the
+  chord is held now). Show it on your Settings page.
+- `setShortcut(id, accelerator)`: rebind one of your declared shortcuts (`""` unbinds
+  it, `null` returns it to your default). Answered only within 2 s of a mouse or key
+  press the shell saw in the window, one request per press, never from a background
+  window. A chord other than the shortcut's default must be the one the user just
+  pressed in that window, so call it from the key press your Settings page records.
+  The chord follows the `accelerator` rule above and may not be another of your
+  shortcuts'; the new chord is registered before the old one is let go, so a chord
+  another program, the desktop app or another app holds leaves the old binding and
+  its chord with your app. Resolves `{ ok, reason?, shortcuts }` (`reason`:
+  `undeclared`, `refused`, `not-pressed`, `in-use` or `unavailable`).
 
 ## Open Command
 

@@ -12,7 +12,8 @@ grant or a mapped skill that the crewmate's conductor does not carry and that
 
 The rule they hold (``docs/system-specs/modules/crew-mode.md``, Keeping the two
 conductors in step): a conductor change lands on both, or it lands here with a
-reason.
+reason. The ask policy is the one exception to the placeholder route: both get
+the same ``output_contract`` constants (crew-mode.md, Ask cases and reroute).
 
 * A prompt rule both need is written ONCE, in ``agent_parts/spec_prompts.py``
   ``_LEDGER_CONDUCTOR_RULES``. The root charter is assembled from it
@@ -28,7 +29,9 @@ The direction is one way: the crewmate's conductor carries much the root one doe
 not (cron, guide and mate servers, the default built-ins, its front-desk wording),
 and that is not drift.
 
-Conductor mode runs a third agent, ``kirocrew-team-lead`` (``crew_mode.DEFAULT_CREW_MODE_AGENT``).
+Conductor mode runs ``kirocrew-conductor`` by default
+(``crew_mode.DEFAULT_CREW_MODE_AGENT``), the root conductor compared above. A person
+can still set ``agent.crew_mode_agent`` to a third agent, ``kirocrew-team-lead``.
 Its system prompt carries none of the shared rules: it reaches them only through
 the ``team-lead`` skill, which points at ``goal-conductor``. The last section holds
 that chain and each shared rule's counterpart in ``goal-conductor/SKILL.md``
@@ -68,7 +71,6 @@ ALLOWLIST: dict[str, str] = {
     "prompt:rounds_back_to_back": "a crewmate's thread is driven by the user and its Heartbeat, not by a round loop",
     "prompt:round_close_reset": "a crewmate's DM thread lives for years and is never reset at a round close",
     "prompt:spend_bounded": "a crewmate is not driven by a round loop; a refused create names its own concurrency cap",
-    "prompt:ask_only_when_needed": "a crewmate's Bot prompt keeps its own ask cases (irreversible steps, the user's goals) and escalates through [HOW YOU WORK] item 3",
     "prompt:patrol_ends": "a crewmate stops a loop with monitor_stop when no item is open, and escalates through its own ladder ([HOW YOU WORK] item 3)",
     "prompt:steer": "steer events come from the Crew panel, which shows Crew Mode trees and not a crewmate's workers",
     "prompt:own_session_ledger": "names session_ledger goal/phase/next, the root conductor's round state; a crewmate keeps its state in its briefing and goal",
@@ -529,9 +531,10 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
     "close_item": ("work_ledger_record action=close with the item's state",),
     "resource_wave": ("resource_status decides the wave", "never ask to raise the cap"),
     "goal_plan": ("a finding rewrites the plan at once", "rewrite the goal text's plan and"),
-    "host_pressure": (
-        "host memory pressure pauses dispatch",
-        "while host_pressure is present it wins: dispatch nothing",
+    "patrol_requested": ("a reply saying requested confirms receipt only", "monitor_inspect"),
+    "dependent_calls": (
+        "a call that depends on another goes in a later step, never the same block",
+        "calls that truly do not depend on each other",
     ),
     # The rule IS "read goal-conductor"; its conductor mode counterpart is the chain itself.
     "skill_first": ("name: goal-conductor",),
@@ -540,17 +543,7 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
 #: Shared rules the team lead does not reach today, as ``key -> (anchor, reason)``.
 #: The anchor is the rule's own phrase; once ``goal-conductor/SKILL.md`` carries it
 #: the entry is stale and the test says so. Remove it then and add the key above.
-CONDUCTOR_MODE_GAPS: dict[str, tuple[str, str]] = {
-    "dependent_calls": (
-        "depends on another goes in a later step",
-        "the team-lead prompt and both skills lack the general rule; only accept_eval's "
-        "settle step says 'in a later step'",
-    ),
-    "patrol_requested": (
-        "confirms receipt only",
-        "the skill reads patrol= outcomes but never says a 'requested' reply is not a retry cue",
-    ),
-}
+CONDUCTOR_MODE_GAPS: dict[str, tuple[str, str]] = {}
 
 
 def _skill_text(name: str) -> str:
@@ -600,15 +593,22 @@ def test_the_anchor_check_sees_a_lost_rule(monkeypatch: pytest.MonkeyPatch) -> N
         test_goal_conductor_skill_carries_each_mapped_rule()
 
 
-def test_conductor_mode_reaches_goal_conductor_through_team_lead(
+def test_conductor_mode_runs_the_root_conductor_by_default() -> None:
+    """The agent conductor mode runs while the key is unset is the root conductor this
+    file holds the shared rules against."""
+    from kiro_crew import crew_mode
+    from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME
+
+    assert crew_mode.DEFAULT_CREW_MODE_AGENT == CONDUCTOR_AGENT_FILENAME.removesuffix(".json")
+
+
+def test_a_team_lead_set_as_the_conductor_reaches_goal_conductor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Conductor mode's default agent is the team lead; its prompt sends it to ``team-lead``,
+    """A team lead set as ``agent.crew_mode_agent``: its prompt sends it to ``team-lead``,
     that skill sends it to ``goal-conductor``, and its spec maps both."""
-    from kiro_crew import crew_mode
     from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME
 
-    assert crew_mode.DEFAULT_CREW_MODE_AGENT == "kirocrew-team-lead"
     prompt = _words(agent._TEAM_LEAD_SYSTEM_PROMPT)
     assert "read the team-lead skill" in prompt
     assert "procedure is goal-conductor" in prompt

@@ -996,6 +996,7 @@ async def _start_kiro_runtime_impl(
                     # own, so this only labels the genuinely-deliberate case.
                     await runtime.kill(expected=True, reason="reap before resume respawn")
                 except Exception:
+                    # The runtime is dead; the respawn below runs whether or not this reap worked.
                     pass
             if not runtime.is_alive() and share is not None:
                 # A shared placement: the dead runtime's tree is what the
@@ -1083,6 +1084,9 @@ async def _start_kiro_runtime_impl(
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,
+                    # Per session for the same reason: the member projection
+                    # follows this chat, not the process's founder.
+                    member_context=self.member_context,
                     memory_mode=self.memory_mode,
                     session_key=self._owning_session_key(),
                     channel_id=self._owning_channel_id() or "",
@@ -1289,6 +1293,12 @@ async def _start_kiro_runtime_impl(
             # pushes a keyless claim gatewayd throws away.
             session_key=self._owning_session_key(),
             channel_id=self._owning_channel_id(),
+            # The values this session's cold create_session ran with, so a fresh
+            # conversation (Edit & Resend) on a shared process keeps them rather
+            # than the founder's.
+            agent=agent or "",
+            crew_agent=self._crew_agent,
+            member_context=self.member_context,
         )
         provider.kas_default_model_notice = _default_model_notice
         provider.memory_mode = self.memory_mode

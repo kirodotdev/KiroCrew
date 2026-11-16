@@ -21,7 +21,7 @@ from dataclasses import dataclass
 # module only owns the shape and the version gate). The MCP side — the same
 # object under ``_meta.kirocrew_status`` on a ``notifications/progress``
 # sibling — is documented in ``docs/system-specs/modules/acp-client.md`` and is
-# NOT parsed here yet (the gateway stub is frozen for this PR).
+# NOT parsed here.
 
 STATUS_EXTENSION_KEY = "kirocrew/status"
 STATUS_EXTENSION_VERSION = 1

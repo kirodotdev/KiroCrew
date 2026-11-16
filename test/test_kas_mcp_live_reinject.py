@@ -494,6 +494,7 @@ class TestKeepRecordOnTeardown:
         # The harness resolves from the backend id; KAS's teardown verb is the
         # record-deleting one this scope exists to avoid.
         runtime._acp_backend = ACP_BACKEND_KAS
+        runtime._session_harness_states = {}
         runtime.unregister_session = MagicMock()  # type: ignore[method-assign]
         return runtime
 
@@ -565,6 +566,7 @@ class TestEvict:
             return {}
 
         runtime._send_and_await = _send  # type: ignore[method-assign]
+        runtime._session_harness_states = {}
         runtime.unregister_session = MagicMock()  # type: ignore[method-assign]
         await AcpRuntime.evict_session(runtime, _SID)
         assert sent == [(METHOD_SESSION_CLOSE, {"sessionId": _SID})]

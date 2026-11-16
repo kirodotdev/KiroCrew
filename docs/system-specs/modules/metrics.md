@@ -257,11 +257,20 @@ start with no dashboard printed the Kiro line to a terminal. `privacy_ack_versio
 alone does not count, nor does a notice of version 2 or lower, which said metrics
 stay on this machine. Whether the notice was shown is part of
 `_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
-consent recheck. It is not returned in an LTS build, on a CI runner, or under a
-non-default `KIROCREW_HOME`. Because the notice names it, the enable refusals (the
+consent recheck. It is not returned in an LTS build or on a CI runner; a
+non-default `KIROCREW_HOME` gets it like any other home. Because the notice names it, the enable refusals (the
 dashboard's `telemetry.enabled` PATCH and `kirocrew telemetry enable`) ask
 `kiro_export.egress_needs_written_opt_in`, which ignores it, and the collection
-status reports that as `enable_refused`. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
+status reports that as `enable_refused`. `kiro_export.off_offer_due` names the
+one off case that is asked again: a written `telemetry.enabled: false` (what
+builds before the recording default wrote into every new config), the heartbeat
+on, no env pin, no policy, no `config.local.json` entry, no collector of the
+user's own, and notice version 3 not yet acknowledged. The theme boot payload then
+reports the stored notice version, the collection status reports `off_offer`, and
+the chapter's off form offers Turn on performance metrics (writes `telemetry.enabled: true` and the
+Kiro acknowledgement) or Keep off (writes `telemetry.enabled: false`, already the
+stored value, then `privacy_ack_version`). A start with
+no dashboard prints `notice.OFFER_TEXT` once on a terminal. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a
@@ -783,7 +792,7 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.mcp_gateway.sessions.attached` | gauge (1) | `class` | Same module and population: the summed stub attachments (`Backend.refcount`) on those backends. `sessions.attached - backends.live` is the number of backend processes pooling avoided. One runtime opens one stub per server however many sessions it hosts, so this is a lower bound on sessions and the saving derived from it is a lower bound too. |
 | `kirocrew.mcp_gateway.backends.rss_bytes` | gauge (By) | `class` | Same module and population: summed current RSS of each backend through `mcp_gateway/pool.py::backend_rss_kb`, the probe the dashboard's pool snapshot uses (the backend pid AND its descendants, so a launcher that forks the real server is measured with it; KiB, exported as bytes). A pid with no reading (it died, or the platform has no `/proc` subtree walk: macOS and Windows) adds 0 and is skipped; a class where no backend could be read publishes nothing, a gap rather than a fake zero. `bytes_saved ~= (sessions.attached - backends.live) * backends.rss_bytes / backends.live`. gatewayd's own RSS is `kirocrew.process.memory.rss_bytes` where the resource has `kirocrew.process.role=gatewayd`; the main process's has no `kirocrew.process.role`. |
 | `kirocrew.chat_runtime_share.toggled` | counter | `state` (`on` / `off`) | `dashboard/server_runtime/config_watch.py` live-config applier on `dashboard.feature_previews` -> `metrics/chat_runtime_share.py::record_toggled`: one count when the `chat_runtime_sharing` preview flips between two applied documents, from any writer (Settings, CLI, a hand edit). Both sides are read by `acp.chat_runtime_sharing.chat_runtime_sharing_enabled`, through `agent_sdk/chat_runtime_sharing.py`, the same reader the inventory gauge uses. Whether it is on NOW is `kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. |
-| `kirocrew.chat_runtime_share.placed` | counter | `outcome` (`spawned` / `joined` / `refused`), `reason` (`chat_sharing_ineligible_reason`'s branch names plus `native_subagents`, `none` on a placement, `other`), `tenants` (`1` / `2` / `3` / `4+` after the placement, `none` on a refusal) | `providers/chat_share.py`: `resolve_chat_share` counts a refusal (preview on, start refused); `ChatSharePlacement._accept` counts the confirmed placement, beside its WARNING line. Nothing counts while the preview is off: `resolve_chat_share` returns before either. |
+| `kirocrew.chat_runtime_share.placed` | counter | `outcome` (`spawned` / `joined` / `refused`), `reason` (`chat_sharing_ineligible_reason`'s branch names plus `native_subagents`, `none` on a placement, `other`), `tenants` (`1` / `2` / `3` / `4+` after the placement, `none` on a refusal), `tree` (`chat` / `bot`: whether the process serves a Bot's session tree, `none` on a refusal), `harness` (`metrics.harness.harness_for_backend` of the chat's backend; with `reason=harness_switched_off` it names the harness whose own switch is off) | `providers/chat_share.py`: `resolve_chat_share` counts a refusal (preview on, start refused); `ChatSharePlacement._accept` counts the confirmed placement, beside its WARNING line. Nothing counts while the preview is off: `resolve_chat_share` returns before either. |
 | `kirocrew.chat_runtime_share.processes` / `.tenants` | gauge (1) | none | `metrics/chat_runtime_share.py::register_chat_runtime_share_gauges` (registered from `metrics/shared_process_gauges.py` beside the MCP gateway pool gauges), read at collection from `RuntimeOwnership.keyed_lease_counts`: live runtimes placed under a compatibility key (a `ChatRuntimeKey`; registration leases are keyed by the runtime itself and are left out), and the chat leases on them. `tenants - processes` is processes saved. Publishes nothing until this process has placed or refused a chat with the preview on, so no other process exports zeros. |
 | `kirocrew.chat_runtime_share.rss_sampled` | counter | `tenants` (`2` / `3` / `4+`), `rss` (`le_512m` / `le_1g` / `le_2g` / `le_4g` / `le_8g` / `gt_8g`, MiB, each edge inclusive) | `session_cleanup_spare.py::note_rss_measured`, called where the RSS watchdog tick first measures a pid's tree (`session_cleanup.py::_rss_threshold_check`, `session_cleanup_leftovers.py`), so a shared process is counted once per tick. Only pids holding two or more chat leases. No sample while `session.watchdog_rss_max_mb` is 0. |
 | `kirocrew.chat_runtime_share.reclaimed` | counter | `reason` (`rss`) | `session_cleanup_spare.py::rss_limit_for`, when a shared process over its scaled ceiling is newly closed to joins (`RuntimeOwnership.close_to_joins` returned non-zero), once per process. |
@@ -1780,6 +1789,42 @@ views' sessions, and the dollar card remembers its own state under the same keys
 `:usd` suffix. The per-session
 table sits under a **Full table** disclosure that starts closed and remembers its state
 in `telemetry:spend-table-open`.
+**What a session delivered.** For the 50 costliest conversations in the window,
+`dashboard.handlers.usage_outcome` reads the conversation's own transcript (through the
+derivation seam, `ConversationLog.derive_messages_chained_full_with_keys`, memoised by the
+file's mtime and reread at most once a minute while the file keeps changing) and attaches an
+`outcome` to each row that delivered something: `commits`, `lines_added`, `lines_removed`,
+`prs`, and for the owner `merged`, `unchecked` and `per_merged`. `outcome_scan` on the cost
+block says how many rows were read; a window that delivered nothing returns the block
+unchanged. A row's command is the `command` argument in its `meta.input`, or its title when
+there is none, since a long title can arrive cut short. A commit counts when a shell tool
+row ran `git commit` and its `meta.output` holds git's `[branch sha]` summary line (the line
+after it gives the changed lines). A `git commit -q` prints no summary line, so a quiet
+commit is not counted: nothing else in the row says which commit, if any, that call made.
+An amend, a preview (`--dry-run` and the
+formats that imply it: `--short`, `--porcelain`, `--long`, `-z`/`--null`) or any other
+output does not count. Commands are read by the shared shell reader
+(`security.shell_commands.read_commands`, the batch guard's own), so quoting is the shell's
+and a here-document body is data; a command with a quote left open, or longer than 16,384
+characters, counts nothing. An incognito or temporary transcript, or one whose line cannot be
+read, is refused by the seam (`TranscriptWithheld`) and its row gets no outcome. The scan
+records each delivering row's chain; `usage_outcome.respond_with_session_outcomes` then,
+off the loop, takes the lock stems of every contributing chain in one sorted acquire, enters
+each chain's `ConversationLog.publication_hold` in sorted transcript order, drops the outcome
+of any it refuses from both spend units, and builds the `web.json_response` before any hold
+is let go. A session tightened after its scan (a channel `!incognito`) is not published, and
+none can be tightened while the response is built. A busy lock, or more than 256 transcripts
+(`_PUBLICATION_HOLD_MAX`) across the chains, sends no outcome. No hold spans an await. The memo
+keeps every transcript the chained read covered and asks each one's line on every poll
+before it is served, because tightening a line keeps the mtime. A chain longer than 64
+transcripts (`_MEMO_CHAIN_MAX`) is not memoised, so each poll reads it through the seam again.
+A pull request counts when a row ran `gh pr create` or `glab mr create` and its output holds
+the change's URL on its own line, parsed by `parse_source_url`, unless the output says the
+pull request already exists. Each is counted once by sha or URL, and only inside the
+window. `merged` is read from the chip-status cache (`get_cached_check_status`), never
+refreshed here, so a URL the cache has not seen is `unchecked` rather than open, and a caller
+that is not the dashboard owner gets no merge figures. `per_merged` is the session's spend
+divided by `merged`. The Spend table shows the five columns only once a row has an outcome.
 **Stamping boundary:** rows are stamped at the two write sites that can run
 app-owned work — the dashboard chat runner (the slot's `_app`) and the
 subagent completion path (`info.app`, an app-dispatched subagent's spend).
@@ -1929,7 +1974,7 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode` or a `traces_otlp_*` key, the worker
+moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode`, `accept_traceparent` or a `traces_otlp_*` key, the worker
 thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
@@ -2093,6 +2138,36 @@ the dispatch runs in a task of its own, and `admitted_cron_dispatch` hands the r
 to it (`turns.adopt_root`). A root opened inside another root bound in the
 same task (a one-liner a dashboard turn awaits) owns its turns until it closes, then
 the outer binding is back. Off, a root is one context-variable write.
+
+**Inbound traceparent** (`tracing/inbound.py`). `telemetry.accept_traceparent`, default
+`false`, read with the switch (`provider.accepts_traceparent()` never reads), lets a
+service that calls Kiro Crew over HTTP put its turn in the caller's trace. Only two
+routes read the header, `POST /v1/chat/completions` (`dashboard/openai_compat.py`) and
+`POST /api/hooks/agent` (`dashboard/handlers/hooks.py`), and only after the caller has
+authenticated, at the point the turn is about to start. `begin(headers)` binds nothing
+unless the setting and tracing are both on and exactly one `traceparent` header was
+sent; `ids.parse_traceparent` accepts only a version `00` value of 55 characters (four
+`-` separated lowercase hex fields of 2, 32, 16 and 2 digits, the trace and parent ids
+not all zero), and anything else is ignored with a debug line, never refused. The
+sampled flag and `tracestate` are ignored: the gateway's own switch decides whether a
+turn is recorded. `begin` mints the turn id, so the turn span's id
+(`H(turn, turn_id, 1)`) is known before the turn runs, and the response carries
+`traceparent` built from the caller's trace id and that span id, never an echo of the
+request; the header names the first attempt, and nothing is sent with tracing off. The
+turn takes the minted id through `claim_turn_id`, once: `dashboard/chat_turn/turn_entry.py::_turn_open`
+for a dashboard turn, `surfaces.root` for a webhook turn that roots itself, and a
+`/prompts get` expansion hands it on to the nested turn with `hand_back`, because the
+outer turn returns before it binds a root and the nested one is the turn that produces
+the reply. The bound turn joins the caller's span (`join_for`, a `runs.RunRef` of kind
+`caller` that is never emitted as a span, with no root session, so the spans keep the
+turn's own `session.id`) and `trace_binding.bind_turn` lets it override any join the
+turn would otherwise take (a Bot or conductor round, a run); only the join is replaced,
+so a conductor round's `rollup_key` stays and the round's roll-up still receives the
+turn's spend. An attempt retried within the turn is another child of the caller's span
+with the same `kirocrew.turn_id`. A turn that ends and queues a recovery turn is
+different: the recovery turn mints its own turn id and runs outside the caller's trace.
+Tests: `test/tracing/test_tracing_inbound.py`, `test_tracing_inbound_routes.py`,
+`test/test_trace_inbound_prompt_expansion.py`.
 
 **Workflow runs** (`tracing/workflows.py`). The `workflow` root above opens the anchor,
 named by the script's `META["name"]`, and the outcome: `finished`, `failed` or

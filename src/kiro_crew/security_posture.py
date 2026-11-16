@@ -333,6 +333,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "subagent_manager/run.py",
         "subagent_manager/run_lifecycle.py",
         "subagent_manager/run_turn.py",
+        # The refined call title a Crew subagent's card shows, redacted before
+        # ``run_turn`` fires it through the same subagent output boundary.
+        "subagent_manager/card_tool_titles.py",
         "subagent_manager/run_yields.py",
         "subagent_manager/stop_hooks.py",
         "subagent_manager/terminal.py",
@@ -568,10 +571,18 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/_dispatch_parts/surfaced_text.py",
         "acp/_dispatch_parts/tool_result_events.py",
         # The client's owners: code that was acp/client.py's own, scrubbing the
-        # same strings for the same records.
+        # same strings for the same records. The two claude owners hold the
+        # substitution-retry warning and the compaction-notice title that
+        # client_start and client_usage scrubbed before they moved there.
+        "acp/client_claude_session.py",
+        "acp/client_claude_turn.py",
         "acp/client_lifecycle.py",
         "acp/client_mcp_array.py",
         "acp/client_model_selection.py",
+        # The opencode hosted fall-back refusal's model id, scrubbed as it was in
+        # client_model_selection before it moved to the opencode client's owner; the
+        # refusal reaches the browser through the chat's own sinks.
+        "acp/client_opencode_session.py",
         "acp/client_permissions.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",
@@ -586,6 +597,21 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_turn.py",
         "acp/client_turn_control.py",
         "acp/client_usage.py",
+        # Keeps a compaction's streamed summary for the compaction card, redacted as
+        # the client reads it; the card reaches the browser through the dashboard's sinks.
+        "acp/compaction_summary.py",
+        # The reason a Claude session gives for refusing Fast mode, redacted as the
+        # provider reads it; the model picker reads it through the slot's API.
+        "providers/acp_model_effort.py",
+        # Read on the client's turn, not its owners: the checklist a ``plan`` update
+        # makes, and the title, description and mode name a harness notice carries,
+        # are redacted as the parsers above redact a sub-agent's title. Their rows
+        # reach the browser through the dashboard's sinks.
+        "acp/harness_notices.py",
+        "acp/plan_checklist.py",
+        # The same, for the task description, summary and retry reason a Claude Code
+        # task-end or retry notice carries (``acp/raw_sdk_tasks.py``).
+        "acp/raw_sdk_tasks.py",
         "acp/transport_errors.py",
         # Split out of transport_errors to keep that file under the line cap; its
         # redact_text call scrubs a compaction-failure reason for the SAME
@@ -740,6 +766,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # agent-switch name, the /compact summary and failure reason, the partial reply and stream
         # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
         "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/builtin_tools_notice.py",
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/elicitation_prompt.py",
@@ -753,6 +780,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/session_events.py",
+        # Words a harness notice as the notice row session_events appends; the row
+        # reaches the browser through the dashboard's sinks.
+        "dashboard/harness_notice_rows.py",
         "dashboard/chat_turn/slash_commands.py",
         "dashboard/chat_turn/tool_approval.py",
         "dashboard/chat_turn/tool_results.py",

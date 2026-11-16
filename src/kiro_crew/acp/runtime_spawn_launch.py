@@ -19,7 +19,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
 ``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_monotonic``,
-``_spawn_skill_projection``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_spawn_skill_projection``, ``_spawn_spec``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
 ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
@@ -41,7 +41,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from kiro_crew import agent_scratch, member_essential_context, platform_compat
+from kiro_crew import agent_scratch, build_reuse, member_essential_context, platform_compat
 from kiro_crew.acp import kas_cli_settings, kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
@@ -69,7 +69,10 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
-from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
+from kiro_crew.agent_sdk.backends import (
+    can_restore_session,
+    spawn_delegates_to_internal_sandbox,
+)
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
     custom_agent_never_defer_ids,
@@ -347,6 +350,8 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
             sandbox_mode=self._sandbox_mode,
             member_context=self._member_context,
             harness_pin=self._harness_pin,
+            extra_env=dict(self._extra_env or {}),
+            agent_env=getattr(self, "_agent_env_override", None),
         )
     )
     # The ONE derived-spec gate on this path, and the one host-level gate that is
@@ -708,6 +713,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # The frozen snapshot a chat-sharing placement keyed on, else set by the
     # handshake below when it read agent.env; None lets launch read it.
     self._spawn_agent_env = getattr(self, "_agent_env_override", None)
+    # The spec the handshake below judges, for this spawn only: cleared here so a
+    # spawn whose handshake reads none never sees an earlier spawn's.
+    self._spawn_spec = None
     if self._harness.client_meta_settings:
         client_capabilities = await self._handshake_client_capabilities()
 
@@ -783,6 +791,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # with.
             # Called before the launch tail's scrub, so a host can both add its
             # own variables and remove one the generic path would pass through.
+            # What the spawn itself minted for its child (``SpawnPlan.child_env``),
+            # placed first so the host's own answer below is the last word.
+            env.update(plan.child_env)
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
@@ -1106,7 +1117,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
         _agent_caps = init_resp.get("agentCapabilities", {})
         self._agent_capabilities = _agent_caps if isinstance(_agent_caps, dict) else {}
-        self._can_load_session = bool(self._agent_capabilities.get("loadSession", False))
+        self._can_load_session = can_restore_session(self._acp_backend, self._agent_capabilities)
         # Retain promptCapabilities so the prompt path can gate non-text
         # blocks -- without them an image block would be sent regardless of
         # whether the agent accepts one, and a refusal would surface as a
@@ -1323,17 +1334,22 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
         self._kas_telemetry_sent = telemetry_on
     if self._tool_search is None:
         return base
-    spec = await asyncio.to_thread(self._projected_spawn_spec)
+
+    def spec_and_added() -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+        # Only KAS reads this channel. There the Crew servers a custom agent was
+        # given, not its author's, stay behind KAS's loader (``crew_added_servers``).
+        spec = self._projected_spawn_spec()
+        if not self._harness.client_meta_settings or spec_grants_tool_search(spec):
+            return spec, ()
+        return spec, crew_added_servers(self._agent, spec)
+
+    # One block for both reads: the spec read and ``crew_added_servers`` each ask
+    # which installed app owns the agent, and the second reuses the first's reads.
+    spec, added = await asyncio.to_thread(build_reuse.in_one_build, spec_and_added)
+    self._spawn_spec = spec
     loader_granted = spec_grants_tool_search(spec)
     never_defer: list[str] = []
     if not loader_granted:
-        # Only KAS reads this channel. There the Crew servers a custom agent was
-        # given, not its author's, stay behind KAS's loader (``crew_added_servers``).
-        added = (
-            await asyncio.to_thread(crew_added_servers, self._agent, spec)
-            if self._harness.client_meta_settings
-            else ()
-        )
         if added:
             never_defer = await asyncio.to_thread(
                 custom_agent_never_defer_ids, spec, _known_server_tool_names, added
@@ -1406,7 +1422,10 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     # Per spawn: only the process this toggle reached runs with MCP off.
     runtime._mcp_switched_off = False
     try:
-        spec = await asyncio.to_thread(runtime._projected_spawn_spec)
+        # The spec this spawn's handshake judged, when it read one; else read here.
+        spec = getattr(runtime, "_spawn_spec", None) or await asyncio.to_thread(
+            runtime._projected_spawn_spec
+        )
     except Exception:
         logger.debug("AcpRuntime: spawn spec unreadable; MCP left on", exc_info=True)
         return

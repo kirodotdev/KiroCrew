@@ -141,10 +141,26 @@ class TestSteerStartupGrace:
         sessions.get_provider = MagicMock(return_value=provider)
         mgr = _manager(sessions)
         mgr._agents["run1"] = SubagentInfo(id="run1", task="t")
-        t0 = time.monotonic()
-        ok, _ = await mgr.steer_run("run1", "msg")
+        slept: list[float] = []
+
+        class _NoGracePoll:
+            """``asyncio`` as the steer path sees it, minus any timed sleep."""
+
+            def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+                return getattr(asyncio, name)
+
+            @staticmethod
+            async def sleep(delay: float, *a, **k):  # type: ignore[no-untyped-def]
+                slept.append(delay)
+                raise AssertionError(f"steer_run polled the grace window (sleep {delay}s)")
+
+        # steer_run reads ``asyncio`` from kiro_crew.subagent's globals; the
+        # startup poll is the only timed sleep on that path.
+        with patch.object(subagent_mod, "asyncio", _NoGracePoll()):
+            ok, _ = await mgr.steer_run("run1", "msg")
+        assert slept == [], f"no full-window wait expected, slept {slept}"
         assert ok is True
-        assert time.monotonic() - t0 < 1.0  # no full-window wait
+        provider.steer.assert_awaited_once_with("msg")
 
 
 # ── TTL registry rebuild from disk ──

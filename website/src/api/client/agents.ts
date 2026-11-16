@@ -11,6 +11,7 @@ import type { PublicPrincipal } from '../../types'
 import { activeLocale } from '../../i18n/format'
 import { agentPath, needsProxySafePath } from '../agentPath'
 import { toApiError } from '../apiError'
+import { isOwnerOnlyRefusal } from '../crewApiError'
 import type { ClientTransport } from './transport'
 
 /** The profile card's Export toggles (rfc-crewmate-share.md §5.3). */
@@ -97,6 +98,9 @@ export interface MemberRosterRow {
   worker_model?: string
   /** Same for the reasoning effort; '' = the crewmate's own level. */
   worker_reasoning_effort?: string
+  /** How many worker sessions this Bot may have open at once: 1-32, or 0 (the
+   *  default) for no limit. Only the owner sets it; the session verbs refuse past it. */
+  max_workers?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
@@ -261,6 +265,13 @@ export interface GoalReport {
   at: number
 }
 
+/** What the Bot's work used, summed once per worker session from the metered
+ *  charges. `partial` means the total is a lower bound. */
+export type GoalSpend =
+  | { status: 'reported'; credits: number; partial: boolean }
+  | { status: 'not_reported'; partial: boolean }
+  | { status: 'pending' }
+
 /** GET /api/members/{slug}/goals: the crewmate's goal record. */
 export interface MemberGoals {
   slug: string
@@ -276,6 +287,9 @@ export interface MemberGoals {
   removed_goal: { id: string; text: string; at: number } | null
   /** The goal a write added or changed (write answers only). */
   goal_id?: string
+  /** The credits the Bot's work used (GET only; a write answer omits it). `null`
+   *  when the gateway could not read it, `pending` while it is read the first time. */
+  spend?: GoalSpend | null
   limits: {
     goal_text_max_chars: number
     key_result_text_max_chars: number
@@ -430,7 +444,14 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     // cheap live-status fields the backend can answer without IO (richer live
     // detail rides the already-subscribed WS `slots` frames). A non-owner's 403
     // `owner_only` still throws but is not journaled (see `jMembers` in client.ts).
-    members: () => fetch('/api/members').then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
+    // Read through the Crew API Owner route; `GET /api/members` serves the same body.
+    // A relay teammate is not the owner, so the Owner route refuses them `owner_only`;
+    // `/api/members` still serves them the narrowed roster, so that refusal falls back
+    // to it. A non-owner dashboard user gets `owner_only` from both, as before.
+    members: () =>
+      fetch('/v1/crew/owner/bots')
+        .then(async (r) => ((await isOwnerOnlyRefusal(r)) ? fetch('/api/members') : r))
+        .then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
     // Idempotent get-or-create of a member's pinned DM thread. Member slots are
     // born ONLY through this route (the generic slot-create endpoint refuses
     // mode="member"), so this is also the only place a member slot key comes from.

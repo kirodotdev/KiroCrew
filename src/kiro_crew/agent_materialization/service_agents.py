@@ -30,7 +30,12 @@ from kiro_crew.agent_files import MATE_CONDUCTOR_AGENT_FILENAME as _MATE_CONDUCT
 from kiro_crew.agent_files import MATE_WORKER_AGENT_FILENAME as _MATE_WORKER_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
-from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
+from kiro_crew.agent_materialization import (
+    auto_approve,
+    conductor_agents,
+    managed_mcp,
+    skill_resources,
+)
 from kiro_crew.user_json import strict_json_equal
 
 
@@ -815,7 +820,7 @@ def _install_team_lead_agent() -> None:
         "items, does the small focused ones itself, dispatches a session for every "
         "other one, and patrols that fleet."
     )
-    config["prompt"] = agent_mod._TEAM_LEAD_SYSTEM_PROMPT
+    config["prompt"] = conductor_agents.with_conductor_ask(agent_mod._TEAM_LEAD_SYSTEM_PROMPT)
     # The skills this agent is told to read: ``team-lead`` ("read it before acting on
     # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
     # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate

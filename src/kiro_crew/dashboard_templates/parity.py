@@ -81,7 +81,9 @@ _VOID_TAGS: Final[frozenset[str]] = frozenset(
 #: ``option`` -- the host KEEPS, and this package refuses them itself: they render as the
 #: furniture of a control and tell a reader an action exists where none does.
 #: :func:`control_tags_used` treats both groups alike, since the answer is the same, but
-#: the host does not strip all of them; ``TestTheControlTagsSplit`` pins the real split.
+#: the host does not strip all of them;
+#: ``test_the_control_tags_split_into_host_stripped_and_locally_refused`` pins the real
+#: split.
 #:
 #: A dashboard template states facts and offers no actions: a decision goes through the
 #: product's own question and approval surfaces, which are outside the rendered frame and

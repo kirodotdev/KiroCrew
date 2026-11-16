@@ -202,6 +202,26 @@ rules:
       category: correctness
       subcategory: test-determinism
 
+  - id: kirocrew.test-radar-store-root-self-removed
+    pattern-either:
+      - pattern: tempfile.TemporaryDirectory(...)
+      - pattern: tempfile.mkdtemp(...)
+    paths:
+      include:
+        - test/test_issue_radar*.py
+        - src/kiro_crew/apps/builtins/issue_radar/tests/**
+    message: >
+      The Issue Radar store mkdirs its root on READ, so a reader still running
+      after this test's cleanup re-creates a directory the test removed, and
+      the run's temp-residue guard fails a later test. Take the root from
+      tmp_path (in a unittest class, an autouse fixture method that sets
+      self.root); pytest owns that directory (testing-conventions.md § Rules).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-isolation
+
   - id: kirocrew.test-autouse-shared-monkeypatch
     patterns:
       - pattern-either:

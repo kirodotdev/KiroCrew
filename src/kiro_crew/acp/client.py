@@ -126,6 +126,7 @@ from kiro_crew.acp._frame_record import record_frame  # noqa: F401
 from kiro_crew.acp.agent_env import agent_env_overlay  # noqa: F401
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.client_class import AcpClient  # noqa: F401
+from kiro_crew.acp.client_claude import ClaudeAcpClient  # noqa: F401
 from kiro_crew.acp.client_claude_seed import _claude_settings_usable  # noqa: F401
 from kiro_crew.acp.client_claude_session import _CLAUDE_CARRIED_PERMISSION_KEYS  # noqa: F401
 from kiro_crew.acp.client_claude_session import _CLAUDE_CREW_GOVERNED_SETTING_SOURCES  # noqa: F401
@@ -146,14 +147,17 @@ from kiro_crew.acp.client_claude_session import _project_settings_restrictions  
 from kiro_crew.acp.client_claude_session import (  # noqa: F401
     _claude_adapter_honours_setting_sources,
 )
+from kiro_crew.acp.client_deepseek import DeepseekAcpClient  # noqa: F401
+from kiro_crew.acp.client_goose import GooseAcpClient  # noqa: F401
+from kiro_crew.acp.client_goose_session import GOOSE_VERIFIED_VERSION_PREFIX  # noqa: F401
+from kiro_crew.acp.client_goose_session import _goose_versions_noted  # noqa: F401
 from kiro_crew.acp.client_lifecycle import _SUPPRESSED_STDERR_MARKERS  # noqa: F401
 from kiro_crew.acp.client_lifecycle import _T  # noqa: F401
 from kiro_crew.acp.client_model_selection import _JSONRPC_INVALID_PARAMS  # noqa: F401
 from kiro_crew.acp.client_model_selection import _is_config_value_rejection  # noqa: F401
 from kiro_crew.acp.client_model_selection import _push_model_via_effort_split  # noqa: F401
-from kiro_crew.acp.client_permissions import GOOSE_VERIFIED_VERSION_PREFIX  # noqa: F401
+from kiro_crew.acp.client_opencode import OpencodeAcpClient  # noqa: F401
 from kiro_crew.acp.client_permissions import PI_ACP_VERIFIED_VERSION  # noqa: F401
-from kiro_crew.acp.client_permissions import _goose_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _pi_adapter_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _scrub_observed  # noqa: F401
 from kiro_crew.acp.client_spawn_env import _CODEX_ACP_DEP_MARKER  # noqa: F401
@@ -926,11 +930,15 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_timeouts",
     "kiro_crew.acp.client_spawn_env",
     "kiro_crew.acp.client_permissions",
+    "kiro_crew.acp.client_goose_session",
+    "kiro_crew.acp.client_opencode_session",
+    "kiro_crew.acp.client_deepseek_session",
     "kiro_crew.acp.client_elicitation",
     "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
     "kiro_crew.acp.client_claude_seed",
     "kiro_crew.acp.client_seed_ownership",
+    "kiro_crew.acp.client_claude_turn",
     "kiro_crew.acp.client_model_selection",
     "kiro_crew.acp.client_mcp_array",
     "kiro_crew.acp.client_tool_events",
@@ -943,6 +951,10 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_turn",
     "kiro_crew.acp.client_new_conversation",
     "kiro_crew.acp.client_class",
+    "kiro_crew.acp.client_claude",
+    "kiro_crew.acp.client_goose",
+    "kiro_crew.acp.client_opencode",
+    "kiro_crew.acp.client_deepseek",
 )
 _MIRROR = _facade_mirror.install(
     sys.modules[__name__],

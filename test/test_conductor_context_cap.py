@@ -188,6 +188,20 @@ async def test_rule_a_trims_a_session_over_400k_at_a_turn_start(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_conductor_modes_default_agent_is_in_the_wake_reset_set(tmp_path):
+    """``autonudge_selfarm.WAKE_RESET_AGENTS`` holds conductor mode's default agent, so
+    its context cap and wake reset run for a conductor mode chat."""
+    from kiro_crew import crew_mode
+    from kiro_crew.autonudge_selfarm import WAKE_RESET_AGENTS
+
+    assert crew_mode.DEFAULT_CREW_MODE_AGENT in WAKE_RESET_AGENTS
+    sessions = _Sessions(_Provider(412_000), idle_secs=0.0)
+    state, slot = _conductor(tmp_path, sessions)
+    slot.agent = crew_mode.DEFAULT_CREW_MODE_AGENT
+    assert await _check(state, slot) == "trimmed"
+
+
+@pytest.mark.asyncio
 async def test_a_trim_appends_no_transcript_row(tmp_path):
     """The rows the reply scans read are the same before and after a trim."""
     from kiro_crew.dashboard.chat_backfill import _is_conversational

@@ -22,6 +22,7 @@ import asyncio
 import logging
 import math
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,12 +137,54 @@ def _running_agents() -> int | None:
     return running
 
 
-def _open_workers() -> int:
-    """Peer slots bound to a ``hub:`` mailbox item and not closed.
+def _open_workers() -> int | None:
+    """Peer slots bound to a ``hub:`` mailbox item and not closed, or None.
 
-    Always 0 in this wave: the ``hub:`` mailbox arrives with wave 2.
+    None when the work-ledger store cannot be read: the gate then reserves
+    nothing, as an unknown reading never refuses.
     """
-    return 0
+    from kiro_crew.remote_dispatch_mailbox import open_mailbox_workers
+
+    try:
+        return open_mailbox_workers()
+    except Exception:
+        logger.warning("remote dispatch: open hub workers unreadable", exc_info=True)
+        return None
+
+
+#: Serialises the final admission: the count, the gate and the binding write
+#: read as one step, so two concurrent creates cannot both take the last room.
+_admission_lock = threading.Lock()
+
+
+def bind_if_room(
+    settings: RemoteDispatchSettings, request: Any, worker_slot_key: str
+) -> tuple[dict[str, Any], str]:
+    """Measure, and store *request*'s mailbox item bound to the worker when nothing
+    is short, as one step. BLOCKING. ``(headroom, short)``; ``short`` is "" when
+    the item was stored.
+
+    The early gate in :func:`create_admission` runs before the slot is minted and
+    sees no create still in flight. This one runs at the bind, under one lock:
+    a create that bound first is in the binding count by the time the next one
+    measures, and a create that never binds reserves nothing. Raises what
+    ``open_mailbox`` raises.
+    """
+    from kiro_crew.remote_dispatch_mailbox import open_mailbox
+
+    with _admission_lock:
+        headroom, short = measure(settings)
+        if not short:
+            open_mailbox(request, worker_slot_key)
+        return headroom, short
+
+
+def crew_busy_response(short: str, headroom: dict[str, Any]) -> web.Response:
+    """The typed ``crew_busy`` refusal naming the short resource."""
+    return web.json_response(
+        {"error": "crew_busy", "code": "crew_busy", "short": short, "headroom": headroom},
+        status=503,
+    )
 
 
 def measure(settings: RemoteDispatchSettings) -> tuple[dict[str, Any], str]:
@@ -168,16 +211,17 @@ def measure(settings: RemoteDispatchSettings) -> tuple[dict[str, Any], str]:
         posture = resource_status.POSTURE_UNKNOWN
     load_per_cpu = _reading(load)
     disk_free = _disk_free_gb()
+    open_workers = _open_workers()
     headroom: dict[str, Any] = {
         "mem_free_gb": _shown(mem_free),
         "cpu_count": cpu_count if isinstance(cpu_count, int) and cpu_count > 0 else None,
         "load_per_cpu": _shown(load_per_cpu),
         "posture": posture,
         "disk_free_gb": _shown(disk_free),
-        "open_workers": _open_workers(),
+        "open_workers": open_workers,
         "measured_at": round(time.time(), 3),
     }
-    return headroom, _short_resource(settings, posture, load_per_cpu, disk_free)
+    return headroom, _short_resource(settings, posture, load_per_cpu, disk_free, open_workers or 0)
 
 
 def _short_resource(
@@ -185,12 +229,22 @@ def _short_resource(
     posture: str,
     load_per_cpu: float | None,
     disk_free: float | None,
+    open_workers: int = 0,
 ) -> str:
+    """The first short resource, or "".
+
+    Each open hub worker reserves one estimate of memory and disk, so a worker
+    admitted but not yet using either still counts: free memory or disk minus
+    ``open_workers`` estimates must hold one more estimate. A running worker is
+    counted in the free reading and again here, the same deliberate overcount
+    the hub's reservations make (RFC §2b).
+    """
     from kiro_crew import resource_status
     from kiro_crew.subagent import check_memory_available
 
+    wanted = open_workers + 1
     try:
-        memory_ok, _ = check_memory_available(settings.memory_gb)
+        memory_ok, _ = check_memory_available(settings.memory_gb * wanted)
     except Exception:
         logger.warning("remote dispatch: memory check failed", exc_info=True)
         memory_ok = True
@@ -206,7 +260,7 @@ def _short_resource(
         cap, running = 0, None
     if cap > 0 and running is not None and running >= cap:
         return SHORT_CPU
-    if disk_free is not None and disk_free < settings.disk_gb:
+    if disk_free is not None and disk_free < settings.disk_gb * wanted:
         return SHORT_DISK
     return ""
 
@@ -231,18 +285,7 @@ async def create_admission(
         return None, None
     headroom, short = await asyncio.to_thread(measure, settings)
     if body.get("work_item") is not None and short:
-        return (
-            web.json_response(
-                {
-                    "error": "crew_busy",
-                    "code": "crew_busy",
-                    "short": short,
-                    "headroom": headroom,
-                },
-                status=503,
-            ),
-            headroom,
-        )
+        return crew_busy_response(short, headroom), headroom
     return None, headroom
 
 

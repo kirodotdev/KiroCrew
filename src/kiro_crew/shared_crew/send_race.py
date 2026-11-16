@@ -287,6 +287,7 @@ class SendRaceRegistry:
             try:
                 self._on_commit(claim.session_key, accepted)
             except Exception:
+                # A failing listener must not undo a committed send.
                 pass
         return accepted
 
@@ -394,5 +395,6 @@ def commit_request(request: Any, *, message_id: str = "") -> AcceptedSend | None
         try:
             note_sent(state, claim.session_key, claim.principal)
         except Exception:
+            # The send is already committed above; a failed lease update must not fail it.
             pass
     return accepted

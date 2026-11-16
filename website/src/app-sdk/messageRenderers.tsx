@@ -48,6 +48,7 @@ import { agentNoToolsAgent, resolveGatewayNotice } from '../pages/chat/gatewayNo
 import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
+import { grillRowId } from '../components/chat/GrillCard'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { REASONING_ROLES, stripAppEnvelope } from '../pages/chat/groupDisplayItems'
@@ -645,6 +646,7 @@ export function renderAssistantBubble(
       // A structured warm brief draws as a fixed card in place of the markdown,
       // inside this same bubble, so it keeps the timestamp and row actions.
       body={warmBriefBodyOf(m)}
+      grillRowId={grillRowId(m)}
     />
   )
   // The column's child is the bubble itself unless this message has a thread

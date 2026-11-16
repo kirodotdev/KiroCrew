@@ -675,7 +675,7 @@ class TestToSlackMrkdwnImages:
             # LINK, so a strict reader would convert it. This converter has no
             # backslash-unescaping layer, so honouring that in detection alone would
             # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
-            # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
+            # Passing it through raw also matches ``outbound_files.IMAGE_MD_RE``,
             # which registers ``\![x](p)`` as an image on the dashboard side.
             pytest.param(
                 r"\![x](p)", r"\![x](p)", id="test_escaped_bang_is_still_treated_as_an_image"

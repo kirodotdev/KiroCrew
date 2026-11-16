@@ -8,6 +8,7 @@ import importlib
 import os
 import random
 import sys
+import tempfile
 import time
 import unittest.mock
 from datetime import date, timezone
@@ -144,6 +145,16 @@ def test_randomness():
     random.seed(20261005)
     # ok: kirocrew.test-unseeded-random
     random.Random(20261005).randint(1, 6)
+
+
+def test_radar_store_root(tmp_path):
+    # ruleid: kirocrew.test-radar-store-root-self-removed
+    root = tempfile.TemporaryDirectory()
+    # ruleid: kirocrew.test-radar-store-root-self-removed
+    other = tempfile.mkdtemp()
+    # ok: kirocrew.test-radar-store-root-self-removed
+    store_root = tmp_path / "radar-root"
+    return root, other, store_root
 
 
 @pytest.fixture(autouse=True)

@@ -214,7 +214,12 @@ def _apply_operations(
         elif section == "resources":
             if value is True:
                 value = key
-            if not isinstance(value, str) or value != key:
+            # An object row (a knowledge base) has no string to set it to.
+            if (
+                not isinstance(value, str)
+                or value != key
+                or isinstance(rows[section].get(key), dict)
+            ):
                 raise CapabilityError("invalid_resource", 400)
             rows[section][key] = key
         elif section in ("prompt", "model"):
@@ -461,7 +466,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         from kiro_crew.agent_capabilities import _materialize, _rows
         from kiro_crew.agent_discovery import expand_skill_uri
         from kiro_crew.agent_sdk import agent_specs
-        from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+        from kiro_crew.agent_sdk.mcp_refs import ReachIndex
         from kiro_crew.config.loader import default_project_dir
         from kiro_crew.mate_worker import MATE_WORKER_AGENT, worker_additions
         from kiro_crew.skill_runtime.catalog import (
@@ -539,11 +544,15 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
                 "resources": {uri for uri in _strs(adds.get("resources")) if not _is_skill(uri)},
             }
             for section in ("tools", "allowedTools"):
-                effective[section].update(
-                    ref
-                    for ref in _strs(spec.get(section))
-                    if any(entry_reaches(entry, ref) for entry in effective[section])
-                )
+                # In list order, and a ref reached here reaches later refs too.
+                # Indexed: this runs once per Remove check, so all-pairs matching
+                # made a Bot with hundreds of approvals time out.
+                reached = effective[section]
+                index = ReachIndex(reached)
+                for ref in _strs(spec.get(section)):
+                    if ref not in reached and index.reaches(ref):
+                        reached.add(ref)
+                        index.add(ref)
             effective["skills"] -= base_skills
             return effective
 

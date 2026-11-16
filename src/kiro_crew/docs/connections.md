@@ -17,13 +17,13 @@ the only place a sign-in is offered.
 
 ## The vendor catalogue
 
-`src/kiro_crew/connections/registry.json` holds **38** curated providers. A catalogue
+`src/kiro_crew/connections/registry.json` holds the curated providers. A catalogue
 entry is what lets Kiro Crew offer a one-click **Connect** instead of asking you for
 a URL: the entry carries the vendor's MCP endpoint, the scopes worth asking for, the
 revoke page to send you to later, and a baseline of the vendor's published OAuth
 metadata that a nightly job watches for drift.
 
-Of those, **15** render a card today. Two conditions decide which:
+Of those, the entries in the first two rows below render a card today:
 
 | Entry state | Card | Why |
 |---|---|---|
@@ -427,7 +427,7 @@ search         →  atlassian_search, gitlab_search, neon_search, ticktick_searc
 whoami         →  figma_whoami, railway_whoami, sentry_whoami
 ```
 
-Renames are declared in the catalogue for eleven providers today — GitHub, Linear,
+Renames are declared in the catalogue for these providers today — GitHub, Linear,
 Vercel, GitLab, Atlassian, Neon, Todoist, TickTick, Sentry, Figma and Railway — and
 only for the tools that actually collide. A server that is not the catalogue provider
 gets no renames, whatever it calls itself.

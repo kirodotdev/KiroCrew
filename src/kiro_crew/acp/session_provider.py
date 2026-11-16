@@ -17,15 +17,16 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
 
+from kiro_crew.acp import session_provider_claim as _sp_claim
 from kiro_crew.acp import session_provider_context as _sp_context
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import session_provider_native_children as _sp_children
 from kiro_crew.acp import session_provider_shared as _sp_shared
 from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
@@ -49,7 +50,6 @@ from kiro_crew.acp.runtime import (
     AcpRuntimeStdinStalled,
     AcpSessionHandle,
 )
-from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -72,7 +72,9 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
-from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.mcp_gateway.claim import (  # noqa: F401 - session_provider_claim reads it here
+    schedule_claim,
+)
 from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
@@ -83,7 +85,9 @@ from kiro_crew.runtime_ownership import (
     claim_runtime_tenancy,
     release_runtime_tenancy,
 )
-from kiro_crew.session_token_sig import schedule_session_token_publish
+from kiro_crew.session_token_sig import (  # noqa: F401 - session_provider_claim reads it here
+    schedule_session_token_publish,
+)
 from kiro_crew.tracing import turn_anomalies
 from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import GrantDeadline
@@ -98,6 +102,16 @@ def _prompts_since(turn: tuple[Any, Any]) -> int:
     if isinstance(before, int) and isinstance(after, int):
         return max(0, after - before)
     return 0
+
+
+def _handle_str(name: str) -> property:
+    """A read-only property forwarding the handle's str field *name*, see ``AcpSessionHandle``."""
+
+    def read(self: AcpSessionProvider) -> str:
+        value = getattr(self._handle, name, "")
+        return value if isinstance(value, str) else ""
+
+    return property(read, doc=f"See ``AcpSessionHandle.{name}``.")
 
 
 class AcpSessionProvider(LLMProvider):
@@ -141,9 +155,20 @@ class AcpSessionProvider(LLMProvider):
         shared_runtime: bool = False,
         session_key: str = "",
         channel_id: str | None = None,
+        agent: str = "",
+        crew_agent: str | None = None,
+        member_context: bool | None = None,
     ) -> None:
         self._handle = handle
         self._runtime = runtime
+        # The agent, crew identity and member projection THIS session was created
+        # with. On a shared chat runtime the process's own (``runtime._agent`` and
+        # its siblings) are the founder's, so a fresh conversation, the loaded
+        # template and the session-info agent read these. Empty / None: the
+        # runtime's, as before (an unshared session's are the same values).
+        self._session_agent = agent
+        self._session_crew_agent = crew_agent
+        self._session_member_context = member_context
         # When True, shutdown() kills the runtime (parent session owns it).
         # When False, shutdown() only destroys the session handle (subagent).
         self._owns_runtime = owns_runtime
@@ -413,7 +438,9 @@ class AcpSessionProvider(LLMProvider):
         # so a chat's fresh conversation carries the ones its cold start passed.
         new_handle = await self._runtime.create_session(
             cwd=self._runtime._work_dir,
-            agent=self._runtime._agent or None,
+            agent=getattr(self, "_session_agent", "") or self._runtime._agent or None,
+            crew_agent=getattr(self, "_session_crew_agent", None),
+            member_context=getattr(self, "_session_member_context", None),
             memory_mode=self.memory_mode,
             session_key=self._session_key,
             member_session_key=member_session_key,
@@ -553,29 +580,12 @@ class AcpSessionProvider(LLMProvider):
         value = getattr(self._handle, "_last_kas_mode_id", "")
         return value if isinstance(value, str) else ""
 
-    @property
-    def kas_agent_prompt_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_agent_prompt_notice``."""
-        value = getattr(self._handle, "kas_agent_prompt_notice", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_bundle_engine_version(self) -> str:
-        """See ``AcpSessionHandle.kas_bundle_engine_version``."""
-        value = getattr(self._handle, "kas_bundle_engine_version", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_telemetry_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_telemetry_notice``."""
-        value = getattr(self._handle, "kas_telemetry_notice", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_withheld_credentials_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_withheld_credentials_notice``."""
-        value = getattr(self._handle, "kas_withheld_credentials_notice", "")
-        return value if isinstance(value, str) else ""
+    # Each reads the handle's field of the same name, ``""`` when it is not a str.
+    kas_agent_prompt_notice = _handle_str("kas_agent_prompt_notice")
+    kas_bundle_engine_version = _handle_str("kas_bundle_engine_version")
+    kas_untested_version_notice = _handle_str("kas_untested_version_notice")
+    kas_telemetry_notice = _handle_str("kas_telemetry_notice")
+    kas_withheld_credentials_notice = _handle_str("kas_withheld_credentials_notice")
 
     @property
     def zero_tool_ban_notice(self) -> str:
@@ -588,6 +598,10 @@ class AcpSessionProvider(LLMProvider):
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir
+
+    # A native child card's Stop: ``kiro_crew.acp.session_provider_native_children``.
+    cancel_native_child = _sp_children.cancel_native_child
+    native_child_requests = _sp_children.native_child_requests
 
     def flush_native_child_text(self) -> list:
         """See AcpSessionHandle.flush_native_child_text (a turn cut short)."""
@@ -1355,7 +1369,7 @@ class AcpSessionProvider(LLMProvider):
         from kiro_crew.acp.types import ACP_BACKEND_KAS  # noqa: PLC0415
 
         if self._runtime.acp_backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
-            if self._handle.active_agent == self._runtime._agent:
+            if self._handle.active_agent == self._agent:
                 return self._handle.active_agent
             return ""
         return self._handle.confirmed_projection_template
@@ -1376,84 +1390,10 @@ class AcpSessionProvider(LLMProvider):
     note_tool_heartbeat = _sp_keepalive.note_tool_heartbeat
     mark_keepalive_routed = _sp_keepalive.mark_keepalive_routed
 
-    def rekey(
-        self,
-        session_key: str,
-        channel_id: str | None = None,
-        crew_agent: str = "",
-        watchdog: WatchdogSettings | None = None,
-    ) -> None:
-        """Re-key for a different session on warm-pool claim (parity with
-        AcpClient.rekey). session_allocation_parts/get_or_create.py calls
-        provider.client.rekey(...) on claim; when the pooled provider is
-        kiro-shared, provider.client is THIS class, so a missing rekey() would
-        AttributeError on claim. Stores
-        the correlation keys and refreshes runtime activity so the just-claimed
-        process is not idle-reaped.
-
-        ``crew_agent`` is the claiming session's canonical crew identity: the
-        pooled runtime was spawned before any crew claimed it, so both the
-        runtime default (future sessions, e.g. new_conversation) and the live
-        handle's watchdog snapshot are rebound here — the identity travels
-        with the session, not the pool key. Empty means "no crew" and rebinds
-        to the globals, so a recycled runtime never carries a previous crew's
-        windows. ``watchdog`` is the pre-resolved snapshot from the async
-        caller (resolved off-loop); None makes rebind load it synchronously."""
-        self._session_key = session_key
-        self._channel_id = channel_id
-        self._runtime._crew_agent = crew_agent
-        self._handle.rebind_watchdog(crew_agent, settings=watchdog)
-        self._handle.bind_session_key(session_key)
-        self._runtime._last_activity = time.monotonic()
-        # Parity with AcpClient.rekey: the handle's prompt stats describe the
-        # session this runtime served BEFORE the handoff; leaking them lets
-        # check_context_usage() compact the new, empty session.
-        self._handle.last_prompt_stats.reset_context_state()
-        # Credits held between turns belong to the session served before the
-        # claim; the claiming session's first turn must not bill them.
-        self._handle._between_turn_credits = 0.0
-        # Claim-push: re-target this session's MCP stub connections under the
-        # shared runtime's PID to the claiming session (see AcpClient.rekey for
-        # the rationale). Fire-and-forget; no-ops without a gateway socket.
-        #
-        # Named by the handle's stub token, so the claim reaches THIS session's
-        # stubs and leaves every sibling session on the same runtime alone — a
-        # subagent's stubs must not be re-pointed at the slot that claimed the
-        # runtime. Empty (the gateway injected no stubs, or an older session)
-        # falls back to the PID-wide re-target this always did.
-        schedule_claim(
-            self._runtime._mcp_gateway_socket,
-            self._runtime.pid,
-            session_key,
-            channel_id,
-            getattr(self._handle, "stub_session_token", ""),
-        )
-        # Re-point this session's SIGNED token mapping at the claiming session, for
-        # the reason AcpClient.rekey states: the token survives the rekey so the
-        # file is what moves. It matters more here — this runtime hosts several
-        # sessions at once, so the mapping is the only channel that can tell them
-        # apart without a daemon. Fire-and-forget; offloads its own file I/O.
-        schedule_session_token_publish(getattr(self._handle, "stub_session_token", ""), session_key)
-
-    def reclaim(self) -> None:
-        """Re-push this session's claim (parity with AcpClient.reclaim).
-
-        The shared runtime makes this the case that matters: its stubs belong to
-        several sessions at once, so the claim must name THIS session's token —
-        and after a gatewayd respawn every one of those tokens is unbound, which
-        gatewayd refuses rather than resolving from the shared process tree.
-        Called at the start of every turn by the shared identity publisher.
-        """
-        token = getattr(self._handle, "stub_session_token", "")
-        if not token:
-            return
-        schedule_claim(
-            self._runtime._mcp_gateway_socket,
-            self._runtime.pid,
-            self._session_key,
-            self._channel_id,
-            token,
-        )
+    # A warm-pool claim and its per-turn re-push:
+    # ``kiro_crew.acp.session_provider_claim``.
+    rekey = _sp_claim.rekey
+    reclaim = _sp_claim.reclaim
 
     @property
     def session_identity_token(self) -> str:
@@ -1473,8 +1413,9 @@ class AcpSessionProvider(LLMProvider):
         """Agent/mode name from the backing runtime (parity with AcpClient._agent).
         Read by session.py session-info introspection via provider.client._agent;
         a missing attribute AttributeErrors that (unguarded) code path whenever a
-        kiro-shared session is listed."""
-        return self._runtime._agent
+        kiro-shared session is listed. This session's own agent on a shared chat
+        runtime, whose process agent is the founder's."""
+        return getattr(self, "_session_agent", "") or self._runtime._agent
 
     # ── AcpClient-compatible API ──
     # These methods mirror AcpClient's public interface so AcpProvider can
@@ -1827,6 +1768,12 @@ class AcpSessionProvider(LLMProvider):
     def acp_config_options(self) -> list[dict[str, Any]]:
         """Config options reported by ACP."""
         return self._handle.config_options
+
+    @property
+    def _raw_sdk(self) -> Any:
+        """The handle's background-task state (``acp.raw_sdk_tasks``), which the
+        dashboard reads through the slot's client."""
+        return self._handle._raw_sdk
 
     def available_models(self) -> list[dict[str, str]]:
         """Models advertised by the backend."""

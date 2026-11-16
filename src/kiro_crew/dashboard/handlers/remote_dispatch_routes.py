@@ -78,9 +78,11 @@ logger = logging.getLogger(__name__)
 CREW_VERBS = ("create", "send", "read", "stop", "close")
 
 #: The create fields a crew create carries. Anything else a local create takes
-#: (folder, agent_kind, reasoning_effort, autocompact_pct, dry_run) names a
-#: local-only behaviour and is refused rather than dropped.
-_CREATE_FIELDS = frozenset({"crew", "title", "agent", "model", "work_item"})
+#: (folder, reasoning_effort, autocompact_pct, dry_run) names a local-only
+#: behaviour and is refused rather than dropped. ``agent_kind`` crosses with its
+#: one local value, ``template``, so a ``kirocrew-worker`` lands on the peer's
+#: shared template even where a crew member carries that name.
+_CREATE_FIELDS = frozenset({"crew", "title", "agent", "agent_kind", "model", "work_item"})
 
 #: A peer slot key this hub will put in a path: one plain segment. A peer is
 #: untrusted, and its create reply names the key every later path is built from,
@@ -638,6 +640,18 @@ async def _create(
             raise CrewCallError(
                 400, "crew_field_invalid", f"{name} carries text that cannot leave this machine"
             )
+    # The local create's rule, checked before any peer call: one value, and only
+    # beside an explicit agent (an omitted agent is the peer's default, which a
+    # kind cannot qualify).
+    agent_kind = body.get("agent_kind", "")
+    if agent_kind not in ("", "template"):
+        raise CrewCallError(400, "invalid_agent_kind", 'agent_kind must be "template"')
+    if agent_kind and not fields["agent"]:
+        raise CrewCallError(
+            400,
+            "agent_kind_requires_agent",
+            "agent_kind qualifies an explicit agent; name the agent too",
+        )
     # The cap check and the record each take the cap lock, which a retire holds
     # from evict to restore: the cap never reads a record a retire is settling.
     # The peer call between them is not held, so creates still run side by side.
@@ -658,6 +672,8 @@ async def _create(
     create: dict[str, Any] = {"memory_mode": memory_mode}
     if fields["agent"]:
         create["agent"] = fields["agent"]
+    if agent_kind:
+        create["agent_kind"] = agent_kind
     if fields["model"]:
         create["model"] = fields["model"]
     work_item_id = ""

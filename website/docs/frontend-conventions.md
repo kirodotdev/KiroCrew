@@ -39,6 +39,19 @@ commit that touches it. The API needs Chrome/Edge 105, Safari 17.2 or Firefox
 140; older browsers paint no highlight, while match counting and stepping to
 the current match keep working (`utils/domHighlight.ts`).
 
+A `::highlight()` rule is attached to a class (`.code-block::highlight(…)`) or
+limited to `[data-hl-scope]`, written for the scope element and its descendants
+both: `[data-hl-scope]::highlight(name), [data-hl-scope] ::highlight(name)`. A
+bare `::highlight(name)` matches every element of the page, so every style
+recalc builds a highlight style for the sidebar, the menus and the rest of the
+chrome, where nothing is ever highlighted. `data-hl-scope` goes on the element
+a registrar walks for text: the chat bubbles, the previews `ContentRenderer`
+renders, the remote artifact body. Ranges registered outside one paint
+nothing, so a new registrar marks its root. Firefox and Safari do not pass a
+highlight style down to descendants, so neither `:root::highlight(name)` nor
+the scope element alone is enough. `src/test/styleRecalcScope.test.ts` enforces
+the selector shape and the attribute on each root.
+
 Pierre draws a fenced code block into a shadow root. A `TreeWalker` never
 enters it, and a document selection reports a drag inside it as collapsed.
 `utils/pierreShadow.ts` therefore reads the block's source lines for the preview

@@ -629,7 +629,11 @@ jobs:
     # (fast-gate.yml has a push trigger) and this job consumes it.
     if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # Covers TOTAL_BUDGET (2100s, await-fast-gate.sh) plus CANCEL_WAIT, so
+    # the step reports its own verdict instead of being killed mid-poll. At
+    # 40 it is no longer than changes plus backend-lint (15 + 25), so the
+    # longest needs chain merge-queue-readiness.yml is sized to is unchanged.
+    timeout-minutes: 40
     permissions:
       # actions:read is what lets this read another workflow's runs. Job-level
       # permissions REPLACE the top-level grant, so contents:read is restated.
@@ -706,7 +710,9 @@ jobs:
     # it.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !(vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]')
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # Covers the probe's TOTAL_BUDGET (2100s, await-fast-gate.sh) plus
+    # LAND_BUDGET, so a gate evicted late in that wait is still cancelled.
+    timeout-minutes: 40
     permissions:
       # actions:write is what lets this cancel its own run (it also covers the
       # probe's reads). Job-level permissions REPLACE the top-level grant, so
@@ -2802,6 +2808,7 @@ jobs:
           pytest -v -n0 --no-cov --timeout=1200 -m real_adapter \
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
+            test/test_codex_chat_runtime_sharing_real.py \
             test/test_codex_session_mcp_approval.py \
             test/test_codex_inner_sandbox_approval.py \
             test/test_opencode_session_mcp.py \
@@ -2844,7 +2851,7 @@ jobs:
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "57"
+          MEASURED_CONTRACT_FLOOR: "58"
           XFAIL_MODULE: "test.test_real_adapter_harness_probe"
         run: |
           python3 - <<'PY'
@@ -4270,7 +4277,18 @@ jobs:
       - name: Install Playwright browser (Chromium)
         timeout-minutes: 6
         working-directory: website
-        run: npx playwright install chromium
+        # Playwright 1.58 has no ubuntu26.04 host entry, and the fork runner
+        # (kirocrew-linux-4-core) now boots ubuntu-26.04, so `install` refuses
+        # with "does not support chromium on ubuntu26.04-x64". On that
+        # image only, use the ubuntu24.04 build; GITHUB_ENV carries it to the
+        # steps that launch the browser. Every other host is left as it was.
+        run: |
+          if [ -r /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 26 ] 2>/dev/null; then
+            export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+            echo "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" >> "$GITHUB_ENV"
+            echo "ubuntu ${VERSION_ID}: Playwright host platform set to $PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"
+          fi
+          npx playwright install chromium
 
       - name: Resolve base for the i18n render-time gate
         # The base must be fetched first because this checkout is shallow; the
@@ -4335,7 +4353,18 @@ jobs:
         working-directory: website
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
-        run: npx playwright install chromium
+        # Playwright 1.58 has no ubuntu26.04 host entry, and the fork runner
+        # (kirocrew-linux-4-core) now boots ubuntu-26.04, so `install` refuses
+        # with "does not support chromium on ubuntu26.04-x64". On that
+        # image only, use the ubuntu24.04 build; GITHUB_ENV carries it to the
+        # steps that launch the browser. Every other host is left as it was.
+        run: |
+          if [ -r /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 26 ] 2>/dev/null; then
+            export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+            echo "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" >> "$GITHUB_ENV"
+            echo "ubuntu ${VERSION_ID}: Playwright host platform set to $PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"
+          fi
+          npx playwright install chromium
 
       - name: Build the profiling bundle and check render budgets
         working-directory: website
@@ -4489,7 +4518,18 @@ jobs:
         timeout-minutes: 6
         shell: bash
         working-directory: website
-        run: npx playwright install chromium
+        # Playwright 1.58 has no ubuntu26.04 host entry, and the fork runner
+        # (kirocrew-linux-4-core) now boots ubuntu-26.04, so `install` refuses
+        # with "does not support chromium on ubuntu26.04-x64". On that
+        # image only, use the ubuntu24.04 build; GITHUB_ENV carries it to the
+        # steps that launch the browser. Every other host is left as it was.
+        run: |
+          if [ -r /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 26 ] 2>/dev/null; then
+            export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+            echo "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" >> "$GITHUB_ENV"
+            echo "ubuntu ${VERSION_ID}: Playwright host platform set to $PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"
+          fi
+          npx playwright install chromium
 
       - name: MCP-App message rows render both delivery states (asserting harness)
         # The same self-asserting harness that produced the PR's screenshot

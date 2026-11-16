@@ -91,7 +91,7 @@ class TestCodeFingerprint:
         assert cf.code_fingerprint() == cf.code_fingerprint()
         assert cf.code_fingerprint()
 
-    def test_a_git_tree_reports_head_and_a_digest_of_the_dirty_diff(
+    def test_a_git_tree_reports_the_package_tree_and_a_digest_of_the_dirty_diff(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_git_fingerprint: None
     ) -> None:
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "HOME": str(tmp_path)}
@@ -120,7 +120,7 @@ class TestCodeFingerprint:
         git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
         head = subprocess.run(
-            ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+            ["git", "-C", str(tmp_path), "rev-parse", "HEAD:pkg"],
             capture_output=True,
             check=True,
             cwd=tmp_path,
@@ -139,6 +139,68 @@ class TestCodeFingerprint:
         second_edit = cf.fingerprint_of(pkg)
         assert second_edit != first_edit
         assert second_edit.startswith(f"{head}+")
+
+    def test_only_commits_that_change_the_package_change_the_fingerprint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_git_fingerprint: None
+    ) -> None:
+        """A commit outside the package (the website, docs) is the same backend
+        code, so a running daemon must not read as stale; a commit inside it is
+        different code and must. Reverting a package change is the same code
+        again, so it reads equal again."""
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "HOME": str(tmp_path)}
+        env.update(git_maintenance_off_entries(env))
+        monkeypatch.chdir(tmp_path)
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "website").mkdir()
+        (tmp_path / "website" / "app.tsx").write_text("export {}\n", encoding="utf-8")
+
+        def commit(msg: str) -> None:
+            for args in (("add", "-A"), ("commit", "-q", "-m", msg)):
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(tmp_path),
+                        "-c",
+                        "user.name=t",
+                        "-c",
+                        "user.email=t@t",
+                        *args,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    cwd=tmp_path,
+                    env=env,
+                )
+
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True, env=env
+        )
+        commit("init")
+        base = cf.fingerprint_of(pkg)
+        assert base and "+" not in base and not base.startswith("mtime:")
+
+        (tmp_path / "website" / "app.tsx").write_text("export const a = 1\n", encoding="utf-8")
+        commit("frontend only")
+        assert cf.fingerprint_of(pkg) == base
+
+        (pkg / "a.py").write_text("x = 2\n", encoding="utf-8")
+        commit("backend")
+        changed = cf.fingerprint_of(pkg)
+        assert changed != base and "+" not in changed
+
+        # A file added to the package is new code the process can import.
+        (pkg / "b.py").write_text("y = 1\n", encoding="utf-8")
+        commit("new backend module")
+        added = cf.fingerprint_of(pkg)
+        assert added not in (base, changed)
+
+        (pkg / "b.py").unlink()
+        (pkg / "a.py").write_text("x = 1\n", encoding="utf-8")
+        commit("revert backend")
+        assert cf.fingerprint_of(pkg) == base
 
     def test_git_is_resolved_from_system_dirs_and_runs_with_no_planted_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -176,10 +238,18 @@ class TestCodeFingerprint:
             assert argv[0] == "/usr/bin/git"
             assert env["GIT_CONFIG_GLOBAL"] == os.devnull
             assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-            # Beside those three, only the shared exec-key pins (GIT_CONFIG_COUNT/KEY_n/VALUE_n).
+            # Beside those, only the shared exec-key pins (GIT_CONFIG_COUNT/KEY_n/VALUE_n)
+            # and the lazy-fetch switch.
+            assert env["GIT_NO_LAZY_FETCH"] == "1"
             assert not any(
                 k.startswith("GIT_")
-                and k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT")
+                and k
+                not in (
+                    "GIT_CONFIG_GLOBAL",
+                    "GIT_CONFIG_NOSYSTEM",
+                    "GIT_TERMINAL_PROMPT",
+                    "GIT_NO_LAZY_FETCH",
+                )
                 and k != "GIT_CONFIG_COUNT"
                 and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
                 for k in env
@@ -192,6 +262,22 @@ class TestCodeFingerprint:
             assert "core.pager=cat" in argv
         diff_argv = seen[1][0]
         assert "--no-ext-diff" in diff_argv and "--no-textconv" in diff_argv
+
+    def test_a_repo_named_driver_is_refused_before_git_reads_any_object(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolving ``HEAD:./`` walks tree objects, and in a partial clone a missing
+        one is fetched through the repository's remote, whose ``uploadpack`` the
+        repository names. The preflight must refuse such a tree before that lookup."""
+        ran: list[list[str]] = []
+        monkeypatch.setattr(cf, "trusted_git_bin", lambda: "/usr/bin/git")
+        monkeypatch.setattr(cf.subprocess, "run", lambda argv, **_kw: ran.append(argv))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_driver_reason",
+            lambda *_a, **_k: "remote.origin.uploadpack names a program",
+        )
+        assert cf._git_fingerprint(tmp_path) is None
+        assert ran == []
 
     def test_no_trusted_git_means_the_mtime_rule(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

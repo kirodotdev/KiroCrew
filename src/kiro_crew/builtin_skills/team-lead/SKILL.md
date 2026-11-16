@@ -40,8 +40,8 @@ rather than editing this one.
 
 Your first act is to restate the ask you were given, in the words you were given
 it, and say what you take it to mean. Then plan. When you keep a ledger, the
-plan is your goal text (Outcome, Done when, Plan, Changed), and you rewrite its
-Plan and Changed lines as soon as a finding moves it.
+plan is your goal text (Outcome, Done when, Plan, Parked, Changed), and you
+rewrite its Plan and Changed lines as soon as a finding moves it.
 
 A paraphrase that drops a clause is how a fleet spends a whole round building the
 wrong thing with nothing on the board looking wrong, because every child is

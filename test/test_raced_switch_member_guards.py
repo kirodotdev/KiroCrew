@@ -23,7 +23,7 @@ from kiro_crew.execution_context import (
 )
 
 KEY = "dashboard:root"
-CHOICE = "kirocrew-team-lead"
+CHOICE = "kirocrew-conductor"
 RACED = "member-x"
 
 
@@ -73,7 +73,7 @@ def _env(tmp_path, monkeypatch, *, raced_store: str):
     state = _make_state(tmp_path)
     state.conversation_log = ConversationLog()
     slot = state.get_or_create_slot("root")
-    slot.agent, slot.agent_kind = "kirocrew-conductor", "template"
+    slot.agent, slot.agent_kind = "kirocrew-team-lead", "template"
 
     async def other_agent_wins(*_a, **_k):
         slot.agent = RACED

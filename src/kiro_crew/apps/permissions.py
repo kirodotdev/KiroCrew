@@ -361,6 +361,8 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append("  Cron:      scheduled agent jobs")
     if perms.chatSlots:
         lines.append("  Chat:      runs its own chat sessions, listed under the app")
+    if perms.hiddenSessions:
+        lines.append("  Chat list: keeps its own chats out of your session list")
     if perms.workerAutoApprove:
         lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
     if perms.reachableByUserSessions:

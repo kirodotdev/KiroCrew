@@ -854,6 +854,7 @@ names that test; every other report-only row gives its plain reason:
 | `watchdog.tool_stall_hard_cap_secs` | 3600.0 -> 7200.0, #8949 | reports | a tuning knob; holding it caps the same forbearance at an hour, with the same cost. Coupled with the suspect window (`note`): adopting either one alone leaves the window at an hour |
 | `watchdog.model_silent_probe_secs` | 900.0 -> 1800.0, #8949 | reports | a tuning knob; holding it probes a long silent think sooner, which regenerates it |
 | `agent.session_start_concurrency` | 2 -> "auto", #17055 | reports | the knob to lower when the host or provider is the bottleneck; holding 2 only serialises a burst of starts |
+| `memory.embedding_idle_evict_secs` | 3600 -> "auto", #36969 | reports | an hour is a deliberate idle release; a stored number is always kept, so `"auto"` (600 s on a machine with 16 GiB or less, 3600 elsewhere) reaches a fresh install and an install that adopts it. Only on a small machine (`applies`): elsewhere `"auto"` is 3600 |
 | `telemetry.retention_days` | 0 -> 30, #22397 | reports | 0 is the documented "no age limit"; adopting prunes metric shards older than 30 days, which cannot be undone (carries a `note`) |
 | `telemetry.max_total_mb` | 0 -> 100, #22397 | reports | 0 is the documented "no size limit"; adopting prunes the oldest metric shards past 100 MB, which cannot be undone (carries a `note`) |
 
@@ -3282,8 +3283,8 @@ live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
-`dashboard.command_bar_enabled` (→ a `config` refresh frame, since the shell reads it from
-the shared config query, which never goes stale on its own),
+`dashboard.command_bar_enabled` and `dashboard.channels_enabled` (→ a `config` refresh frame,
+since the shell reads each from the shared config query, which never goes stale on its own),
 `dashboard.terminal.enabled` (→ `handlers/terminal_lifecycle.py::apply_terminal_enabled`, run
 off the cycle like the provider switch below, since ending a shell can outlast the bound), and
 `agent.model_context_tokens` (→ `model_registry.apply_operator_windows`, process state of
@@ -3549,6 +3550,7 @@ class AgentConfig:
     deny_override: bool = True     # offer the deny-rule override card (dashboard/deny_override.py). Read on each request (deny_override_enabled), no restart. false = every deny-rules refusal is final at once, session overrides stop applying (they apply again on true, until the slot ends), and a card already showing cannot grant. A present non-bool loads as false; a load whose degraded_sections holds "agent" or the whole-config marker reads as false (sticky until restart, like member_dispatch). See security.md "A person's in-session override"
     apps_builtin_adoption: dict[str, dict] = {}  # gateway-written marker per adopted former built-in: {"state": "granting"|"adopted", "repository", "commit" (40-hex), "addedName", "setRepository", "removedLocal" (bools: what the adoption grant changed, read by its rollback)}. Keys must match execution.APP_NAME_RE, values exactly that shape, else the entry is dropped; capped at 512 (builtin_adoption_markers.coerce_adoption_markers). Read on demand (no restart mark), base UNION effective so an overlay cannot hide an entry; an "adopted" entry is never removed, which keeps an uninstalled adopted app from coming back. Not shown in Settings. See app-kit-platform.md § Former built-in adoption
     apps_builtin_adoption_nav: dict[str, dict] = {}  # gateway-written {"route", "icon"} per adopted former built-in: the pin's legacyNav, recorded when its marker becomes "adopted" (and at APPLY for an adopted record that lacks it), so /api/apps keeps answering legacyNav once no pin row names the app. Held to the pin's legacyNav shape (builtin_adoption_pins.legacy_nav_error) and capped at 512, else the entry is dropped; a key of its own because an older build drops any marker with a seventh key
+    apps_never_adopt_backend_listener: bool = False  # opt-in: when true, never adopt or re-bind a healthy app backend listener this gateway did not start in this run; off adopts any healthy listener, and so does a config that fails to load
     apps_ui_stream_timeout_secs: int = 30  # total transfer deadline for one response body on the unauthenticated /apps/<app>/ui/ route. Load-time clamped to [5, 600]; read per request (live), and no off switch — the route has eight descriptor permits and this deadline is what stops a client that quits reading from holding one indefinitely
     task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing, and with false (or no store) a floor miss also queues, in memory. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
     task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True
@@ -3721,6 +3723,7 @@ class DashboardConfig:
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
+    channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     unfiled_sessions_above_folders: bool = False  # draw the sessions filed in no folder above the folder list (true) or below it (false), in the list view's folder tree and in each board column. A view preference; the drop that removes a session from its folder works in both layouts. See "Unfiled sessions above folders" below.
@@ -5120,6 +5123,12 @@ links it to that route's page (`memory.history_max_days` and
 least 7 days and 0.5 hours; `agent.log_level` to Developer → Logs), so a generic
 write cannot skip that rule. A key such a route writes as one step with other keys
 and that has no control (`memory.embedding_provider`) is read-only (`owned`).
+The two MCP safety switches, `mcp.protect_kiro_permission_rules` and
+`mcp.honour_auto_approve`, stay in `READONLY_REASONS` (`safety`) and link to their
+Settings → Security → Safety switches controls through the registry `configKey`.
+Their only dashboard writer is the owner-gated `GET`/`PUT
+/api/security/safety-switches` ([security](security.md), "Owner's MCP safety
+switches"), so neither this PATCH nor a change card can write them.
 
 An `edit` row saves when its control changes, with no confirm step. A text,
 number or list field saves when it loses focus (or on Enter); a toggle or select

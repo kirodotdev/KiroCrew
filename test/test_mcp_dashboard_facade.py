@@ -130,12 +130,27 @@ def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() 
     assert _index().divergent() == ()
 
 
+#: The owner modules, one per line, so two changes that each add an owner edit
+#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
+_OWNER_MODULES = (
+    "kiro_crew.mcp_dashboard_caller_scope",
+    "kiro_crew.mcp_dashboard_folder_runs",
+    "kiro_crew.mcp_dashboard_folder_tree",
+    "kiro_crew.mcp_dashboard_references",
+    "kiro_crew.mcp_dashboard_session_runs",
+    "kiro_crew.mcp_dashboard_session_tools",
+    "kiro_crew.mcp_dashboard_tag_runs",
+)
+
+
 def test_the_owners_are_the_mcp_dashboard_siblings_in_layer_order() -> None:
     """``_OWNERS`` names every ``mcp_dashboard_*.py`` sibling, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
     on_disk = {f"kiro_crew.{p.stem}": p for p in SRC_DIR.glob("mcp_dashboard_*.py")}
-    assert len(on_disk) == 7
+    assert sorted(on_disk) == list(
+        _OWNER_MODULES
+    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

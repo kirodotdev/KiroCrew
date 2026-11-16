@@ -247,7 +247,13 @@ Who is told. The dashboard's first-run Privacy chapter says recording is on and
 offers Keep on or Turn off. A new install sees it on first run. An existing
 install that is recording and acknowledged an older notice sees the chapter once
 more. An install whose recording is off by any rule above is not asked again:
-the dashboard reports the current notice as already seen. A CLI or headless
+the dashboard reports the current notice as already seen. The one exception is
+a public-build install off only by a written `telemetry.enabled: false`, which
+builds before recording was on by default wrote into every new config: it sees
+the version 3 chapter once, in an off form that names Kiro telemetry and offers
+Turn on performance metrics or Keep off, and until Turn on is chosen only the
+daily heartbeat and official app install receipts are sent (owner decision,
+`kiro_export.off_offer_due`). A CLI or headless
 start prints a one-line notice once per install, only while recording is on and
 the current notice is not acknowledged.
 
@@ -260,7 +266,7 @@ one exception is the public build's own Kiro telemetry destination
 (`metrics/kiro_export.py`, owner decision of 2026-11-14): it gets the reviewed
 `PRODUCT_METRICS` under the recording default, once the Privacy chapter (notice
 version 3, which names it) or the CLI notice has been shown, and never in an LTS
-build, on CI or under a non-default `KIROCREW_HOME`. An enterprise policy
+build or on CI (a non-default `KIROCREW_HOME` gets it too). An enterprise policy
 can pin the whole thing off through the `capabilities.telemetry` governance
 scope. The enterprise build never shows the Privacy chapter, refuses the
 heartbeat, and applies the same export rule to the collector the admin policy
@@ -581,7 +587,8 @@ today.
 - The consent gate is the one that exists. `telemetry.enabled` is on for a new
   install and for an existing install with the heartbeat on. An existing install
   that turned the heartbeat off, wrote `telemetry.enabled: false`, or sets
-  `DO_NOT_TRACK` stays off and is not asked again. A value written in a config
+  `DO_NOT_TRACK` stays off; only the written `false` case is asked once more,
+  by the off form of the version 3 notice. A value written in a config
   file still wins. Section 4.6 has every case.
 
 ## 9. Security and privacy considerations

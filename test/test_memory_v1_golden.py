@@ -485,27 +485,29 @@ def _blocks(payload: str) -> dict[str, str]:
     return out
 
 
-#: Byte extent of every block in the normalized default session context, and the
-#: total. Regenerate ONLY as part of a reviewed change to what a block contains.
+#: Byte extent of every block in the normalized default session context.
+#: Regenerate ONLY as part of a reviewed change to what a block contains. The total
+#: is their sum, not a pinned number of its own: two changes to different blocks
+#: then edit different lines (testing-conventions.md § Merge-safe ratchets and
+#: counts), and each block's extent stays exact.
 EXPECTED_EXTENTS = {
-    "[CRITICAL RULES": 4338,
+    "[CRITICAL RULES": 5057,
     "[CURRENT DATE]": 48,
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,
     "[DOCUMENTATION]": 235,
     "[Memory —": 2077,
     "[Skills:]": 413,
-    "[Learned corrections": 320,
+    "[Learned corrections": 374,
 }
-EXPECTED_TOTAL = 8003
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
-    """Every block's char extent, and the total, are what they were."""
+    """Every block's char extent is what it was, and the blocks cover the payload."""
     payload = seeded.normalize(_session_context(seeded))
     extents = {marker: len(text) for marker, text in _blocks(payload).items()}
     assert extents == EXPECTED_EXTENTS
-    assert sum(extents.values()) == len(payload) == EXPECTED_TOTAL
+    assert sum(extents.values()) == len(payload)
 
 
 def test_total_stays_under_the_production_ceiling(seeded: Seeded) -> None:

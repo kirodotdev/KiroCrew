@@ -1037,6 +1037,7 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "agent.session_start_concurrency",
         "telemetry.retention_days",
         "telemetry.max_total_mb",
+        "memory.embedding_idle_evict_secs",
     }
 
 

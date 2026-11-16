@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, leave it a no
 one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 41 of its tools, written for the agent that is about to use them.
+for every one of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -1272,6 +1272,18 @@ the default of `session.max_per_creator`: the owner raises it, up to 450, in
 Settings > Chat > Sessions > Sessions per creator, and the change applies to
 the next create with no restart. An agent can only propose the change on a
 card that you apply.
+
+A Bot also has its own limit: how many of its own worker sessions may be open
+at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit).
+Its own worker sessions are the ones that run on its worker template. Its owner
+sets it on the Bot's settings page under **Workers at once**; no Bot tool can
+change it. A `session_create`, `session_revive` or `session_fork` that would
+leave one more of those worker sessions open past it, from the Bot's chat or
+from one of its workers, is refused with `bot_worker_cap_reached` (HTTP 409),
+and nothing is created. A session that a worker opens on another template is
+not counted here; the per-creator cap above still bounds it. A worker keeps its
+seat until it is closed, even after its work is done: close one that has
+finished (`session_close`), then try again.
 
 ## Combining two chats
 

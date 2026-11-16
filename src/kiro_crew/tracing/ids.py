@@ -52,6 +52,31 @@ def is_hex32(value: str) -> bool:
     return len(value) == 32 and set(value) <= _HEX_DIGITS
 
 
+def parse_traceparent(value: object) -> tuple[str, str] | None:
+    """``(trace_id, parent_id)`` of a W3C ``traceparent`` value, or ``None``.
+
+    Only version ``00`` is read: 55 characters, four ``-`` separated fields of
+    lowercase hex (2, 32, 16 and 2 digits), the trace and parent ids not all zero.
+    Plain string methods, so a hostile value costs one length check.
+    """
+    if not isinstance(value, str) or len(value) != 55:
+        return None
+    fields = value.split("-")
+    if len(fields) != 4 or [len(f) for f in fields] != [2, 32, 16, 2]:
+        return None
+    version, trace, parent, flags = fields
+    if version != "00" or any(not set(f) <= _HEX_DIGITS for f in fields):
+        return None
+    if trace == _ZERO32 or parent == _ZERO16:
+        return None
+    return trace, parent
+
+
+def format_traceparent(trace_id: str, span_id: str) -> str:
+    """A ``traceparent`` value for a recorded span, from ids this module produced."""
+    return f"00-{trace_id}-{span_id}-01"
+
+
 def esc(part: object) -> str:
     """Escape one input so a ``|`` inside it cannot shift the tuple boundary."""
     return str(part).replace("%", "%25").replace("|", "%7C")

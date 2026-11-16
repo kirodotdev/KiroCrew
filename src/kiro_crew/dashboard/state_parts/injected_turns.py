@@ -14,6 +14,7 @@ import re
 
 from kiro_crew.constants import SUBAGENT_BATCH_COMPLETION_PREFIX, SUBAGENT_COMPLETION_PREFIX
 from kiro_crew.deny_guidance import remediation_for, rule_id_for
+from kiro_crew.deny_notice import POLICY_REROUTE_TEXT
 from kiro_crew.timed_out_call import TOOL_STALL_RECOVERY_PREFIX as _TOOL_STALL_RECOVERY_PREFIX
 from kiro_crew.timed_out_call import timed_out_call_body
 
@@ -44,7 +45,7 @@ SUBAGENT_COMPLETION_PREFIXES = (
 
 
 # One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
-# each result has been processed in its own turn (see gateway._subagent_done arm
+# each result has been processed in its own turn (see subagent_wiring._subagent_done arm
 # + chat_runner drain/idle branch). Its visible reply is the consolidated,
 # user-facing summary. Rendered as an "inject" message (not a user bubble); the
 # prefix marks it as a synthetic continuation so it is NOT mirrored to linked
@@ -413,17 +414,17 @@ def build_refusal_recovery_prompt(
         (
             "Do NOT repeat, restate or re-derive what you already sent — the user "
             "has read it. If the task is NOT finished, continue from there: use an "
-            "allowed alternative (for a shell command, a read-only variant) or a "
-            "different tool, and say what it changed. Only if the task IS finished "
+            "allowed alternative that does not reach the same effect (for a shell "
+            "command, a read-only variant; for a publish, a branch and a pull "
+            "request), and say what it changed. Only if the task IS finished "
             "and the block left nothing missing, open with a one-line recap of the "
             "outcome of the work (the one restatement allowed here: this reply "
             "becomes the last message the user sees), then one short line noting "
             "the block, and stop."
             if answered
-            else "Decide how to proceed: use an allowed alternative (for a shell "
-            "command, a read-only variant), a different tool, or — if the block is "
-            "correct and you genuinely cannot proceed — say so and stop. Otherwise "
-            "continue the task where you left off."
+            else "Decide how to proceed: "
+            + POLICY_REROUTE_TEXT
+            + " Otherwise continue the task where you left off."
         ),
     ]
     # Per-class remediation, de-duplicated across the turn's refusals: several

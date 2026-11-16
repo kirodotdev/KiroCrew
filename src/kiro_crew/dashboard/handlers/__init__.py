@@ -286,6 +286,7 @@ from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_rules_get,
     api_member_rules_put,
     api_member_thread,
+    api_member_wake,
     api_members,
 )
 from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
@@ -1121,6 +1122,14 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
     api_decisions_provider_sagemaker_test,
 )
+
+# MCP message-body fields — owner-gated, and the ONLY writer of
+# ``mcp_body_fields.json`` (see ``security.mcp_body_fields``).
+from kiro_crew.dashboard.handlers.mcp_body_fields import (  # noqa: E402, F401
+    api_mcp_body_fields_add,
+    api_mcp_body_fields_get,
+    api_mcp_body_fields_remove,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_own_notification_ack,
     api_own_notifications,
@@ -1155,6 +1164,13 @@ from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, 
 # ``security.reveal_store``; refuses every agent, app and non-owner caller.
 from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
     api_owner_value_reveal,
+)
+
+# MCP safety switches — owner-gated, the one dashboard writer of
+# ``mcp.protect_kiro_permission_rules`` and ``mcp.honour_auto_approve``.
+from kiro_crew.dashboard.handlers.safety_switches import (  # noqa: E402, F401
+    api_safety_switches_get,
+    api_safety_switches_put,
 )
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,

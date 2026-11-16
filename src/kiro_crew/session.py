@@ -1117,6 +1117,7 @@ class SessionManager:
             if picked is not None:
                 model = spec_model(picked)
         except Exception:
+            # Any failure here leaves the "auto" default, cached like any other miss.
             pass
         cache[cache_key] = (model, dir_mtime, now)
         return model

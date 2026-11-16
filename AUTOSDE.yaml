@@ -415,11 +415,23 @@ custom-rules:
          local time is correct; do not flag it.
       5. (D7) An UPPER bound on a measured wall or CPU duration, a rate or a
          sample count (`assert elapsed < 0.5`, "about 125 samples"). Assert the
-         work, the schedule or the order. Do not flag: a LOWER bound that proves
-         a deadline or backoff was honoured ("did not fire early") with a margin
+         work, the schedule or the order. A CPU clock (`time.thread_time`,
+         `time.process_time`) is no exception: coverage's tracer multiplies
+         the CPU of every traced line about fivefold on the instrumented
+         shards, so a budget the code meets bare fails there on every rerun.
+         For a complexity guard, count the work and bound its growth between
+         input sizes (`_interpreter_work` / `_linear_work` in
+         `test/denied_commands_security_helpers.py`). For a "returns at once"
+         bound, which says a call never waits, assert the wait was never taken:
+         spy the lock, sleep or join and refuse a blocking call
+         (testing-conventions § Determinism 5). Also FLAG a change that
+         keeps an existing budget alive by reshaping its reading (the minimum
+         of N readings, the tracer paused around it, a larger constant): each
+         still asserts seconds. Do not flag: a LOWER bound that proves a
+         deadline or backoff was honoured ("did not fire early") with a margin
          of at least one clock tick; a bound relative to a span the test
-         measured itself; an existing complexity guard's thread-CPU budget kept
-         at its original constant.
+         measured itself; an existing complexity guard's thread-CPU budget
+         left untouched at its original constant.
       6. (D8) An await, `join` or `communicate` the test itself must unblock,
          with no timeout. On Windows a hang kills the xdist worker and aborts
          the run; bound it so a miss fails by name at that line. A literal bound
@@ -458,6 +470,16 @@ custom-rules:
           `monkeypatch` (use `_floor_monkeypatch`), or a bare
           `monkeypatch.undo()` in a test body (scope the patch with
           `monkeypatch.context()`).
+      13. A host probe that picks which result a live test requires (runs vs
+          fails closed) but asks a different program or binary than the one the
+          test drives (Crew's `userns_available()` deciding for codex's
+          bubblewrap), or lets such a stand-in short-circuit ahead of the
+          program's own check. The kernel and its LSMs judge per binary, so the
+          two disagree on some runner images and the test reds every PR routed
+          there. Use the program's own preflight with the binary it runs; a
+          stand-in answers only where that check gives no verdict
+          (testing-conventions § A host probe that asks a different program
+          than the one under test).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
@@ -1007,10 +1029,11 @@ custom-rules:
         generic seam every app can use, never the app in core. An explicit
         maintainer decision recorded on the PR (the /ai-review override flow)
         is the only exception — the default is closed.
-      - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
-        Channels app from the App Store (flipping "hidden": true in
-        src/kiro_crew/apps/builtins/channels/app.json). Both are deliberate
-        fork divergences an upstream sync must not undo.
+      - FLAG restoring a withdrawn built-in (the Board app), restoring the
+        Channels app, or offering Channels where it was not offered (it is the
+        default-off core setting dashboard.channels_enabled, whose Settings
+        row is drawn only while it is on). Both are deliberate fork
+        divergences an upstream sync must not undo.
 
       Allowed (do NOT flag):
       - Changes inside an EXISTING built-in app directory or its existing
@@ -1226,6 +1249,26 @@ custom-rules:
       can supply instead (a CLI the shell script under test runs, such as
       `jq`; a link, via `make_dir_link` or `make_escaping_link`) stays
       flagged: supply it.
+
+      A ratchet must also survive two changes merging without a test of the
+      combined tree: two edits that turn one line into the same new text merge
+      cleanly, so a record that is ONE shared number goes red on main when two
+      changes each add a site (both write `9` over `8`). FLAG, in a ratchet the
+      diff adds or rewrites: a module-level total the scan is compared with
+      when the sites could be recorded one line per file, site or change; a
+      hand-kept total asserted beside an exact table or set that already
+      decides it; a message that tells the author to record "the amount over"
+      a shared budget instead of the change's own delta. Do NOT flag a frozen
+      snapshot of a one-time event no later change edits. Moving a shared
+      number to a keyed record whose every key stays exact is tightening, not
+      loosening (testing-conventions.md § Merge-safe ratchets and counts).
+      `test/test_flake_pattern_ratchet.py` (K21) already refuses a new count
+      pinned `==` an integer literal of 10 or more, or `==` / `!=` an ALL-CAPS
+      `BASELINE` / `COUNT` / `TOTAL` / `EXPECTED` / `ROWS` constant, in a test
+      module that walks the product tree; flag what it cannot see: a pin held
+      by two one-sided `if total > X` / `if total < X` checks, a count in a
+      doc or registry compared with a constant, and a `# flake-ok` on such a
+      pin whose reason is not a frozen snapshot.
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.

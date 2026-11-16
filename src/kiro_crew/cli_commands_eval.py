@@ -5,7 +5,9 @@ project's own files named by ``--dir`` / ``--file`` (in a worker thread, through
 ``_load_eval_scenarios``), runs them (``--agent`` and ``--model`` pick what answers,
 ``--repeat N`` runs the set N times and a scenario passes only when every run does),
 scores them with an LLM judge when ``--judge`` is given and prints the results;
-``write_eval_artifacts`` writes the run's Markdown report and JSON summary. It has a module of its own because it is its own
+``--baseline`` / ``--max-drop`` / ``--junit`` (``eval.baseline``) compare the scores with a
+saved run and write a JUnit file; ``write_eval_artifacts`` writes the run's Markdown report
+and JSON summary. It has a module of its own because it is its own
 command with its own imports, and it sits beside the other ``cli_commands_*`` owners
 because it finds the scenarios from this file's own location.
 
@@ -271,6 +273,11 @@ async def _run_eval(args: argparse.Namespace) -> None:
     runs_note = f", {repeat} runs" if repeat > 1 else ""
     print(f"Running: {names} ({total_turns} turns{runs_note})\n")
 
+    # Read before the run so an unusable baseline is named up front; None when not asked for.
+    from kiro_crew.eval.baseline import gate_from_args
+
+    gate = await asyncio.to_thread(gate_from_args, args)
+
     # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
     # never ran the gateway's KAS floor, so establish that evidence before the
     # load reads the pick. Probes only for a Kiro CLI pick; off the event loop.
@@ -353,7 +360,24 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
     print(f"\nResults saved to:\n  {report_path}\n  {json_path}")
 
-    if overall < len(results):
-        # A failed scenario must fail the command, so `kirocrew eval && next` stops
-        # and a script can gate on it. The report is already on disk.
+    failed_run = overall < len(results)
+    junit_path = getattr(args, "junit", None)
+    if gate is not None or junit_path:
+        from kiro_crew.eval import baseline
+
+        rows = [r.summary() for r in results]
+        reasons: dict[str, str] | None = None
+        if gate is not None:
+            found = baseline.compare(gate, rows)
+            baseline.print_comparison(found, gate.max_drop)
+            reasons = found.reasons
+            # The gate only adds: a regression fails the run, and so does every failure.
+            failed_run = failed_run or bool(found.regressions)
+        if junit_path:
+            await asyncio.to_thread(baseline.write_junit, junit_path, rows, reasons)
+
+    if failed_run:
+        # A failed scenario, or a score below the baseline when one is given, must fail
+        # the command, so `kirocrew eval && next` stops and a script can gate on it.
+        # The report is already on disk.
         sys.exit(1)

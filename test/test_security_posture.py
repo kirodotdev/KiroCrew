@@ -255,11 +255,14 @@ def _gate_side_baseline_log_sites(
 #: nets to zero (both edits land in one reviewed diff), and the scan is
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
+    # The model-substitution retry's warning, moved out of client_start.py with the
+    # retry; same gateway process.
+    "acp/client_claude_session.py": 1,
     "acp/client_lifecycle.py": 1,
     # +1: model-unavailable warning log in the rejected-model path
     "acp/client_model_selection.py": 2,
     "acp/client_permissions.py": 1,
-    "acp/client_start.py": 2,
+    "acp/client_start.py": 1,
     "acp/client_transport.py": 1,
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
     # the client owners' sites.

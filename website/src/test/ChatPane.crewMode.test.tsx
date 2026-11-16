@@ -51,9 +51,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
-import { crewModePreviewOn } from './crewModePreview'
 import { setCrewModeCatalog } from '../lib/crewMode'
-import { PREVIEW_CREW_MODE } from '../utils/previewFlags'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 const permission = { role: 'permission', content: 'Shell', cls: '', meta: { approval_id: 'rid-1', tool_input: 'printf hi', request_id: 'rid-1' } }
 const row = (key: string, extra: Record<string, unknown> = {}) => ({
@@ -117,11 +116,11 @@ describe('ChatPane in Split View (Crew Mode)', () => {
   })
 })
 
-describe('ChatPane in Split View with the Crew Mode preview off', () => {
-  // The gateway still runs Crew Mode; the device has the preview off.
+describe('ChatPane in Split View in a build without conductor mode (LTS)', () => {
+  // The gateway still runs conductor mode; the dashboard offers none.
   beforeEach(() => {
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
-    localStorage.removeItem(PREVIEW_CREW_MODE)
+    turnOffCrewModeAsLts()
   })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
@@ -141,6 +140,3 @@ describe('ChatPane in Split View with the Crew Mode preview off', () => {
     expect(await screen.findByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

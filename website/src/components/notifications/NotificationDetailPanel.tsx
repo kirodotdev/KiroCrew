@@ -22,6 +22,10 @@ import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '
 import { buildNotificationPrompt, isCutCronResult, wholeCronResult } from './notificationHandoff.prompt'
 import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { isMemberThreadSlot } from '../../hooks/unreadOnAttention'
+import { useLoadedInstalledApps } from '../../hooks/panelTabRegistry'
+import { appNavTarget } from '../../appNav'
+import { isChatPageSurface } from '../../utils/channelOrigin'
+import type { InstalledApp } from '../appstore/types'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -47,6 +51,20 @@ function memberThreadPage(
   const name = openSlot ? openSlot.agent : member?.name
   if (name) return `/members?member=${encodeURIComponent(name)}`
   return openSlot ? '/members' : null
+}
+
+/** The page of the app that keeps this open chat out of the session lists
+ *  (`permissions.hiddenSessions`), or null. /chat does not list such a chat, so
+ *  "Go to chat" opens the app's page, where it lives. */
+function hiddenChatAppPage(
+  openSlot: { mode?: string; surface?: string } | null | undefined,
+  apps: readonly InstalledApp[] | undefined,
+): string | null {
+  // `surface` is "" while the app may not hide the chat: it is listed on /chat.
+  const mode = openSlot?.surface ?? openSlot?.mode
+  if (!mode || isChatPageSurface(mode)) return null
+  const app = apps?.find(a => a.name === mode && a.manifest?.permissions?.hiddenSessions === true)
+  return app ? appNavTarget(app)?.route ?? null : null
 }
 
 /**
@@ -184,6 +202,8 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   const directSlot = n.slot ? slots.find(s => s.key === n.slot) : null
   const { title, body } = noteText(n)
   const memberPage = memberThreadPage(n.slot, directSlot, member, slots)
+  const installedApps = useLoadedInstalledApps()
+  const appPage = hiddenChatAppPage(directSlot, installedApps)
 
   // Fuzzy match: try to find a related chat slot from the body/title
   const relatedSlot = useMemo(() => {
@@ -258,7 +278,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           {handoffNotice}
         </>)}
         {directSlot && !(n.kind === 'cron' && n.job_id && n.slot) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { if (memberPage) { navigate(memberPage); return } dispatch(switchSlot({ key: directSlot.key, announceOnMissing: true, gesture: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { if (memberPage) { navigate(memberPage); return } if (appPage) { navigate(appPage); return } dispatch(switchSlot({ key: directSlot.key, announceOnMissing: true, gesture: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
         )}
         {!directSlot && n.slot && !(n.kind === 'cron' && n.job_id && n.slot) && (
           /* `.unwrap()` is load-bearing for the diagnostic: a thunk dispatch

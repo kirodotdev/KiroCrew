@@ -15,7 +15,7 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 
 import kiro_crew.acp.client as acp_client
 from conftest import requires_symlinks
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.clock import ManualClock
 
@@ -65,7 +65,7 @@ class TestMovedAsideRestore:
         restore, so a write from its wrapper is a file that arrives while the
         pathname is vacant -- the race the no-clobber restore exists for.
         """
-        real_holds = AcpClient._settings_path_holds
+        real_holds = ClaudeAcpClient._settings_path_holds
 
         def verify_then_a_racer_lands(candidate: Path, expectation) -> bool:
             held = real_holds(candidate, expectation)
@@ -74,7 +74,7 @@ class TestMovedAsideRestore:
             return held
 
         monkeypatch.setattr(
-            AcpClient, "_settings_path_holds", staticmethod(verify_then_a_racer_lands)
+            ClaudeAcpClient, "_settings_path_holds", staticmethod(verify_then_a_racer_lands)
         )
 
     @staticmethod
@@ -230,7 +230,7 @@ class TestMovedAsideRestore:
             lambda *args, **kwargs: put_backs.append(args) or None,
         )
 
-        restored = AcpClient._restore_aside_without_clobber(aside, path, expect)
+        restored = ClaudeAcpClient._restore_aside_without_clobber(aside, path, expect)
 
         assert restored is False
         assert not path.exists()
@@ -277,7 +277,7 @@ class TestWindowsRestorePin:
         monkeypatch.setattr(acp_client.platform_compat, "pin_directory", pin_directory)
         monkeypatch.setattr(acp_client.os, "rename", rename_while_pinned)
 
-        restored = AcpClient._restore_aside_without_clobber(
+        restored = ClaudeAcpClient._restore_aside_without_clobber(
             aside, path, self._moved_identity(aside)
         )
 
@@ -310,7 +310,7 @@ class TestWindowsRestorePin:
         monkeypatch.setattr(acp_client.platform_compat, "pin_directory", refuse_pin)
         monkeypatch.setattr(acp_client.os, "rename", record_rename)
 
-        restored = AcpClient._restore_aside_without_clobber(
+        restored = ClaudeAcpClient._restore_aside_without_clobber(
             aside, path, self._moved_identity(aside)
         )
 
@@ -342,7 +342,7 @@ class TestWindowsRestorePin:
             lambda source, destination: renames.append((source, destination)),
         )
 
-        restored = AcpClient._rename_aside_noreplace(aside, path)
+        restored = ClaudeAcpClient._rename_aside_noreplace(aside, path)
 
         assert restored is False
         assert pinned_paths == []
@@ -381,7 +381,7 @@ class TestWindowsRestorePin:
         monkeypatch.setattr(acp_client.platform_compat, "pin_directory", pin_directory)
         monkeypatch.setattr(acp_client.os, "rename", windows_rename)
 
-        restored = AcpClient._restore_aside_without_clobber(
+        restored = ClaudeAcpClient._restore_aside_without_clobber(
             aside, path, self._moved_identity(aside)
         )
 
@@ -592,7 +592,9 @@ class TestCreateRaceLoserPoll:
 
         # Half a mocked second per poll: four polls reach the 2 s deadline.
         clock = self._poll_clock(monkeypatch, winner_records_on_the_first_poll, poll_cost=0.45)
-        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+        monkeypatch.setattr(
+            ClaudeAcpClient, "_log_declined_share", lambda self, p: declines.append(p)
+        )
 
         loser._write_claude_local_settings()
 
@@ -621,7 +623,9 @@ class TestCreateRaceLoserPoll:
         fired = self._winner_holds_the_name(monkeypatch, path, foreign)
         declines: list[Path] = []
         self._poll_clock(monkeypatch, lambda _poll: None, poll_cost=0.45)
-        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+        monkeypatch.setattr(
+            ClaudeAcpClient, "_log_declined_share", lambda self, p: declines.append(p)
+        )
 
         loser._write_claude_local_settings()
 
@@ -659,7 +663,9 @@ class TestCreateRaceLoserPoll:
                 assert seed_provenance.record(path, winners_payload, "winner-session") is True
 
         clock = self._poll_clock(monkeypatch, winner_records_on_the_first_poll, poll_cost=0.45)
-        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+        monkeypatch.setattr(
+            ClaudeAcpClient, "_log_declined_share", lambda self, p: declines.append(p)
+        )
 
         # The holder lets go only once the lock poll has BACKED OFF at least
         # once, so the contention is certain and the release is a signal, not a

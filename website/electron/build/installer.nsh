@@ -42,6 +42,13 @@
 !define KIRO_AW_BLEND 0x00080000
 !define KIRO_FADE_IN_MS 180
 !define KIRO_FADE_OUT_MS 120
+; The longest path the previous version's uninstaller can move a file to (MAX_PATH
+; less its terminating NUL), and the longest directory it can create there
+; (CreateDirectoryW also reserves 12 characters for an 8.3 file name). Without the
+; long-path opt-in, which its manifest does not carry, neither limit lifts.
+; packaging/check_windows_path_budget.py turns the first into a build budget.
+!define KIRO_MAX_MOVE_PATH 259
+!define KIRO_MAX_MOVE_DIR 247
 
 ; electron-builder ships these 26 installer languages by default. Keep the
 ; update-only progress contract in the same language as the native MUI chrome.
@@ -71,6 +78,39 @@ LangString KiroUpdateProgress 1025 "قد يستغرق هذا عدة دقائق. 
 LangString KiroUpdateProgress 1055 "Bu işlem birkaç dakika sürebilir. ${PRODUCT_NAME} otomatik olarak yeniden açılacaktır."
 LangString KiroUpdateProgress 1054 "อาจใช้เวลาหลายนาที ${PRODUCT_NAME} จะเปิดขึ้นอีกครั้งโดยอัตโนมัติ"
 LangString KiroUpdateProgress 1066 "Quá trình này có thể mất vài phút. ${PRODUCT_NAME} sẽ tự động mở lại."
+
+; Shown when an installed file is too deep for the previous version's
+; uninstaller to move (see KiroClearUnmovableFiles); the file's path follows.
+; The way forward is an uninstall and a fresh install: an uninstall removes the
+; files without moving them, it keeps the data home and app data (see
+; customUnInstall), and an install over no registered install runs no old
+; uninstaller.
+LangString KiroUnmovableFile 1033 "${PRODUCT_NAME} was not updated, and the installed version still works. To update, uninstall ${PRODUCT_NAME}, then run this installer again. Your sessions and settings are kept.$\r$\n$\r$\nThis installed file's path is too long for the update to move:"
+LangString KiroUnmovableFile 1031 "${PRODUCT_NAME} wurde nicht aktualisiert, die installierte Version funktioniert weiterhin. Deinstallieren Sie ${PRODUCT_NAME} und führen Sie dieses Installationsprogramm dann erneut aus, um zu aktualisieren. Ihre Sitzungen und Einstellungen bleiben erhalten.$\r$\n$\r$\nDer Pfad dieser installierten Datei ist zu lang, um sie beim Update zu verschieben:"
+LangString KiroUnmovableFile 1036 "${PRODUCT_NAME} n'a pas été mis à jour et la version installée fonctionne toujours. Pour mettre à jour, désinstallez ${PRODUCT_NAME}, puis relancez ce programme d'installation. Vos sessions et paramètres sont conservés.$\r$\n$\r$\nLe chemin de ce fichier installé est trop long pour que la mise à jour puisse le déplacer :"
+LangString KiroUnmovableFile 3082 "${PRODUCT_NAME} no se ha actualizado y la versión instalada sigue funcionando. Para actualizar, desinstala ${PRODUCT_NAME} y vuelve a ejecutar este instalador. Tus sesiones y tu configuración se conservan.$\r$\n$\r$\nLa ruta de este archivo instalado es demasiado larga para que la actualización pueda moverlo:"
+LangString KiroUnmovableFile 2052 "${PRODUCT_NAME} 未更新，已安装的版本仍可正常使用。要更新，请卸载 ${PRODUCT_NAME}，然后重新运行此安装程序。您的会话和设置会保留。$\r$\n$\r$\n此已安装文件的路径过长，更新无法移动它："
+LangString KiroUnmovableFile 1028 "${PRODUCT_NAME} 未更新，已安裝的版本仍可正常使用。若要更新，請解除安裝 ${PRODUCT_NAME}，然後重新執行此安裝程式。您的工作階段與設定會保留。$\r$\n$\r$\n此已安裝檔案的路徑過長，更新無法移動它："
+LangString KiroUnmovableFile 1041 "${PRODUCT_NAME} は更新されませんでした。インストール済みのバージョンは引き続き使用できます。更新するには、${PRODUCT_NAME} をアンインストールしてから、このインストーラーをもう一度実行してください。セッションと設定は保持されます。$\r$\n$\r$\nこのインストール済みファイルのパスが長すぎるため、更新で移動できません:"
+LangString KiroUnmovableFile 1042 "${PRODUCT_NAME}이(가) 업데이트되지 않았으며 설치된 버전은 계속 작동합니다. 업데이트하려면 ${PRODUCT_NAME}을(를) 제거한 다음 이 설치 프로그램을 다시 실행하세요. 세션과 설정은 유지됩니다.$\r$\n$\r$\n설치된 이 파일의 경로가 너무 길어 업데이트에서 이동할 수 없습니다:"
+LangString KiroUnmovableFile 1040 "${PRODUCT_NAME} non è stato aggiornato e la versione installata funziona ancora. Per aggiornare, disinstalla ${PRODUCT_NAME} e poi esegui di nuovo questo programma di installazione. Le sessioni e le impostazioni vengono mantenute.$\r$\n$\r$\nIl percorso di questo file installato è troppo lungo perché l'aggiornamento possa spostarlo:"
+LangString KiroUnmovableFile 1043 "${PRODUCT_NAME} is niet bijgewerkt en de geïnstalleerde versie werkt nog. Verwijder ${PRODUCT_NAME} en voer dit installatieprogramma daarna opnieuw uit om bij te werken. Uw sessies en instellingen blijven behouden.$\r$\n$\r$\nHet pad van dit geïnstalleerde bestand is te lang om het tijdens de update te verplaatsen:"
+LangString KiroUnmovableFile 1030 "${PRODUCT_NAME} blev ikke opdateret, og den installerede version virker stadig. Afinstaller ${PRODUCT_NAME} for at opdatere, og kør derefter dette installationsprogram igen. Dine sessioner og indstillinger bevares.$\r$\n$\r$\nStien til denne installerede fil er for lang til, at opdateringen kan flytte den:"
+LangString KiroUnmovableFile 1053 "${PRODUCT_NAME} uppdaterades inte, och den installerade versionen fungerar fortfarande. Avinstallera ${PRODUCT_NAME} och kör sedan det här installationsprogrammet igen för att uppdatera. Dina sessioner och inställningar behålls.$\r$\n$\r$\nSökvägen till den här installerade filen är för lång för att uppdateringen ska kunna flytta den:"
+LangString KiroUnmovableFile 1044 "${PRODUCT_NAME} ble ikke oppdatert, og den installerte versjonen fungerer fortsatt. Avinstaller ${PRODUCT_NAME} og kjør deretter dette installasjonsprogrammet på nytt for å oppdatere. Øktene og innstillingene dine beholdes.$\r$\n$\r$\nBanen til denne installerte filen er for lang til at oppdateringen kan flytte den:"
+LangString KiroUnmovableFile 1035 "${PRODUCT_NAME} ei päivittynyt, ja asennettu versio toimii edelleen. Päivitä poistamalla ${PRODUCT_NAME} ja suorittamalla tämä asennusohjelma sitten uudelleen. Istuntosi ja asetuksesi säilyvät.$\r$\n$\r$\nTämän asennetun tiedoston polku on liian pitkä, jotta päivitys voisi siirtää sen:"
+LangString KiroUnmovableFile 1049 "${PRODUCT_NAME} не обновлено, установленная версия продолжает работать. Чтобы обновить, удалите ${PRODUCT_NAME}, а затем снова запустите этот установщик. Ваши сеансы и настройки сохранятся.$\r$\n$\r$\nПуть к этому установленному файлу слишком длинный, и обновление не может его переместить:"
+LangString KiroUnmovableFile 2070 "O ${PRODUCT_NAME} não foi atualizado e a versão instalada continua a funcionar. Para atualizar, desinstale o ${PRODUCT_NAME} e volte a executar este instalador. As suas sessões e definições são mantidas.$\r$\n$\r$\nO caminho deste ficheiro instalado é demasiado longo para que a atualização o possa mover:"
+LangString KiroUnmovableFile 1046 "O ${PRODUCT_NAME} não foi atualizado e a versão instalada continua funcionando. Para atualizar, desinstale o ${PRODUCT_NAME} e execute este instalador novamente. Suas sessões e configurações são mantidas.$\r$\n$\r$\nO caminho deste arquivo instalado é longo demais para que a atualização possa movê-lo:"
+LangString KiroUnmovableFile 1045 "${PRODUCT_NAME} nie został zaktualizowany, a zainstalowana wersja nadal działa. Aby zaktualizować, odinstaluj ${PRODUCT_NAME}, a następnie ponownie uruchom ten instalator. Twoje sesje i ustawienia zostaną zachowane.$\r$\n$\r$\nŚcieżka tego zainstalowanego pliku jest zbyt długa, aby aktualizacja mogła go przenieść:"
+LangString KiroUnmovableFile 1058 "${PRODUCT_NAME} не оновлено, встановлена версія й далі працює. Щоб оновити, видаліть ${PRODUCT_NAME}, а потім знову запустіть цей інсталятор. Ваші сеанси й налаштування збережуться.$\r$\n$\r$\nШлях до цього встановленого файлу задовгий, тому оновлення не може його перемістити:"
+LangString KiroUnmovableFile 1029 "${PRODUCT_NAME} nebyl aktualizován a nainstalovaná verze dál funguje. Chcete-li aktualizovat, odinstalujte ${PRODUCT_NAME} a potom znovu spusťte tento instalační program. Vaše relace a nastavení zůstanou zachovány.$\r$\n$\r$\nCesta k tomuto nainstalovanému souboru je příliš dlouhá, aby jej aktualizace mohla přesunout:"
+LangString KiroUnmovableFile 1051 "${PRODUCT_NAME} nebol aktualizovaný a nainštalovaná verzia naďalej funguje. Ak chcete aktualizovať, odinštalujte ${PRODUCT_NAME} a potom znova spustite tento inštalačný program. Vaše relácie a nastavenia zostanú zachované.$\r$\n$\r$\nCesta k tomuto nainštalovanému súboru je príliš dlhá na to, aby ho aktualizácia mohla presunúť:"
+LangString KiroUnmovableFile 1038 "A(z) ${PRODUCT_NAME} nem frissült, a telepített verzió továbbra is működik. A frissítéshez távolítsa el a(z) ${PRODUCT_NAME} alkalmazást, majd futtassa újra ezt a telepítőt. A munkamenetek és a beállítások megmaradnak.$\r$\n$\r$\nEnnek a telepített fájlnak az elérési útja túl hosszú ahhoz, hogy a frissítés áthelyezze:"
+LangString KiroUnmovableFile 1025 "لم يتم تحديث ${PRODUCT_NAME}، ولا يزال الإصدار المثبت يعمل. للتحديث، أزل تثبيت ${PRODUCT_NAME} ثم شغّل أداة التثبيت هذه مرة أخرى. سيتم الاحتفاظ بجلساتك وإعداداتك.$\r$\n$\r$\nمسار هذا الملف المثبت طويل جدًا بحيث لا يمكن للتحديث نقله:"
+LangString KiroUnmovableFile 1055 "${PRODUCT_NAME} güncellenmedi ve yüklü sürüm çalışmaya devam ediyor. Güncellemek için ${PRODUCT_NAME} uygulamasını kaldırın, ardından bu yükleyiciyi yeniden çalıştırın. Oturumlarınız ve ayarlarınız korunur.$\r$\n$\r$\nYüklü bu dosyanın yolu, güncellemenin onu taşıyabilmesi için çok uzun:"
+LangString KiroUnmovableFile 1054 "ไม่ได้อัปเดต ${PRODUCT_NAME} และเวอร์ชันที่ติดตั้งยังใช้งานได้ หากต้องการอัปเดต ให้ถอนการติดตั้ง ${PRODUCT_NAME} แล้วเรียกใช้ตัวติดตั้งนี้อีกครั้ง เซสชันและการตั้งค่าของคุณจะยังคงอยู่$\r$\n$\r$\nเส้นทางของไฟล์ที่ติดตั้งนี้ยาวเกินกว่าที่การอัปเดตจะย้ายได้:"
+LangString KiroUnmovableFile 1066 "${PRODUCT_NAME} chưa được cập nhật và phiên bản đã cài đặt vẫn hoạt động. Để cập nhật, hãy gỡ cài đặt ${PRODUCT_NAME}, rồi chạy lại trình cài đặt này. Phiên làm việc và cài đặt của bạn được giữ lại.$\r$\n$\r$\nĐường dẫn của tệp đã cài đặt này quá dài nên bản cập nhật không thể di chuyển tệp:"
 
 ; A fresh install can finish before the default agent is usable. Keep this
 ; handoff on the native Finish page: the shell must never download Kiro CLI or
@@ -155,6 +195,12 @@ Var KiroAppExeName
 ; physically exists beside the root this update writes.
 Var KiroStaleSibling
 Var KiroStaleSiblingProbe
+; KiroClearUnmovableFiles: the install root being walked, the length of the
+; previous uninstaller's move root, and the first installed file that cannot be
+; moved there ("" when none).
+Var KiroWalkRoot
+Var KiroMoveRootLength
+Var KiroUnmovable
 
 ; The fade operates on the top-level dialog, the only window type for which
 ; AW_BLEND is supported. It runs once per page boundary and leaves the native
@@ -351,6 +397,114 @@ Function KiroEnsureAppInstallDir
   Goto KiroCheckFreshInstallDir
 
   KiroFreshInstallDirReady:
+FunctionEnd
+
+; Make the install the previous version's uninstaller is about to remove movable,
+; or stop before it starts.
+;
+; Before writing anything, this installer runs that uninstaller (template
+; uninstallOldVersion, on every install over an existing one, `--updated` or
+; not), and the uninstaller moves the installed files one by one into its own
+; $PLUGINSDIR\old-install (un.atomicRMDir). That is old code, already on the
+; user's machine, so its behaviour cannot be changed here; this function runs
+; first so that it never meets a file it cannot move. Left to itself, the first
+; move that fails makes it move everything back and exit 2; the template
+; retries that five times, reports it as "cannot be closed", and gives up. A
+; move fails deterministically when the target path passes
+; ${KIRO_MAX_MOVE_PATH} characters or sits in a directory past
+; ${KIRO_MAX_MOVE_DIR}, and the target is about 11 characters longer than the
+; installed path, so a file Windows installed can still be one it cannot move.
+; If the moves back are interrupted (a restart, a killed installer), the files
+; already moved stay in %TEMP% and the install is left without them.
+;
+; So every file is measured against the same move root first. An over-limit
+; bytecode cache (a .pyc in __pycache__) is deleted: Python compiles the module
+; from its source instead, and earlier releases shipped such caches (the bundled
+; runtime also writes new ones beside its sources). Any other over-limit file
+; cannot be helped, so the caller stops before the uninstaller has moved a thing.
+;
+; The uninstaller's $PLUGINSDIR is a GetTempFileName name directly under the
+; same user's $TEMP: a three-letter prefix, the hex form of a 16-bit number and
+; .tmp. The caller measures the longest such name, four hex digits, so a file
+; this passes moves whatever number the uninstaller draws.
+;
+; Deleting from the install is safe because KiroClearUnmovableRoot walks only a
+; root holding this app's executable, and the uninstaller that follows deletes
+; every file in it anyway.
+;
+; $R0 = the directory to measure, relative to $KiroWalkRoot ("" or "\a\b").
+Function KiroClearUnmovableFiles
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+
+  ; $R5 = 1 when the uninstaller could not create this directory, so it cannot
+  ; move any file inside it either.
+  StrLen $R3 "$R0"
+  IntOp $R3 $R3 + $KiroMoveRootLength
+  StrCpy $R5 0
+  ${If} $R3 > ${KIRO_MAX_MOVE_DIR}
+    StrCpy $R5 1
+  ${EndIf}
+  ; $R4 = 1 when this directory is a bytecode cache (LogicLib == ignores case).
+  StrCpy $R4 $R0 "" -12
+  ${If} $R4 == "\__pycache__"
+    StrCpy $R4 1
+  ${Else}
+    StrCpy $R4 0
+  ${EndIf}
+
+  FindFirst $R1 $R2 "$KiroWalkRoot$R0\*.*"
+  ${DoWhile} $R2 != ""
+    ${If} $R2 != "."
+    ${AndIf} $R2 != ".."
+      ${If} ${FileExists} "$KiroWalkRoot$R0\$R2\*.*"
+        Push "$R0\$R2"
+        Call KiroClearUnmovableFiles
+      ${Else}
+        StrLen $R3 "$R0\$R2"
+        IntOp $R3 $R3 + $KiroMoveRootLength
+        ${If} $R3 > ${KIRO_MAX_MOVE_PATH}
+        ${OrIf} $R5 == 1
+          StrCpy $R3 $R2 "" -4
+          ${If} $R4 == 1
+          ${AndIf} $R3 == ".pyc"
+            Delete "$KiroWalkRoot$R0\$R2"
+          ${EndIf}
+          ${If} ${FileExists} "$KiroWalkRoot$R0\$R2"
+          ${AndIf} $KiroUnmovable == ""
+            StrCpy $KiroUnmovable "$KiroWalkRoot$R0\$R2"
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+    FindNext $R1 $R2
+  ${Loop}
+  FindClose $R1
+
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
+; Pop an install root and run KiroClearUnmovableFiles over it, but only when
+; it holds this app's executable (the ownership proof KiroEnsureAppInstallDir's
+; update bypass uses). $KiroAppExeName is tested for non-emptiness for the
+; reason given there.
+Function KiroClearUnmovableRoot
+  Pop $KiroWalkRoot
+  ${If} $KiroWalkRoot != ""
+  ${AndIf} $KiroAppExeName != ""
+  ${AndIf} ${FileExists} "$KiroWalkRoot\$KiroAppExeName"
+    Push ""
+    Call KiroClearUnmovableFiles
+  ${EndIf}
 FunctionEnd
 
 ; Updates need progress, not another decision: skip the welcome page while
@@ -713,6 +867,56 @@ FunctionEnd
     Quit
   ${EndIf}
   StrCpy $INSTDIR $KiroInstallDir
+
+  ; Over an existing install, before any uninstaller runs: see
+  ; KiroClearUnmovableFiles. installSection.nsh uninstalls the SHELL_CONTEXT
+  ; install at $INSTDIR, and during an all-users install also the per-user one
+  ; registered under HKCU; both roots are measured first, so a file in the
+  ; second cannot stop the update after the first is already gone. The per-user
+  ; root is read from the same value the template's uninstallOldVersion reads.
+  ; A per-machine install is measured by the elevated instance only, because a
+  ; non-elevated one cannot delete under Program Files and would stop on a
+  ; cache it could have cleared. Nothing has been moved or written when this
+  ; stops, so the installed version keeps working.
+  ;
+  ; shortcut: measures $INSTDIR, which customInit resolves from the same
+  ; InstallLocation value the template hands the uninstaller, and the HKCU
+  ; root only through its InstallLocation; the template falls back to the
+  ; uninstaller's own directory when that value is missing. Measure the
+  ; template's $installationDir instead if the two can ever differ.
+  ${If} $installMode != "all"
+  ${OrIf} ${UAC_IsAdmin}
+    StrLen $KiroMoveRootLength "$TEMP\nsa0000.tmp\old-install"
+    StrCpy $KiroUnmovable ""
+    Push $INSTDIR
+    Call KiroClearUnmovableRoot
+    ${If} $installMode == "all"
+      ; The template uninstalls the HKCU root only when it registered an
+      ; UninstallString, so walk it only then.
+      ReadRegStr $KiroWalkRoot HKCU "${UNINSTALL_REGISTRY_KEY}" UninstallString
+      !ifdef UNINSTALL_REGISTRY_KEY_2
+        ${If} $KiroWalkRoot == ""
+          ReadRegStr $KiroWalkRoot HKCU "${UNINSTALL_REGISTRY_KEY_2}" UninstallString
+        ${EndIf}
+      !endif
+      ${If} $KiroWalkRoot != ""
+        ReadRegStr $KiroWalkRoot HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+        ${If} $KiroWalkRoot != $INSTDIR
+          Push $KiroWalkRoot
+          Call KiroClearUnmovableRoot
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+    ; A missing registry value, a directory the walk could not list or a
+    ; delete that failed sets the error flag; clear it so no later ${Errors}
+    ; test reads it as its own failure.
+    ClearErrors
+    ${If} $KiroUnmovable != ""
+      MessageBox MB_OK|MB_ICONSTOP "$(KiroUnmovableFile)$\r$\n$\r$\n$KiroUnmovable" /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  ${EndIf}
 !macroend
 
 ; Report a failed previous-version uninstall without blocking a silent run.

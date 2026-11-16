@@ -252,12 +252,16 @@ class _Founding:
     one the allocator's priorities exist to avoid.
 
     ``done`` resolves when the founding ends, published or not, and only tells a
-    waiter to look again -- never what it found.
+    waiter to look again -- never what it found. ``entry`` is what it published,
+    when it did: a founder may publish under another key than it matched on
+    (``acquire``'s *published_key*), so a woken waiter takes that entry rather
+    than re-picking by its own key and missing it.
     """
 
     key: Hashable
     done: asyncio.Future[None]
     sessions: list[str] = field(default_factory=list)
+    entry: _Entry | None = None
 
 
 class RuntimeOwnership:
@@ -293,6 +297,7 @@ class RuntimeOwnership:
         spawn: Callable[[], Awaitable[OwnedRuntime]],
         *,
         cap: int = CHAT_RUNTIME_CAP,
+        published_key: Callable[[OwnedRuntime], Hashable] | None = None,
     ) -> Acquisition:
         """Take a LEASE on a runtime, spawning one only when needed.
 
@@ -323,6 +328,12 @@ class RuntimeOwnership:
         runtime may have filled, died, or never been published because its spawn
         raised or was cancelled. A founder's failure is its own; the waiter gets
         no share of it and simply looks again, founding itself if it must.
+
+        *published_key*, when given, names the key a FOUNDED runtime is published
+        under, read off the spawned runtime: a founder whose spawn input describes
+        something the runtime then exposes as its own (a restarted chat's tree) can
+        be published the way a founder that allocated that state is, so later
+        arrivals match it. Matching here still uses *key*.
         """
         while True:
             self._drop_dead()
@@ -351,7 +362,15 @@ class RuntimeOwnership:
             finally:
                 if not founding.done.done():
                     founding.sessions.remove(session_key)
-
+            # What the founding published, even under another key than this one.
+            published = founding.entry
+            if (
+                published is not None
+                and any(e is published for e in self._entries)
+                and published.admits(session_key, cap=cap)
+                and self._alive(published)
+            ):
+                return self._mint(published, session_key, cap=cap, joined=True)
         founding = _Founding(
             key=key, done=asyncio.get_running_loop().create_future(), sessions=[session_key]
         )
@@ -367,7 +386,8 @@ class RuntimeOwnership:
             # sharing placement (cap > 1) logs it; the cap-1 registration of every
             # chat with the preview off stays silent.
             closed = getattr(runtime, "chat_joinable", True) is False
-            entry = _Entry(runtime=runtime, key=key, closed=closed)
+            entry_key = published_key(runtime) if published_key is not None else key
+            entry = _Entry(runtime=runtime, key=entry_key, closed=closed)
             if entry.closed and cap > 1:
                 logger.warning(
                     "chat-runtime-sharing: runtime pid=%s runs an engine that queues chats; "
@@ -375,6 +395,7 @@ class RuntimeOwnership:
                     _pid_of(runtime),
                 )
             self._entries.append(entry)
+            founding.entry = entry
             return self._mint(entry, session_key, cap=cap, joined=False)
         finally:
             # Every way out -- published, raised, cancelled -- clears the marker
@@ -428,6 +449,13 @@ class RuntimeOwnership:
             return None
         entry.leases.pop(lease, None)
         if entry.leases:
+            # A runtime whose departed sessions leave processes behind (codex: its
+            # per-session MCP fleet outlives ``session/close``) takes no new lease
+            # once any holder leaves, so it drains and dies with its last holder
+            # instead of collecting one leftover fleet per departure. Bounded by the
+            # cap: at most cap-1 departed fleets ever wait on one process.
+            if getattr(entry.runtime, "chat_closes_on_departure", False) is True:
+                entry.closed = True
             logger.info(
                 "runtime_ownership outcome=released pid=%s remaining_leases=%d",
                 _pid_of(entry.runtime),
@@ -543,6 +571,20 @@ class RuntimeOwnership:
             if entry.key is not entry.runtime and entry.leases and self._alive(entry)
         ]
 
+    def live_keys(self, exclude: object = None) -> list[Hashable]:
+        """The key of each LIVE runtime placed under a compatibility key, for diagnostics.
+
+        Same selection as :meth:`keyed_lease_counts`, less the runtime *exclude*.
+        A caller logs only which fields differ from its own key, never a value.
+        """
+        return [
+            entry.key
+            for entry in list(self._entries)
+            if entry.key is not entry.runtime
+            and entry.runtime is not exclude
+            and self._alive(entry)
+        ]
+
     def held_leases_on_runtime(self, runtime: object) -> int:
         """Leases still recorded on this runtime OBJECT, alive or not, for telemetry.
 
@@ -552,6 +594,27 @@ class RuntimeOwnership:
         a kill-gate answer, which must stay live-only.
         """
         return sum(len(e.leases) for e in list(self._entries) if e.runtime is runtime)
+
+    def join_on_tree(
+        self, key: Hashable, tree: object, session_key: str, *, cap: int = CHAT_RUNTIME_CAP
+    ) -> Acquisition | None:
+        """A lease on a live runtime under *key* that exposes *tree*, or None. Never spawns.
+
+        A runtime exposes the work directory it inherited or allocated
+        (``work_scratch_dir``). Only a runtime that both matches *key* and exposes
+        *tree* is taken, with the same room and same-session rule as
+        :meth:`acquire`; on None the caller places through :meth:`acquire` instead.
+        """
+        self._drop_dead()
+        for entry in self._entries:
+            if (
+                entry.key == key
+                and entry.admits(session_key, cap=cap)
+                and self._alive(entry)
+                and getattr(entry.runtime, "work_scratch_dir", None) == tree
+            ):
+                return self._mint(entry, session_key, cap=cap, joined=True)
+        return None
 
     # -- internals --
 

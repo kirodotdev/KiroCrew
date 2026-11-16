@@ -59,13 +59,15 @@ import { messageActionGrantLabel } from '../messageActions/messageActionRegistry
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
 import AppDetailLinks from './AppDetailLinks'
 import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
+import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
+import AppDetailBotGrants, { StagedBotScopes, stagedBotScopes } from './AppDetailBotGrants'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
+import { ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
 import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
@@ -113,8 +115,11 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, hasStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, hasStagedGrants: hasOtherStagedGrants,
   } = stagedGrantsOf(app)
+  // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
+  const stagedBots = stagedBotScopes(app)
+  const hasStagedGrants = hasOtherStagedGrants || stagedBots.length > 0
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -345,6 +350,7 @@ export default function AppDetailPage() {
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
             userSessionReachGrant: installed.userSessionReachGrant,
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
+            frameSourcesGrant: installed.frameSourcesGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -471,6 +477,7 @@ export default function AppDetailPage() {
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
             userSessionReachGrant: installed.userSessionReachGrant,
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
+            frameSourcesGrant: installed.frameSourcesGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -1143,6 +1150,7 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              <StagedBotScopes scopes={stagedBots} />
               {stagedLinkHosts.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_hosts')}</div>
@@ -1186,6 +1194,16 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedFrameSources.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_frame_sources')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1" data-testid="staged-frame-sources">
+                    {stagedFrameSources.map(o => (
+                      <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
               {stagedComposerActions.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
@@ -1222,11 +1240,12 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
                     events: stagedEvents,
+                    bots: stagedBots,
                     linkPreviewHosts: stagedLinkHosts,
                     linkPreviewTextPatterns: stagedLinkPatterns,
                     linkPreviewFullUrl: stagedFullUrl ? ['fullUrl'] : [],
@@ -1238,10 +1257,13 @@ export default function AppDetailPage() {
                     workerAutoApprove: stagedWorkerAutoApprove ? ['ownSlots'] : [],
                     reachableByUserSessions: stagedUserSessionReach,
                     desktopCapabilities: stagedDesktopCapabilities,
+                    frameSources: stagedFrameSources,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load({ keepView: true })
+                  // The Bot card's own query: `mc:apps-changed` marks it stale without a refetch.
+                  if (stagedBots.length) void queryClient.invalidateQueries({ queryKey: ['apps', app.name, 'bot-grants'] })
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
@@ -1783,6 +1805,7 @@ export default function AppDetailPage() {
                 )}
                 {app.manifest.permissions.workerAutoApprove && <WorkerAutoApproveBox staged={stagedWorkerAutoApprove} />}
                 {app.manifest.permissions.chatSlots === true && <ChatSlotsBox />}
+                {app.manifest.permissions.hiddenSessions === true && <HiddenSessionsBox />}
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />
                 {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
@@ -1796,28 +1819,9 @@ export default function AppDetailPage() {
             </Card>
           )}
 
-          {/* MCP Servers */}
-          {app.manifest?.mcpServers && Object.keys(app.manifest.mcpServers).length > 0 && (
-            <Card>
-              <CardTitle>{i18nT('pages.appDetailPage.mcp_servers')}</CardTitle>
-              <div className="grid gap-2 mt-2 text-[13px]">
-                {Object.entries(app.manifest.mcpServers).map(([sName, sConfig]) => (
-                  <div key={sName} className="bg-bg-elevated border border-border rounded-md px-2.5 py-2">
-                    <div className="font-mono font-medium text-text text-[12px]">{sName}</div>
-                    {sConfig.url && <div className="text-muted text-[11px] mt-0.5">{sConfig.url}</div>}
-                    {sConfig.command && <div className="text-muted text-[11px] mt-0.5">{sConfig.command}</div>}
-                    {(sConfig.autoApprove || []).length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {(sConfig.autoApprove || []).map((t: string) => (
-                          <span key={t} className="bg-ok-subtle border border-ok/20 px-1 py-0 rounded text-[10px] text-ok-text">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
+          {app.installed && <AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} />}
+
+          <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 
           {/* Tags */}
           {(app.tags || []).length > 0 && (

@@ -148,6 +148,7 @@ class AcpRuntime:
     _start_mount_check = _rt_setup._start_mount_check
     # ``session/new`` end to end: ``kiro_crew.acp.runtime_session_create``.
     create_session = _rt_create.create_session
+    _create_session_with_harness_state = _rt_create._create_session_with_harness_state
     _collect_late_start = _rt_create._collect_late_start
     _teardown_late_session = _rt_create._teardown_late_session
     start_collectors = _rt_create.start_collectors
@@ -155,6 +156,7 @@ class AcpRuntime:
     probe_advertised_models = _rt_create.probe_advertised_models
     # ``session/load`` end to end: ``kiro_crew.acp.runtime_session_load``.
     load_session = _rt_load.load_session
+    _load_session_with_harness_state = _rt_load._load_session_with_harness_state
     _wait_managed_mcp = _rt_load._wait_managed_mcp
     _park_in_start_agent = _rt_load._park_in_start_agent
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
@@ -367,6 +369,9 @@ class AcpRuntime:
         # The agent.env snapshot this spawn's handshake judged telemetry on, handed
         # to launch so the child gets the same values; None lets launch read it.
         self._spawn_agent_env: dict[str, str] | None = None
+        # The spec this spawn's handshake judged, handed to the MCP switch-off so
+        # both judge one read; None lets the switch-off read it.
+        self._spawn_spec: dict[str, Any] | None = None
         # Resolved on FIRST USE, never here: ``ACP_BACKENDS_KNOWN`` admits
         # backends the shared-process runtime has no harness for, and provider
         # safety constructs a runtime for every one of them to prove the reader
@@ -628,6 +633,10 @@ class AcpRuntime:
         # binary THIS process is executing, which can differ from the one on
         # disk after an in-place upgrade. Empty until the handshake completes.
         self._agent_version = ""
+        # Per-session state a harness with ``per_session_state`` prepared before each
+        # session's request (``HarnessAdapter.prepare_session``), by session id, ended
+        # with the session (``HarnessAdapter.end_session``). Empty on every other host.
+        self._session_harness_states: dict[str, Any] = {}
         # Entitlement probe state (probe_advertised_models): single-flight lock
         # plus a short-TTL cache of the last non-empty answer.
         self._entitlement_probe_lock = asyncio.Lock()
@@ -724,6 +733,10 @@ class AcpRuntime:
         # set by a KAS start from the engine it ran; True for every other host,
         # where chat sharing's own membership set decides.
         self.chat_joinable = True
+        # Whether this process stops taking chats once any chat leaves it
+        # (``RuntimeOwnership.release``): set by a shared codex placement, whose
+        # departed sessions leave their MCP fleet running; False everywhere else.
+        self.chat_closes_on_departure = False
         # The server path from kiro-cli's ``failed to canonicalize KAS server path``
         # line, latched by ``_drain_stderr`` before the first session is ready
         # (whatever ``recording_allowed`` says) and cleared by a revive.

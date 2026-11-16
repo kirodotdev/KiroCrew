@@ -1180,8 +1180,9 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     branch at all (the provider's own sentence is shown verbatim), while this
     classifier deliberately hoists all three above the 5xx family so a
     co-occurring connector token or retry hint cannot rescue a payload the
-    backend rejected for its shape or size (see
-    ``test_terminal_branches_outrank_a_co_occurring_dispatch_failure``). A frame
+    backend rejected for its shape or size
+    (``test_terminal_branches_outrank_a_co_occurring_dispatch_failure`` checks the
+    malformed-request branch this way; the oversized-request branch is untested). A frame
     carrying both wordings therefore reads as 5xx prose with a terminal verdict;
     only the verdict drives retries.
 

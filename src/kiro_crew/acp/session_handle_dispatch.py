@@ -9,7 +9,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_input_wait_emitted``, ``_last_stop_reason``,
+``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
 ``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
 ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
@@ -29,8 +29,9 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import raw_sdk_tasks
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     classify_notification,
@@ -60,6 +61,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
+from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.tool_silence import named_tool_call_id
@@ -171,6 +173,18 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+    # This turn's claude children are listed as they are seen.
+    self._reset_claude_child_turn()
+    # What the pre-turn drain read from a claude child that ended between turns:
+    # the text its redactor held, then its roster, so its card gets both.
+    if self._drained_child_events:
+        _drained, self._drained_child_events = self._drained_child_events, []
+        for _drained_event in _drained:
+            yield _drained_event
+    # Whether this is the dashboard turn that draws the session's background work.
+    # The readers take the per-chat client; they read the fields this handle names alike.
+    _raw_reader: Any = self
+    _draws_background = raw_sdk_tasks.begin_draw(_raw_reader)
     try:
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -717,6 +731,13 @@ async def _dispatch_events(
                 # Runtime process died — sentinel
                 raise self._died("Runtime process died during prompt")
 
+            # What Claude Code's background work sent before this frame, drawn
+            # above it by the dashboard turn alone (``raw_sdk_tasks``), as the
+            # per-chat client draws it.
+            if _draws_background:
+                for _raw_event in raw_sdk_tasks.pending_events(_raw_reader):
+                    yield _raw_event
+
             last_data_ts = time.monotonic()
             parked_at_data = self._parked_total
             if not msg.fanout_no_owner:
@@ -913,6 +934,9 @@ async def _dispatch_events(
                     if msg.id is not None:
                         await self._runtime.send_error(msg.id, -32600, "invalid request id")
                     continue
+                # A Stop on the card of the claude child that asks settles it
+                # (``session_handle_claude_children``).
+                self._note_native_child_request(msg)
                 # The request is its call's frame (a child's: its sub-agent's).
                 # The human wait that follows is a consumer park, which every
                 # clock subtracts, so the call's timer is paused while it lasts.
@@ -932,6 +956,10 @@ async def _dispatch_events(
                 if await self._refuse_unidentifiable_mcp_approval(msg, _perm_event):
                     continue
                 if await self._refuse_unreadable_mcp_identity(_perm_event):
+                    continue
+                if host_checks_sessions(self._runtime) and await self._refuse_by_harness(
+                    _perm_event
+                ):
                     continue
                 if await self._refuse_unretained_provenance(msg, _perm_event):
                     continue
@@ -995,6 +1023,8 @@ async def _dispatch_events(
                 _elicit_event = await self._handle_elicitation_request(msg)
                 if _elicit_event is None:
                     continue
+                # A Stop on the card of the claude child that asks settles it.
+                self._note_native_child_request(msg)
                 self._sync_silence_hold()
                 # Same park marking as a permission: the consumer waits on a
                 # human here too, and an observer must not read that as a stall.
@@ -1011,6 +1041,12 @@ async def _dispatch_events(
                 # frame for it of a kind the silence timer cannot read.
                 self._retire_call_timer(named_tool_call_id(msg.params))
             elif action == "update":
+                # A session that left the permission state its host requires is
+                # closed before any of the frame is yielded. Read only on a host
+                # with per-session state, so every other host makes no call.
+                if host_checks_sessions(self._runtime):
+                    self._note_permission_state(msg)
+                    await self._refuse_moved_permission_state()
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this

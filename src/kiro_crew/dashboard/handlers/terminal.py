@@ -395,14 +395,19 @@ def _bash_ready_env(token: str) -> dict[str, str]:
     The snippet is single-shot and self-removing: it emits only while the token
     variable is still set, unsets that token so neither a later prompt nor a
     child shell repeats the sequence, and withdraws itself from
-    ``PROMPT_COMMAND`` only when that variable is still exactly the scalar that
-    was exported. Both halves of that last test matter: a profile that APPENDED
-    (``PROMPT_COMMAND="$PROMPT_COMMAND; history -a"``) no longer matches, and one
-    that appended as an ARRAY (``PROMPT_COMMAND+=("history -a")``, Bash 5.1+)
-    leaves the exported text as element zero — which the scalar expansion alone
-    would match, so unsetting there would take the user's own element with it.
-    ``${PROMPT_COMMAND[1]+x}`` distinguishes the two without Bash 5.1 syntax the
-    ``/bin/bash`` on macOS (3.2) cannot parse.
+    ``PROMPT_COMMAND`` only while element zero is still exactly the value that
+    was exported. A profile that APPENDED to the scalar
+    (``PROMPT_COMMAND="$PROMPT_COMMAND; history -a"``) does not match it, so the
+    hook stays. A profile that appended as an ARRAY
+    (``PROMPT_COMMAND+=("history -a")``, Bash 5.1+) leaves the exported text as
+    element zero. systemd's ``/etc/profile.d`` OSC-context script does this on
+    every login shell of a systemd host, so it is the common case there, not a
+    corner. Unsetting the variable there would take the profile's own elements
+    with it, so the hook drops ONLY element zero: replaced by the inherited
+    command when there is one, else removed with the rest shifted down, which
+    is the array the profile would have built with no hook in front.
+    ``${PROMPT_COMMAND[1]+x}`` tells the two shapes apart without Bash 5.1
+    syntax the ``/bin/bash`` on macOS (3.2) cannot parse.
 
     A profile that ASSIGNS ``PROMPT_COMMAND`` outright drops the hook, and with
     it the marker: that session's barrier never opens, and the client's own
@@ -435,11 +440,11 @@ def _bash_ready_env(token: str) -> dict[str, str]:
         f"builtin printf '\\033]697;KiroCrewReady;%s\\007' "
         f'"${{{_READY_TOKEN_VAR}}}"; '
         f"builtin unset {_READY_TOKEN_VAR}; "
-        f'if [[ "${{PROMPT_COMMAND-}}" == "${{{_READY_HOOK_VAR}-}}" '
-        f'&& -z "${{PROMPT_COMMAND[1]+x}}" ]]; then '
+        f'if [[ "${{PROMPT_COMMAND-}}" == "${{{_READY_HOOK_VAR}-}}" ]]; then '
         f'if [[ -n "${{{_READY_PREV_VAR}+x}}" ]]; then '
         f'PROMPT_COMMAND="${{{_READY_PREV_VAR}}}"; '
-        f"else builtin unset PROMPT_COMMAND; fi; fi; "
+        f'elif [[ -z "${{PROMPT_COMMAND[1]+x}}" ]]; then builtin unset PROMPT_COMMAND; '
+        f'else PROMPT_COMMAND=("${{PROMPT_COMMAND[@]:1}}"); fi; fi; '
         f"builtin unset {_READY_HOOK_VAR} {_READY_PREV_VAR}; fi"
     )
     inherited = os.environ.get("PROMPT_COMMAND") or ""

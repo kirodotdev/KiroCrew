@@ -27,15 +27,24 @@ CREW_TOOLS = (
     "session_close",
 )
 
+#: The goal-conductor skill keeps its remote-dispatch procedure out of SKILL.md, so
+#: a conductor learns of it only from these descriptions, which exist only while
+#: the preview is on.
+_READ_FIRST = (
+    "Before your first crew or work_item call, read references/remote-dispatch.md "
+    "in the goal-conductor skill's directory and follow it."
+)
+
 _CREW_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (
         "Preview. Run this on a connected remote crew instead of this machine: the "
         "crew's instance id or exact name. The session lives on that crew and shows "
-        "in its sidebar group. With crew, session_create takes only title, agent and "
-        "model (omit agent to get the crew's own default), and send, read, stop and "
+        "in its sidebar group. With crew, session_create takes only title, agent, "
+        'agent_kind ("template" only) and model (omit agent to get the crew\'s own '
+        "default), and send, read, stop and "
         "close reach only a crew session YOU opened with session_create(crew=) on "
-        "that same crew; pass the key it returned as target."
+        "that same crew; pass the key it returned as target. " + _READ_FIRST
     ),
 }
 
@@ -48,7 +57,7 @@ _WORK_ITEM_PROPERTY: dict[str, Any] = {
         "Omit crew and the hub picks the connected crew with the most headroom; when "
         "none has room the item stays unbound, and only a turn the owner sends can "
         "retry. Its reports reach your next work_ledger_read, and a decide reaches "
-        "the worker."
+        "the worker. " + _READ_FIRST
     ),
 }
 
@@ -75,7 +84,11 @@ def _on(resp: dict[str, Any]) -> str:
 
 
 def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
-    payload = {k: args[k] for k in ("crew", "title", "agent", "model", "work_item") if k in args}
+    payload = {
+        k: args[k]
+        for k in ("crew", "title", "agent", "agent_kind", "model", "work_item")
+        if k in args
+    }
     extra = sorted(k for k in args if k not in payload and args.get(k) not in (None, ""))
     if extra:
         return f"Error: session_create with crew does not take {', '.join(extra)}."

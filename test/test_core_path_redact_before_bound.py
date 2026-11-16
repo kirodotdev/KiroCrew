@@ -214,8 +214,10 @@ _SCANNED_MODULES = [
     "src/kiro_crew/acp/client.py",
     # The client's owner modules.
     "src/kiro_crew/acp/client_class.py",
+    "src/kiro_crew/acp/client_claude.py",
     "src/kiro_crew/acp/client_claude_seed.py",
     "src/kiro_crew/acp/client_claude_session.py",
+    "src/kiro_crew/acp/client_claude_turn.py",
     "src/kiro_crew/acp/client_lifecycle.py",
     "src/kiro_crew/acp/client_mcp_array.py",
     "src/kiro_crew/acp/client_model_selection.py",

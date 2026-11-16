@@ -763,12 +763,14 @@ def _build_slot_links(
         if isinstance(candidate, ChannelLink):
             mirror = candidate
     except Exception:
+        # No readable mirror link: the slot is shown without one.
         pass
     try:
         raw_ts, raw_channel = self.sessions.get_slack_link(session_key)
         persisted_ts = raw_ts if isinstance(raw_ts, str) else None
         persisted_channel = raw_channel if isinstance(raw_channel, str) else None
     except Exception:
+        # No readable Slack link: the in-memory values below are used.
         pass
 
     # Prefer persisted values, but retain explicit in-memory Slack links in
@@ -976,6 +978,14 @@ def serialize_slot(
             "slack_thread_ts": slack_thread_ts,
         }
     )
+    # Present only while a "continue when the usage limit resets" wait is armed on
+    # this chat, so every other slot's frame is unchanged. Imported here: the module
+    # imports chat_utils, which imports this package.
+    from kiro_crew.dashboard.limit_continue import armed_resume_iso
+
+    resume_at = armed_resume_iso(slot)
+    if resume_at:
+        payload["limit_continue_at"] = resume_at
     # The thread a Slack-born session lives in. Not a mirror: `slack_linked`
     # stays False for it. See _slot_link_projection. Only a Slack-born slot
     # carries it, so every other slot's frame is unchanged by it.

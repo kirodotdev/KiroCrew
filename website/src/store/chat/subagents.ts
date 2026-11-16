@@ -145,11 +145,32 @@ export const SUBAGENT_TOOL_CALLS_CAP = 50
  *  and the card reports the difference rather than implying a complete list.
  *  Reconnect replay runs this same rule on a copied timeline, while
  *  `clearSubagentsForSnapshot` keeps the running card's held timeline.
+ *
+ *  A `refinement` (a frame marked `is_update`: the harness renamed a call it
+ *  first announced with a generic title) renames the entry of its call wherever
+ *  that entry sits, because calls of parallel children interleave; one naming
+ *  no entry here is recorded by the rule above, before the newest entry when its
+ *  count does not move past the held one. Returns whether the entry it
+ *  wrote is the newest, which is when the caller's `lastTool` takes the title.
  *  Must run BEFORE the caller stores the frame's `tool_count`. */
-function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined, callId: string | undefined) {
+function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined, callId: string | undefined, refinement = false): boolean {
   const calls = (a.toolCalls ??= [])
   const newest = calls[calls.length - 1]
   const id = callId || undefined
+  if (refinement && id) {
+    const row = calls.findLast(call => call.id === id)
+    if (row) {
+      row.tool = tool
+      return row === newest
+    }
+    // An unlisted call's refinement that moves no count is older than the newest
+    // call, so it is listed before it and leaves `lastTool` alone.
+    if (newest && typeof toolCount === 'number' && toolCount <= (a.toolCount ?? 0)) {
+      calls.splice(calls.length - 1, 0, { tool, id })
+      if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+      return false
+    }
+  }
   let same: boolean
   if (id && newest?.id) same = newest.id === id
   // A replay from an older gateway can seed its one row without an id, so an
@@ -161,10 +182,11 @@ function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | u
   if (same && newest) {
     newest.tool = tool
     if (id) newest.id = id
-    return
+    return true
   }
   calls.push(id ? { tool, id } : { tool })
   if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+  return true
 }
 
 /** A replayed snapshot is older than the held card when it carries a lower
@@ -697,14 +719,15 @@ export const subagentReducers = {
       toolCount: 0, stalled: false,
     }
   },
-  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }>) {
+  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; is_update?: boolean }>) {
     const { slot, id } = action.payload
     // Prototype-pollution guard is centralized in upsertSlotSub, which also
     // creates the entry when this is the first frame naming the agent.
     const a = upsertSlotSub(state, slot, id)
     if (a) {
-      if (action.payload.tool) recordToolCall(a, action.payload.tool, action.payload.tool_count, action.payload.tool_call_id)
-      a.lastTool = action.payload.tool; a.status = 'tool'
+      const newest = !action.payload.tool || recordToolCall(a, action.payload.tool, action.payload.tool_count, action.payload.tool_call_id, action.payload.is_update === true)
+      if (newest) a.lastTool = action.payload.tool
+      a.status = 'tool'
       // A tool frame proves the run launched: a retired verdict must not
       // resurrect when the run later ends `stopped`.
       a.approvalRetired = undefined
@@ -747,14 +770,18 @@ export const subagentReducers = {
   /** One coalesced ~1s frame carrying the latest delta per agent (scale
    *  plumbing — replaces per-event tool/stalled/retrying frames when many
    *  agents run). Field presence decides what to apply; latest wins. */
-  sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; tool_call_id?: string; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
+  sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; tool_call_id?: string; is_update?: boolean; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
     for (const u of action.payload.updates || []) {
       const a = upsertSlotSub(state, u.slot, u.id)
       if (!a) continue
       // Order matters: retrying (attempt) applies FIRST so a tool field in
       // the same merged entry — meaning work resumed — clears it last.
       if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
-      if (typeof u.tool === 'string' && u.tool) { recordToolCall(a, u.tool, u.tool_count, u.tool_call_id); a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
+      if (typeof u.tool === 'string' && u.tool) {
+        if (recordToolCall(a, u.tool, u.tool_count, u.tool_call_id, u.is_update === true)) a.lastTool = u.tool
+        if (a.status === 'running') a.status = 'tool'
+        a.retrying = false
+      }
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled

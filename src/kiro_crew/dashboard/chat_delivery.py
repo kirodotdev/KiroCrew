@@ -1105,7 +1105,7 @@ async def steer_into_running_turn(
     if decision_strip:
         # The same field the assistant row's strip rides on, read by the same
         # frontend reader. Stamped at APPEND time rather than written afterwards,
-        # for the reason `chat_runner._decisions_strip_meta` states: `append`
+        # for the reason `chat_turn.decisions_hooks._decisions_strip_meta` states: `append`
         # broadcasts the live frame from inside the call, so a later write would
         # persist a receipt the open tab never renders.
         meta["decisions_strip"] = decision_strip

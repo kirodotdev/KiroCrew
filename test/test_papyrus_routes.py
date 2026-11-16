@@ -782,6 +782,8 @@ class TestCompile:
             )
         assert compile_mock.await_args is not None
         assert compile_mock.await_args.args[1] == "amlc.tex"
+        # Persisted, so the next compile reads it rather than searching again.
+        assert store.get_main_file(project) == "amlc.tex"
 
     async def test_404s_a_project_with_no_tex(self, enabled: None, data_root: Path) -> None:
         proj = store.projects_dir() / "empty"

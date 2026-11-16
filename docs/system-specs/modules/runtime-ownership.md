@@ -100,8 +100,13 @@ says WHICH sessions may share: the preview on, a backend in
 `ACP_BACKENDS_CHAT_RUNTIME_SHARING` (asked separately from the subagent
 `ACP_BACKENDS_SESSION_SHARING`, because it is the chat teardown this membership
 asserts is safe), on KAS an engine `kas_chat_sharing_ready` accepts, no session
-environment, persistent memory mode, a dashboard chat origin, and not a crew member.
-`ChatRuntimeKey` is the compatibility key they share ON, and `chat_runtime_cap`
+environment, persistent memory mode, a dashboard chat origin, and for a Bot (crew
+member) session a tree root that is the same member on the same memory store.
+`ChatRuntimeKey` is the compatibility key they share ON. It carries the session
+tree's root (`share_tree_root_of`, the top of the creator chain the slot list nests
+on, read once at the start) and the session's member and store, so sessions share
+only inside one tree and two Bots never share. On KAS it leaves out the agent, its
+spec generation, the model and the effort, which KAS takes per session. `chat_runtime_cap`
 reads `agent.chat_runtime_sharing_max_sessions`, forced back to `CHAT_RUNTIME_CAP`
 whenever the preview is off. With the preview off the paragraph above is the
 shipped behaviour exactly.
@@ -143,6 +148,17 @@ founder's error is never handed to another session. Every exit from the founder
 clears the marker and wakes its waiters; a runtime is published in the same
 synchronous stretch in which `spawn()` returns, so no cancellation point lies
 between a spawned runtime and its entry.
+
+**A founder may publish under another key than it matched on.** `acquire`'s
+optional `published_key` reads the key off the spawned runtime; matching still
+uses the caller's key. Chat sharing uses it for a restarted chat that founds its
+tree's first process: its key carries the scratch tree it was recorded in, and
+the process mounts that tree as its own `work_scratch_dir`, so it is published
+with the empty `shared_scratch` a fresh founder publishes, and a fresh chat of
+the same tree joins it. A runtime that does not expose the tree keeps the full
+key. The founding records the entry it published, and a woken waiter takes that
+entry (when it has room and is alive) before re-picking by its own key, so two
+restarts of one tree waiting on one launch still land on one process.
 
 On the **chat** registration path a lease means the same thing as registry
 membership, which is why it is taken there rather than at provider start:
@@ -196,6 +212,16 @@ own `kas/<version>-<sha256>` extract for the kiro-cli version Crew spawns. The
 kiro-cli version alone does not count, and an engine version that cannot be read
 (no extract yet, no installed bundle) keeps one process per chat
 (`kas_engine_not_shareable`).
+
+**Each harness has its own switch under the preview.** The table is
+`agent_sdk.backends_sessions.CHAT_RUNTIME_SHARING_HARNESSES`: one row per harness
+that may share chats, with the default of its switch (KAS: on). The switch is
+`agent.chat_runtime_sharing_harnesses.<harness>`, shown under the preview's row in
+Settings > Developer > Feature previews only while the preview is on. A chat may
+share only when the preview is on AND its harness's switch is on AND every rule
+above holds; a harness switched off keeps one process per chat
+(`harness_switched_off`, checked before the KAS engine is read). Letting another
+harness share chats is one row in that table.
 
 The preview also moves KAS onto Crew's own pinned engine by itself
 (`kas_route.REASON_SHARING_PREVIEW`), so it works from the Feature previews row
@@ -767,16 +793,18 @@ commit.
   as undiagnosable as before. A positive control
   (`test_the_needles_match_a_known_call_site`) stops an empty scan reading as total
   success.
-- `test/test_pid_reader_ratchet.py` — `_BASELINE_SITES` counts src sites that read
-  a runtime's pid, by AST rather than grep so reflective reads survive nesting and
-  wrapping. A site whose reading genuinely belongs to the module that owns the pid
-  carries an owner marker and is counted apart under `_BASELINE_OWNER_MARKED`, so
-  marking a site is a visible act rather than a silent exemption. The exact-match
-  test refuses a stale baseline in either direction: a baseline left above the real
-  count leaves room for a future reader to fill silently.
+- `test/test_pid_reader_ratchet.py` — `_BASELINE` counts, per file, src sites that
+  read a runtime's pid, by AST rather than grep so reflective reads survive nesting
+  and wrapping. A site whose reading genuinely belongs to the module that owns the
+  pid carries an owner marker and is counted apart, in the second number of its
+  file's entry, so marking a site is a visible act rather than a silent exemption.
+  The exact-match test refuses a stale entry in either direction: an entry left
+  above the real count leaves room for a future reader to fill silently.
 
-The baseline is an invariant of the tree, not of a branch. Whoever merges after
-someone else re-measures on their own tree.
+The baseline is an invariant of the tree, not of a branch. The kill-chokepoint
+baseline is one total, so whoever merges after someone else re-measures on their
+own tree. The pid-reader baseline is one line per file, so two changes to different
+files merge with the table right and two changes to one file conflict on its line.
 
 ### The leak and chaos gates
 
@@ -826,8 +854,13 @@ recover.
   reader ratchet still counts; each needs classifying as a session-level question,
   a runtime handle, or a reading whose owner is the module that holds the pid.
 - **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
-  by default, so a default install still serves one chat per runtime. codex is not
-  a chat-sharing member: its chat teardown's record preservation has no lane cover.
+  by default, so a default install still serves one chat per runtime. The members
+  are KAS (its switch on by default) and codex (off by default); kiro-cli is not,
+  because some of its session-control frames name no session. A shared codex
+  process takes no new chat once any chat leaves it and dies with its last chat
+  (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's
+  `session/close` leaves the departed session's MCP fleet running, so this bounds
+  the leftover fleets to cap-1 per process instead of one per chat turnover.
 - **Membership is narrower than the slice it is compared against.** The app
   backend table claims each spawned backend's root process, plus that root's direct
   children where the gateway's wrap inserted a forking sandbox launcher (so the

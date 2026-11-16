@@ -1574,10 +1574,12 @@ async def handle_message_transport(
             try:
                 await slack.post_message(channel, _transport_error_text(exc), post_thread_ts)
             except Exception:
+                # A failed error reply must not raise out of this handler.
                 pass
         try:
             await slack.set_thread_status(channel, reply_ts, "")
         except Exception:
+            # Clearing the thread status is cosmetic.
             pass
     finally:
         if _live is not None:

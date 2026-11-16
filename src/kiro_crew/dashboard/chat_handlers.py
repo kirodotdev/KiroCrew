@@ -274,6 +274,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     deny_session_approval_caller,
 )
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
+    _app_hides_own_mode,
     _birth_default_project,
     _check_new_slot_assignment,
     _created_slot_row,
@@ -309,6 +310,8 @@ from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # n
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
     _own_models_field,
+    _write_session_switch,
+    api_chat_slot_fast_mode,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
     api_chat_slot_ultracode,

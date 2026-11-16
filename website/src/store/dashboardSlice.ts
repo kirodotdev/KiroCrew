@@ -1778,7 +1778,7 @@ const _unreadByModeCache = new Map<string, UnreadByModeSelector>()
 export function selectUnreadByMode(mode: string): UnreadByModeSelector {
   let sel = _unreadByModeCache.get(mode)
   if (!sel) {
-    // The Crew Mode and mate sessions previews decide whether crew members and a
+    // Conductor mode (off in LTS) and the mate sessions preview decide whether crew members and a
     // mate's sessions count (`crewMemberKeys`).
     // It is passed as an argument, not read inside an input selector: the
     // selector memoizes on its arguments, so a flip with the same state would

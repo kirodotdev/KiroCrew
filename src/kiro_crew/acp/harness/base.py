@@ -122,6 +122,16 @@ class SpawnContext:
     seed) and records there the facts the session's turn-time code reads back (a
     gate nonce, a resolved adapter version)."""
 
+    extra_env: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """The shared runtime's own ``extra_env``, which its child is launched with on
+    top of the gateway's environment and ``agent.env``. Read by a host that boots a
+    probe child before the real one (the DeepSeek Harness gate read-back), so the
+    probe composes what the child will."""
+
+    agent_env: Mapping[str, str] | None = field(default=None, kw_only=True)
+    """The ``agent.env`` snapshot the shared runtime launches with, or ``None`` when
+    it reads ``agent.env`` at launch. Read for the same probe."""
+
 
 @dataclass
 class HarnessReadBack:
@@ -152,6 +162,11 @@ class HarnessReadBack:
     """Servers switched off in Crew, recorded by the projection, which the read-back
     refuses when the host mounts one itself."""
 
+    config_model: str = ""
+    """The ``model`` the host's own resolved config names, or ``""`` when it names
+    none. The start-time model check reads it to tell a model the operator chose
+    from one the host fell back to."""
+
 
 class ProcessSession(Protocol):
     """What a :class:`ProcessAdapter` may read, write and ask of the session it launches.
@@ -159,8 +174,8 @@ class ProcessSession(Protocol):
     ``AcpClient`` is the production implementation; a test hands in a plain object
     carrying these members. The attributes are the session's own state, named as the
     session names them, because the session's turn-time code reads them after the
-    launch: the gate tripwires read the nonces, the settings writer reads the
-    adapter version. A config read-back is the adapter's own
+    launch: the gate tripwires read the nonces. A harness whose session carries more
+    declares a protocol of its own over this one (``harness.claude.ClaudeProcessSession``). A config read-back is the adapter's own
     (:class:`HarnessReadBack`), reached through :meth:`_harness_read_back`.
     """
 
@@ -169,8 +184,6 @@ class ProcessSession(Protocol):
     _session_key: str | None
     _model: str
     _agent_version_read: bool
-    _claude_adapter_argv: tuple[str, ...]
-    _claude_adapter_disk_version: str
     _session_harness_deny_rules: tuple[str, ...]
     _session_mcp_unhonoured: frozenset[str]
     _mimocode_governed_stop: tuple[str, str] | None
@@ -179,9 +192,7 @@ class ProcessSession(Protocol):
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
-    _deepseek_gate_nonce: str
     _unasked_shell_tripwire: bool
-    _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
     _launch_mcp_servers: list[Any] | None
     _mcp_relaunch_pending: bool
@@ -213,17 +224,8 @@ class ProcessSession(Protocol):
         The session keeps its adapter before :meth:`ProcessAdapter.resolve_spawn`
         runs, so what the launch records here is what the session reads after it."""
 
-    def _opencode_session_mcp_servers(self) -> list[dict[str, Any]]:
-        """The opencode session's ``mcpServers`` entries."""
-
     def _mimocode_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The MiMo Code session's ``mcpServers`` entries."""
-
-    def _goose_session_mcp_servers(self) -> list[dict[str, Any]]:
-        """The goose session's ``mcpServers`` entries."""
-
-    def _deepseek_session_mcp_servers(self) -> list[dict[str, Any]]:
-        """The DeepSeek Harness session's ``mcpServers`` entries."""
 
     def _copilot_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The Copilot CLI session's ``mcpServers`` entries."""
@@ -236,15 +238,6 @@ class ProcessSession(Protocol):
 
     async def _discard_copilot_mcp_config(self) -> None:
         """Remove this session's Copilot CLI launch MCP config, if one was written."""
-
-    async def _seed_session_settings(self) -> None:
-        """Seed the session's own settings file, best-effort."""
-
-    async def _prepare_claude_side_read_denies(self) -> None:
-        """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
-
-    def _refuse_claude_session_below_floor_before_spawn(self, installed_version: str) -> None:
-        """Refuse an option-bound session the installed claude-agent-acp is too old for."""
 
     def _install_idle_reader(self) -> None:
         """Have the session read stdout between turns (idempotent)."""
@@ -339,6 +332,15 @@ class SpawnPlan:
 
     Runs on the spawn worker with the merged environment. An explicit private
     state location skips preparation, preserving the operator's override.
+    """
+
+    child_env: Mapping[str, str] = field(default_factory=dict)
+    """Variables this spawn decided its child must carry, set on the child's
+    environment just before :meth:`HarnessAdapter.apply_spawn_env` runs.
+
+    For a value the spawn itself minted, which a harness keeps no state to hand on
+    (the DeepSeek Harness gate nonce its read-back was booted with, and the
+    permission mode it pinned). Empty for every other host.
     """
 
 
@@ -807,6 +809,128 @@ class HarnessAdapter(LaunchAdapter):
         refuses the start before anything is sent.
         """
         return params, agent
+
+    # ── Seam 3b: per-session state (a host whose sessions carry their own setup) ──
+
+    #: True on a host that prepares each session on its own before ``session/new`` /
+    #: ``session/load`` and checks it after (:meth:`prepare_session` and the seams
+    #: below). The runtime reads this before awaiting any of them, so a host that
+    #: answers False -- kiro-cli, KAS, codex -- makes no extra call at all
+    #: (harness-parity H13).
+    per_session_state: bool = False
+
+    async def prepare_session(
+        self,
+        *,
+        work_dir: str | Path,
+        agent: str | None,
+        model: str,
+        session_key: str,
+        channel_id: str,
+        memory_mode: str,
+    ) -> Any:
+        """Prepare one session before its ``session/new`` or ``session/load`` goes out.
+
+        Returns the session's state, handed back to every seam below, or None.
+        Off-loop work (a settings file this host reads per session) belongs here.
+        Raising refuses the start before anything is sent. Reached only where
+        :attr:`per_session_state` is True.
+        """
+        return None
+
+    def permission_surface_owned(self, state: Any) -> bool:
+        """Whether Crew governs this session's native permission surface, for the
+        mirror's array: False unless the host's own state says it does."""
+        return False
+
+    def session_meta(
+        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+    ) -> dict[str, Any] | None:
+        """The ``_meta`` entries this session's request carries, built after its array, or None."""
+        return None
+
+    async def after_session_start(
+        self,
+        state: Any,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        send_request: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        close_session: Callable[[], Awaitable[None]],
+        agent_version: str = "",
+    ) -> None:
+        """Check the session that just started, before its first prompt.
+
+        *agent_version* is the ``agentInfo.version`` the process reported at its
+        handshake.
+
+        *send_request* sends a request on the shared connection and awaits its
+        answer; *close_session* ends THIS session only. A host that refuses the
+        session closes it through *close_session* and raises; it never ends the
+        process, which other sessions share.
+        """
+
+    async def end_session(self, state: Any) -> None:
+        """Release what :meth:`prepare_session` set up, once the session is over or
+        never started. Must not raise."""
+
+    def take_session_frame(self, state: Any, msg: Any) -> bool:
+        """Whether the host reads the notification *msg* of a session into its *state*.
+
+        Read by the runtime's reader for a notification that names a registered
+        session, with what :meth:`prepare_session` returned for it (``None`` when
+        nothing). A frame taken here is put on no queue: no turn, waiting request or
+        idle reader of the session sees it. Every host answers ``False`` unless it
+        reads such frames itself. Must not raise.
+        """
+        return False
+
+    def permission_refusal(
+        self, state: Any, event: Any, *, unclassified: bool
+    ) -> tuple[str, str] | None:
+        """``(reason, tool_name)`` when this host refuses a permission request, or None.
+
+        For a host whose tool identity Crew reads from the harness's own channel
+        (goose's ``_meta.goose.toolCall``): a call that channel classified as nothing
+        (*unclassified*: the session's ``tool_call`` frame said neither a command
+        nor a server), or one naming a server this session never placed, is refused
+        before any gate reads it. Only where :attr:`per_session_state` is True.
+        """
+        return None
+
+    def session_update_issue(self, state: Any, update: dict[str, Any]) -> str:
+        """Why this session must stop on *update*, a ``session/update`` it sent, or ``""``.
+
+        For a host whose permission state a session can move mid-session (goose's
+        mode): the runtime closes that session and fails its turn with the gate's
+        reason. Read on every update the session's turn and its pre-turn drain see,
+        and only where :attr:`per_session_state` is True.
+        """
+        return ""
+
+    def note_permission_approved(self, state: Any, tool_call_id: str) -> None:
+        """Record that Crew's yes to *state*'s permission request for *tool_call_id*
+        was written.
+
+        For a host that holds a session to "a call completes only with Crew's yes"
+        (the DeepSeek Harness gate tripwire, :meth:`session_update_issue`): every
+        other outcome -- a refusal on any path, a cancel, no answer yet -- leaves
+        the call unapproved. Called by the handle's approve path once the answer is
+        written, and only where :attr:`per_session_state` is True. Must not raise.
+        """
+
+    #: True when a :meth:`session_update_issue` refusal means the PROCESS can no
+    #: longer be trusted, not just the session: the host's gate is composed into the
+    #: process once (the DeepSeek Harness ``--patch`` plugin), so a call that ran past
+    #: it on one session says the same of every other. The runtime is then marked
+    #: dead instead of closing the one session.
+    permission_state_issue_ends_process: bool = False
+
+    def permission_state_audit(self, state: Any) -> tuple[str, str, str] | None:
+        """``(tool_name, outcome, reason)`` for the audit row of the issue
+        :meth:`session_update_issue` last reported on *state*, or None for the default
+        row (a denied ``session/set_mode``, the mode tripwire's). Must not raise."""
+        return None
 
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.

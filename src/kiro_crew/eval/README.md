@@ -57,6 +57,43 @@ and the JSON summary adds `runs` and `runs_passed` per scenario and a top-level
 `repeat`. The JSON also records `agent` and `model` when you gave them. Without the
 new flags the command and its files are unchanged.
 
+## Gating on a saved run
+
+```bash
+# Compare each scenario's score with an earlier run's JSON summary
+kirocrew eval --dir ./evals --baseline eval_results/main.json --max-drop 0.05
+
+# Also write the results as a JUnit XML file for a CI test report
+kirocrew eval --dir ./evals --baseline eval_results/main.json --junit eval.xml
+```
+
+A scenario's score is its share of passed assertions (the `assertions` field of the
+JSON summary, `passed/total`), or 1 or 0 when it has no assertions. `--baseline`
+takes a file an earlier run wrote; `--max-drop` is the fall in a score, as a fraction
+from 0 to 1, that is still allowed (default `0`: any fall counts).
+
+With a baseline, one line names each scenario whose score fell by more than
+`--max-drop` (`Regression: alpha: 1.00 -> 0.50 (allowed drop 0.05)`), and the command
+exits 1. The baseline only adds to the exit code: every failed scenario still fails the
+run, as it does without one, so `--max-drop` decides which falls are named regressions,
+never whether a failure counts. A score alone cannot tell a known failure from a new
+one (a turn that errors records no assertion result, so a scenario can fail at an
+unchanged score), which is why the baseline never excuses a failure. A scenario in only
+one of the two runs is printed as `Not compared` and is never a regression.
+
+`--junit PATH` writes one test case per scenario, with a failure for each failed
+scenario; a regression's failure carries its `score fell from ... to ...` line. The file
+is written whether or not the run passes, through the same guard the benchmark reports
+use: a destination the sensitive-path check protects, or a link at the file name, is
+refused rather than written through.
+
+None of these flags can stop a run that would otherwise go ahead. A baseline that is
+missing, unreadable, refused by the sensitive-path check, or not an eval result file,
+a `--max-drop` that is not a number from 0 to 1, and a `--junit` file that cannot be
+written each print one warning that names the file and the reason, and the command
+carries on as it would without that flag. Without any of them the output, files and
+exit code are what they were.
+
 `--no-jail` (the shared top-level CLI flag) applies here as it does to every
 `kirocrew` command.
 

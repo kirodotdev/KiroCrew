@@ -1,6 +1,6 @@
 {
   "name": "project-scaffolder",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "displayName": "Create Folders From Project",
   "description": "Point it at a project directory and it works out which sub-projects live inside, then creates a matching sidebar folder for each one. The scan is read-only, so you see the whole list and tick what you want before anything is created. Sub-projects nest under their parent the way they do on disk, and anything you have already set up is shown but never created twice.",
   "author": "kirocrew",

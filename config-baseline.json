@@ -38,7 +38,7 @@
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
-        "crew_mode_agent": "kirocrew-team-lead",
+        "crew_mode_agent": "kirocrew-conductor",
         "deepseek_env": {},
         "strands_env": {},
         "strands_project": "",
@@ -52,6 +52,7 @@
         "sandbox_readonly_paths": [],
         "sandbox_readonly_exceptions": [],
         "apps_allow_third_party": false,
+        "apps_never_adopt_backend_listener": false,
         "apps_trusted": [],
         "apps_trusted_local": [],
         "apps_trusted_repositories": {},
@@ -69,6 +70,10 @@
         "tool_search_min_tokens": 50000,
         "session_sharing": true,
         "chat_runtime_sharing_max_sessions": 10,
+        "chat_runtime_sharing_harnesses": {
+          "kas": true,
+          "codex": false
+        },
         "agent_started_turns": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
@@ -560,7 +565,7 @@
       "help": "The agent template a chat runs when conductor mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew-team-lead"
+      "defaultValue": "kirocrew-conductor"
     },
     {
       "path": "agent.deepseek_env",
@@ -808,6 +813,20 @@
       "tags": [],
       "label": "Allow Third-Party Apps",
       "help": "Explicitly allow executable code from third-party (non-builtin) apps. Defaults to false. Only the JSON boolean true admits in-process Python hooks, backend processes, lifecycle/install scripts, and openCommand. App code can access the filesystem, network, and in-memory credentials; enable this only for apps you trust (CSE SEC-012). Prefer apps_trusted, which grants the same admission to ONE named app.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.apps_never_adopt_backend_listener",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Never Adopt App Backend Listener",
+      "help": "When true, the gateway never adopts or re-binds a healthy app backend listener that it did not start in this run, such as an uninstall survivor or a backend an earlier gateway run started. A config that fails to load still adopts, as when the setting is off. Defaults to false: any healthy listener on the app's port is adopted.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -1146,6 +1165,51 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 10
+    },
+    {
+      "path": "agent.chat_runtime_sharing_harnesses",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Chat Runtime Sharing: harnesses",
+      "help": "Which harnesses may share one agent process between dashboard chats while the chat_runtime_sharing feature preview is on, by harness name, each true or false. A harness switched off keeps one process per chat. A harness that is absent takes its default (KAS: on, codex: off). Has no effect while the preview is off. Applies to chats started after the change.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "kas": true,
+        "codex": false
+      }
+    },
+    {
+      "path": "agent.chat_runtime_sharing_harnesses.kas",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "kas",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.chat_runtime_sharing_harnesses.codex",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "codex",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.agent_started_turns",
@@ -1847,7 +1911,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Conductor Own-Child Sends",
-      "help": "Let the Conductor and the conductor mode team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
+      "help": "Let the Conductor and the team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -2791,7 +2855,7 @@
         "embedding_threads": 4,
         "embedding_bulk_threads": 1,
         "embedding_bulk_duty": 0.2,
-        "embedding_idle_evict_secs": 3600,
+        "embedding_idle_evict_secs": "auto",
         "embedding_weight_repack": true,
         "embedding_child_process": false,
         "consolidation_write_child_process": false,
@@ -2965,10 +3029,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Unload Embedding Model When Idle (seconds)",
-      "help": "Seconds without any embedding before the embedding model is unloaded from memory. The next search or memory write loads it again, which takes a few seconds. 0 keeps the model loaded.",
+      "help": "Seconds without any embedding before the embedding model is unloaded from memory. The next search or memory write loads it again, which takes a few seconds. 0 keeps the model loaded. 'auto' (the default) is 600 on a machine with 16 GiB of memory or less, where opening, typing in or sending to a chat and any channel message load the model again before it is needed, and 3600 elsewhere. A number you set is always kept.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 3600
+      "defaultValue": "auto"
     },
     {
       "path": "memory.embedding_weight_repack",
@@ -4578,6 +4642,7 @@
         "traces_otlp_headers_secret": {},
         "traces_otlp_headers_env": {},
         "traces_conductor_mode": "run",
+        "accept_traceparent": false,
         "beacon_enabled": true,
         "plan_alert_pcts": [],
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
@@ -4795,6 +4860,20 @@
         "turn"
       ],
       "defaultValue": "run"
+    },
+    {
+      "path": "telemetry.accept_traceparent",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Traces: join the caller's trace",
+      "help": "While Traces Enabled is on, a W3C 'traceparent' header on an authenticated POST /v1/chat/completions or POST /api/hooks/agent request parents the turn it starts under the caller's span, so the turn's trace id is the caller's, and the response carries a 'traceparent' header for the turn span. A header that is not a valid version 00 value is ignored. The caller's sampled flag never turns recording on, and nothing is returned while tracing is off. Off (default): the header is ignored.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "telemetry.beacon_enabled",
@@ -6235,6 +6314,7 @@
       "enumValues": null,
       "defaultValue": {
         "choice": "auto",
+        "report_changes": false,
         "live": {
           "enabled": true,
           "quality": "auto",
@@ -6270,6 +6350,20 @@
         "headless"
       ],
       "defaultValue": "auto"
+    },
+    {
+      "path": "browser.report_changes",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Report what a step changed",
+      "help": "After a click, a typed entry or a choice in a list, the browser's answer also says what the page did: a new address or title, a dialog that opened or closed, new alert or status text, the names of fields that failed validation, and the controls that appeared or went away. The agent then needs fewer page reads between steps. Each step takes a fraction of a second longer, and the report covers the page's own document, not what is inside frames. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "browser.live",
@@ -9812,6 +9906,7 @@
         },
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
+        "audit_secret_reads": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
         "feature_previews": {},
@@ -9867,6 +9962,7 @@
         "recent_tint_count": 0,
         "show_unread_dot": true,
         "command_bar_enabled": true,
+        "channels_enabled": false,
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "unfiled_sessions_above_folders": false,
@@ -10226,6 +10322,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.audit_secret_reads",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Audit secret reads",
+      "help": "Write a security log row when the gateway reads a vault secret: the secret's name, the module that read it and the function that asked (unknown when the read runs on a worker thread with no calling code of its own), never the value. Repeat reads of one secret by one caller share a row per 10 minutes, which counts them. Off by default. Takes effect on the next read; no restart (within 30 seconds in the MCP gateway process).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.crewmate_threads",
       "kind": "core",
       "type": "boolean",
@@ -10305,20 +10415,6 @@
       "tags": [],
       "label": "Feature preview: chat_runtime_sharing",
       "help": "Turn on the 'chat_runtime_sharing' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
-      "path": "dashboard.feature_previews.crew_mode",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: crew_mode",
-      "help": "Turn on the 'crew_mode' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10487,6 +10583,20 @@
       "tags": [],
       "label": "Feature preview: webhooks",
       "help": "Turn on the 'webhooks' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.worker_grill",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: worker_grill",
+      "help": "Turn on the 'worker_grill' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10748,7 +10858,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Start new chats in conductor mode",
-      "help": "Open each new dashboard chat with conductor mode already on. It can still be turned off before the first message. Applies only where conductor mode is offered: a Persistent chat on the default agent, with the conductor mode preview on.",
+      "help": "Open each new dashboard chat with conductor mode already on. It can still be turned off before the first message. Applies only where conductor mode is offered: a Persistent chat on the default agent.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -11384,6 +11494,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.channels_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Channels Enabled",
+      "help": "Show Channels, where several agents work a problem together in one shared room, in the sidebar and in Search Everywhere. Off by default; off only hides the sidebar row and the search result, so the channels you made and the Channels page itself are kept.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.folder_sort",
@@ -12310,6 +12434,20 @@
       "defaultValue": []
     },
     {
+      "path": "hooks.return_answer",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Webhook answer return",
+      "help": "Off by default. When true, a POST /api/hooks/agent call that sends wait (seconds, at most 300) is held until its run ends or the wait runs out, and a run that finished its turn answers with its outcome and the redacted text delivery sends (a timeout or error run, with its outcome alone). Without it, wait is ignored with a warning and the call returns the accept receipt.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "slack_channels",
       "kind": "core",
       "type": "object",
@@ -12566,6 +12704,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agents.*.max_workers",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Workers at once",
+      "help": "How many of this Bot's own worker sessions (on its worker template) may be open at once. A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit; otherwise 1 to 32.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "agents.*.acp_backend",

@@ -15,9 +15,11 @@ from typing import Any
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import batch_guard, kas_wire
+from kiro_crew.acp import session_handle_claude_children as _sh_claude_children
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
 from kiro_crew.acp import session_handle_elicitation as _sh_elicitation
+from kiro_crew.acp import session_handle_harness_surfaces as _sh_surfaces
 from kiro_crew.acp import session_handle_kas as _sh_kas
 from kiro_crew.acp import session_handle_lifecycle as _sh_lifecycle
 from kiro_crew.acp import session_handle_mcp as _sh_mcp
@@ -30,6 +32,7 @@ from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
 from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS, NativeCompactionStates
+from kiro_crew.acp.compaction_summary import CompactionSummaries
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import (
@@ -40,6 +43,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.prompt_blocks import SentImageLedger
+from kiro_crew.acp.raw_sdk_tasks import RawSdkState
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeProtocol
 from kiro_crew.acp.session_handle_watchdog import (
@@ -69,6 +73,8 @@ _MEMBER_OWNERS = frozenset(
         "kiro_crew.acp.session_handle_compaction",
         "kiro_crew.acp.session_handle_dispatch",
         "kiro_crew.acp.session_handle_elicitation",
+        "kiro_crew.acp.session_handle_claude_children",
+        "kiro_crew.acp.session_handle_harness_surfaces",
         "kiro_crew.acp.session_handle_kas",
         "kiro_crew.acp.session_handle_lifecycle",
         "kiro_crew.acp.session_handle_mcp",
@@ -176,6 +182,15 @@ class AcpSessionHandle:
     _handle_legacy_codex_subagent = _sh_children._handle_legacy_codex_subagent
     _announced_row = _sh_children._announced_row
     _roster_event = _sh_children._roster_event
+    # Claude Code's Agent-tool children: ``kiro_crew.acp.session_handle_claude_children``.
+    _claude_children_declared = _sh_claude_children._claude_children_declared
+    _native_child_roster = _sh_claude_children._native_child_roster
+    _native_child_of = _sh_claude_children._native_child_of
+    _reset_claude_child_turn = _sh_claude_children._reset_claude_child_turn
+    _claude_child_events = _sh_claude_children._claude_child_events
+    _note_native_child_request = _sh_claude_children._note_native_child_request
+    native_child_requests = _sh_claude_children.native_child_requests
+    cancel_native_child = _sh_claude_children.cancel_native_child
     _child_text_activity = _sh_children._child_text_activity
     _flush_announced_child_text = _sh_children._flush_announced_child_text
     flush_native_child_text = _sh_children.flush_native_child_text
@@ -253,6 +268,10 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _tool_call_unclassified = _sh_permissions._tool_call_unclassified
+    _refuse_by_harness = _sh_permissions._refuse_by_harness
+    _note_permission_state = _sh_permissions._note_permission_state
+    _refuse_moved_permission_state = _sh_permissions._refuse_moved_permission_state
     _reject_with_host_notice = _sh_permissions._reject_with_host_notice
     _audit_handle_reject = _sh_permissions._audit_handle_reject
     apply_session_permission_routing = _sh_permissions.apply_session_permission_routing
@@ -269,7 +288,10 @@ class AcpSessionHandle:
     _tool_kind_cache_for_wire = _sh_updates._tool_kind_cache_for_wire
     _identity_unreadable_cache_for_wire = _sh_updates._identity_unreadable_cache_for_wire
     _tool_call_cache_overflow_for_wire = _sh_updates._tool_call_cache_overflow_for_wire
-    _handle_update = _sh_updates._handle_update
+    _handle_update_frame = _sh_updates._handle_update_frame
+    # The claude-agent-acp surfaces of this session's own frames:
+    # ``kiro_crew.acp.session_handle_harness_surfaces``.
+    _handle_update = _sh_surfaces._handle_update
     _structured_status_event = _sh_updates._structured_status_event
     _note_status_rejected = _sh_updates._note_status_rejected
     # One turn end to end: ``kiro_crew.acp.session_handle_turn``.
@@ -480,6 +502,15 @@ class AcpSessionHandle:
         # NATIVE_CHILD_ROSTER_CAP; ids past the cap are counted, not stored.
         self._native_child_sids: set[str] = set()
         self._native_child_overflow = 0
+        # Claude Code's Agent-tool children (``session_handle_claude_children``), in
+        # the client's shapes: each child's row, the Agent call that delegated to
+        # it, this turn's children in the order seen, the ones granted a cancel, and
+        # the requests each asked this turn (request id -> child).
+        self._native_child_rows: dict[str, dict[str, Any]] = {}
+        self._native_child_by_tool_use: dict[str, str] = {}
+        self._native_child_turn: dict[str, None] = {}
+        self._native_child_cancellable: set[str] = set()
+        self._native_child_requests: dict[str, str] = {}
         # Last monotonic ts a WORKING-verdict deferral was logged (rate limit).
         self._working_logged_ts = _WORKING_NEVER_LOGGED
         # Terminal compaction status captured by compact() while draining its
@@ -505,6 +536,10 @@ class AcpSessionHandle:
         # Native ``compaction_update`` lifecycle per id: duplicate terminals and
         # late starts are dropped against it. Lives as long as the handle.
         self._native_compaction_states = NativeCompactionStates()
+        # What each native compaction in flight streamed (``acp.compaction_summary``).
+        self._compaction_summaries = CompactionSummaries()
+        # Background-task state for a session whose host keeps none (``_raw_sdk``).
+        self._raw_sdk_own = RawSdkState()
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to
@@ -692,6 +727,10 @@ class AcpSessionHandle:
         # when True), a sibling of the caches above under the same admission,
         # cleared, evicted and released with them.
         self._tool_call_identity_unreadable: dict[str, bool] = {}
+        # Why this session must stop, recorded off a ``session/update`` that moved
+        # the permission state its host requires (``_note_permission_state``), ""
+        # while none has. Never cleared: the session is closed on it.
+        self._permission_state_issue = ""
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
         self._native_child_tool_call_ids: set[str] = set()
@@ -825,6 +864,9 @@ class AcpSessionHandle:
         # The engine version when Crew knows it, i.e. its own bundle's
         # (``KasHarness.bundle_engine_version``); "" on the relay.
         self.kas_bundle_engine_version: str = ""
+        # The notice when the kiro-cli a relay KAS runs under is outside its tested
+        # range (``KasHarness.untested_version_notice``); "" otherwise.
+        self.kas_untested_version_notice: str = ""
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.
@@ -941,6 +983,9 @@ class AcpSessionHandle:
         # One StreamRedactor per announced child whose text is streaming, keyed
         # by the child's session id (_child_text_activity).
         self._native_child_redactors: dict[str, StreamRedactor] = {}
+        # What a turn-start drain read from a claude child's ``subagent_update``
+        # (its held text, its roster), shown at the head of that turn's dispatch.
+        self._drained_child_events: list[AcpEvent] = []
 
     @property
     def session_id(self) -> str:
@@ -1144,6 +1189,43 @@ class AcpSessionHandle:
     def config_options(self) -> list[dict[str, Any]]:
         """ACP-reported configOptions (effort, model, mode selectors)."""
         return self._config_options
+
+    @property
+    def backend(self) -> str:
+        """The runtime's backend id, under the name the shared surface readers take."""
+        return str(getattr(getattr(self, "_runtime", None), "acp_backend", "") or "")
+
+    @property
+    def _acp_config_options(self) -> list[dict[str, Any]]:
+        """``config_options`` under the per-chat client's name, for the mode notice."""
+        return self._config_options
+
+    @property
+    def _raw_sdk(self) -> RawSdkState:
+        """What Claude Code's background work reported for this session.
+
+        The runtime's reader reads it into the session's harness state
+        (``ClaudeHarness.take_session_frame``); a session whose host keeps none, or
+        one already ended, reads the handle's own, which nothing fills.
+        """
+        state = getattr(self._runtime, "_session_harness_states", {}).get(self._session_id)
+        held = getattr(state, "_raw_sdk", None)
+        if isinstance(held, RawSdkState):
+            return held
+        return self._raw_sdk_own
+
+    @_raw_sdk.setter
+    def _raw_sdk(self, value: RawSdkState) -> None:
+        state = getattr(self._runtime, "_session_harness_states", {}).get(self._session_id)
+        if state is not None and isinstance(getattr(state, "_raw_sdk", None), RawSdkState):
+            state._raw_sdk = value
+        else:
+            self._raw_sdk_own = value
+
+    # The mode names the session advertised and its last mode report, for the
+    # mode-change notice (``acp.harness_notices``). Each is replaced, never mutated.
+    _harness_mode_names: dict[str, str] = {}
+    _harness_mode: tuple[str, str | None] | None = None
 
     @property
     def available_models(self) -> list[dict[str, str]]:

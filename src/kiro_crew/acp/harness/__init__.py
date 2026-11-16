@@ -31,11 +31,11 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
-from kiro_crew.acp.harness.claude import ClaudeLaunch
+from kiro_crew.acp.harness.claude import ClaudeHarness, ClaudeLaunch
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.harness.copilot import CopilotLaunch
-from kiro_crew.acp.harness.deepseek import DeepseekLaunch
-from kiro_crew.acp.harness.goose import GooseLaunch
+from kiro_crew.acp.harness.deepseek import DeepseekHarness, DeepseekLaunch
+from kiro_crew.acp.harness.goose import GooseHarness, GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
 from kiro_crew.acp.harness.mimocode import MimoCodeLaunch
@@ -57,10 +57,13 @@ from kiro_crew.acp.types import (
 )
 
 __all__ = [
+    "ClaudeHarness",
     "ClaudeLaunch",
     "CodexHarness",
     "CopilotLaunch",
+    "DeepseekHarness",
     "DeepseekLaunch",
+    "GooseHarness",
     "GooseLaunch",
     "HarnessAdapter",
     "KasHarness",
@@ -93,6 +96,16 @@ _HARNESSES: dict[str, type[HarnessAdapter]] = {
     # a harness unreachable to its own tests, and would leave the runtime resolving
     # one that exists on disk but not in the table.
     ACP_BACKEND_CODEX: CodexHarness,
+    # Registered ahead of routing, for the reason above: no session is routed to
+    # the shared runtime for claude yet, and a process-per-session client still
+    # launches it through ``ClaudeLaunch`` below.
+    ACP_BACKEND_CLAUDE: ClaudeHarness,
+    # The same: no goose session is routed to the shared runtime yet, and a
+    # process-per-session client still launches goose through ``GooseLaunch``.
+    ACP_BACKEND_GOOSE: GooseHarness,
+    # The same for deepseek: a process-per-session client still launches it
+    # through ``DeepseekLaunch``.
+    ACP_BACKEND_DEEPSEEK: DeepseekHarness,
 }
 
 

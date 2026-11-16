@@ -26,6 +26,7 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
 from kiro_crew.config.sections import (
     FEATURE_PREVIEW_FLAGS,
     MAX_PER_CREATOR_MAX,
@@ -230,6 +231,12 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
 _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
     {
         "agent.chat_turn_timeout_secs",
+        # Whether one harness's chats may pool into one agent process while the
+        # sharing preview is on: process placement only, never what a chat can reach.
+        *(
+            f"agent.chat_runtime_sharing_harnesses.{_name}"
+            for _name in CHAT_RUNTIME_SHARING_HARNESSES
+        ),
         "agent.completion_keep",
         "agent.completion_keep_chars",
         "agent.fallback_model",
@@ -262,6 +269,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Which surface the quick-search shortcut opens; both show only what the
         # dashboard already shows this person.
         "dashboard.command_bar_enabled",
+        # Only whether Channels has a sidebar row; its page and `/api/channels`
+        # are served either way.
+        "dashboard.channels_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
         # A feature preview only decides whether the dashboard OFFERS an
@@ -336,6 +346,8 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # The weekly repeated-failures bell note: a reminder to the owner, which
         # writes no memory and grants nothing.
         "memory.repeated_failures_notice",
+        # How long the idle embedding model stays loaded: memory use only, grants nothing.
+        "memory.embedding_idle_evict_secs",
         # Local recording only: the write route refuses the enable on a host
         # where it would start sending data out.
         "telemetry.enabled",

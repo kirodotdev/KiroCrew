@@ -126,20 +126,6 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.awsControl.manifest.use_case_1'],
     configuration: ['apps.awsControl.manifest.configuration_1'],
   },
-  'channels': {
-    displayName: 'apps.channels.manifest.display_name',
-    description: 'apps.channels.manifest.description',
-    pageLabel: 'apps.channels.manifest.page_label',
-    highlights: [
-      'apps.channels.manifest.highlight_1',
-      'apps.channels.manifest.highlight_2',
-      'apps.channels.manifest.highlight_3',
-      'apps.channels.manifest.highlight_4',
-      'apps.channels.manifest.highlight_5',
-    ],
-    useCases: ['apps.channels.manifest.use_case_1'],
-    configuration: ['apps.channels.manifest.configuration_1'],
-  },
   'code-review-sage': {
     displayName: 'apps.codeReviewSage.manifest.display_name',
     description: 'apps.codeReviewSage.manifest.description',

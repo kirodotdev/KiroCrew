@@ -428,6 +428,9 @@ from kiro_crew.validation import (  # noqa: F401
     ValidationError,
     validate_tool_args,
 )
+from kiro_crew.workbook_rows import read_workbook_rows  # noqa: F401
+from kiro_crew.zip_vet import WORKBOOK_MAX_EXPANDED_BYTES as _SHEET_MAX_EXPANDED_BYTES  # noqa: F401
+from kiro_crew.zip_vet import WORKBOOK_MAX_MEMBERS as _SHEET_MAX_MEMBERS  # noqa: F401
 from kiro_crew.zip_vet import (  # noqa: F401
     ZipInventoryRejected,
     vet_zip_inventory_bytes,
@@ -1284,8 +1287,8 @@ async def api_browse_files(request: web.Request) -> web.Response:
 _SHEET_MAX_SHEETS = 20
 _SHEET_MAX_ROWS = 500
 _SHEET_MAX_COLS = 100
-_SHEET_MAX_MEMBERS = 4096
-_SHEET_MAX_EXPANDED_BYTES = 200 * 1024 * 1024
+# _SHEET_MAX_MEMBERS and _SHEET_MAX_EXPANDED_BYTES are zip_vet's workbook
+# ceilings, imported above, so every reader that opens a workbook uses one pair.
 # Text amplification caps. Shared strings are stored once in the archive but
 # referenced per cell, so the expansion cap above does not bound the RESPONSE:
 # one 32 KiB string referenced by every cell would amplify into gigabytes of

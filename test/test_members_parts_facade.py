@@ -154,6 +154,18 @@ def test_no_owner_rebinds_a_module_global() -> None:
     assert {owner: names for owner, names in rebinds.items() if names} == {}
 
 
+#: The owner modules, one per line, so two changes that each add an owner edit
+#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
+_OWNER_MODULES = (
+    "kiro_crew.members_parts.dm_bindings",
+    "kiro_crew.members_parts.member_activity",
+    "kiro_crew.members_parts.member_sessions",
+    "kiro_crew.members_parts.member_space",
+    "kiro_crew.members_parts.prompt_layers",
+    "kiro_crew.members_parts.self_edit",
+)
+
+
 def test_the_owners_are_the_parts_package_in_layer_order() -> None:
     """``_OWNERS`` names every module of ``members_parts``, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
@@ -163,7 +175,9 @@ def test_the_owners_are_the_parts_package_in_layer_order() -> None:
         for p in PARTS_DIR.glob("*.py")
         if p.name != "__init__.py"
     }
-    assert len(on_disk) == 6
+    assert sorted(on_disk) == list(
+        _OWNER_MODULES
+    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

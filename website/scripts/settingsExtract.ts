@@ -123,6 +123,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   // Task Runner's switch, mounted by DisplayPanel's View page.
   'TaskRunnerSetting.tsx': { tab: 'display', params: { sub: 'view' } },
+  // Channels' switch, mounted by DisplayPanel's View page. Drawn only while Channels
+  // is on, so a search offers it only then (`settingEntryOffered`).
+  'ChannelsSetting.tsx': { tab: 'display', params: { sub: 'view' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
   // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
@@ -142,8 +145,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelTailnet.tsx': 'security',
   'SecurityPanelTrust.tsx': 'security',
   'SecurityPanelRedaction.tsx': 'security',
+  'SecurityPanelSafetySwitches.tsx': 'security',
   'SecurityPanelLayers.tsx': 'security',
   'SecurityPanelGovernance.tsx': 'security',
+  'SecurityPanelBodyFields.tsx': 'security',
   // The review cards for settings files edited outside the dashboard, which
   // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
   // the hand-written `security.config-pending` entry stays anchored to its source.
@@ -211,6 +216,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
   // key deep-links to the row.
   'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
+  // The per-harness switches under ACP runtime sharing, mounted inside that
+  // preview's row while it is on. Their labels come from a table, so the
+  // extractor skips them as dynamic; the parent preview row is the search hit.
+  'ChatRuntimeSharingHarnessRows.tsx': DEVELOPER_PREVIEWS,
   // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
   // The Decision models card, which FeaturePreviewsSection mounts. Its own file

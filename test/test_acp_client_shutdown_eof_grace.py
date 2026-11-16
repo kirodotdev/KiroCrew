@@ -273,8 +273,7 @@ async def test_a_cancel_as_the_agent_exits_still_kills_what_it_left(started, mon
 )
 async def test_only_kiro_cli_is_given_the_wait(tmp_path, backend, waits):
     """The lock is kiro-cli's. Every other backend keeps the kill that does not wait."""
-    client = AcpClient(work_dir=tmp_path)
-    client._acp_backend = backend
+    client = AcpClient(work_dir=tmp_path, acp_backend=backend)
     client._process = None
     client._pid = None
     client._child_pids = {}
@@ -292,8 +291,7 @@ async def test_only_kiro_cli_is_given_the_wait(tmp_path, backend, waits):
 @pytest.mark.asyncio
 async def test_a_claude_client_whose_kill_is_wrapped_still_shuts_down(tmp_path):
     """The claude idle reader wraps ``_kill_process`` in a function that takes only ``force``."""
-    client = AcpClient(work_dir=tmp_path)
-    client._acp_backend = ACP_BACKEND_CLAUDE
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
     client._process = None
     client._pid = None
     client._child_pids = {}

@@ -34,6 +34,7 @@ from kiro_crew.hooks import (
     untruncated_shell_title,
 )
 from kiro_crew.llm_helpers_parts.tool_input_denials import (
+    _MAX_SCANNABLE_TOOL_INPUT_CHARS,
     _edit_target_denial,
     _extract_tool_input_strings,
     _first_tool_input_denial,
@@ -53,6 +54,12 @@ from kiro_crew.security import (
     is_denied_synthesized_target,
     redact_credentials,
     redact_exfiltration_urls,
+)
+from kiro_crew.security.mcp_body_fields import (
+    body_field_keys,
+    is_kirocrew_server,
+    named_size_refusal,
+    warn_body_field_matches,
 )
 from kiro_crew.security.paths_resolver import bounded_judgment
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
@@ -207,6 +214,26 @@ def _orphan_reject_done(task: asyncio.Task[Any]) -> None:
         logger.warning(
             "orphan reject_tool failed; the permission request may be unanswered: %r", exc
         )
+
+
+def _body_field_link_origin() -> str:
+    """The dashboard origin a size refusal links to, or ``""``. Blocking; never raises.
+
+    Same origin choice as the Slack->dashboard links
+    (``dashboard.urls.dashboard_link_origin``). No click token: the refusal reaches
+    the model and may be relayed to a shared channel.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.urls import dashboard_link_origin, tunnel_origin_if_opted_in
+
+        cfg = KiroCrewConfig.load()
+        return dashboard_link_origin(
+            cfg.dashboard.url, tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+        )
+    except Exception:
+        logger.debug("body-field refusal: dashboard origin unavailable", exc_info=True)
+        return ""
 
 
 async def _resolve_permission(
@@ -488,10 +515,21 @@ async def _resolve_permission(
     # frame carries no ``kind`` (only its later updates do), so the shell cache
     # is empty for a real kiro-cli MCP call. A frame that does report a shell
     # kind still sets ``is_shell`` and is refused the exemption.
+    _body_field_server = getattr(event, "mcp_server_name", "") or ""
+    _body_field_tool = getattr(event, "tool_name", "") or ""
+    _trusted_mcp_params: dict | None = None
+    if (
+        getattr(event, "raw_params_trusted", False)
+        and getattr(event, "mcp_identity_trusted", False)
+        and isinstance(getattr(event, "raw_tool_params", None), dict)
+    ):
+        from kiro_crew.agent_sdk import mcp_call_arguments
+
+        _trusted_mcp_params = mcp_call_arguments(event, _body_field_server, _body_field_tool)
     _mcp_body_keys = (
         mcp_document_body_keys(
-            getattr(event, "tool_name", ""),
-            getattr(event, "mcp_server_name", ""),
+            _body_field_tool,
+            _body_field_server,
             event.raw_tool_params,
         )
         if (
@@ -503,6 +541,29 @@ async def _resolve_permission(
             and isinstance(getattr(event, "raw_tool_params", None), dict)
         )
         else frozenset()
+    )
+    # A third-party MCP tool's message-body fields (``security.mcp_body_fields``:
+    # the reviewed defaults plus the rows the dashboard owner allowed). Same
+    # identity and params bar as the Kiro Crew rows above, and only for a call no
+    # Kiro Crew row covers and no Kiro Crew server makes: a ``kirocrew-*`` tool's
+    # unlisted field (a cron script job's ``message``) keeps the full scan and is
+    # never offered as a row. The rows are resolved in ``_scan_off_loop`` because the
+    # owner's are read from disk. A body field joins the Kiro Crew bodies in the one
+    # ``command_rules=False`` scan (256 KiB ceiling and the path tier), so it never
+    # reaches the shell matcher or the deny-rule list.
+    _body_field_params: dict | None = (
+        _trusted_mcp_params
+        if (
+            _edit_params is None
+            and _scoped_params is None
+            and not _mcp_body_keys
+            and _body_field_server
+            and not is_kirocrew_server(_body_field_server)
+            and _body_field_tool
+            and not getattr(event, "is_shell", False)
+            and _trusted_mcp_params is not None
+        )
+        else None
     )
     _scoped_truncated = False
     _body_strings: list[str] = []
@@ -578,7 +639,28 @@ async def _resolve_permission(
             edit_hit = _edit_target_denial(_gated_params, event.diff_path, event.tool_kind)
             if edit_hit is not None:
                 return (*edit_hit, "always_deny_input")
-        if _scoped_truncated:
+        input_strings, scoped_truncated = _input_strings, _scoped_truncated
+        body_strings = _body_strings
+        field_bodies: dict[str, str] = {}
+        # What a size refusal names a field from: the params left after the listed
+        # body fields are split out, so it never names a field already allowed.
+        size_params: dict | None = _body_field_params
+        if _body_field_params is not None:
+            field_keys = body_field_keys(_body_field_tool, _body_field_server)
+            if field_keys:
+                # A field is a top-level name; only a string there is a body.
+                field_bodies = {
+                    k: v
+                    for k, v in _body_field_params.items()
+                    if k in field_keys and isinstance(v, str)
+                }
+                rest = {k: v for k, v in _body_field_params.items() if k not in field_bodies}
+                body_strings = list(field_bodies.values())
+                size_params = rest
+                field_rest = command_shaped_strings(rest, body_keys=frozenset())
+                scoped_truncated = field_rest.truncated
+                input_strings = list(field_rest)
+        if scoped_truncated:
             # The field-scoped walk could not finish, so the strings it did
             # collect are not the whole payload: refuse rather than scan a part.
             return (
@@ -587,17 +669,36 @@ async def _resolve_permission(
                 "",
                 "always_deny_input",
             )
-        if _input_strings:
+        if input_strings:
             input_hit = _first_tool_input_denial(
-                _input_strings, _denied_regexes, exempt_command=_path_tier_exempt(event)
+                input_strings, _denied_regexes, exempt_command=_path_tier_exempt(event)
             )
             if input_hit is not None:
+                if input_hit[0] == "oversize" and size_params is not None:
+                    input_hit = _named_size_refusal(input_hit, size_params)
                 return (*input_hit, "always_deny_input")
-        if _body_strings:
-            body_hit = _first_tool_input_denial(_body_strings, _denied_regexes, command_rules=False)
+        if body_strings:
+            # Every MCP document or message body, Kiro Crew's and a listed
+            # third-party field alike: the size ceiling and the path tier only.
+            body_hit = _first_tool_input_denial(body_strings, _denied_regexes, command_rules=False)
             if body_hit is not None:
                 return (*body_hit, "always_deny_input")
+        if field_bodies:
+            warn_body_field_matches(field_bodies, _body_field_server, _body_field_tool)
         return None
+
+    def _named_size_refusal(hit: tuple[str, str, str], params: dict) -> tuple[str, str, str]:
+        # A trusted MCP call refused for one top-level field's size: name the tool
+        # and field, and remember the refusal so the dashboard owner can allow that
+        # exact row (``security.mcp_body_fields.named_size_refusal``).
+        reason = named_size_refusal(
+            params,
+            _body_field_server,
+            _body_field_tool,
+            _MAX_SCANNABLE_TOOL_INPUT_CHARS,
+            dashboard_origin=_body_field_link_origin(),
+        )
+        return hit if reason is None else (hit[0], reason, hit[2])
 
     def _bounded_scan_off_loop() -> tuple[str, str, str, str] | None:
         # Every path check of this one call shares one resolver wait budget. An

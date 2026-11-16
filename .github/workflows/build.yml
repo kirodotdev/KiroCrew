@@ -319,6 +319,7 @@ jobs:
             website/electron/runtime-evidence/gateway-stdout.log
             website/electron/runtime-evidence/gateway-stderr.log
             website/electron/runtime-evidence/native-install-mode.png
+            website/electron/runtime-evidence/update-refused-path-too-long.png
           if-no-files-found: warn
 
   # Resolve which desktop platforms a PR builds. Linux (both arches) ALWAYS

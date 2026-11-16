@@ -83,6 +83,11 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_new_conversation.py` | a fresh conversation on the live process: `new_conversation` for a member of `ACP_BACKENDS_CLIENT_NEW_CONVERSATION` (claude) closes the old session and sets a new one up as a cold start does (see claude-code-provider, *A fresh conversation on the live adapter*) |
 | `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
 | `acp/claude_background_calls.py` | not a member owner: on the claude backend, the `incomplete_tool_call` prompt error that names only background agents' calls, found in the session's subagent transcripts, which `_prompt_loop` ends as `end_turn` (see claude-code-provider, *A turn that ends while background agents' calls run*) |
+| `acp/plan_checklist.py` | not a member owner: on a backend in `ACP_BACKENDS_PLAN_CHECKLIST` (claude), the `plan` update read as a read-only checklist (see *Claude's checklist, notices and mode changes*) |
+| `acp/compaction_summary.py` | not a member owner: on a backend in `ACP_BACKENDS_COMPACTION_SUMMARY` (claude), a native compaction's summary, the `completed` event's title (see *Native adapter compaction lifecycle*) |
+| `acp/raw_sdk_tasks.py` | not a member owner: on a backend in `ACP_BACKENDS_RAW_SDK_TASKS` (claude), Claude Code's `_claude/sdkMessage` task and retry messages, which `_read_message` reads into `AcpClient._raw_sdk` (`take`) and returns to no caller, so they move no activity clock or deadline; only a dashboard chat turn draws what they made, Workflow cards through `acp/raw_sdk_workflow_cards.py` (see claude-code-provider, *Claude Code's background tasks, Workflow agents and retries*) |
+| `acp/harness_notices.py` | not a member owner: on a backend in `ACP_BACKENDS_HARNESS_NOTICES` (claude), a `notice` and a mode-changing `current_mode_update` read as notices (see *Claude's checklist, notices and mode changes*) |
+| `acp/read_path_arg.py` | not a member owner: on a backend in `ACP_BACKENDS_READ_PATH_ARG` (claude), the argument a `read` call names its file in (`file_path`, set as `AcpEvent.read_path_arg`), for the row's image thumbnails (see claude-code-provider, *Images Claude reads*) |
 | `acp/relaunch_reload.py` | not a member owner: relaunching a live client's process and loading the same session in it, and the MCP mark a relaunch-reload harness applies at its next turn boundary (see *An MCP change applied by relaunch*) |
 | `acp/client_class.py` | the class statement: the constructor, the properties, the class defaults, the member table that binds every owner's members, and the members that stay class-resident |
 | `acp/client_lifecycle.py` | the child after it is spawned: the stderr drain, process-tree tracking, kill, failed-start classification, state reset, the workspace and sandbox discards, re-binding a live process, and shutdown |
@@ -1476,8 +1481,9 @@ false and consumers that need trusted arguments fail closed.
 
 OpenCode can send a shell permission request before the `tool_call_update` that
 contains its command. If the trusted cache identifies a shell call but has no
-command, the prompt loop selects OpenCode explicitly before calling
-`_defer_opencode_shell_permission` to wait at most two seconds for the next frame.
+command, the prompt loop asks the session's client class (`_defers_shell_permission`,
+set on `OpencodeAcpClient`) before calling its `_defer_shell_permission`
+to wait at most two seconds for the next frame.
 The method reorders only a same-session, same-call,
 in-progress `tool_call_update` with a nonempty command and no output, so the
 normal update handler fills the trusted cache before the permission is built.
@@ -1844,7 +1850,7 @@ Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not fou
 | `fs.readTextFile` / `fs.writeTextFile` | `false` | We serve no `fs/*` handler; advertising them would invite requests that hit `_reject_unknown_server_request`. |
 | `terminal` | `false` | Same — the agent uses its own tools. |
 | `subagents` | `{}` on the claude backend only (`CLAUDE_CLIENT_CAPABILITIES`) | claude-agent-acp then announces each subagent it starts and sends the child's frames under the child's own sessionId. `client_native_children` reads that form, so the declaration ships with its handler. Every other backend leaves it out: kiro-cli has its own roster, and an adapter that has not been measured gets nothing it might route around. JetBrains AIR's `_meta` opt-in is never sent. |
-| `elicitation` | `{"form": {}, "url": {}}` | **Declared together with its handler, never ahead of it.** The ACP schema gates `elicitation/create` on this capability, so a standard harness forwards an MCP server's elicitation only when the client declares it; an advertised-but-unserved key would turn that ask into a `-32601` the harness reports as a cancelled tool call. Both drivers classify and answer the method (*MCP elicitation* below); `test_acp_client_capabilities.py` pins the declaration to that classification so the two cannot drift apart. The key does not move tool approvals: codex-acp (`@agentclientprotocol/codex-acp`, its `CodexElicitationHandler.ts` module: `createMcpElicitationContext`, `shouldUseAcpElicitation`, `canUsePermissionFallback`) recognises a tool approval as a message-only form and routes it through `session/request_permission` whatever the client declared; only a form WITH fields and a URL ask consult `clientCapabilities.elicitation.form` / `.url`, and the same gate decides whether codex's own `tool/requestUserInput` reaches the client at all. Measured live, not only read off the source: `test_codex_session_mcp_approval.py` drives the pinned codex-acp with this dict declared and the command approval arrives as `session/request_permission` (fixture `codex/command-approval-elicitation-declared-live.jsonl`); codex's own command approvals never pass through its elicitation handler (`handleCommandExecution` → `requestPermission`). Without the key codex answers a URL ask through `session/request_permission` (where a trust tier could approve it) and cancels a form with fields — with it, a URL ask on a consumer that cannot put it to a person (a channel, a cron) is declined, which is the intended answer: no trust tier answers an elicitation. opencode's ACP server routes tool permissions through `requestPermission` and never calls the SDK's `unstable_createElicitation`; pi's gated `bash` call is measured in `test_pi_real_adapter.py` under Crew's own handshake and arrives as `session/request_permission`; kiro-cli, KAS, claude-agent-acp and goose never send `elicitation/create`. Both modes are declared because both are rendered: a form from the requested schema, and a URL the person is sent to. |
+| `elicitation` | `{"form": {}, "url": {}}` | **Declared together with its handler, never ahead of it.** The ACP schema gates `elicitation/create` on this capability, so a standard harness forwards an MCP server's elicitation only when the client declares it; an advertised-but-unserved key would turn that ask into a `-32601` the harness reports as a cancelled tool call. Both drivers classify and answer the method (*MCP elicitation* below); `test_acp_client_capabilities.py` pins the declaration to that classification so the two cannot drift apart. The key does not move tool approvals: codex-acp (`@agentclientprotocol/codex-acp`, its `CodexElicitationHandler.ts` module: `createMcpElicitationContext`, `shouldUseAcpElicitation`, `canUsePermissionFallback`) recognises a tool approval as a message-only form and routes it through `session/request_permission` whatever the client declared; only a form WITH fields and a URL ask consult `clientCapabilities.elicitation.form` / `.url`, and the same gate decides whether codex's own `tool/requestUserInput` reaches the client at all. Measured live, not only read off the source: `test_codex_session_mcp_approval.py` drives the pinned codex-acp with this dict declared and the command approval arrives as `session/request_permission` (fixture `codex/command-approval-elicitation-declared-live.jsonl`); codex's own command approvals never pass through its elicitation handler (`handleCommandExecution` → `requestPermission`). Without the key codex answers a URL ask through `session/request_permission` (where a trust tier could approve it) and cancels a form with fields — with it, a URL ask on a consumer that cannot put it to a person (a channel, a cron) is declined, which is the intended answer: no trust tier answers an elicitation. opencode's ACP server routes tool permissions through `requestPermission` and never calls the SDK's `unstable_createElicitation`; pi's gated `bash` call is measured in `test_pi_real_adapter.py` under Crew's own handshake and arrives as `session/request_permission`; kiro-cli, KAS and goose never send `elicitation/create`, and claude-agent-acp sends it for AskUserQuestion (a tool it turns off for a client that declares no `form`), an MCP server's ask and a model-refusal retry. Both modes are declared because both are rendered: a form from the requested schema, and a URL the person is sent to. |
 
 **Request-id namespaces are independent.** Our outbound requests (prompt, initialize, set_model, ...) use `_next_req_id()`; the agent's inbound server→client requests (`session/request_permission`) carry their own id counter. The two collide on small integers, so `JsonRpcMessage.is_response_for(req_id)` requires both `id == req_id` **and** `method is None` — a response never has a `method`. Without the `method is None` guard, a permission request whose id equals the in-flight prompt's `req_id` was misclassified as that prompt's completion in `_process_message`, ending the turn early and leaving the tool's permission unanswered → the agent turn hangs on follow-up messages (the agent waits forever for a `session/request_permission` response that never comes).
 
@@ -2578,6 +2584,8 @@ turn's reader reads it. Pinned by `test/test_acp_post_session_new_drain.py`.
 `AcpClient._wait_for_response()` buffers all JSON-RPC notifications in
 `_mcp_notifications` instead of discarding them. `_drain_notifications()`
 processes buffered notifications first, then reads any remaining from stdout.
+A `_claude/sdkMessage` (claude) reaches neither: `_read_message` reads it into the
+task state (`raw_sdk_tasks.take`), and it extends no request's deadline.
 
 The multiplexed `AcpRuntime` has the same guarantee for session-scoped init
 frames even though it cannot register the session queue until `session/new`
@@ -2610,7 +2618,10 @@ an empty `mcpServers` map — opts out via
 the idle shortcut active from the start (the pre-ceiling behavior). A KAS
 process spawned for a tool-less agent has MCP switched off
 (`_kiro/mcp/toggle {enabled: false}`, `runtime_spawn_launch._send_mcp_off_if_toolless`,
-which sets `AcpRuntime._mcp_switched_off` for that spawn), so no server of any
+which sets `AcpRuntime._mcp_switched_off` for that spawn; the spec it judges is the
+one that spawn's handshake read, `AcpRuntime._spawn_spec`, cleared at the start of
+each spawn, and it reads the spec itself only when the handshake read none), so no
+server of any
 session on it can report: `_wait_managed_mcp` passes it a zero ceiling as well,
 and a tool-less agent such as `kirocrew-lite` no longer waits out the 6 s
 ceiling on every cold start. Every other agent keeps the ceiling.
@@ -3438,9 +3449,10 @@ stdout while no request waits. Design record:
   turn (below). The kiro-cli
   arm of `_spawn` reaches no adapter, so a Kiro client's constructor and read
   methods behave as on main and it never reads between turns (harness-parity
-  H13). The one shared change on that path is `_read_message`'s keyword-only
+  H13). The shared changes on that path are `_read_message`'s keyword-only
   `check_cancel`, which defaults to main's check and only the idle reader
-  passes.
+  passes, and its `raw_sdk_tasks.take` call, which takes no frame outside
+  `ACP_BACKENDS_RAW_SDK_TASKS`.
 - **Instance bindings hide class patches.** The wrappers are set on the
   instance with `setattr`, and each holds the method it wraps, so after the
   spawn a patch of `AcpClient.<method>` on the class does not reach a claude
@@ -3484,8 +3496,11 @@ stdout while no request waits. Design record:
 - **Hand-off.** A request from the agent, or a `session/update` of kind
   `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`
   or `plan`, ends the reader: it records that frame as the turn's start and
-  calls `on_agent_turn(client)`. A frame that only reports state
-  (`usage_update`, `session_info_update`) starts nothing. The hand-off stays
+  calls `on_agent_turn(client)`. On a backend in `ACP_BACKENDS_HARNESS_NOTICES`
+  a `notice` does too (`_starts_agent_turn`). A frame that only reports state
+  (`usage_update`, `session_info_update`) starts nothing, and a `_claude/sdkMessage`
+  never reaches the reader (`raw_sdk_tasks.take`): a stopped task's end is followed
+  by no cycle, so a turn started on it would never close. The hand-off stays
   pending while the start frame is still in `_buffer`, and a turn that takes it
   ends the hand-off by reading it as its own.
 - **Other readers keep the turn's frames.** A wrapped reader other than a turn
@@ -3968,7 +3983,7 @@ opposed to `spawn_run` / `spawn_sub_agents` tasks Kiro Crew manages
 | kiro-cli (`ACP_BACKEND_KIRO`) `use_subagent` | yes — `_kiro.dev/subagent/list_update` roster (`sessionId`, `status`), and child-routed `session/update` / `_kiro.dev/session/update` frames carry the child `sessionId` (`AcpEvent.sub_session_id`) | attributable: child frames are parsed with the shared parser into origin-scoped caches and re-tagged `EVENT_SUBAGENT_ACTIVITY`; child approvals surface on the PARENT with `sub_session_id` set (`subagent_manager/run_turn.py` `_run_inner_impl` counts them separately) | parent only — `session/cancel` on the parent session takes every child | none independent of the parent | not a task row. `AcpSessionHandle.native_child_sessions` counts child ids seen this turn through `_note_native_child` at three execution-layer seams — the child-routed branch of `_handle_update`, the `_kiro.dev/session/update` child stream in `_dispatch_events`, and the `subagent_list` roster when this handle is its sole owner (`fanout_no_owner` False; a fanned-out roster is counted on nobody) — never from model text. No `HostBudget` charge, because a child lives inside the parent's already-charged runtime process; `report_native_children(budget)` reports the count as `uncharged["native_children"]`. Recovery boundary = the parent session. A child-routed `kirocrew/status` is rejected (`child_origin`), never re-attributed |
 | KAS (`ACP_BACKEND_KAS`) | yes — `_meta.kiro.agentSubtaskId` / `pipeline` on parent `tool_call` frames (`_handle_kas_subagent`), roster keyed by `agentSubtaskId` | child nested tool frames emit an activity prefix and populate the caches | parent only | none | same boundary as kiro-cli; every roster entry (individual `agent-subtask` frame or pipeline stage) is counted through the same `_note_native_child` seam |
 | Codex (`ACP_BACKEND_CODEX`) native subagents | yes, once the client declares `clientCapabilities.subagents` (`CODEX_CLIENT_CAPABILITIES`): each child is announced by a lifecycle `session/update` ON the session that spawned it -- `subagent_spawned` / `subagent_state_update`, keyed on `subagentSessionId` -- and streams its own work under its own `sessionId`. No other lifecycle shape is read until an adapter sends one. A continued child is announced again under `<id>:generation:N`. `_handle_announced_subagent` keeps the roster (`_announced_subagent_roster`, row shape of the KAS roster plus `parentSessionId` for a nested child) and emits it whole as `EVENT_SUBAGENT_LIST`. An adapter built on ACP SDK 1.x drops the declaration while parsing `initialize`, so codex-acp 2.2.2 and older still send only "Start/Complete subagent" tool rows; `_handle_legacy_codex_subagent` reads their `rawInput` (`agentThreadId`, `agentPath`, `activityKind`) into the same roster instead of rendering them, and such an adapter sends no child output | child frames reach the parent through the runtime's announced-child route and take the same child-routed branch of `_handle_update` as kiro-cli's | parent only | none independent of the parent; a continuation is a new generation id, so a new card | same boundary as kiro-cli; announced ids are counted through `_note_native_child` |
-| Claude backend (`ACP_BACKEND_CLAUDE`) | yes — `AcpClient` declares `subagents`, so claude-agent-acp announces each child on the parent (`subagent_update`: the child `sessionId`, title, description and state) and sends the delegated prompt (`session_message`, whose `messageId` is the Agent call's `toolCallId`) and the child's own frames under the child's sessionId; read by `client_native_children` into the same roster shape the cards take | attributable: a child's tool call yields an `EVENT_SUBAGENT_ACTIVITY` prefix and then continues to the ordinary tool path, as a kiro-cli child's does on `AcpClient`; a child's text becomes `EVENT_SUBAGENT_ACTIVITY`, never the parent's text; its other frames are dropped | parent only — the adapter offers `capabilities.cancel` per child, and Kiro Crew does not send it | none | same boundary; the child ids and Agent-call links are kept under `NATIVE_CHILD_ROSTER_CAP` with the overflow counted and logged at the next turn; a child past the cap gets no card, its text is dropped and its tool calls render as ordinary rows. They are not yet reported as uncharged residency, and a resume naming one misses as an unknown conversation. On a session that declares nothing, the Task tool is an ordinary `tool_call` on the parent and the liveness oracle bounds the parent turn identically (`test_claude_backend_counts_no_children_but_oracle_still_bounds_the_parent`, `test_claude_native_subagent_cards.py`) |
+| Claude backend (`ACP_BACKEND_CLAUDE`) | yes — `AcpClient` declares `subagents`, so claude-agent-acp announces each child on the parent (`subagent_update`: the child `sessionId`, title, description and state) and sends the delegated prompt (`session_message`, whose `messageId` is the Agent call's `toolCallId`) and the child's own frames under the child's sessionId; read by `client_native_children` into the same roster shape the cards take | attributable: a child's tool call yields an `EVENT_SUBAGENT_ACTIVITY` prefix and then continues to the ordinary tool path, as a kiro-cli child's does on `AcpClient`; a child's text becomes `EVENT_SUBAGENT_ACTIVITY`, never the parent's text; its other frames are dropped | parent, and one child at a person's Stop on its card when the adapter granted it `capabilities.cancel` (`AcpClient.cancel_native_child`) | none | same boundary; the child ids and Agent-call links are kept under `NATIVE_CHILD_ROSTER_CAP` with the overflow counted and logged at the next turn; a child past the cap gets no card, its text is dropped and its tool calls render as ordinary rows. On the shared runtime the session handle reads the same form (`session_handle_claude_children`, with the client's functions) and `report_native_children` reports this turn's claude children as `uncharged["native_children"]`; the ids outlive the turn, so the count reads the turn's roster, as on the client, and a working child keeps its redactor across parent turns until it ends or a cancel stops it. A resume naming one misses as an unknown conversation. On a session that declares nothing, the Task tool is an ordinary `tool_call` on the parent and the liveness oracle bounds the parent turn identically (`test_claude_backend_counts_no_children_but_oracle_still_bounds_the_parent`, `test_claude_native_subagent_cards.py`) |
 | `spawn_run` / `spawn_sub_agents` (all backends) | task rows (`taskq`) | yes | per task | per task (continuable) | full scheduling. A `spawn_run` child that itself uses `use_subagent` is the boundary for ITS native grandchildren: they are counted on the child's handle only, never on the grandparent |
 
 The minimal recovery boundary for every native subtask is therefore the parent
@@ -4005,7 +4020,7 @@ session: it is counted there, cancelled there, and recovered there. Concretely:
   `EVENT_COMPLETE` or `EVENT_STRUCTURED_STATUS` a runner would act on.
 - **One cancel.** `cancel()` sends a single `session/cancel` naming the parent;
   the tool-stall watchdog recovers a stalled parent with that same single cancel
-  however many children it fanned out. Kiro Crew sends no per-child lever, even where an adapter offers one (claude-agent-acp's per-child `capabilities.cancel`).
+  however many children it fanned out. No recovery path sends a per-child cancel; a person's Stop on a claude child's card is the one per-child request (`AcpClient.cancel_native_child`).
 - **No independent resume.** `native_child_resume_refusal(conversation_id)`
   returns a typed `native_child_not_resumable: <id> is a harness-native child of
   session <parent> …` for a `spawn_continue`-style resume naming a child id, or
@@ -4087,23 +4102,37 @@ session: it is counted there, cancelled there, and recovered there. Concretely:
   the per-call silence timer reads both before it judges a native sub-agent call.
 - **A child announced ON a session routes to that session.** The runtime learns
   announced children only for a harness whose `client_capabilities` declares
-  `subagents` (today codex), and the handle's lifecycle intercept is gated on
-  `ACP_BACKEND_CODEX`. A Codex lifecycle
+  `subagents`: codex, from its `subagent_spawned` / `subagent_state_update`
+  lifecycle frames (the handle's lifecycle intercept is gated on
+  `ACP_BACKEND_CODEX`), and claude, from `subagent_update`, whose `sessionId` names
+  the child; a claude child's route is kept until its owner leaves, because an
+  idle claude child can still be messaged. A lifecycle
   frame names its owner, unlike the ownerless kiro-cli roster, so
   `AcpRuntime._note_announced_child` maps the child id to the registered session
   the frame arrived on (a nested child, announced on a child's id, maps to the
   same root owner) in `_announced_children`, before the frame itself is routed.
-  The child's `session/update` and `session/request_permission` frames then reach
+  The child's `session/update`, `session/request_permission` and
+  `elicitation/create` frames then reach
   that owner even while other sessions share the runtime, under the same
   governance as the roster route (`_route_owned_child_frame`: routed while the
-  owner's turn is active, a permission answered fail-closed and an update dropped
-  between turns). The first announcement wins, a registered session is never
+  owner's turn is active; between turns a permission is answered fail-closed, a
+  question is declined and an update dropped). A child's question no registered
+  session owns (a child past the announcement cap, or never announced) is declined
+  at once on every backend instead of left unanswered. Each decline waits on the
+  shared answer-task bound (`_wait_for_answer_capacity`) and is SEL-recorded under
+  `mcp_elicitation` with outcome `decline`, keyed on the owner (the child's own id
+  when there is none), naming the child and the reason (`owner_no_active_turn`, or
+  the roster-overflow / unregistered reason the permission answer uses). On the
+  claude handle, a child's `subagent_update` that a turn-start drain discards is
+  first applied to the child's row, so a child that ended between turns shows
+  ended. The first announcement wins, a registered session is never
   taken as a child, the map holds at most `NATIVE_CHILD_ROSTER_CAP` ids (refusals
   counted in `_announced_overflow`, which selects the overflow reject reason), a
   codex-acp 2.2.x terminal `subagent_state_update` releases that child's route,
   and the owner's ids leave with it on unregister. Pinned by
   `test_codex_native_subagent_cards.py`, whose fixtures are reduced live captures
-  of codex-acp 2.2.3-preview.23 and 2.2.2.
+  of codex-acp 2.2.3-preview.23 and 2.2.2, and, for claude and the question
+  declines, by `test_claude_shared_children.py`.
 
 The UI showing per-child cards (`_native_subagent_sync` in `chat_turn/native_cards.py`)
 never implies the scheduler can pause or restart one child; a backend that later
@@ -4116,6 +4145,17 @@ the runtime shared with unrelated sessions.
 kiro can return a `-32603` error that is an *advisory* that it substituted a different model, not a fatal failure. `_is_model_substitution_advisory()` (with `_extract_advisory_detail()` for the human-readable reason) recognizes this shape, and the session stays alive and continues the turn instead of tearing down — a real fatal error still propagates.
 
 ## Session Update Handling
+
+**Claude's checklist, notices and mode changes.** On a backend in
+`ACP_BACKENDS_PLAN_CHECKLIST` / `ACP_BACKENDS_HARNESS_NOTICES` (claude) `plan`,
+`notice` and a mode-changing `current_mode_update` of the client's own session are
+read, not plumbing-only: `plan` as a read-only `EVENT_TODO_UPDATE`
+(`acp/plan_checklist.py`), the other two as notices (`acp/harness_notices.py`); a
+`notice` reaches every text reader as its text form. `notice` and the native
+compaction pair `compaction_update` / `compaction_summary_chunk` are in
+`KNOWN_SESSION_UPDATES`, so claude logs neither as unhandled. See
+claude-code-provider, *Claude Code's checklist* and *Claude's notices and mode
+changes*.
 
 `_extract_text_chunk()` handles two update types for text streaming:
 
@@ -6060,3 +6100,7 @@ start after another ID. Codex retains its missing-terminal `failed` verdict.
 Legacy tool-marker/text paths remain available for older adapters. No AIR
 capability is advertised, so read, terminal and MCP output contracts remain
 unchanged. Unknown lifecycle statuses and summary chunks are tolerated.
+On a backend in `ACP_BACKENDS_COMPACTION_SUMMARY` (claude) a `completed` event's
+title is the compaction's summary, the text the compaction card folds
+(`acp/compaction_summary.py`; claude-code-provider, *A compaction's summary*);
+elsewhere it stays empty.

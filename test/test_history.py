@@ -699,7 +699,7 @@ class TestListSessionsDedup:
         log = ConversationLog(base_dir=tmp_path)
         log.append("dashboard_chat-1-100", "user", "older")
         log.append("dashboard_dashboard_chat-1-100", "user", "newer")
-        # Make the double-prefix file newer
+        # Age the single-prefix file so the double-prefix one is the newer copy.
         older = tmp_path / "dashboard_chat-1-100.jsonl"
         os.utime(older, (1000, 1000))
         sessions = log.list_sessions()

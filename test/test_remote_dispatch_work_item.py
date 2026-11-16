@@ -603,7 +603,9 @@ async def test_the_get_reply_redacts_artifact_keys_too(state, preview, worker_ro
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_bind_finishes_its_write_before_the_cancellation_lands(monkeypatch):
+async def test_a_cancelled_bind_finishes_its_write_before_the_cancellation_lands(
+    monkeypatch, preview
+):
     """The unwind then sees the binding it must undo, and the discard removes it."""
     import asyncio
 
@@ -613,7 +615,7 @@ async def test_a_cancelled_bind_finishes_its_write_before_the_cancellation_lands
     async def _gated(fn: Any, *args: Any, **kwargs: Any) -> Any:
         # The write is held on the loop, not on a pool thread, until the
         # cancellation has been delivered. Every other off-loop read runs at once.
-        if fn is not mailbox.open_mailbox:
+        if fn is not remote_dispatch_headroom.bind_if_room:
             return fn(*args, **kwargs)
         entered.set()
         await asyncio.wait_for(gate.wait(), _BOUND_SECS)

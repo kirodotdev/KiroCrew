@@ -86,10 +86,9 @@ def _abort_connection(request: web.Request) -> None:
             transport.abort()
 
 
-#: Ceiling for an uploaded state archive, aligned with the bomb guard that
-#: already governs this path: `portability._MAX_IMPORT_UNCOMPRESSED` admits 2 GiB
-#: *uncompressed*, so a compressed archive under 2 GiB cannot be refused here
-#: without the two limits contradicting each other.
+#: Ceiling for an uploaded state archive. An import accepts more than this once
+#: unpacked (`portability.import_size_problem`), and an export compresses a few
+#: times, so a backup that unpacks to several GB still uploads under it.
 #:
 #: A tighter ceiling (512 MB, say) is a NEW restriction rather than a restored
 #: one -- the upload streams to disk, so nothing downstream needs it -- and it

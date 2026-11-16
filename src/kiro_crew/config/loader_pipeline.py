@@ -120,6 +120,8 @@ from kiro_crew.config.section_builders import (
     _build_work_ledger_config,
 )
 from kiro_crew.config.sections import (
+    BOT_MAX_WORKERS_MAX,
+    BOT_MAX_WORKERS_MIN,
     STAR_ORDER_MAX,
     AgentConfig,
     BrowserConfig,
@@ -1044,6 +1046,9 @@ def build_config(
                         else crew.default("worker_model")
                     ),
                     worker_reasoning_effort=coerce_effort(crew.get("worker_reasoning_effort")),
+                    max_workers=crew.read(
+                        "max_workers", _safe_int, lo=BOT_MAX_WORKERS_MIN, hi=BOT_MAX_WORKERS_MAX
+                    ),
                     # Kept as written, never coerced to a selectable value: the
                     # selection gate refuses a pin this build cannot start, and a
                     # coerced one would run the crewmate on another harness.

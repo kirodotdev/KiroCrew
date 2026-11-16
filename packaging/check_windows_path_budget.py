@@ -31,13 +31,22 @@ problem, because the installed path is shorter than the moved one.
 path relative to the install root, for a payload measured before packaging
 (``resources\\backend-dist\\kirocrew-backend`` for the bundled backend); it is
 empty when ``--root`` is the install root itself.
+
+``--prune-caches`` first deletes every over-budget bytecode cache (a ``.pyc``
+in a ``__pycache__`` directory) and then measures what is left. A cache is the
+one kind of file the payload can lose safely: Python compiles the module from
+its source instead. The release build precompiles the gateway's import closure,
+and some of those caches sit deeper than their sources; any other over-budget
+file still fails the build.
 """
 
 from __future__ import annotations
 
 import argparse
+import ntpath
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 MAX_USABLE_PATH = 259
@@ -46,16 +55,18 @@ MOVE_DIRECTORY = len("\\nsaXXXX.tmp\\old-install\\")
 RELATIVE_PATH_BUDGET = MAX_USABLE_PATH - TEMP_ALLOWANCE - MOVE_DIRECTORY
 
 
-def relative_paths(root: Path, prefix: str = "") -> list[str]:
-    """Every file under ``root`` as a backslash path relative to the install root."""
-
+def _walk(root: Path, prefix: str) -> Iterator[tuple[str, Path]]:
     lead = prefix.strip("\\/").replace("/", "\\")
-    found: list[str] = []
     for directory, _dirnames, filenames in os.walk(root):
         relative = Path(directory).relative_to(root).parts
         for name in filenames:
-            found.append("\\".join(part for part in (lead, *relative, name) if part))
-    return found
+            yield "\\".join(part for part in (lead, *relative, name) if part), Path(directory, name)
+
+
+def relative_paths(root: Path, prefix: str = "") -> list[str]:
+    """Every file under ``root`` as a backslash path relative to the install root."""
+
+    return [relative for relative, _path in _walk(root, prefix)]
 
 
 def over_budget(paths: list[str], budget: int = RELATIVE_PATH_BUDGET) -> list[str]:
@@ -64,13 +75,43 @@ def over_budget(paths: list[str], budget: int = RELATIVE_PATH_BUDGET) -> list[st
     return sorted((path for path in paths if len(path) > budget), key=len, reverse=True)
 
 
+def is_bytecode_cache(relative: str) -> bool:
+    """Whether a Windows relative path is a ``.pyc`` inside a ``__pycache__`` directory."""
+
+    return (
+        relative.lower().endswith(".pyc")
+        and ntpath.basename(ntpath.dirname(relative)).lower() == "__pycache__"
+    )
+
+
+def prune_over_budget_caches(
+    root: Path, prefix: str = "", budget: int = RELATIVE_PATH_BUDGET
+) -> list[str]:
+    """Delete each bytecode cache longer than ``budget``; return them, longest first."""
+
+    pruned = []
+    for relative, path in _walk(root, prefix):
+        if len(relative) > budget and is_bytecode_cache(relative):
+            path.unlink()
+            pruned.append(relative)
+    return sorted(pruned, key=len, reverse=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--prefix", default="")
     parser.add_argument("--show", type=int, default=5)
+    parser.add_argument("--prune-caches", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.prune_caches:
+        pruned = prune_over_budget_caches(args.root, args.prefix)
+        print(
+            f"pruned {len(pruned)} bytecode cache(s) over the {RELATIVE_PATH_BUDGET}-character budget"
+        )
+        for path in pruned[: args.show]:
+            print(f"  {len(path)}: {path}")
     paths = relative_paths(args.root, args.prefix)
     if not paths:
         print(f"no files under {args.root}", file=sys.stderr)

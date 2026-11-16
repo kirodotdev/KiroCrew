@@ -652,33 +652,48 @@ class TestSweepWaitsForIngestion:
         """The store gate holds new entrants off once a maintenance window is
         waiting for the current holders to drain; a caller that already holds
         the gate and enters again (the ingest call inside a handler's span)
-        must pass at once, not wait for the window's timeout."""
+        must pass at once, not wait for the window's timeout.
+
+        "At once" is asserted as no wait at all: once the window is waiting, any
+        entrant wait on the gate's condition other than the window's own is refused
+        on the spot, so a regression fails here instead of after the timeout."""
         store = KnowledgeStore(str(tmp_path / "k.db"))
         pipeline = IngestionPipeline.__new__(IngestionPipeline)
         pipeline.store = store
-        window_waiting = threading.Event()
+        gate = store._ingestion_gate
         window_result: list[bool] = []
+        window_thread: list[int] = []
+        entrant_waits: list[int] = []
+        real_wait = gate._cond.wait
+
+        def wait(timeout: float | None = None) -> bool:
+            if threading.get_ident() in window_thread:
+                return real_wait(timeout)
+            entrant_waits.append(threading.get_ident())
+            raise AssertionError("a nested hold waited behind the maintenance window")
+
+        gate._cond.wait = wait
 
         def open_window():
-            window_waiting.set()
-            with store.maintenance_window(timeout=2.0) as quiescent:
+            window_thread.append(threading.get_ident())
+            with store.maintenance_window(timeout=default_timeout()) as quiescent:
                 window_result.append(quiescent)
 
-        async def scenario() -> float:
+        async def scenario() -> None:
             async with pipeline.ingestion_in_flight():
                 th = threading.Thread(target=open_window)
                 th.start()
-                assert window_waiting.wait(2)
-                await asyncio.sleep(0.1)  # the window is now waiting on the holder
-                started = time.monotonic()
+                # The window has claimed its turn and is waiting on this holder.
+                await async_wait_until(lambda: gate._maintenance)
                 async with pipeline.ingestion_in_flight():
                     pass
-                elapsed = time.monotonic() - started
-                return elapsed
+            await asyncio.to_thread(th.join, default_timeout())
+            assert not th.is_alive(), "the window never closed"
 
         try:
-            elapsed = asyncio.run(scenario())
-            assert elapsed < 0.5, f"nested hold waited {elapsed:.2f}s behind the window"
+            asyncio.run(scenario())
+            assert entrant_waits == []
+            assert window_result == [True], "the window waited for the outer hold and ran"
         finally:
             store._close_all_for_tests()
 

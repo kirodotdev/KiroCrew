@@ -81,8 +81,46 @@ _ALL_DRIFT = {
     "NO_DIRECTIVES",
 }
 
-#: Distinct names other packages import from the pipeline's modules. May only fall.
-_EXPORT_BUDGET = 31
+#: Every name other packages import from the pipeline's modules, one per line, so
+#: two changes that each retire a different name edit different lines (see
+#: testing-conventions.md § Merge-safe ratchets and counts). The interface may only
+#: narrow: a name that stops being imported leaves this set in the same change, and a
+#: new one fails until a reviewed change adds it here.
+_EXPORTED_NAMES = frozenset(
+    {
+        "kiro_crew.messaging.dispatch.Approvals",
+        "kiro_crew.messaging.dispatch.Asker",
+        "kiro_crew.messaging.dispatch.ChannelTurn",
+        "kiro_crew.messaging.dispatch.ChannelTurns",
+        "kiro_crew.messaging.dispatch.DISCORD_DRIFT",
+        "kiro_crew.messaging.dispatch.MonitorWake",
+        "kiro_crew.messaging.dispatch.TOOLLESS_TURN_AGENT",
+        "kiro_crew.messaging.dispatch.TurnOutcome",
+        "kiro_crew.messaging.dispatch.TurnRecord",
+        "kiro_crew.messaging.dispatch.Verdict",
+        "kiro_crew.messaging.dispatch.admit_inbound_callback",
+        "kiro_crew.messaging.dispatch.await_replay_gap",
+        "kiro_crew.messaging.dispatch.build_auto_approve",
+        "kiro_crew.messaging.dispatch.build_directive_consumer",
+        "kiro_crew.messaging.dispatch.build_tool_gate",
+        "kiro_crew.messaging.dispatch.charge_turn_failure",
+        "kiro_crew.messaging.dispatch.consume_reinjection",
+        "kiro_crew.messaging.dispatch.delivery_is_muted",
+        "kiro_crew.messaging.dispatch.drive_turn",
+        "kiro_crew.messaging.dispatch.driver_turn_landed",
+        "kiro_crew.messaging.dispatch.hold_inbound_callback",
+        "kiro_crew.messaging.dispatch.inbound_permitted",
+        "kiro_crew.messaging.dispatch.open_turn_crew_log",
+        "kiro_crew.messaging.dispatch.rearm_reinjection",
+        "kiro_crew.messaging.dispatch.requested_model_sid",
+        "kiro_crew.messaging.dispatch.rollback_skill_bodies",
+        "kiro_crew.messaging.dispatch.session_stop_generation",
+        "kiro_crew.messaging.dispatch.slot_workspace",
+        "kiro_crew.messaging.dispatch.stop_reason_landed",
+        "kiro_crew.messaging.dispatch.store_predecessor",
+        "kiro_crew.messaging.dispatch.warn_if_toolless_turns_unservable",
+    }
+)
 _PIPELINE_MODULES = (
     "kiro_crew.messaging.dispatch",
     "kiro_crew.messaging.dispatch_admission",
@@ -216,12 +254,14 @@ def _pipeline_imports() -> set[tuple[str, str]]:
     return names
 
 
-def test_the_export_budget_may_only_fall() -> None:
-    imported = _pipeline_imports()
+def test_the_exported_names_are_the_pinned_set() -> None:
+    imported = {f"{module}.{name}" for module, name in _pipeline_imports()}
     # Non-vacuity: the channels' own entry points are among them.
-    assert ("kiro_crew.messaging.dispatch", "ChannelTurns") in imported
-    assert len(imported) <= _EXPORT_BUDGET, (
-        f"{len(imported)} names are imported from the pipeline's modules, over the "
-        f"budget of {_EXPORT_BUDGET}; narrow the interface rather than widen it:\n"
-        + "\n".join(sorted(f"{m}.{n}" for m, n in imported))
+    assert "kiro_crew.messaging.dispatch.ChannelTurns" in imported
+    added = sorted(imported - _EXPORTED_NAMES)
+    assert not added, (
+        f"new names imported from the pipeline's modules: {added}; narrow the "
+        "interface rather than widen it"
     )
+    retired = sorted(_EXPORTED_NAMES - imported)
+    assert not retired, f"no longer imported, delete from _EXPORTED_NAMES: {retired}"

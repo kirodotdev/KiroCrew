@@ -34,6 +34,7 @@ from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.context_assembly import output_contract as _output_contract
 from kiro_crew.context_assembly import sections as _sections
 
 if TYPE_CHECKING:
@@ -879,6 +880,13 @@ def _render_contract(
             conductor=agent == MATE_CONDUCTOR_AGENT,
             own_thread=is_member_session_key(session_key),
         )
+    # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
+    # shared core and conductor tail, the same constants Conductor mode carries)
+    # rides here at agent rank. After any user prompt.md is read, so a custom
+    # charter keeps it too.
+    if agent == MATE_CONDUCTOR_AGENT:
+        ask = _output_contract.ASK_CORE + _output_contract.CONDUCTOR_ASK_TAIL
+        agent_prompt = f"{agent_prompt}\n\n{ask}" if agent_prompt else ask
     # Every shipped conductor talks to a person in the dashboard chat, so it gets
     # the widget pointer here, not as a token in its spec: kiro-cli loads that
     # spec prompt natively and a crewmate's essentials deliver it verbatim, and

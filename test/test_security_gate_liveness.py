@@ -466,8 +466,8 @@ def _url_payload_command(n: int) -> str:
 #: and nothing glued after. One regex of three fixed-width alternatives, a helper that
 #: returns the digest spans, their comment, and the one clause beside the document-link
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
-#: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
-#: boundary split an SRI value saves main's verdict on the digest, not the notice.
+#: Six more for its ``judged_sri_values`` input: a streamed segment's save judges a
+#: digest holding a value a delta boundary cut, so that delta's verdict is kept.
 #:
 #: Raised again, from 32,188, for the ``self-protection-skills-authority-retire`` floor,
 #: which denies the operator-only ``kirocrew skills authority-retire`` recovery
@@ -908,8 +908,13 @@ def test_the_package_stays_within_its_line_budget() -> None:
     budget = _package_line_budget(_BUDGET_ROWS_DIR)
     assert total <= budget, (
         f"package grew to {total} lines, over its budget of {budget}: {counts}. If the "
-        f"growth is meant, add test/security_line_budget/<change>.txt: first line "
-        f"+{total - budget}, then the reason (see README.md there)."
+        f"growth is meant, add test/security_line_budget/<change>.txt: first line your "
+        f"diff's OWN net line change under src/kiro_crew/security/*.py (lines added minus "
+        f"lines removed, e.g. from `git diff --numstat origin/main...HEAD -- "
+        f"src/kiro_crew/security/`), then the "
+        f"reason (see README.md there). Not the {total - budget} over: that is your growth "
+        f"minus whatever headroom this base had, and two rows written that way under-count "
+        f"once both merge."
     )
 
 

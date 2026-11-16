@@ -108,6 +108,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/projections", handlers.api_member_projections)
     app.router.add_get("/api/members/{slug}/briefing", handlers.api_member_briefing)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
+    # An app's wake (`permissions.bots: wake`, handlers/members_app.py): app tokens only.
+    app.router.add_post("/api/members/{slug}/wake", handlers.api_member_wake)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
     # Export one crewmate as a .crewmate file (rfc-crewmate-share.md §5.3): owner-only.
     app.router.add_post("/api/members/{slug}/export", member_export.api_member_export)

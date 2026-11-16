@@ -125,7 +125,6 @@ class TestBootSkillReconcile:
         skills_root = tmp_path / "skills"
         skills_root.mkdir(parents=True)
 
-        # Write installed.json (enabled, gateway-managed)
         installed = {
             "name": "test-app",
             "version": "1.0.0",

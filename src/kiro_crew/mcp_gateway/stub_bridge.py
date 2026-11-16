@@ -347,6 +347,7 @@ class StubSession:
                 try:
                     asyncio.run_coroutine_threadsafe(line_q.put(b""), loop).result(timeout=1.0)
                 except Exception:
+                    # If the EOF cannot be queued, the reader thread still ends here.
                     pass
 
         threading.Thread(target=_blocking_reader, name="stub-stdin", daemon=True).start()
@@ -442,6 +443,7 @@ async def run_bridge(
                 try:
                     await _write_frame(writer, {"type": "unregister"})
                 except Exception:
+                    # The unregister frame is a courtesy; the session ends here either way.
                     pass
                 return
             # Track outbound JSON-RPC request IDs (have "method" + "id"), and

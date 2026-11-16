@@ -104,11 +104,11 @@ class TestValidation:
         assert _mf([{"id": "env-picker", "entryPoint": "dist/c.mjs"}]).validate() == []
 
     def test_a_trailing_newline_is_refused_on_both_patterns(self):
-        """Regression: `$` also matches BEFORE a trailing newline.
+        """`$` also matches BEFORE a trailing newline.
 
-        These two patterns were checked with ``re.match``, so ``"a\\n"`` and
-        ``"session-status\\n"`` validated clean and the statusPath then reached
-        the URL the dashboard builds. The module docstring calls this trap out —
+        With ``re.match`` on these two patterns, ``"a\\n"`` and ``"session-status\\n"``
+        would validate clean and the statusPath would reach the URL the dashboard
+        builds. The comment above ``_ENDPOINT_ALLOWED_RE`` calls this trap out —
         both must use ``fullmatch``.
         """
         assert any(

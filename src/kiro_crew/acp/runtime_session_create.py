@@ -9,19 +9,19 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
-``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``,
-``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
-``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
+``_entitlement_probe_result_at``, ``_first_session_ready``,
+``_saw_delegate_launch_failure``, ``_saw_kas_engine_refusal``,
+``_saw_sandbox_init_failure``, ``_session_cwds``, ``_session_harness_states``,
+``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
-Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_fold_mcp_frame``, ``_initialized``,
-``_kas_telemetry_sent``, ``_mcp_gateway_overlay``, ``_member_context``, ``_open_mcp_report``,
-``_pending_init_notifications``, ``_pid``,
-``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
-``_refuse_over_ceiling_start``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
-``_wire_mode_id``, ``_work_dir``,
+Instance fields read: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
+``_crew_agent``, ``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``,
+``_fold_mcp_frame``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
+``_mcp_reports``, ``_member_context``, ``_model``, ``_open_mcp_report``, ``_pending_init_notifications``,
+``_pid``, ``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
+``_refuse_over_ceiling_start``, ``_remote_session_servers``, ``_remote_workspace_agents``,
+``_session_label_elements``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -42,6 +42,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
+from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -60,6 +61,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     METHOD_SESSION_NEW,
     JsonRpcMessage,
 )
@@ -130,11 +132,18 @@ async def create_session(
     on_gate_queued: Callable[..., None] | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     bg_runtime_start: bool = False,
+    member_context: bool | None = None,
+    harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Create a new ACP session on this runtime. Returns a session handle.
 
     ``crew_agent`` is the canonical Kiro Crew identity for THIS session;
     None falls back to the runtime's own (spawn-time or rekeyed) identity.
+
+    ``member_context`` is whether THIS session runs as a Bot (crew member), which
+    decides whether its member resource documents are projected. None falls back
+    to the runtime's own value. Per session because a shared chat runtime's own
+    value is the founding session's, not this one's.
 
     ``session_key`` is the Kiro Crew session that will OWN this ACP session.
     It is what makes the session's broker stubs resolvable as this session
@@ -175,6 +184,25 @@ async def create_session(
     """
     if memory_mode not in {"persistent", "incognito", "temporary"}:
         raise ValueError("Invalid session memory mode")
+    if self._harness.per_session_state and harness_state is None:
+        # A host whose sessions each carry their own setup (``harness_state`` is
+        # how this call, made again below, carries it). Every other host reads
+        # the flag and goes on (harness-parity H13).
+        return await self._create_session_with_harness_state(
+            cwd=cwd,
+            agent=agent,
+            mcp_servers=mcp_servers,
+            crew_agent=crew_agent,
+            member_session_key=member_session_key,
+            session_key=session_key,
+            channel_id=channel_id,
+            memory_mode=memory_mode,
+            on_gate_acquired=on_gate_acquired,
+            late_adopter=late_adopter,
+            on_gate_queued=on_gate_queued,
+            start_priority=start_priority,
+            bg_runtime_start=bg_runtime_start,
+        )
     agent = await self._source_agent(agent)
     if memory_mode != "persistent":
         # A mixed runtime cannot attribute every raw diagnostic frame to a
@@ -225,6 +253,10 @@ async def create_session(
                 work_dir=session_work_dir,
                 session_key=session_key,
                 channel_id=channel_id,
+                permission_surface_owned=(
+                    harness_state is not None
+                    and self._harness.permission_surface_owned(harness_state)
+                ),
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers
@@ -400,6 +432,13 @@ async def create_session(
     # narrows its array would otherwise be reported as having been sent servers
     # the wire never carried, and the guard would judge refs against them.
     await self._write_remote_token()
+    # A host that fails or silently loses a server whose command cannot start
+    # gets the array without it (the ``AcpClient`` prune, one routine); every
+    # other host makes no call.
+    pruned = None
+    if self.acp_backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
+        pruned = await prune_session_servers(self.acp_backend, mcp_servers)
+        mcp_servers = pruned.kept
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
@@ -428,9 +467,14 @@ async def create_session(
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
+    if harness_state is not None:
+        # This session's own envelope, built after the array it travels with.
+        meta = self._harness.session_meta(harness_state, wire_servers, zero_tools=zero_tools)
+        if meta is not None:
+            params["_meta"] = {**(params.get("_meta") or {}), **meta}
 
     projected_sources: dict[str, str] = {}
-    if self._member_context:
+    if self._member_context if member_context is None else member_context:
         from kiro_crew.member_essential_context import projected_resource_documents
 
         for definition in kas_agents or ():
@@ -522,7 +566,10 @@ async def create_session(
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
             payload_snapshot=payload_snapshot,
-            late_adopter=late_adopter,
+            # A late session would start without its own pin or seed (both end
+            # with this failed start), so a host with per-session state has it
+            # torn down rather than adopted.
+            late_adopter=None if harness_state is not None else late_adopter,
             memory_mode=memory_mode,
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
@@ -547,7 +594,22 @@ async def create_session(
     # id, so an arm inside that already tore it down is not repeated. Shielded
     # so a second cancel cannot skip the host-side teardown.
     try:
-        return await self._finish_create_session(
+        if harness_state is not None:
+            self._session_harness_states[session_id] = harness_state
+            # Unclaimed from here, not only once the handle is built: a failed or
+            # cancelled pin below must still reach the shielded close.
+            self._unclaimed_new_sessions.add(session_id)
+            # Before the handle exists, so a session the host refuses never
+            # reaches a caller. Its own refusal ends only this session.
+            await self._harness.after_session_start(
+                harness_state,
+                session_id,
+                resp,
+                send_request=lambda method, req: self._send_and_await(method, req, timeout=budget),
+                close_session=lambda: self.terminate_session(session_id),
+                agent_version=self._agent_version,
+            )
+        handle = await self._finish_create_session(
             session_id,
             resp,
             buffered_init=buffered_init,
@@ -577,9 +639,46 @@ async def create_session(
             withheld_notice=withheld_notice,
             start_priority=start_priority,
         )
+        if pruned is not None:
+            # On the report the session opened with: what the array left out failed.
+            report = self._mcp_reports().get(session_id)
+            if report is not None:
+                record_pruned(report, pruned.pruned, pruned.omitted)
+        return handle
     except BaseException:
         if session_id in self._unclaimed_new_sessions:
             await asyncio.shield(self.terminate_session(session_id))
+        if (
+            harness_state is not None
+            and self._session_harness_states.pop(session_id, None) is not None
+        ):
+            await self._harness.end_session(harness_state)
+        raise
+
+
+async def _create_session_with_harness_state(self: AcpRuntime, **kwargs: Any) -> AcpSessionHandle:
+    """:meth:`create_session` on a host that prepares each session itself.
+
+    The host's :meth:`~HarnessAdapter.prepare_session` runs first, in the
+    session's own working directory, and the start then runs with that state.
+    A start that fails at any step before the session is recorded releases the
+    state here; once recorded, the session's teardown releases it.
+    """
+    agent = await self._source_agent(kwargs["agent"])
+    work_dir = await self._session_work_dir(kwargs["cwd"])
+    state = await self._harness.prepare_session(
+        work_dir=work_dir,
+        agent=agent or self._agent,
+        model=self._model or "",
+        session_key=kwargs["session_key"],
+        channel_id=kwargs["channel_id"],
+        memory_mode=kwargs["memory_mode"],
+    )
+    try:
+        return await self.create_session(**kwargs, harness_state=state)
+    except BaseException:
+        if state not in self._session_harness_states.values():
+            await self._harness.end_session(state)
         raise
 
 

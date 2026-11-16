@@ -1129,6 +1129,7 @@ def _linked_running_flipped(state: "DashboardState") -> bool:
         try:
             now[name] = bool(slot.linked_turn_running)
         except Exception:
+            # One slot that cannot report must not stop the scan; the next reconcile reads it again.
             continue
     flipped = any(seen.get(name, False) != running for name, running in now.items())
     # A tab that closed while its turn ran needs no push of its own.

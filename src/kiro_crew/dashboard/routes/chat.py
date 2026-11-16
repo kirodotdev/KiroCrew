@@ -16,6 +16,7 @@ from kiro_crew.dashboard import (
     chat_follow_default,
     chat_threads,
     handlers,
+    limit_continue,
     queue_edit_hold,
     session_export,
     session_transfer,
@@ -157,6 +158,15 @@ def register(app: web.Application) -> None:
     # Deliberately NOT /resume — that path is already taken by "open a history
     # session into a tab" (api_chat_slot_resume) and means something else.
     app.router.add_post("/api/chat/slots/{slot}/continue", chat.api_chat_slot_continue)
+    # One continue, held until the usage limit the chat stopped on resets.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/limit-continue", limit_continue.api_chat_slot_limit_continue
+    )
+    app.router.add_delete(
+        "/api/chat/slots/{slot}/limit-continue",
+        limit_continue.api_chat_slot_limit_continue_cancel,
+    )
+    app.on_cleanup.append(limit_continue.cancel_all)
     app.router.add_delete(
         "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
     )
@@ -193,6 +203,7 @@ def register(app: web.Application) -> None:
     )
     app.router.add_get("/api/chat/slots/{slot}/steering", api_chat_slot_steering)
     app.router.add_post("/api/chat/slots/{slot}/ultracode", chat.api_chat_slot_ultracode)
+    app.router.add_post("/api/chat/slots/{slot}/fast", chat.api_chat_slot_fast_mode)
     app.router.add_put("/api/chat/slots/{slot}/steering", api_chat_slot_steering_switch)
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)

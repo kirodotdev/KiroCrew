@@ -6,7 +6,7 @@ import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKin
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
-import UltracodeToggle from './UltracodeToggle'
+import SessionSwitchToggle from './SessionSwitchToggle'
 import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
@@ -187,7 +187,8 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
             </div>
           )}
           {!effortSupported && effortAutoNote && <EffortOffOnAutoNote />}
-          {typeof selectionCapabilitiesQ.data?.ultracode === 'boolean' && <UltracodeToggle key={slotKey} slot={slotKey} enabled={selectionCapabilitiesQ.data.ultracode} />}
+          {typeof selectionCapabilitiesQ.data?.ultracode === 'boolean' && <SessionSwitchToggle key={`ultracode:${slotKey}`} slot={slotKey} option="ultracode" enabled={selectionCapabilitiesQ.data.ultracode} />}
+          {typeof selectionCapabilitiesQ.data?.fast === 'boolean' && <SessionSwitchToggle key={`fast:${slotKey}`} slot={slotKey} option="fast" enabled={selectionCapabilitiesQ.data.fast} unavailable={selectionCapabilitiesQ.data.fast_unavailable} />}
          </div>
         </div>
       }</OverlayPortal>}

@@ -10,7 +10,8 @@ chats one crash takes down. These instruments answer them and nothing else.
 name                                               kind     attributes
 =================================================  =======  ======================================
 ``kirocrew.chat_runtime_share.toggled``            counter  ``state`` (on / off)
-``kirocrew.chat_runtime_share.placed``             counter  ``outcome``, ``reason``, ``tenants``
+``kirocrew.chat_runtime_share.placed``             counter  ``outcome``, ``reason``, ``tenants``,
+                                                            ``tree``
 ``kirocrew.chat_runtime_share.processes``          gauge    none: live processes placed by sharing
 ``kirocrew.chat_runtime_share.tenants``            gauge    none: chat leases on those processes
 ``kirocrew.chat_runtime_share.rss_sampled``        counter  ``tenants``, ``rss``
@@ -108,10 +109,12 @@ PLACED_OUTCOMES: tuple[str, ...] = ("spawned", "joined", "refused")
 #: ``native_subagents`` (``providers/chat_share.py``), plus ``none`` on a placement.
 #: ``sharing_disabled`` is listed because the function can return it, though the
 #: placement path returns before asking it while the preview is off.
-#: ``test_chat_runtime_share_metrics`` holds this set equal to the function's own.
+#: ``test_refusal_reasons_are_every_branch_the_eligibility_rule_returns`` holds this
+#: set equal to the function's own.
 REFUSAL_REASONS: tuple[str, ...] = (
     "sharing_disabled",
     "backend_not_chat_shareable",
+    "harness_switched_off",
     "kas_engine_not_shareable",
     "session_environment",
     "memory_mode_not_shareable",
@@ -121,6 +124,10 @@ REFUSAL_REASONS: tuple[str, ...] = (
 )
 
 TENANT_BUCKETS: tuple[str, ...] = ("0", "1", "2", "3", "4+")
+
+#: The kind of session tree a placed chat's process serves: a Bot's tree (every
+#: session a Bot opened, under its member identity) or any other chat tree.
+TREE_KINDS: tuple[str, ...] = ("chat", "bot")
 
 #: Prompt written to first event of that turn back, each edge INCLUSIVE.
 DELAY_BUCKET_EDGE_SECS: tuple[tuple[float, str], ...] = (
@@ -249,17 +256,30 @@ def record_toggled(on: bool) -> None:
     emit_counter(TOGGLED, {"state": "on" if on else "off"})
 
 
-def record_refused(reason: Any) -> None:
-    """An eligible-looking chat start, preview on, kept its own process."""
+def record_refused(reason: Any, *, backend: Any = None) -> None:
+    """An eligible-looking chat start, preview on, kept its own process.
+
+    ``harness`` names the backend it asked for, so a refusal reads per harness:
+    ``reason=harness_switched_off`` with ``harness=kas`` is KAS's own switch off.
+    """
     _note_sharing_in_use()
     emit_counter(
         PLACED,
-        {"outcome": "refused", "reason": _closed(reason, REFUSAL_REASONS), "tenants": NONE},
+        {
+            "outcome": "refused",
+            "reason": _closed(reason, REFUSAL_REASONS),
+            "tenants": NONE,
+            "tree": NONE,
+            ATTR_HARNESS: harness_for_backend(backend),
+        },
     )
 
 
-def record_placed(*, joined: bool, tenants: Any) -> None:
-    """A chat start landed: founded a process or joined one, with *tenants* after it."""
+def record_placed(*, joined: bool, tenants: Any, tree: Any = "chat", backend: Any = None) -> None:
+    """A chat start landed: founded a process or joined one, with *tenants* after it.
+
+    *tree* is the kind of session tree the process serves (:data:`TREE_KINDS`).
+    """
     _note_sharing_in_use()
     emit_counter(
         PLACED,
@@ -267,6 +287,8 @@ def record_placed(*, joined: bool, tenants: Any) -> None:
             "outcome": "joined" if joined else "spawned",
             "reason": NONE,
             "tenants": tenants_bucket(tenants),
+            "tree": _closed(tree, TREE_KINDS),
+            ATTR_HARNESS: harness_for_backend(backend),
         },
     )
 

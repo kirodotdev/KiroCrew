@@ -77,7 +77,18 @@ def coerce_fallback_model(raw: object) -> str:
 #: The Crew Mode conductor template's name. Equal to
 #: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
 #: binds no name the sections facade does not.
-_CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+
+
+def _chat_runtime_sharing_harness_defaults() -> dict:
+    """``{harness: default}`` for ``agent.chat_runtime_sharing_harnesses``.
+
+    Imported here rather than at module level so this owner binds no new imported
+    name the sections facade would have to bind too.
+    """
+    from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+
+    return dict(CHAT_RUNTIME_SHARING_HARNESSES)
 
 
 @dataclass
@@ -630,6 +641,17 @@ class AgentConfig:
             "apps_trusted, which grants the same admission to ONE named app.",
         ),
     )
+    apps_never_adopt_backend_listener: bool = field(
+        default=False,
+        metadata=_meta(
+            "Never Adopt App Backend Listener",
+            "When true, the gateway never adopts or re-binds a healthy app backend "
+            "listener that it did not start in this run, such as an uninstall survivor "
+            "or a backend an earlier gateway run started. A config that fails to "
+            "load still adopts, as when the setting is off. Defaults to false: any "
+            "healthy listener on the app's port is adopted.",
+        ),
+    )
     apps_trusted: list[str] = field(
         default_factory=list,
         metadata=_meta(
@@ -830,6 +852,21 @@ class AgentConfig:
             "larger value pools more sessions onto one process and loses more of them "
             "at once. Has no effect while the preview is off, which keeps one process "
             "per session. Clamped to 1..64.",
+        ),
+    )
+    chat_runtime_sharing_harnesses: dict = field(
+        default_factory=_chat_runtime_sharing_harness_defaults,
+        metadata=_meta(
+            "Chat Runtime Sharing: harnesses",
+            "Which harnesses may share one agent process between dashboard chats "
+            "while the chat_runtime_sharing feature preview is on, by harness name, "
+            "each true or false. A harness switched off keeps one process per chat. "
+            "A harness that is absent takes its default (KAS: on, codex: off). Has no effect "
+            "while the preview is off. Applies to chats started after the change.",
+            properties={
+                name: {"type": "boolean", "default": default}
+                for name, default in _chat_runtime_sharing_harness_defaults().items()
+            },
         ),
     )
     agent_started_turns: bool = field(
@@ -1453,7 +1490,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Conductor Own-Child Sends",
-            "Let the Conductor and the conductor mode team lead send to and close a "
+            "Let the Conductor and the team lead send to and close a "
             "session they created themselves without an approval prompt, the way a "
             "Bot already does. A send or close aimed at any other session still "
             "prompts, and the child keeps its own approval mode. Turn this off to "
