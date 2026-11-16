@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _history_key_for,
         _normalize_slot_key,
         app_may_control_session,
+        app_names_bot,
         app_new_key_refusal,
         app_owns_slot_session,
         app_owns_transcript_meta,
@@ -291,6 +292,34 @@ async def _app_claim_refused(
     for key in claimed:
         _audit_app_allow(request_app, operation, f"session={key}")
     return False
+
+
+async def _app_send_refused(
+    state: DashboardState, request_app: str, agent: object, existing: Any, key: str
+) -> bool:
+    """True, audited, when an app's ``POST /api/chat`` may not go ahead on *key*.
+
+    Two refusals, both answered with the uniform ``slot_not_found`` 404. A slot
+    this send would auto-create must not land on a transcript the app does not
+    own (:func:`_app_claim_refused`): its first save would stamp the app onto
+    that transcript's metadata line. And the app's own session, a slot this send
+    would create or a live app-owned one, does not take a Bot's name: owning a
+    session is not being given a Bot (:func:`slot_ownership.app_names_bot`). A
+    user's session the ``sessionApproval`` grant reaches is not the app's own: a
+    Bot thread the ``memberThreads`` scope reaches keeps its pinned name, and the
+    send path's own checks decide it.
+    """
+    if (
+        key
+        and existing is None
+        and await _app_claim_refused(state, request_app, "chat_send", (_history_key_for(key),))
+    ):
+        return True
+    if existing is not None and not getattr(existing, "_app", ""):
+        return False
+    return await app_names_bot(
+        request_app, agent, getattr(existing, "agent_kind", ""), "chat_send", key
+    )
 
 
 def _app_cancel_denied(

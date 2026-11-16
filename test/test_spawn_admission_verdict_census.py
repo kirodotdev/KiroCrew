@@ -64,6 +64,7 @@ _POLICY_REFUSALS = frozenset(
         "rejected_spawn",
         # The parent's turn was started by a Dashboard card (CARD_TURN_POLICY).
         "rejected_card_origin_turn",
+        "rejected_batch_owner",  # app/parent ownership conflicts, never capacity
     }
 )
 _STORE_REFUSALS = frozenset({"refused_task_store"})
@@ -141,6 +142,7 @@ _OUTSIDE_THE_GATE = frozenset(
 #: that writes no SEL outcome still lands here, so a new one turns this red.
 _REFUSAL_TEXTS = frozenset(
     {
+        "spawn refused: batch belongs to another app or session",
         "spawn refused: task must be a non-empty string",
         "spawn refused: gateway admission is closed",
         "memory_unavailable: the parent's memory mode could not be established",

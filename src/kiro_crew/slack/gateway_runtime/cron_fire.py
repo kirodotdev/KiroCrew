@@ -162,6 +162,29 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
 
         cap = await self._cron_capture(job)
 
+        # ── An app's job never runs as a Bot ──
+        # Every kind of job, before anything is dispatched: a script or command
+        # job's tool calls take the captured store too. A policy denial like the
+        # governance gates below, so it does not feed the auto-pause counter.
+        if _app_job_runs_as_bot(
+            job, cap.cron_execution, cap.cron_agent, live.snapshot() or getattr(self, "_cfg", None)
+        ):
+            job.last_status = "error"
+            job.last_error = APP_JOB_BOT_REFUSAL
+            job.fire_time_denied = True
+            try:
+                sel().log_tool_invocation(
+                    session_key=f"cron:{job.id}",
+                    tool_name="cron_dispatch",
+                    tool_kind="cron_message",
+                    outcome="denied",
+                    error=APP_JOB_BOT_REFUSAL,
+                )
+            except Exception:
+                logger.debug("SEL logging failed in the app-job Bot deny path", exc_info=True)
+            await self._alert_cron_failure(job, APP_JOB_BOT_REFUSAL, denied=True)
+            return None
+
         # ── Concurrent execution guard ──
         if (job.script or job.command) and job.id in self._running_script_ids:
             logger.info("Cron '%s': previous execution still running, skipping", job.name)
@@ -581,6 +604,65 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         prior_result,
         _gate_alias or cron_agent,
     )
+
+
+#: Why a fire of an app's job that captured a Bot's execution is refused.
+APP_JOB_BOT_REFUSAL = (
+    "an app's schedule cannot run as a Bot; recreate it with one of the app's own agents"
+)
+
+
+def _job_is_an_apps(job: CronJob) -> bool:
+    """Whether *job* carries an app's creator tag."""
+    return str(getattr(job, "created_by", "") or "").startswith("app:")
+
+
+def _app_job_runs_as_bot(
+    job: CronJob, cron_execution: ExecutionContext, cron_agent: str, cfg: Any
+) -> bool:
+    """Whether *job* is an app's and runs on a Bot's own: its capture or a file it names.
+
+    An app does not reach a Bot's memory store or chat by naming the Bot
+    (``execution_context.is_bot_own_execution``). A create refuses such a job; one
+    stored before that refusal still carries the capture, and is refused here.
+    Nor does it reach a Bot's own file: a name the job stores, its ``agent_id``
+    or any ``agent_sequence`` step, is judged for every job. The effective
+    ``cron_agent`` after default substitution is judged only for a job that
+    dispatches an agent. In the template namespace a Bot's own file
+    (``mate_worker.is_mate_owned_agent``) would load that Bot's prompt, servers
+    and tools, so such a job fails by name before dispatch.
+    """
+    from kiro_crew import mate_worker
+    from kiro_crew.execution_context import is_bot_own_execution
+
+    if not _job_is_an_apps(job):
+        return False
+    names = [job.agent_id, *(job.agent_sequence or [])]
+    if not (job.script or job.command):
+        names.append(cron_agent)
+    return is_bot_own_execution(cron_execution, cfg) or any(
+        mate_worker.is_mate_owned_agent(str(name or "").strip()) for name in names
+    )
+
+
+def _app_job_names_bot(job: CronJob, alias: str | None, cfg: Any) -> bool:
+    """Whether *job* is an app's and *alias*, a name it stores, is a Bot's own row.
+
+    Such a name is dispatched in the template namespace
+    (``_resolve_cron_agent(..., template_namespace=True)``): the run takes none
+    of the Bot's agent, workspace, model pin or crew identity, and a name no
+    template declares fails the run by name. A row on the shared store still
+    collapses, as for any job. In memory; a row whose binding cannot be
+    resolved answers True, so it is not handed to an app on a guess.
+    """
+    if not alias or not _job_is_an_apps(job) or alias not in (getattr(cfg, "agents", None) or {}):
+        return False
+    from kiro_crew.execution_context import is_bot_own_execution, resolve_member_execution
+
+    try:
+        return is_bot_own_execution(resolve_member_execution(cfg, alias), cfg)
+    except ValueError:
+        return True
 
 
 def _resolve_cron_agent(

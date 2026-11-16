@@ -28,7 +28,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         _app_acquisition_conflict,
-        _app_claim_refused,
+        _app_send_refused,
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
         _arm_pending_reset_retry,
@@ -553,15 +553,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # because a card has no optimistic bubble of its own.
         _card_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         user_meta = {"sendId": _card_sid} if _card_sid else None
-    # An app's auto-created slot must not land on a transcript it does not own:
-    # its first save would stamp the app onto that transcript's metadata line.
-    if (
-        _requested_key
-        and existing is None
-        and await _app_claim_refused(
-            state, request.get("app", ""), "chat_send", (_history_key_for(_requested_key),)
-        )
-    ):
+    # An app's send keeps to its own transcripts and its own agents.
+    if await _app_send_refused(state, request_app, agent, existing, _requested_key):
         return slot_not_found()
     if (
         existing is not None

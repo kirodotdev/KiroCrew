@@ -238,6 +238,32 @@ class TestEagerSpawn:
         state.sessions.release.assert_called_once_with(key)
 
     @pytest.mark.asyncio
+    async def test_a_bot_name_on_an_apps_session_starts_nothing(self):
+        """An app's session never runs as a Bot, so the same named-store pick that
+        starts above starts nothing when the slot is an app's: the first real turn
+        refuses it, and no provider is warmed as the Bot."""
+        slot = _ChatSlot("t1")
+        slot.agent = "legacy"
+        slot.memory_store = "legacy-v1"
+        slot._app = "shop"
+        state = _mock_state(slot)
+        cfg = _cfg_with_store("legacy-v1", version=1)
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner,
+                "resolve_agent_bindings",
+                return_value=_bindings(
+                    agent="legacy-agent", alias="legacy", memory_store="legacy-v1"
+                ),
+            ),
+        ):
+            await _eager_spawn(state, slot)
+        assert chat_runner._armed_prefetches == {}
+        state.sessions.get_or_create.assert_not_awaited()
+        state.sessions.release.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_private_assignment_blocks_legacy_speculation_without_slot_metadata(self):
         from kiro_crew.member_memory_auth import bind_private_session_store
         from kiro_crew.memory_stores import provision_member_memory

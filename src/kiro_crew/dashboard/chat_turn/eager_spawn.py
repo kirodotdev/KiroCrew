@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _recover_app_agent_binding,
         app_agent_binding_applies,
+        app_session_selects_bot,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
     from kiro_crew.dashboard.chat_turn.model_fallback import (
@@ -752,6 +753,10 @@ async def _eager_spawn(
                 if bindings.selection_kind == "template":
                     crew_alias = ""
                 resolved_ok = bindings.requested_resolved
+                if app_session_selects_bot(slot, bindings):
+                    # The first real turn refuses it, so nothing starts as the Bot.
+                    logger.info("Eager spawn: app slot %s names a Bot; not started", slot.key)
+                    return
                 await asyncio.to_thread(
                     _require_session_memory_assignment, session_key, bindings.memory_store_name
                 )

@@ -7,8 +7,8 @@ Each function takes the manager as ``self`` and is bound as the ``SubagentManage
 attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 
 Manager fields read: ``_admission``, ``_admitting_waiting``, ``_agents``,
-``_batch_progress_ts``, ``_batch_submitted``, ``_floor_deferred_ids``, ``_floor_waits``,
-``_held_approval_modes``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
+``_batch_owner``, ``_batch_progress_ts``, ``_batch_submitted``, ``_floor_deferred_ids``,
+``_floor_waits``, ``_held_approval_modes``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
 ``_run_events``, ``_session_start_concurrency``, ``_session_start_configured``,
 ``_sessions``, ``_startup_reservations``.
 
@@ -559,10 +559,33 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
         except (OSError, ValueError) as exc:
             batch_id = str(kwargs.get("batch_id") or "")
             batch_total = max(0, int(kwargs.get("batch_total") or 0))
+            error = f"memory_unavailable: {exc}"
             if batch_id and not kwargs.get("_from_queue") and not kwargs.get("_store_accepted"):
-                submitted = self._batch_submitted.setdefault(batch_id, [0, batch_total])
-                submitted[0] += 1
-                self._batch_progress_ts[batch_id] = time.monotonic()
+                owner = (str(kwargs.get("app") or ""), parent)
+                recorded_owner = self._batch_owner.get(batch_id, owner)
+                if recorded_owner != owner and (
+                    owner[0] or (recorded_owner is not None and recorded_owner[0])
+                ):
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=parent,
+                            source="subagent",
+                            tool_name="spawn_run",
+                            outcome="rejected_batch_owner",
+                            metadata={"agent": str(kwargs.get("agent") or "")},
+                        )
+                    except Exception:
+                        logger.debug("SEL audit failed for batch-owner rejection", exc_info=True)
+                    # As at the gate, this refusal belongs to no batch. Do not
+                    # count it or announce its task into another owner's wave.
+                    batch_id, batch_total = "", 0
+                    error = "spawn refused: batch belongs to another app or session"
+                else:
+                    submitted = self._batch_submitted.setdefault(batch_id, [0, batch_total])
+                    submitted[0] += 1
+                    self._batch_progress_ts[batch_id] = time.monotonic()
+                    if self._batch_owner.setdefault(batch_id, owner) != owner:
+                        self._batch_owner[batch_id] = None
             return self._announce_rejection(
                 SubagentInfo(
                     id=kwargs.get("_preassigned_id") or self._mint_agent_id(),
@@ -571,7 +594,7 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
                     agent=str(kwargs.get("agent") or ""),
                     memory_mode=mode if isinstance(mode, str) else "persistent",
                     done=True,
-                    error=f"memory_unavailable: {exc}",
+                    error=error,
                     batch_id=batch_id,
                     batch_total=batch_total,
                 )

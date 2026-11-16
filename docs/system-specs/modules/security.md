@@ -4185,9 +4185,11 @@ A refusal is 404 `task_scope_denied`, so a run id is never confirmed to a caller
 that may not see it; the identity-less refusal says so and points at the
 strict-identity diagnosis (`kirocrew doctor`), because from the caller's side a
 wrong run id and a missing identity are the same "not found". Only the dashboard
-owner (cookie auth, no `internal_auth`) is admitted without the fence: that
-surface IS the owner. `handlers/messaging.py::_run_belongs_to_caller` is the one
-predicate both the routes and the list use.
+owner (cookie auth, no `internal_auth`, no app claim) is admitted without the
+fence: that surface IS the owner. `handlers/messaging.py::_run_belongs_to_caller`
+is the one predicate both the routes and the list use. An app token is not the
+owner: it reaches only a run recorded under its own app, with the same 404
+([subagent](subagent.md) → Properties).
 
 **An untrusted channel sender talks to a tool-less agent.** A messaging turn the
 channel does not trust as its operator (`ChannelTurn.deny_all_tools`) is driven on

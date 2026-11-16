@@ -459,6 +459,7 @@ class CancellationCoordinator(ManagerComponent):
             task=str(params.get("task") or "(stopped before start)"),
             parent_session_key=str(params.get("parent_session_key") or ""),
             agent=str(params.get("agent") or ""),
+            app=str(params.get("app") or ""),
             user_stopped=not error,
             error=error,
             queued=True,

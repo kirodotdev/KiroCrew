@@ -635,6 +635,31 @@ def derive_caller_app(
     return ""
 
 
+def app_owner_of_session_key(
+    slots: object, session_key: str, jobs: object = None, subagents: object = None
+) -> str:
+    """Resolve a requested parent in its own namespace, never by a slot alias.
+
+    Unlike caller confinement, a request-body key needs positive ownership of
+    that exact session. Cron and subagent registries alone own their namespaces;
+    a dashboard slot owns its default key only while it is not linked elsewhere.
+    """
+    if not session_key:
+        return ""
+    if session_key.startswith("cron:"):
+        return _cron_job_owner(jobs, _key_segment(session_key))
+    if session_key.startswith("subagent:"):
+        return _subagent_owner(subagents, _key_segment(session_key))
+    if session_key.startswith("dashboard:"):
+        lookup = getattr(slots, "get", None)
+        slot = lookup(session_key.removeprefix("dashboard:")) if lookup is not None else None
+        if getattr(slot, "linked_session_key", ""):
+            return ""
+    else:
+        slot = _slot_by_linked_key(slots, session_key)
+    return str(getattr(slot, "_app", "") or "") if slot is not None else ""
+
+
 def _key_segment(session_key: str) -> str:
     """The id segment of a delegated caller key, ignoring anything after it.
 
