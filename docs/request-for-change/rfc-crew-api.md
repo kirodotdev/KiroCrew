@@ -565,7 +565,7 @@ projects:
 |---|---|---|
 | Caller | The owner's own client | A third-party app with a delegated credential |
 | Bots listed | Every global Bot | Only the grant's Bot range |
-| Each row | Name, private chat binding and its last line, configuration, live state | Only id, name, description, avatar and status |
+| Each row | Name, private chat binding and its last line, configuration, live state | Only id, name, description, avatar, status (`idle` or `busy`) and `has_goal` |
 | Private chat, briefing, rules | The last line of the private chat is present | Never |
 
 **Candidates for more wrappers.** The route inventory assigns 96 existing routes (distinct method

@@ -1664,8 +1664,8 @@ paths:
               ref: msg_8121
       responses:
         '202':
-          description: Accepted. status says whether a new turn was queued, the wake was merged into a turn already
-            queued, or it waits until the Bot is back
+          description: Accepted. status says whether the turn already started, a new turn was queued, the wake was
+            merged into a turn already queued, or it waits until the Bot is back
           headers:
             X-Request-Id:
               $ref: ./components.yaml#/components/headers/X-Request-Id
