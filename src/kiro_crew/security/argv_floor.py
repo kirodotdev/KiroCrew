@@ -239,6 +239,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _brace_alternatives,
         _brace_expansions,
         _command_value_names_self_endpoint,
+        _double_quoted_substitution_bodies,
         _function_call_binds_self,
         _glob_can_name_ssh_verb,
         _is_ssh_to_self,
@@ -253,6 +254,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ssh_family_verb,
         _ssh_verb_basename,
         _unmask_separators,
+        _without_quoted_heredoc_text,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
@@ -278,6 +280,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decoded_b64_literal_sources,
         _has_self_importing_inline_program,
     )
+    from kiro_crew.security.shell_commands import read_commands  # noqa: F401
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
         _PROCESS_SUBSTITUTION_OPENERS,

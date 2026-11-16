@@ -1208,6 +1208,70 @@ class TestSandboxEscapeSshSelf:
     def test_live_substitution_outside_single_quotes_still_denied(self, cmd):
         assert _denied_by(cmd) == self._RULE
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Bash runs a ``$(...)`` inside double quotes, and its body is a command
+            # line of its own. ``-p 22`` keeps these off the catalog row.
+            'echo "$(ssh -p 22 %s id)"',
+            'x="$(ssh -p 22 %s id)"',
+            'echo "pre $(ssh -p 22 %s id) post"',
+            '"$(echo "$(ssh -p 22 %s id)")"',
+            # A separator inside the body ends a command there, as it does unquoted.
+            'echo "$(true; ssh -p 22 %s id)"',
+            # ``$$`` is the PID, so ``(a;b)`` stays quoted text.
+            'scp "$$(a;b)" -P 22 %s:/x',
+            # The quoted body stays one word of the outer command, so the walk
+            # still reaches the operands after it.
+            "scp \"$(printf /etc/hosts $'a\\';b')\" %s:/tmp/copy",
+            'ssh -i "$(true; printf /tmp/key)" %s id',
+            'scp "$(true; printf /etc/hosts)" %s:/x',
+            # The body is read like a top-level command line: ``$((`` is
+            # arithmetic, a live heredoc body runs its substitutions, and a
+            # command after the tag line or after a here-string runs.
+            'x="$(echo $((1<<2)); echo\n$(ssh -p 22 %s id))"',
+            'x="$(cat <<E\n$(ssh -p 22 %s id)\nE\n)"',
+            'x="$(cat <<E\nE\nssh -p 22 %s id)"',
+            "x=\"$(cat <<'E'\ntext\nE\nssh -p 22 %s id)\"",
+            "x=\"$(cat <<'E'; ssh -p 22 %s id\nE\n)\"",
+            # A ``)`` line in a heredoc body does not end the substitution.
+            "out=\"$(cat <<'EOF'\n)\nEOF\nssh -p 22 %s id\n)\"",
+            'out="$(cat <<EOF\n)\nEOF\nssh -p 22 %s id\n)"',
+            # A heredoc that a shell reads is a script.
+            "x=\"$(bash <<'E'\nssh -p 22 %s id\nE\n)\"",
+            "x=\"$(cat <<'E' | sh\nssh -p 22 %s id\nE\n)\"",
+            "x=\"$(cat <<'E' >s; sh s\nssh -p 22 %s id\nE\n)\"",
+            'x="$(cat <<<y; ssh -p 22 %s id)"',
+            # A body inside an unquoted substitution, and after ``$$``.
+            'echo $(echo "$(ssh -p 22 %s id)")',
+            'echo "$$$(ssh -p 22 %s id)"',
+            # A ``\'`` inside ``$'...'`` does not close it.
+            "echo $'a\\'' \"$(ssh -p 22 %s id)\"",
+        ],
+    )
+    def test_double_quoted_command_substitution_is_judged(self, cmd):
+        assert _denied_by(cmd % ("local" + "host")) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo '$(ssh -p 22 %s id)'",
+            "git commit -m 'docs: quote $(ssh -p 22 %s id)'",
+            'echo "$(ssh -p 22 example.com id)"',
+            # A quoted separator inside the double-quoted body is still data.
+            "echo \"$(echo 'a;b') $(ssh -p 22 example.com id)\"",
+            # The body ends at its own ``)``; the rest is quoted text.
+            'echo "$(true) ; ssh -p 22 %s id"',
+            # ``$$`` is the PID and ``\$`` is text, so neither opens a body.
+            'echo "$$(ssh -p 22 %s id)"',
+            'echo "\\$(ssh -p 22 %s id)"',
+            # The text that ``cat`` prints from a quoted-tag heredoc is data.
+            "gh pr create --body \"$(cat <<'EOF'\n- ssh -p 22 %s id\nEOF\n)\"",
+        ],
+    )
+    def test_double_quoted_substitution_rows_that_stay_allowed(self, cmd):
+        assert _denied_by(cmd.replace("%s", "local" + "host")) is None
+
     @pytest.mark.parametrize("tag", ["'EOF'", '"EOF"', "\\EOF"])
     @pytest.mark.parametrize("body", ["`ssh -p 22 localhost id`", "$(ssh -p 22 localhost id)"])
     def test_heredoc_text_keeps_the_quote_blind_reading(self, tag, body):
