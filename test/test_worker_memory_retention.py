@@ -205,3 +205,109 @@ class TestLinecacheIsBounded:
             root_conftest.pytest_runtest_logfinish("nodeid", None)
 
         assert calls == [1, 1, 1]
+
+
+class TestCollectedFixtureBookkeepingIsShared:
+    """Every item resolves ~130 fixtures, and pytest stores that resolution per item.
+
+    Measured over a full collection (283,605 items), the per-item request copies and
+    per-function lookup tuples and dicts were 2,971 MiB of a 5,295 MiB worker; sharing
+    them took the collection peak to 2,957 MiB.
+    """
+
+    @pytest.fixture
+    def fresh_tables(self, root_conftest, monkeypatch: pytest.MonkeyPatch):
+        """Empty interning tables, so a direct call cannot reach the session's own."""
+        for name in (
+            "_SHARED_FIXTUREDEF_TUPLES",
+            "_SHARED_INITIALNAMES",
+            "_SHARED_NAME2FIXTUREDEFS",
+        ):
+            monkeypatch.setattr(root_conftest, name, {})
+        monkeypatch.setattr(root_conftest, "_COMPACTED_FIXTUREINFO", set())
+        return root_conftest
+
+    @staticmethod
+    def _item(defs: dict[str, tuple]):
+        from types import SimpleNamespace
+
+        from _pytest.fixtures import FuncFixtureInfo
+
+        info = FuncFixtureInfo(
+            argnames=(),
+            initialnames=tuple(defs),
+            names_closure=list(defs),
+            name2fixturedefs=dict(defs),
+        )
+        return SimpleNamespace(_request=object(), _fixtureinfo=info)
+
+    def test_two_functions_with_the_same_fixtures_share_one_lookup(self, fresh_tables) -> None:
+        floor, home = object(), object()
+        first = self._item({"floor": (floor,), "home": (home,)})
+        # Equal content in DIFFERENT containers: what two test functions get from pytest.
+        second = self._item({"floor": (floor,), "home": (home,)})
+
+        fresh_tables.compact_collected_item(first)
+        fresh_tables.compact_collected_item(second)
+
+        a, b = first._fixtureinfo, second._fixtureinfo
+        assert b.name2fixturedefs is a.name2fixturedefs
+        assert b.initialnames is a.initialnames
+        assert b.name2fixturedefs == {"floor": (floor,), "home": (home,)}
+
+    def test_a_different_resolution_keeps_its_own_lookup(self, fresh_tables) -> None:
+        """Sharing is by identity of the FixtureDefs, so an override is never merged away."""
+        floor = object()
+        base = self._item({"floor": (floor,)})
+        overridden = self._item({"floor": (floor, object())})
+
+        fresh_tables.compact_collected_item(base)
+        fresh_tables.compact_collected_item(overridden)
+
+        assert overridden._fixtureinfo.name2fixturedefs is not base._fixtureinfo.name2fixturedefs
+        assert len(overridden._fixtureinfo.name2fixturedefs["floor"]) == 2
+
+    def test_the_closure_list_stays_per_function(self, fresh_tables) -> None:
+        """``names_closure`` is ``item.fixturenames``; pytest-asyncio inserts into it."""
+        floor = object()
+        first, second = self._item({"floor": (floor,)}), self._item({"floor": (floor,)})
+
+        fresh_tables.compact_collected_item(first)
+        fresh_tables.compact_collected_item(second)
+
+        assert first._fixtureinfo.names_closure is not second._fixtureinfo.names_closure
+
+    def test_the_request_is_dropped_to_the_state_pytest_rebuilds_from(self, fresh_tables) -> None:
+        item = self._item({"floor": (object(),)})
+
+        fresh_tables.compact_collected_item(item)
+
+        assert item._request is False
+
+    def test_no_collected_item_waits_with_a_request_built(self, request) -> None:
+        """The hook is wired: only the running test holds a request.
+
+        pytest itself sets ``_request = False`` after each test, so every OTHER item
+        in this worker, run or not, must hold none; one that does means collection
+        kept the copy.
+        """
+        holding = [
+            item.nodeid
+            for item in request.session.items
+            if item is not request.node and getattr(item, "_request", False)
+        ]
+
+        assert holding == []
+
+    def test_this_items_lookup_is_the_shared_one(self, request, root_conftest) -> None:
+        """End to end on the running item, which a pytest upgrade renaming a field would break.
+
+        Checked against the hook's own tables, so it holds however the run was selected.
+        """
+        info = request.node._fixtureinfo
+        lookup = info.name2fixturedefs
+        shared = root_conftest._SHARED_NAME2FIXTUREDEFS
+        tuples = root_conftest._SHARED_FIXTUREDEF_TUPLES
+
+        assert any(candidate is lookup for candidate in shared.values())
+        assert all(tuples.get((name, *map(id, defs))) is defs for name, defs in lookup.items())

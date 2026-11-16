@@ -4518,8 +4518,27 @@ do not quote a layer's absolute number as current. Re-ablate before optimizing o
   host-mutation floor, so the only version of that saving is merging guards behind
   fewer fixture *names* while every guard still runs.
 
-Every layer is live: the item tree, the closures and the rewritten modules are
-retained for the whole session by design, so none of the floor is reclaimable.
+**Re-measured at 283,605 items, the fixture bookkeeping had become the biggest
+layer.** A `--collect-only -n0` worker peaked at 5,295 MiB, and `tracemalloc` put
+2,971 MiB of it in pytest's per-item fixture structures: each item resolves ~130
+fixtures, and pytest kept a fresh `(FixtureDef,)` tuple per name per test function
+(1,084 MiB), a `name2fixturedefs` dict per function (577 MiB), and a copy of that
+dict in every item's `TopRequest` (884 MiB). Almost all of them are identical. The
+rootdir conftest's `pytest_itemcollected` hook (`compact_collected_item`) now shares
+the identical tuples and dicts and drops each item's request until pytest rebuilds
+it at setup, which took the collection peak to 2,957 MiB. It runs per item so the
+freed copies are reused while collection is still allocating; a hook at collection
+finish would leave the peak where it was. `test/test_worker_memory_retention.py`
+pins it, including that every item but the running one holds no request.
+
+The hook bounds what each autouse fixture costs; it does not make one free. Every
+autouse name still adds a slot to each function's `names_closure` (shared only
+between a function's own parametrizations, because pytest-asyncio inserts into
+it) and a setup and teardown to every test. Merge a new guard into an existing
+autouse fixture of the same scope before adding a name.
+
+Every layer that remains is live: the item tree, the closures and the rewritten
+modules are retained for the whole session by design.
 
 So the full suite genuinely needs multiple gigabytes. On an 8–16 GiB Linux or Windows
 laptop with a browser open it may not fit; on macOS the 16 GiB reservation often clamps
