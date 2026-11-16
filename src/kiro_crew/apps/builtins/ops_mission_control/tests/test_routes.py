@@ -13,12 +13,11 @@ caught.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import models, routes, store
@@ -145,10 +144,15 @@ class TestEnabledGate(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSecretsAreWriteOnly(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         from kiro_crew.config import loader
@@ -171,7 +175,6 @@ class TestSecretsAreWriteOnly(unittest.IsolatedAsyncioTestCase):
             fn = getattr(loader, name, None)
             if fn is not None and hasattr(fn, "cache_clear"):
                 fn.cache_clear()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_provider_listing_never_contains_a_token(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry, secrets
@@ -206,10 +209,15 @@ class TestIncidentsPayloadIsBounded(unittest.IsolatedAsyncioTestCase):
     endpoint.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -220,7 +228,6 @@ class TestIncidentsPayloadIsBounded(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def _get_incidents(self):
         request = mock.MagicMock(spec=web.Request)
@@ -310,12 +317,17 @@ class TestSignalsSplitsParkedFromFiring(unittest.IsolatedAsyncioTestCase):
     rendered "3 firing" above an empty queue with nothing to explain the contradiction.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         registry.reset_registry()
@@ -333,7 +345,6 @@ class TestSignalsSplitsParkedFromFiring(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _add_source(self, signals):
         class _Fake:
@@ -437,10 +448,15 @@ class TestIncidentServesItsPostmortem(unittest.IsolatedAsyncioTestCase):
     whenever there is nothing there rather than computed from the id.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -451,7 +467,6 @@ class TestIncidentServesItsPostmortem(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     async def _get(incident_id: str):
@@ -506,10 +521,15 @@ class TestLedgerHygieneWiring(unittest.IsolatedAsyncioTestCase):
     makes every instance re-derive the same dedupe locally so the repo never converges.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -520,7 +540,6 @@ class TestLedgerHygieneWiring(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     async def _run(*, calls=None, sync_result="", index_result=None, hygiene=None):
@@ -703,10 +722,15 @@ class TestNeedsHumanNotifiesOnTheEdgeOnly(unittest.IsolatedAsyncioTestCase):
     condition ``SKILL.md``'s noise discipline forbids.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.pushes: list[tuple] = []
@@ -736,7 +760,6 @@ class TestNeedsHumanNotifiesOnTheEdgeOnly(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def _transition(self, incident_id: str, status: str, **extra):
         request = mock.MagicMock(spec=web.Request)
@@ -856,10 +879,15 @@ class TestStateReportsTheNotificationChannel(unittest.IsolatedAsyncioTestCase):
     so it cannot be answered from the unauthenticated config file the panel already has.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -870,7 +898,6 @@ class TestStateReportsTheNotificationChannel(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_state_carries_the_notify_status_with_every_field_the_ui_types(self):
         request = mock.MagicMock(spec=web.Request)
@@ -902,10 +929,15 @@ class TestLedgerWritesAreRedacted(unittest.IsolatedAsyncioTestCase):
     and incident->Slack both pass a redaction chokepoint; this path did not.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -916,7 +948,6 @@ class TestLedgerWritesAreRedacted(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_a_credential_in_a_fix_never_reaches_the_ledger_file(self):
         from aiohttp.test_utils import TestClient, TestServer
@@ -999,10 +1030,15 @@ class TestHygieneIsPrimaryOnly(unittest.IsolatedAsyncioTestCase):
     knowledge. Concurrency on the maintenance path is the more expensive of the two.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -1013,7 +1049,6 @@ class TestHygieneIsPrimaryOnly(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_a_non_primary_instance_is_refused(self):
         from aiohttp.test_utils import TestClient, TestServer
