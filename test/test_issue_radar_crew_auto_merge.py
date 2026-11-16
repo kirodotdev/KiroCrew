@@ -8,10 +8,9 @@ that ``may_arm_auto_merge`` (the crew's ``auto_merge``, never on GitLab, never w
 a key) decides the one merge rule the crew is told.
 """
 
-import tempfile
 import unittest
-from pathlib import Path
 
+import pytest
 from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     OWNER,
     REPO,
@@ -57,10 +56,11 @@ class TestMayArmAutoMerge(unittest.TestCase):
 
 
 class TestCrewMergeRule(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        """The radar store root, in ``tmp_path``: the store mkdirs its root on read,
+        so a root the test removes itself can be re-created by a late reader."""
+        self.root = tmp_path
 
     def _nudge(self, key: provider.RepoKey | None, **spec) -> str:
         # Crew names are unique per repo, and one test may build several crews.
