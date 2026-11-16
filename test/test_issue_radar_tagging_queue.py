@@ -9,11 +9,8 @@ the queue's own controls; the rest are in ``test_issue_radar_tagging.py``.
 
 import contextlib
 import json
-import shutil
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -37,11 +34,17 @@ def _merge(*args, ui_language: str = "", **kwargs):
 
 
 class TestTaggingCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     def test_absent_returns_none(self):
         self.assertIsNone(store.read_tagging_cache("o", "r", self.tmp))
@@ -570,17 +573,23 @@ class TestTaggingCacheLockSerializesWriters(unittest.TestCase):
     issue whose labels were just applied. This drives real thread contention
     rather than asserting the lock exists, so deleting the lock fails it."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         _merge(
             "o",
             "r",
             {str(n): [{"name": "bug", "reason": ""}] for n in range(1, 21)},
             root=self.tmp,
         )
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_concurrent_merge_and_prune_both_survive(self):
         import threading
@@ -649,6 +658,15 @@ class TestUntaggedQueueRoute(unittest.IsolatedAsyncioTestCase):
             "author": "bob",
         },
     ]
+
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the tests pytest's per-test directory for a radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
 
     def _req(self, query: str = "owner=o&repo=r"):
         return make_mocked_request("GET", f"/api/apps/issue-radar/tagging?{query}")
@@ -768,28 +786,23 @@ class TestUntaggedQueueRoute(unittest.IsolatedAsyncioTestCase):
         # Locking only the write loses data rather than ordering it: a patch that
         # lands between the fetch and the write is overwritten by the pre-write
         # snapshot, so a just-applied label vanishes from the dashboard.
-        tmp = Path(tempfile.mkdtemp())
-        try:
-            held: list[bool] = []
+        tmp = self._tmp_path
+        held: list[bool] = []
 
-            def fetch() -> list[dict]:
-                # Inside `refresh_issues_cache`, so the lock must already be ours.
-                # A second acquisition from this thread would deadlock, so assert
-                # on the lock FILE existing instead.
-                held.append(
-                    store.issues_cache_path("o", "r", tmp, "open")
-                    .with_suffix(".json.lock")
-                    .is_file()
-                )
-                return [{"number": 1, "labels": []}]
-
-            store.refresh_issues_cache("o", "r", fetch, root=tmp, state="open")
-            self.assertEqual(held, [True])
-            self.assertEqual(
-                store.read_issues_cache("o", "r", tmp, state="open"), [{"number": 1, "labels": []}]
+        def fetch() -> list[dict]:
+            # Inside `refresh_issues_cache`, so the lock must already be ours.
+            # A second acquisition from this thread would deadlock, so assert
+            # on the lock FILE existing instead.
+            held.append(
+                store.issues_cache_path("o", "r", tmp, "open").with_suffix(".json.lock").is_file()
             )
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            return [{"number": 1, "labels": []}]
+
+        store.refresh_issues_cache("o", "r", fetch, root=tmp, state="open")
+        self.assertEqual(held, [True])
+        self.assertEqual(
+            store.read_issues_cache("o", "r", tmp, state="open"), [{"number": 1, "labels": []}]
+        )
 
     async def test_serves_label_counts_and_titles_over_the_open_set(self):
         # Counts and titles come over the open set, not the frontend's shared
