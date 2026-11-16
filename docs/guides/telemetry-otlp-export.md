@@ -133,7 +133,7 @@ as above; the list adds to it.
 | `headers_env` | no | Header name -> environment variable name. The value is read from the gateway's environment when the exporter is built, so a secret is never in `config.json`. If the variable is unset or blank, that entry sends nothing and a warning names the variable. There is no key for a literal header value: an entry with a `headers` key is skipped with a warning that points here. |
 | `temporality` | no | `""` (the default described in [Temporality](#temporality-the-setting-that-decides-whether-your-backend-accepts-the-data)), `"cumulative"` or `"delta"`. A value here pins every instrument kind for this entry only, and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` does not move it. `"delta"` is the OpenTelemetry delta preset: counters and histograms delta, up-down counters cumulative. |
 | `allow` | no | A list of full metric names, or the preset name `"PRODUCT_METRICS"` (the reviewed list in `src/kiro_crew/metrics/product_metrics.py`). Without it the entry gets every metric. An unknown preset name refuses the entry rather than sending everything. |
-| `point_attributes` | no | Fixed labels added to every data point of this entry. Keys come from a reviewed set (`ClientType` today); values are short constants (letters, digits, `.`, `_`, `-`). |
+| `point_attributes` | no | Fixed labels added to every data point of this entry. Keys come from a reviewed set (`ClientType` and `machineId` today); values are short constants (letters, digits, `.`, `_`, `-`). |
 | `resource_allow` | no | Keep only these resource keys on this entry's batches. |
 
 An entry sends only the headers it names in `headers_env`. The process-wide
@@ -218,11 +218,13 @@ do that.
 
 Builds before recording was on by default wrote `telemetry.enabled: false` into every new config, so a public-build install that is off only because of that written `false` (the heartbeat on, no env pin, no policy, not CI, the default data home) is shown the version 3 notice once, in an off form that names Kiro telemetry and offers Turn on performance metrics or Keep off. Until Turn on is chosen, only the daily heartbeat and official app install receipts are sent and no performance metrics are recorded; Keep off is not asked again. A start with no dashboard prints one line pointing at `kirocrew telemetry enable`, once, on a terminal.
 
-Each data point carries `ClientType=kiro-crew`. The batch's resource keeps
+Each data point carries `ClientType=kiro-crew` and `machineId`, the same
+SHA-256 of the install id that every request carries as `x-kiro-machineid`
+(the endpoint does not copy the header onto the points it stores, and a point
+with no identity is dropped before product analytics). The batch's resource keeps
 only service name and version, Python runtime, `kirocrew.harness` and
-`kirocrew.process.role`: no install id, no pid, no OS type, nothing under `host.*`. Every
-request carries `x-kiro-machineid`, a SHA-256 of the install id, and no sign-in
-token or other credential. The process-wide `OTEL_EXPORTER_OTLP_*` header,
+`kirocrew.process.role`: no install id, no pid, no OS type, nothing under `host.*`.
+No sign-in token or other credential is sent. The process-wide `OTEL_EXPORTER_OTLP_*` header,
 credential and certificate variables are never applied to it.
 
 ### Other settings worth knowing
@@ -466,7 +468,7 @@ too:
 - `allow` -- only metrics whose name is in this set are sent. Unset means
   everything, which is what your endpoint gets.
 - `point_attributes` -- fixed key/value pairs added to every data point of that
-  destination. The one reviewed key today is `ClientType`.
+  destination. The reviewed keys today are `ClientType` and `machineId`.
 - `resource_allow` -- that destination's batches carry a resource reduced to these
   keys, so a destination that may see only `service.name` and `service.version`
   does not receive `service.instance.id`.
