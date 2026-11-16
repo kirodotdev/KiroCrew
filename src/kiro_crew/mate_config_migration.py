@@ -32,7 +32,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from kiro_crew.agent_files import is_mate_service_agent
+from kiro_crew.agent_files import AGENT_FILENAME, is_mate_service_agent
 from kiro_crew.agent_sdk import agent_specs
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.config.loader import KiroCrewConfig
@@ -59,6 +59,9 @@ logger = logging.getLogger(__name__)
 
 #: How many differences a skip reason names before it says "and N more".
 _REASON_ITEMS = 5
+
+#: The default template a binding with an empty ``kiro_agent`` chats on.
+_DEFAULT_TEMPLATE = AGENT_FILENAME.removesuffix(".json")
 
 
 @dataclasses.dataclass
@@ -558,7 +561,8 @@ def _candidates(
     """Crewmates whose ``kiro_agent`` does not resolve to their own file yet.
 
     ``{member_name: source_agent}``, leaving out ``default``, bindings with no
-    ``kiro_agent`` or ``member_id``, ones already on their own file, and moved ones.
+    ``member_id``, ones already on their own file, and moved ones. A binding with
+    no ``kiro_agent`` maps to ``""`` and is read as the default template.
     """
     out: dict[str, str] = {}
     ledger = _read_ledger()
@@ -580,8 +584,12 @@ def _candidates(
             )
             continue
         source = getattr(binding, "kiro_agent", "")
-        if not source:
+        if not isinstance(source, str):
             continue
+        # An empty ``kiro_agent`` chats on the default template
+        # (``mate_worker.member_chat_agent``), so it moves as a row bound to that
+        # template does (owner decision in docs/decisions, case N5); it stays recorded as ``""``,
+        # the value the repoint compares against.
         if source == name and has_mate_config(name) and not _shadowed_by_user_agent(name):
             # A file that a user-level spec still shadows is not read yet: a move
             # that stopped before retiring its private copy is resumed.
@@ -1302,13 +1310,13 @@ def migrate_existing_crewmates(
             )
             continue
         try:
-            old = _governed_source(source)
+            old = _governed_source(source or _DEFAULT_TEMPLATE)
         except MateConfigError as exc:
             # Moved anyway (owner decision, docs/decisions): its worker starts from
             # the default template, as a fresh create's does, and its user is told.
             logger.info("crewmate migration: %s's agent %r unreadable: %s", label, source, exc)
             fallback, kept_limit, limits_said = _fallback_keeping_limits(
-                source, base, _default_template_file(name, base)
+                source or _DEFAULT_TEMPLATE, base, _default_template_file(name, base)
             )
             if kept_limit:
                 # Its spec parses (only its prompt did not resolve) and states a
@@ -1329,7 +1337,7 @@ def migrate_existing_crewmates(
                 continue
             report.moved_from_default.append(name)
             changes[name] = (
-                f"the agent it ran on ({source}) could not be read, so its worker starts "
+                f"the agent it ran on ({source or _DEFAULT_TEMPLATE}) could not be read, so its worker starts "
                 "from the default template and nothing that agent added was carried over"
             )
             if limits_said:
@@ -1396,7 +1404,9 @@ def migrate_existing_crewmates(
     # Pointers move only once every candidate above has been written and proven.
     for name in verified:
         binding = cfg.agents.get(name)
-        source = "" if name in unchanged else candidates[name]
+        # The agent its earlier threads ran on: an empty ``kiro_agent`` ran on the
+        # default template. ``candidates[name]`` stays the compare-and-set value.
+        source = "" if name in unchanged else (candidates[name] or _DEFAULT_TEMPLATE)
         try:
 
             undos: list[Callable[[], None]] = []

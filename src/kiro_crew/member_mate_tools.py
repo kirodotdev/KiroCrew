@@ -222,15 +222,14 @@ _LEDGER_RECORD_REF = f"{_WORK_REF}/work_ledger_record"
 
 
 def spec_has_ledger_tools(spec: Any) -> bool:
-    """Whether *spec* mounts ``kirocrew-work`` and grants ``work_ledger_record``.
+    """Whether *spec* mounts ``kirocrew-work`` with ``work_ledger_record`` selected.
 
     Mounted means the server entry is present and not muted, ``tools`` names the
-    server, ``work_ledger_record`` itself or ``*``, and ``excludedTools`` withholds neither
-    the server nor ``work_ledger_record``. Granted means ``allowedTools`` still
-    carries the server or that verb once the governance ceiling has filtered it
-    (``auto_approve._apply_allowed_tools_ceiling``): a ceiling that withholds the
-    verb leaves it mounted but gated, and a patrol whose every bind waits on an
-    approval is not one to teach.
+    server, ``work_ledger_record`` itself or ``*``, and neither ``excludedTools`` nor
+    the entry's ``disabledTools`` withholds ``work_ledger_record`` (``excludedTools``
+    may not name the server either). ``allowedTools`` is not read: a governance
+    ceiling that withholds the verb leaves it mounted and asking for approval, and
+    the Bot is still taught the ledger (owner decision in docs/decisions, case N1).
     """
     from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 
@@ -253,10 +252,10 @@ def spec_has_ledger_tools(spec: Any) -> bool:
         t in ("*", _WORK_REF, _LEDGER_RECORD_REF) for t in excluded if isinstance(t, str)
     ):
         return False
-    allowed = spec.get("allowedTools")
-    return isinstance(allowed, list) and any(
-        t in (_WORK_REF, _LEDGER_RECORD_REF) for t in allowed if isinstance(t, str)
-    )
+    # A per-tool switch-off on the entry takes the verb out of the session (KAS
+    # projects it into ``excludedTools``), unlike a ceiling, which only gates it.
+    off = entry.get("disabledTools")
+    return not (isinstance(off, list) and "work_ledger_record" in off)
 
 
 def _chat_spec(binding: Any) -> dict | None:
@@ -284,20 +283,38 @@ def _chat_spec(binding: Any) -> dict | None:
     return agent_mod._read_spec_capped(path)
 
 
+#: Why a crewmate's own chat is not taught the ledger (:func:`binding_ledger_off_reason`).
+LEDGER_OFF_UNREADABLE = "unreadable"
+LEDGER_OFF_CONFIG = "config"
+
+
+def binding_ledger_off_reason(binding: Any) -> str:
+    """Why the crewmate *binding*'s own chat cannot track work in a ledger, ``""`` when it can.
+
+    :data:`LEDGER_OFF_UNREADABLE` when the spec that chat runs is missing, unsafe or
+    unreadable; :data:`LEDGER_OFF_CONFIG` when it reads but does not mount the ledger
+    (:func:`spec_has_ledger_tools`). Both fail closed: the chat keeps the no-ledger
+    wording and says why (owner decision in docs/decisions, cases N3 and N4).
+    """
+    if binding is None:
+        return LEDGER_OFF_UNREADABLE
+    try:
+        spec = _chat_spec(binding)
+    except Exception:
+        logger.debug("chat spec unreadable; keeping the no-ledger wording", exc_info=True)
+        return LEDGER_OFF_UNREADABLE
+    if not isinstance(spec, dict):
+        return LEDGER_OFF_UNREADABLE
+    return "" if spec_has_ledger_tools(spec) else LEDGER_OFF_CONFIG
+
+
 def binding_has_ledger_tools(binding: Any) -> bool:
     """Whether the crewmate *binding*'s own chat can track work in a ledger.
 
-    :func:`spec_has_ledger_tools` over the spec that chat runs. Unlike the mate
-    tools check, an unreadable spec answers False: the ledger and patrol text is
-    new, so the wording every crewmate had before this check is the one without it.
+    :func:`spec_has_ledger_tools` over the spec that chat runs; an unreadable spec
+    answers False (:func:`binding_ledger_off_reason`).
     """
-    if binding is None:
-        return False
-    try:
-        return spec_has_ledger_tools(_chat_spec(binding))
-    except Exception:
-        logger.debug("chat spec unreadable; keeping the no-ledger wording", exc_info=True)
-        return False
+    return not binding_ledger_off_reason(binding)
 
 
 def member_has_ledger_tools(member: str) -> bool:

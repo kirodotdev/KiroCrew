@@ -148,58 +148,58 @@ def test_with_the_ceiling_off_every_verb_is_granted(which, verb, tmp_path, monke
 
 
 @pytest.mark.parametrize("which", sorted(_SPECS))
-@pytest.mark.parametrize("muted", [True, False])
-def test_an_inherited_switch_off_survives_the_mount(which, muted, tmp_path, monkeypatch):
-    """An operator's ``disabled`` on ``kirocrew-work`` in the default template is
-    kept on the managed entry, so the KAS projection still withholds it."""
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        pytest.param({"disabled": True}, id="muted"),
+        pytest.param({"disabledTools": ["work_ledger_record", "work_report"]}, id="per-tool"),
+    ],
+)
+def test_a_default_template_switch_off_does_not_reach_the_mount(
+    which, inherited, tmp_path, monkeypatch
+):
+    """The ledger is on by default for a Bot as for conductor mode (owner decision in
+    docs/decisions, case N2): the default template's ``disabled`` or ``disabledTools`` on
+    ``kirocrew-work`` is not copied, so the KAS projection keeps the server and every
+    verb is still granted."""
     from kiro_crew.acp.kas_agents import _project_mcp_servers
 
     real = agent.build_agent_config
 
     def with_switch():
         config = real()
-        config.setdefault("mcpServers", {})["kirocrew-work"] = {"disabled": muted}
+        config.setdefault("mcpServers", {})["kirocrew-work"] = dict(inherited)
         return config
 
     monkeypatch.setattr(agent, "build_agent_config", with_switch)
+    monkeypatch.setattr(auto_approve, "_may_auto_approve", lambda ref: True)
     spec = _install(which, tmp_path, monkeypatch)
     entry = spec["mcpServers"]["kirocrew-work"]
     assert "mcp-work" in entry["args"]
-    assert entry.get("disabled", False) is muted
-    projected = _project_mcp_servers(spec, spec["name"], frozenset())
-    assert ("kirocrew-work" in projected) is (not muted)
+    assert "disabled" not in entry and "disabledTools" not in entry
+    assert "kirocrew-work" in _project_mcp_servers(spec, spec["name"], frozenset())
+    verb = "work_ledger_record" if which == "conductor" else "work_report"
+    assert f"@kirocrew-work/{verb}" in spec["allowedTools"]
 
 
+@pytest.mark.parametrize("which", sorted(_SPECS))
 @pytest.mark.parametrize(
-    ("which", "limited", "kept"),
-    [
-        ("conductor", "work_ledger_record", "work_ledger_read"),
-        ("worker", "work_report", "work_brief"),
-    ],
+    "ref", ["@kirocrew-work", "@kirocrew-work/work_ledger_record", "@kirocrew-work/work_report"]
 )
-def test_an_inherited_per_tool_limit_survives_the_mount(
-    which, limited, kept, tmp_path, monkeypatch
-):
-    """An operator's ``disabledTools`` on ``kirocrew-work`` stays on the managed
-    entry and its verb is not granted. On the worker, the merge then excludes it."""
+def test_a_default_template_exclusion_does_not_reach_the_mount(which, ref, tmp_path, monkeypatch):
+    """An ``excludedTools`` entry naming ``kirocrew-work`` on the default template is
+    dropped (case N2); the template's other exclusions stay."""
     real = agent.build_agent_config
 
-    def with_limit():
+    def with_exclusion():
         config = real()
-        config.setdefault("mcpServers", {})["kirocrew-work"] = {"disabledTools": [limited]}
+        config["excludedTools"] = [*(config.get("excludedTools") or []), ref, "fs_write"]
         return config
 
-    monkeypatch.setattr(agent, "build_agent_config", with_limit)
+    monkeypatch.setattr(agent, "build_agent_config", with_exclusion)
     spec = _install(which, tmp_path, monkeypatch)
-    assert spec["mcpServers"]["kirocrew-work"]["disabledTools"] == [limited]
-    assert "mcp-work" in spec["mcpServers"]["kirocrew-work"]["args"]
-    assert f"@kirocrew-work/{limited}" not in spec["allowedTools"]
-    assert f"@kirocrew-work/{kept}" in spec["allowedTools"]
-    if which == "worker":
-        monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
-        merged = mate_worker.resolve_worker_spec({**spec, "prompt": ""}, None)
-        assert f"@kirocrew-work/{limited}" in merged["excludedTools"]
-        assert f"@kirocrew-work/{limited}" not in merged["allowedTools"]
+    assert ref not in spec["excludedTools"]
+    assert "fs_write" in spec["excludedTools"]
 
 
 # ── on KAS: the projection a session's spec goes through ──

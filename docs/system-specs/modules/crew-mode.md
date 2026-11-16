@@ -4381,9 +4381,17 @@ parts:
   prompt all dispatch and END the turn rather than waiting or polling: without
   the ledger the worker's report wakes the thread, and no monitor loop is
   armed. **Ledger-tracked work is the one exception**, and only where the
-  conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
-  after the governance ceiling
-  (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
+  conductor's chat spec mounts `kirocrew-work` with `work_ledger_record`
+  selected (`member_mate_tools.binding_ledger_off_reason` answers `""`). A
+  governance ceiling that withholds the verb does not change that: the verb
+  stays mounted and asks for approval when called. The mate conductor and
+  worker installers mount their own `kirocrew-work` entry and never carry the
+  default template's `disabled`, `disabledTools` or an `excludedTools` entry
+  naming it, as conductor mode does (decision 2026-11-15). Where the chat's
+  spec reads but does not mount the ledger, or cannot be read, the tracking
+  sentence is followed by one line naming why tracking is off
+  (`conductor.tracking_off_config`, `conductor.tracking_off_unreadable`), which
+  the Bot says to the user when asked to track or hand off work. Where the ledger is mounted, the tracking sentence
   names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
   in place of `conductor.tracking`), and the operating-mode block appends
   `conductor.patrol`. A turn whose operating-mode block is withheld
