@@ -12,7 +12,10 @@ plain ``web_fetch.trusted`` URL only, never refused here (:func:`url_literal`).
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
+import string
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -176,22 +179,154 @@ def _url_matches(entry: tuple[str, bool], url: str) -> bool:
     return url.startswith(literal) if prefix else url == literal
 
 
+_UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
+_HEX = frozenset(string.hexdigits)
+_HOST_NAME = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*")
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+_URL_SEP = "/"  # a URL path separator, never a file path one
+
+
+def canonical_url(text: str, *, prefix: bool = False) -> str | None:
+    """*text* as an ``http(s)`` fetch resolves it, or ``None`` when that is unsure.
+
+    Lower-case scheme and host, no trailing host dot, no default port, ``%XX`` of an
+    unreserved character decoded (other escapes upper-cased), dot segments removed,
+    an empty path read as ``/``, no fragment. Refused: userinfo, non-ASCII, whitespace, a
+    backslash, a bad escape or port, a numeric host that is not a plain dotted quad,
+    and (outside *prefix*) a ``[...]`` address literal or an empty path segment.
+    With *prefix*, *text* is the start of a URL (a ``blocked`` entry before its
+    ``.*``); its form may only be wider, so a cut escape or a final ``.``/``..``
+    segment is refused rather than guessed.
+    """
+    if not text.isascii() or any(ch <= " " or ch in "\\\x7f" for ch in text):
+        return None
+    scheme, sep, rest = text.partition("://")
+    scheme = scheme.lower()
+    if not sep or scheme not in _DEFAULT_PORTS:
+        return None
+    cut = min((i for i in map(rest.find, "/?#") if i >= 0), default=len(rest))
+    authority, tail = rest[:cut], rest[cut:]
+    if "@" in authority or "%" in authority:
+        return None
+    if authority.startswith("["):
+        # An address literal is never granted; a blocked one is compared in its
+        # compressed form.
+        inner, close, port = authority[1:].partition("]")
+        if not prefix or not close or (port and not port.startswith(":")):
+            return None
+        try:
+            host = f"[{ipaddress.IPv6Address(inner).compressed}]"
+        except ValueError:
+            return None
+        port = port[1:]
+    else:
+        host, _, port = authority.partition(":")
+        host = host.lower().removesuffix(".")
+        if not _HOST_NAME.fullmatch(host) and not (prefix and host == ""):
+            return None
+        last = host.rsplit(".", 1)[-1]
+        if last.isdigit() or last.startswith("0x"):
+            # A cut prefix host with fewer than four parts (`http://127.1`) can be
+            # a short address spelling as well as the start of a longer one.
+            whole = not prefix or cut < len(rest)
+            if not whole and host.count(".") != 3:
+                return None
+            try:
+                if str(ipaddress.IPv4Address(host)) != host:
+                    return None
+            except ValueError:
+                return None
+    if port and not (port.isdigit() and int(port) <= 65535):
+        return None
+    port = str(int(port)) if port else ""
+    netloc = host if port in ("", _DEFAULT_PORTS[scheme]) else f"{host}:{port}"
+    tail = tail.partition("#")[0]  # a fetch never sends the fragment
+    out: list[str] = []
+    i = 0
+    while i < len(tail):
+        if tail[i] != "%":
+            out.append(tail[i])
+            i += 1
+            continue
+        code = tail[i + 1 : i + 3]
+        if len(code) != 2 or not _HEX.issuperset(code):
+            return None
+        ch = chr(int(code, 16))
+        out.append(ch if ch in _UNRESERVED else "%" + code.upper())
+        i += 3
+    tail = "".join(out)
+    end = tail.find("?") if "?" in tail else len(tail)
+    path, after = tail[:end], tail[end:]
+    if not prefix and "//" in path:
+        return None  # a server may or may not collapse an empty segment
+    segments = path.split(_URL_SEP)[1:]
+    if prefix and not after and segments and segments[-1] in (".", ".."):
+        return None
+    kept: list[str] = []
+    for seg in segments:
+        if seg == "..":
+            if kept:
+                kept.pop()
+        elif seg != ".":
+            kept.append(seg)
+    if segments and segments[-1] in (".", ".."):
+        kept.append("")
+    if path or not prefix or after:
+        path = "/" + "/".join(kept)
+    return f"{scheme}://{netloc}{path}{after}"
+
+
+def _blocked_hits(entry: tuple[str, bool] | None, url: str, canonical: str) -> bool:
+    """Whether a ``blocked`` entry withholds the grant: unread, or matching the URL
+    as written or canonical, read as written or canonical."""
+    if entry is None:
+        return True
+    literal, prefix = entry
+    scheme, sep, _ = literal.partition("://")
+    if sep and scheme.lower() not in _DEFAULT_PORTS:
+        return False  # another scheme's entry never names an http(s) URL
+    form = canonical_url(literal, prefix=prefix)
+    if form is None:
+        return True
+    return any(_url_matches((lit, prefix), u) for lit in (literal, form) for u in (url, canonical))
+
+
 def _web_fetch_granted(call: ToolCall, grant: SpecDeniedGrant) -> bool:
     """Whether a ``web_fetch`` call is granted: only by a ``trusted`` entry that is a
     plain URL (equal) or a plain URL plus ``.*`` (prefix), with every ``blocked``
     entry of that shape and not matching. Anything else keeps the prompt KAS asked
     for. A URL with a control character is never granted: Rust's ``.`` does not
-    match a newline, so a prefix test would read the entry wider than kiro-cli."""
+    match a newline, so a prefix test would read the entry wider than kiro-cli.
+
+    The URL is also compared in its :func:`canonical_url` form, so a spelling the
+    fetch resolves elsewhere (an escape, a case, a default port, a dot segment,
+    userinfo) neither slips past ``blocked`` nor reaches out of ``trusted``. A URL
+    with no canonical form, or one left holding an escape, is never granted."""
     if not grant.web_fetch_blocked_complete or not grant.web_fetch_trusted:
         return False
     url = call.raw_params.get("url") if isinstance(call.raw_params, dict) else None
     if not isinstance(url, str) or not url or any(ch < " " or ch == "\x7f" for ch in url):
         return False
+    canonical = canonical_url(url)
+    if canonical is None or "%" in canonical:
+        return False
     blocked = [url_literal(raw) for raw in grant.web_fetch_blocked]
     trusted = [url_literal(raw) for raw in grant.web_fetch_trusted]
-    if any(entry is None or _url_matches(entry, url) for entry in blocked):
+    if any(_blocked_hits(entry, url, canonical) for entry in blocked):
         return False
-    return any(entry is not None and _url_matches(entry, url) for entry in trusted)
+    return any(
+        entry is not None
+        and _url_matches(entry, url)
+        and (not entry[1] or _canonical_prefix_holds(entry[0], canonical))
+        for entry in trusted
+    )
+
+
+def _canonical_prefix_holds(literal: str, canonical: str) -> bool:
+    """Whether a ``trusted`` prefix still holds for the canonical URL; a prefix cut
+    before ``://`` (``.*``, ``http``) is compared as written."""
+    form = canonical_url(literal, prefix=True) if "://" in literal else literal
+    return form is not None and canonical.startswith(form)
 
 
 def denied_grant_applies(call: ToolCall, names: tuple[str, ...]) -> bool:

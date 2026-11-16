@@ -670,6 +670,34 @@ class TestToolRequestsAreGated:
         ):
             assert shell_command_refusal(command) == "", f"{command!r} must stay allowed"
 
+    def test_glab_top_level_aliases_and_unknown_verbs_are_refused(self) -> None:
+        """glab's documented top-level aliases reach the same denied verbs, and a word
+        glab does not know runs a user alias, which can name any verb."""
+        from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
+            shell_command_refusal,
+        )
+
+        for command in (
+            "glab pipeline run",
+            "glab pipe run",
+            "glab pipe create",
+            "glab --repo o/r pipeline run",
+            "glab ci run-trig --token t",
+            "glab var set X 1",
+            "glab sched run 1",
+            "glab schedule run 1",
+            "glab mr for 7",
+            "glab mr create-for 7",
+            "glab incident note 1 -m hi",
+            "glab incident resolve 1",
+            "glab alias set m 'mr merge'",
+            "glab m 1",
+            "gh alias set m 'pr merge'",
+        ):
+            assert shell_command_refusal(command), f"{command!r} evaded the denylist"
+        for command in ("glab pipeline status", "glab ci view", "glab help ci run", "glab"):
+            assert shell_command_refusal(command) == "", f"{command!r} must stay allowed"
+
     def test_the_commands_the_task_actually_needs_are_allowed(self) -> None:
         """A denylist that blocks the build is not a fix — the watcher must still work."""
         from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
