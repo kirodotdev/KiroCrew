@@ -19,7 +19,9 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.dashboard.handlers.wakatime as wt
 import kiro_crew.wakatime.service as wt_service
+from kiro_crew.config import live
 from kiro_crew.dashboard.handlers.wakatime import _csv_safe, _rows_by_project
+from kiro_crew.secrets import read_audit
 
 
 class _StubClient:
@@ -496,11 +498,18 @@ async def test_status_loads_config_off_the_event_loop(
         return _Cfg()
 
     monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(_load))
+    # The secret read beside the client-id read asks the vault's read audit
+    # whether it is on; with no live snapshot that loads config.json once per
+    # TTL and caches the answer process-wide. Start both cold so the count does
+    # not depend on which test ran first: one load for the client id, one for
+    # the audit switch.
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    monkeypatch.setattr(read_audit, "_loaded", None)
     async with TestClient(TestServer(_oauth_app())) as client:
         resp = await client.get("/api/wakatime/oauth/status")
         assert resp.status == 200
         assert (await resp.json())["client_configured"] is True
-    assert on_loop == [False]
+    assert on_loop == [False, False]
 
 
 @pytest.mark.asyncio
