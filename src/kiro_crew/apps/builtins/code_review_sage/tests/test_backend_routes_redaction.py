@@ -8,8 +8,6 @@ leak a credential nor break the endpoint.
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 
 import pytest
@@ -134,8 +132,13 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
     # fires on credential-shaped input.
     _SENTINEL = github_classic(seed=33)
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -144,7 +147,6 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _plant(self, payload, run_id="run-a"):
         from sage_lib import report
@@ -242,8 +244,13 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
     # Assembled at runtime so the scan sees no credential-shaped literal.
     _SENTINEL = github_classic(seed=33)
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -252,7 +259,6 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _plant(self, run_id, payload, index=None):
         from sage_lib import report
@@ -341,8 +347,13 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
     # on credential-shaped input.
     _SENTINEL = github_classic(seed=33)
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -351,7 +362,6 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _plant(self, run_id, rows):
         from sage_lib import report
