@@ -7,7 +7,10 @@ import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sce
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 import { i18nT } from '../../i18n/t'
 
-const GHOST_THEME: SceneTooltipTheme = { active: 'Haunting the codebase', idle: 'Drifting through walls' }
+const GHOST_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.ghostScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.ghostScene.tooltip_idle') },
+}
 
 /* ── Types ── */
 interface Ghost {

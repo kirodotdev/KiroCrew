@@ -8,7 +8,10 @@ import { useSceneInteraction } from '../../../hooks/useSceneInteraction'
 
 import { i18nT } from '../../../i18n/t'
 
-const MC_THEME = { active: 'Vibe coding', idle: 'Doomscrolling TikTok' }
+const MC_THEME = {
+  get active() { return i18nT('pages.scenes.missionControl.missionControlScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.missionControl.missionControlScene.tooltip_idle') },
+}
 
 export default function MissionControlScene({ agents, visible = true }: { agents: AgentSource[]; visible?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
