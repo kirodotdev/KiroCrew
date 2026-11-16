@@ -505,10 +505,15 @@
       //: TWO ASKS, not one. A draft reported done is waiting on a verdict; a draft whose
       //: writer asked something is waiting on an answer. They need different primary
       //: buttons, so one "waiting on you" count would hide which move the person owes.
+      //: Whether a `question` is still owed an answer: the fold's `awaits_person` when
+      //: sent (a report naming a person that no decide or steer answered), else yes.
+      function unanswered(task) {
+        return typeof task.awaits_person === 'boolean' ? task.awaits_person : true;
+      }
       function waiting() {
         return everyTask().filter(function (r) {
           var st = txt(r.task.status);
-          return txt(r.task.state) === 'open' && (st === 'done' || st === 'question');
+          return txt(r.task.state) === 'open' && (st === 'done' || (st === 'question' && unanswered(r.task)));
         }).sort(function (a, b) {
           return (stamp(b.task.last_report_at) || 0) - (stamp(a.task.last_report_at) || 0);
         });
@@ -657,7 +662,7 @@
           var got = entry('drafts', id);
           var draft = got.value;
           var kind = typeOf(task, draft);
-          var asking = txt(task.status) === 'question';
+          var asking = txt(task.status) === 'question' && unanswered(task);
           var card = el('div', 'of-todo-i');
           //: The kind token. The accent family for a verdict owed, the info family for
           //: an answer owed -- the two asks this section keeps apart, in the same place

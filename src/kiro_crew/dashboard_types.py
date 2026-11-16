@@ -309,6 +309,7 @@ def _row_keys() -> dict[str, dict[str, Any]]:
             "title",
             "state",
             "status",
+            "awaits_person",
             "summary",
             "verdict",
             "pr",

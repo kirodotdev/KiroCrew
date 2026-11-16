@@ -732,6 +732,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _workstreams_bump,
         _workstreams_charged,
         _workstreams_copy,
+        _workstreams_decided_after,
         _workstreams_event,
         _workstreams_hour,
         _workstreams_item_state,
@@ -912,4 +913,5 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         coerce_ask,
         coerce_discussion,
         coerce_retired_bindings,
+        waits_on_person,
     )

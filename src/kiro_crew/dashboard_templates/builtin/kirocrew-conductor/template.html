@@ -202,7 +202,12 @@
         if (state === 'rejected') return ['bad', 't_rejected'];
         if (state === 'abandoned') return ['other', 't_abandoned'];
         if (state !== 'open') return ['other', state || 'unknown'];
-        if (it.status === 'question' || it.status === 'blocked') return ['you', 't_you'];
+        // The host's `awaits_person`, when sent, is the Board's own test: a report naming
+        // a person that no decide or steer answered. A question the conductor answered
+        // takes the open task's other tones, not needing the person.
+        var asks = typeof it.awaits_person === 'boolean' ? it.awaits_person :
+          (it.status === 'question' || it.status === 'blocked');
+        if (asks) return ['you', 't_you'];
         // A `progress` report is the worker's last word, not proof it is mid-turn. The
         // host stamps `worker` (running / idle / closed) on each item, so only a running
         // worker reads as working. A value without `worker` keeps the old rule.
@@ -386,7 +391,8 @@
           var id = text(it.item_id) || String(i);
           var reading = tone(it);
           var signature = JSON.stringify([
-            locale(), it.title, it.state, it.status, it.reason, it.pr, it.summary, it.worker
+            locale(), it.title, it.state, it.status, it.reason, it.pr, it.summary, it.worker,
+            reading[0]
           ]);
           var card = taskNodes[id];
           if (!card) {

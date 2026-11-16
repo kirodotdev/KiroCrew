@@ -146,6 +146,8 @@ def test_the_rendered_keys_are_the_spec_keys() -> None:
         "title",
         "state",
         "status",
+        # Its share of the board's `needs_you`, the Board's own field name.
+        "awaits_person",
         "summary",
         "verdict",
         "pr",
@@ -555,7 +557,10 @@ def test_a_charge_with_no_opener_is_stated_not_assigned() -> None:
 
 
 def test_the_counts_answer_what_is_done_and_what_needs_me() -> None:
-    """``accepted``/``open`` come from the item's state, ``needs_you`` from an open one's status."""
+    """``accepted``/``open`` come from the item's state, ``needs_you`` from an open one's
+    report naming a person (``reason`` approval / needs_human). A plain question is the
+    conductor's to answer, so it does not count (the Board's rule, ``work_vocab.waits_on_person``).
+    """
     value = _fold(
         [
             _opened(CONDUCTOR),
@@ -563,17 +568,34 @@ def test_the_counts_answer_what_is_done_and_what_needs_me() -> None:
             _work("create", item_id="it_1", title="landed", round=2),
             _work("close", item_id="it_1", state="accepted"),
             _work("create", item_id="it_2", title="asking", round=2),
-            _work("report", actor="worker", item_id="it_2", status="question", summary="which?"),
+            _work(
+                "report",
+                actor="worker",
+                item_id="it_2",
+                status="question",
+                reason="needs_human",
+                summary="which?",
+            ),
             _work("create", item_id="it_3", title="stuck", round=2),
-            _work("report", actor="worker", item_id="it_3", status="blocked", summary="no creds"),
+            _work(
+                "report",
+                actor="worker",
+                item_id="it_3",
+                status="blocked",
+                reason="approval",
+                summary="no creds",
+            ),
             _work("create", item_id="it_4", title="running", round=2),
             _work("report", actor="worker", item_id="it_4", status="progress", summary="moving"),
+            _work("create", item_id="it_5", title="conductor's", round=2),
+            _work("report", actor="worker", item_id="it_5", status="question", summary="A or B?"),
         ]
     )
     board = _board(value, "counts")
-    assert (board["total"], board["accepted"], board["needs_you"]) == (4, 1, 2)
-    # ``open`` is the state, so the accepted item is out and the other three in.
-    assert board["open"] == 3
+    assert (board["total"], board["accepted"], board["needs_you"]) == (5, 1, 2)
+    # ``open`` is the state, so the accepted item is out and the other four in.
+    assert board["open"] == 4
+    assert [t["awaits_person"] for t in board["tasks"]] == [False, True, True, False, False]
     assert _task(board, "asking")["summary"] == "which?"
 
 
@@ -592,17 +614,32 @@ def test_a_closed_item_no_longer_needs_me() -> None:
             item_id = f"it_{state}_{status}"
             entries += [
                 _work("create", item_id=item_id, title=f"{state} {status}", round=1),
-                _work("report", actor="worker", item_id=item_id, status=status, summary="?"),
+                _work(
+                    "report",
+                    actor="worker",
+                    item_id=item_id,
+                    status=status,
+                    reason="needs_human",
+                    summary="?",
+                ),
                 _work("close", item_id=item_id, state=state),
             ]
     for status in ("question", "blocked", "progress"):
         entries += [
             _work("create", item_id=f"it_open_{status}", title=f"open {status}", round=1),
-            _work("report", actor="worker", item_id=f"it_open_{status}", status=status),
+            _work(
+                "report",
+                actor="worker",
+                item_id=f"it_open_{status}",
+                status=status,
+                reason="needs_human" if status != "progress" else None,
+            ),
         ]
     entries += [
         _work("create", item_id="it_reopened", title="reopened question", round=1),
-        _work("report", actor="worker", item_id="it_reopened", status="question"),
+        _work(
+            "report", actor="worker", item_id="it_reopened", status="question", reason="approval"
+        ),
         _work("close", item_id="it_reopened", state="accepted"),
         _work("close", item_id="it_reopened", state="open"),
     ]
@@ -618,6 +655,112 @@ def test_a_closed_item_no_longer_needs_me() -> None:
     # open progress, and none of the six closed ones.
     assert board["needs_you"] == 3
     assert board["open"] == 4
+
+
+def test_a_savepoint_from_before_reason_and_answered_rebuilds() -> None:
+    """Items in an older savepoint carry no ``reason``/``answered``, so resuming one
+    would hide a real person wait from ``needs_you``. The bumped version retires it."""
+    assert projection._FOLDS["workstreams"].state_version == projection._FOLD_STATE_VERSION_BASE + 2
+
+
+def _asked(item_id: str, status: str, reason: str | None) -> list[Entry]:
+    return [
+        _work("create", item_id=item_id, title=item_id, round=1),
+        _work("report", actor="worker", item_id=item_id, status=status, reason=reason),
+    ]
+
+
+def test_an_answered_report_no_longer_needs_me() -> None:
+    """A ``decide`` or a person's ``steer`` after the report answers it, as on the Board.
+
+    ``status`` is the worker's last report and moves only when the worker reports again,
+    so counting by status kept an answered ask on the count until the worker spoke. The
+    fold uses the Board's own rule (``work_vocab.waits_on_person``): an answer clears it,
+    a new report asks again, and a plain question (no person reason) never counts.
+    """
+    entries = [_opened(CONDUCTOR), _work("goal", goal="answers", round=1)]
+    entries += _asked("plain_decided", "question", None)
+    entries += [_work("decide", item_id="plain_decided", decision="take A")]
+    entries += _asked("human_open", "blocked", "needs_human")
+    entries += _asked("human_decided", "blocked", "needs_human")
+    entries += [_work("decide", item_id="human_decided", decision="wait for the maintainer")]
+    entries += _asked("approval_steered", "question", "approval")
+    entries += [_work("steer", actor="person", item_id="approval_steered", event="go")]
+    entries += _asked("asked_again", "question", "needs_human")
+    entries += [
+        _work("decide", item_id="asked_again", decision="try B"),
+        _work(
+            "report", actor="worker", item_id="asked_again", status="question", reason="approval"
+        ),
+    ]
+    entries += _asked("closed", "blocked", "needs_human")
+    entries += [_work("close", item_id="closed", state="abandoned")]
+    board = _board(_fold(entries), "answers")
+    waits = {t["item_id"]: t["awaits_person"] for t in board["tasks"]}
+    assert waits == {
+        "plain_decided": False,
+        "human_open": True,
+        "human_decided": False,
+        "approval_steered": False,
+        "asked_again": True,
+        "closed": False,
+    }
+    assert board["needs_you"] == 2
+
+
+@pytest.mark.parametrize(
+    ("decided_at", "answered"),
+    [("2026-10-03T12:05:00+00:00", True), ("2026-10-03T11:55:00+00:00", False), (None, False)],
+)
+def test_a_baselined_item_reads_its_hand_back_from_the_stamps(
+    decided_at: str | None, answered: bool
+) -> None:
+    """An item first seen whole (a baseline) carries no event order, so the ledger's own
+    stamps decide: ``decided_at`` at or after ``last_report_at`` answered the report."""
+    value = _fold(
+        [
+            _opened(CONDUCTOR),
+            _work("goal", goal="baseline", round=1),
+            _work(
+                "verdict",
+                item_id="it_b",
+                baseline=True,
+                title="old item",
+                state="open",
+                status="blocked",
+                reason="needs_human",
+                last_report_at="2026-10-03T12:00:00+00:00",
+                decided_at=decided_at,
+                verdict="pending",
+            ),
+        ]
+    )
+    board = _board(value, "baseline")
+    assert _task(board, "old item")["awaits_person"] is (not answered)
+    assert board["needs_you"] == (0 if answered else 1)
+
+
+@pytest.mark.parametrize(
+    ("status", "reason", "answered", "running", "waits"),
+    [
+        ("question", None, False, False, False),
+        ("blocked", None, False, False, False),
+        ("question", "needs_human", False, False, True),
+        ("blocked", "approval", False, False, True),
+        ("blocked", "needs_human", True, False, False),
+        ("question", "approval", False, True, False),
+        ("progress", "needs_human", False, False, False),
+        ("done", None, False, False, False),
+    ],
+)
+def test_the_shared_rule_is_the_boards(
+    status: str, reason: str | None, answered: bool, running: bool, waits: bool
+) -> None:
+    """``work_vocab.waits_on_person`` is the one rule the Board, the sidebar and this
+    fold count by: a report naming a person, unanswered, its worker's turn not running."""
+    from kiro_crew.work_vocab import waits_on_person
+
+    assert waits_on_person(status, reason, answered=answered, running=running) is waits
 
 
 def test_an_item_moved_out_of_accepted_takes_its_hour_back() -> None:
