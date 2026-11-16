@@ -648,7 +648,10 @@ def _decode_note_bytes(data: bytes) -> str:
     # gate), so a note written with CRLF elsewhere (Obsidian on Windows, a repo
     # with autocrlf) would otherwise reach the block editor as "\r\n" and produce
     # mixed endings on the next save. Writes already emit "\n" (newline="").
-    return data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+    # "utf-8-sig" drops a leading BOM (Notepad, VS Code "UTF-8 with BOM",
+    # PowerShell 5.1), which would otherwise sit ahead of the frontmatter fence
+    # and hide the note's title and tags. The content hash still covers raw bytes.
+    return data.decode("utf-8-sig", "replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 async def _assert_note_is_fresh(
