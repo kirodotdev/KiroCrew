@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         clear_list_agents_cache,
         clear_model_pin,
         control_plane_declarations,
+        dashboard_author_ownership_digest,
         discovery_executor,
         enumerate_skill_catalog,
         is_markdown_spec,
@@ -498,8 +499,8 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             ):
                                 agent_state.begin_managed_write(
                                     f.stem,
-                                    agent_state.spec_digest(fresh),
-                                    current=agent_state.spec_digest(pre_write),
+                                    dashboard_author_ownership_digest(fresh),
+                                    current=dashboard_author_ownership_digest(pre_write),
                                 )
                                 _atomic_json_write(f, fresh)
                                 agent_state.finalize_managed_write(f.stem)

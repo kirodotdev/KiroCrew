@@ -1676,7 +1676,12 @@ representative rather than exhaustive.
   exact entry another tool injects into every agent spec, so the knowledge spec
   repair leaves a file carrying only that injection alone and its view is built from
   the template. A filter's answer counts only when its output equals the template
-  exactly, and the view is the template, so a filter grants nothing. The public core
+  exactly, and the view is the template, so a filter grants nothing. The same filters
+  let the dashboard-author installer confirm a file as its own when the filtered spec
+  reproduces the recorded ownership digest, so the rebuild still rewrites it from
+  the template. Every managed writer of that spec records its digest over the
+  filtered spec (`worker_agent.dashboard_author_ownership_digest`), so an injected
+  identifier that changes per launch never enters the record. The public core
   registers none.
 - `config.overlay_owners.register_overlay_owner(key_path, owner)`: claims a
   `config.local.json` key the edition enforces, such as an `auto_update` value it
