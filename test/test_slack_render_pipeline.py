@@ -1114,6 +1114,40 @@ def test_a_token_longer_than_a_post_is_cut_at_the_limit_with_no_stub_post() -> N
     assert len(parts[0]) == SLACK_MSG_LIMIT
 
 
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "\U0001f1fa\U0001f1f8",
+        "\U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "e\u0301",
+        "1\ufe0f\u20e3",
+    ],
+    ids=["flag", "zwj", "combining", "keycap"],
+)
+@pytest.mark.parametrize("lead", range(3870, 3880))
+def test_a_hard_cut_never_splits_a_visible_character(unit: str, lead: int) -> None:
+    text = "x" * lead + unit * 60
+    parts = slack_format.split_message(text, limit=SLACK_MSG_LIMIT)
+    bodies = [part.removesuffix(CONTINUATION) for part in parts]
+    assert "".join(bodies) == text
+    offset = 0
+    for body in bodies[:-1]:
+        offset += len(body)
+        assert offset <= lead or (offset - lead) % len(unit) == 0, f"cut at {offset}"
+
+
+@pytest.mark.parametrize(
+    "run",
+    ["a" + "\u0301" * 10000, "\U0001f468\u200d" * 3000],
+    ids=["combining-run", "zwj-run"],
+)
+def test_a_line_of_joining_marks_longer_than_a_post_is_cut_at_the_limit(run: str) -> None:
+    """With no boundary in reach the cut falls at the limit, never one mark per post."""
+    parts = slack_format.split_message(run, limit=SLACK_MSG_LIMIT)
+    assert len(parts) <= len(run) // (SLACK_MSG_LIMIT - len(CONTINUATION)) + 1
+    assert "".join(part.removesuffix(CONTINUATION) for part in parts) == run
+
+
 @pytest.mark.parametrize("width", range(3860, 3900, 3))
 def test_a_link_line_after_a_reopened_block_never_leaves_a_bare_opener_post(
     width: int,

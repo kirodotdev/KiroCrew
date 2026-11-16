@@ -23,6 +23,7 @@ from kiro_crew.messaging.display_safety import (
     slack_mrkdwn_reading,
     strip_ansi,
 )
+from kiro_crew.messaging.graphemes import joins_previous
 from kiro_crew.messaging.markup import flatten_mermaid_body
 from kiro_crew.messaging.renderer import MIRROR_ECHO_LABEL, cap_choices, format_overflow
 from kiro_crew.messaging.split import rebalance_fenced_cuts
@@ -1341,9 +1342,17 @@ def _hard_cut(text: str, chunk_limit: int, past: int = 0) -> int:
     head's link is no link and the next post opens with ``label>``. A token
     longer than a whole post cannot move whole, so it is cut where the limit
     falls. The move never goes back to *past* or before it, so a cut already
-    ruled out stays ruled out.
+    ruled out stays ruled out. A cut that would split one visible character (a
+    flag, a ZWJ emoji, a mark on its base) moves left to that character's start,
+    by the rule the shared splitter uses (``messaging.graphemes``).
     """
     cut = chunk_limit
+    while cut > past + 1 and cut < len(text) and joins_previous(text, cut):
+        cut -= 1
+    if cut < len(text) and joins_previous(text, cut):
+        # The whole reach is one run of joining marks: no boundary to step back
+        # to, so cut at the limit rather than posting one mark at a time.
+        cut = chunk_limit
     opened = text.rfind("<", 0, cut)
     line_start = text.rfind("\n", 0, cut)
     if opened > max(text.rfind(">", 0, cut), line_start, past, 0):
