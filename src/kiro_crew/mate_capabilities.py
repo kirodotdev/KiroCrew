@@ -470,6 +470,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         from kiro_crew.config.loader import default_project_dir
         from kiro_crew.mate_worker import MATE_WORKER_AGENT, worker_additions
         from kiro_crew.skill_runtime.catalog import (
+            _alias_candidates,
             _alias_matches,
             _alias_roots,
             _matches_any,
@@ -486,25 +487,48 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         project = default_project_dir(binding.workspace) if binding else ""
         skill_path = _path or mate_config_path(member)
         skill_uris = dict.fromkeys([*catalog.values(), *_strs(spec.get("resources"))])
+        # Every Remove check below re-derives the granted skills of a candidate
+        # spec, so the catalog is expanded once and each resource's grant is
+        # memoised. A grant is a union over resources: each glob and its
+        # canonical spelling match independently, so ``granted(rs)`` is the
+        # union of ``granted([r])``.
+        skill_paths = [
+            (uri, path)
+            for uri in skill_uris
+            if (path := expand_skill_uri(uri, skill_path, project_dir=project))
+        ]
+        canonical_cache: dict[tuple[str, str], str] = {}
+        granted_by: dict[str, frozenset[str]] = {}
+
+        def _granted_by(resource: str) -> frozenset[str]:
+            hit = granted_by.get(resource)
+            if hit is None:
+                keys = {_skill_key(resource)}
+                glob = expand_skill_uri(resource, skill_path, project_dir=project)
+                if glob:
+                    globs = _with_canonical_globs([glob], project, canonical_cache)
+                    # ``_alias_matches`` is False for every path when the globs
+                    # name no ``<prefix>/*/SKILL.md`` alias inside the roots, so
+                    # skip its per-path fence check then.
+                    aliased = bool(
+                        _alias_candidates(
+                            globs, dict.fromkeys(globs), {g: g for g in globs}, alias_roots
+                        )
+                    )
+                    keys.update(
+                        _skill_key(uri)
+                        for uri, path in skill_paths
+                        if _matches_any(path, globs)
+                        or (
+                            aliased
+                            and _alias_matches(Path(path), globs, [skills_dir()], roots=alias_roots)
+                        )
+                    )
+                hit = granted_by[resource] = frozenset(keys)
+            return hit
 
         def _granted_skills(resources: list[str]) -> set[str]:
-            globs = _with_canonical_globs(
-                [
-                    glob
-                    for uri in resources
-                    if (glob := expand_skill_uri(uri, skill_path, project_dir=project))
-                ],
-                project,
-            )
-            return {_skill_key(uri) for uri in resources} | {
-                _skill_key(uri)
-                for uri in skill_uris
-                if (path := expand_skill_uri(uri, skill_path, project_dir=project))
-                and (
-                    _matches_any(path, globs)
-                    or _alias_matches(Path(path), globs, [skills_dir()], roots=alias_roots)
-                )
-            }
+            return set().union(*map(_granted_by, resources))
 
         base_skills = _granted_skills(_strs(base.get("resources"))) | set(_strs(base.get("skills")))
 
