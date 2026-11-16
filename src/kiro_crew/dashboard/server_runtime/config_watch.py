@@ -301,15 +301,6 @@ def _register_config_watch(
         if change.touched("apps"):
             state.push_refresh("config")
 
-    def _push_mate_listing(change: ConfigChange) -> None:
-        # Each mate thread's row carries its Bot's "Show in my Sessions list"
-        # switch (crew_mode.stamp_rows), so a flip from any writer re-sends the
-        # slot list and refreshes the roster so every dashboard's lists and
-        # Bot Settings switch follow it.
-        if any(p.endswith(".show_sessions_in_list") for p in change.under("agents")):
-            state.push_slots_update()
-            state.push_refresh("agents")
-
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -378,7 +369,6 @@ def _register_config_watch(
             name="dashboard.chat_runtime_sharing_toggle",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
-        live.subscribe("agents", callback=_push_mate_listing, name="agents.show_sessions_in_list"),
         live.subscribe(
             "dashboard.command_bar_enabled",
             callback=_push_command_bar,

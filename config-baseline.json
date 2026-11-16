@@ -13123,20 +13123,6 @@
       "defaultValue": false
     },
     {
-      "path": "agents.*.show_sessions_in_list",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Show in my Sessions list",
-      "help": "Off by default. The chats this crewmate opens are listed on its profile's Sessions tab and left out of your Sessions list. Turn it on to list them in your Sessions list too.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",

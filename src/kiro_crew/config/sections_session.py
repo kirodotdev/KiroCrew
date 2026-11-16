@@ -504,19 +504,6 @@ class KiroCrewAgentConfig:
             "open approval or question.",
         ),
     )
-    # Off by default: the sessions this crewmate's thread opens are listed on its
-    # profile's Sessions tab and left out of the person's own session list
-    # (``crew_mode.list_view`` and the dashboard's ``crewModeView``). On puts them
-    # back in that list too; the Sessions tab lists them either way.
-    show_sessions_in_list: bool = field(
-        default=False,
-        metadata=_meta(
-            "Show in my Sessions list",
-            "Off by default. The chats this crewmate opens are listed on its "
-            "profile's Sessions tab and left out of your Sessions list. Turn it "
-            "on to list them in your Sessions list too.",
-        ),
-    )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
     # defaults are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows
