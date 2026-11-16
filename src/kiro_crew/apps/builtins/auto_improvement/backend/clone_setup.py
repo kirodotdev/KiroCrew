@@ -302,6 +302,12 @@ def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
     disabled" for a clone whose remotes were never read — a misleading 409.
     """
     key = "remote.origin.pushurl" if push else "remote.origin.url"
+    return _local_config_values(repo, key)
+
+
+def _local_config_values(repo: Path, key: str) -> list[str] | None:
+    """Every value of ``key`` in the clone's local config; same contract as
+    :func:`_origin_urls`."""
     where = _git_cwd(repo)
     try:
         proc = subprocess.run(
@@ -699,6 +705,52 @@ def _repository_is_isolated(repo: Path) -> bool:
     return _repository_is_safe(repo) and _push_disabled(repo)
 
 
+#: Local git config key holding which project a clone was made from. `_disable_push`
+#: replaces both origin urls with the sentinel, so after setup the origin cannot say
+#: which repository the clone holds; this key does. It stores a digest, not the url, so
+#: agent-run Bash in the clone cannot read the real remote from git (see `_ok`).
+_CLONE_IDENTITY_KEY = "kirocrew.cloneidentity"
+
+
+def _clone_identity(spec: CloneSpec) -> str:
+    """The digest a clone of ``spec`` records. Lower-cased: both forges fold case."""
+    return hashlib.sha256(f"{spec.host}/{spec.path}".lower().encode("utf-8")).hexdigest()
+
+
+def _record_clone_identity(repo: Path, identity: str) -> bool:
+    """Write ``identity`` as the clone's only identity value. True on success."""
+    where = _git_cwd(repo)
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                where,
+                *_GIT_SAFE_CONFIG,
+                "config",
+                "--local",
+                "--no-includes",
+                "--replace-all",
+                _CLONE_IDENTITY_KEY,
+                identity,
+            ],
+            capture_output=True,
+            timeout=30,
+            shell=False,
+            env=_git_env(),
+            cwd=where,
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    try:
+        return proc.returncode == 0 and _local_config_values(repo, _CLONE_IDENTITY_KEY) == [
+            identity
+        ]
+    except IsolationProbeError:
+        return False
+
+
 @dataclass
 class CloneSpec:
     """The validated, derived clone target, built only from validated components."""
@@ -756,7 +808,9 @@ def _gitlab_dir_name(host: str, path: str) -> str:
     case-insensitive), so two projects whose readable parts fold together stay apart.
     """
     readable = _keep_allowed(f"{host}--{path}", _GITLAB_SEGMENT_CHARS, "--").strip("-.")
-    digest = hashlib.sha256(f"{host}/{path}".lower().encode("utf-8")).hexdigest()[:12]
+    # 128 bits: wide enough that no two projects share a name, short enough that the
+    # longest accepted host/path still fits a 255-byte file name.
+    digest = hashlib.sha256(f"{host}/{path}".lower().encode("utf-8")).hexdigest()[:32]
     return f"gitlab+{readable}--{digest}"
 
 
@@ -1002,6 +1056,18 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
     if git_dir.is_dir():
         if not _repository_is_safe(dest):
             return {}, f"Existing clone at {dest} failed Git metadata safety verification."
+        # The origin cannot prove identity on reuse: after setup it is always the
+        # sentinel. The recorded identity can. A clone made before identities were
+        # recorded has none; it is adopted once (its name is all it was ever checked on).
+        identity = _clone_identity(spec)
+        recorded = _local_config_values(dest, _CLONE_IDENTITY_KEY)
+        if recorded is None or len(recorded) > 1:
+            return {}, f"Existing clone at {dest} has an ambiguous identity — refusing reuse."
+        if recorded and recorded[0] != identity:
+            return {}, (
+                f"Existing clone at {dest} was made from a different repository than "
+                f"{spec.display!r} — refusing to reuse it."
+            )
         origins = _origin_urls(dest, push=False)
         if origins is None or len(origins) != 1:
             return {}, f"Existing clone at {dest} has ambiguous origin URLs — refusing reuse."
@@ -1011,6 +1077,8 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
                 f"Existing clone at {dest} has origin {actual_origin!r}, which does not "
                 f"match the requested {spec.clone_url!r} — refusing to reuse it."
             )
+        if not recorded and not _record_clone_identity(dest, identity):
+            return {}, f"Could not record the identity of the clone at {dest} — refusing reuse."
         _disable_push(dest)
         result = _ok(spec, dest, reused=True)
         if not result.get("push_disabled"):
@@ -1083,6 +1151,9 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
     if not safe:
         rmtree_force(dest)
         return {}, "cloned repository failed Git metadata safety verification"
+    if not _record_clone_identity(dest, _clone_identity(spec)):
+        rmtree_force(dest)
+        return {}, "could not record the clone's identity — refusing"
 
     _disable_push(dest)
     result = _ok(spec, dest, reused=False)
