@@ -978,4 +978,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.tailnet import POLICY_OFF_DETAIL, policy_off  # noqa: F401
     from kiro_crew.env import node_augmented_path, node_bin_dirs  # noqa: F401
     from kiro_crew.gateway_lock import LockHolder  # noqa: F401
+    from kiro_crew.git_tmp_packs import UPDATE_FETCH_TIMEOUT_S, reap_stale_tmp_packs  # noqa: F401
     from kiro_crew.platform import release_apply  # noqa: F401
