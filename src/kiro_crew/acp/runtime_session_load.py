@@ -197,6 +197,7 @@ async def load_session(
                 member_session_key=member_session_key,
                 session_key=session_key,
                 channel_id=channel_id,
+                kas_memory_mode=kas_memory_mode,
                 require_replay=require_replay,
                 start_priority=start_priority,
                 focus_resume=focus_resume,
