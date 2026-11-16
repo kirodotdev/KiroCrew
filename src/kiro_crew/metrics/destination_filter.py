@@ -46,12 +46,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Point-attribute keys a destination may ask for. One entry in v1: the client
-#: label a receiving side routes on. Deliberately a short reviewed list rather
-#: than a shape check -- an attribute that lands on every exported point of a
-#: destination is a privacy and cardinality decision, so it is made here, once,
-#: and not at the destination that wants it.
-ALLOWED_POINT_ATTRIBUTE_KEYS = frozenset({"ClientType"})
+#: Point-attribute keys a destination may ask for: the client label a receiving
+#: side routes on, and ``machineId``, the hashed install id the built-in Kiro
+#: telemetry destination already sends in its request header (``kiro_export``).
+#: Deliberately a short reviewed list rather than a shape check -- an attribute
+#: that lands on every exported point of a destination is a privacy and
+#: cardinality decision, so it is made here, once, and not at the destination
+#: that wants it.
+ALLOWED_POINT_ATTRIBUTE_KEYS = frozenset({"ClientType", "machineId"})
 
 
 def validate_point_attributes(attributes: Optional[Mapping[str, str]]) -> "dict[str, str]":

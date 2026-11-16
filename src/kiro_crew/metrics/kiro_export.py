@@ -37,8 +37,12 @@ only for the operator's own destinations (:func:`egress_needs_written_opt_in`).
 What it sends, narrowed by the core (``metrics/destination_filter.py``):
 
 * ``allow=PRODUCT_METRICS`` -- the reviewed list; every other metric is dropped.
-* ``point_attributes={"ClientType": "kiro-crew"}`` -- the receiving side routes
-  each data point on it and refuses one without it.
+* ``point_attributes={"ClientType": "kiro-crew", "machineId": <hash>}`` -- the
+  receiving side routes each data point on ``ClientType`` and refuses one
+  without it. ``machineId`` is the same hash the header carries (below); the
+  endpoint does not copy the header onto the points it stores, and a stored
+  point with no identity is dropped before it reaches product analytics. It is
+  left out while there is no install id, when no request is made anyway.
 * ``resource_allow=RESOURCE_ALLOW`` -- no install id, pid, OS type or ``host.*`` key.
 * ``temporality="delta"`` and ``process_env_credentials=False`` -- the
   process-wide OTel header, credential and TLS variables are for an operator's
@@ -47,12 +51,14 @@ What it sends, narrowed by the core (``metrics/destination_filter.py``):
 Identity, added per request by the session: ``x-kiro-machineid``, a SHA-256 of
 the existing install id under a fixed prefix, which the endpoint accepts for
 anonymous ingestion. Never creates the id; without it no request is made. No
-sign-in token or other credential is sent. The header value is never logged,
-stored on the descriptor, or written to config.
+sign-in token or other credential is sent. The hash is never logged or written
+to config; it is the only identity on the descriptor (the ``machineId`` point
+attribute), and the raw install id never leaves the machine.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import threading
@@ -72,6 +78,9 @@ ENDPOINT = "https://telemetry.us-east-1.kiro.dev/v1/metrics"
 
 CLIENT_TYPE_KEY = "ClientType"
 CLIENT_TYPE_VALUE = "kiro-crew"
+
+#: Point attribute carrying the same hash as :data:`HEADER_MACHINE_ID`.
+MACHINE_ID_KEY = "machineId"
 
 #: Resource keys this destination may receive. ``service.instance.id`` (the
 #: install id), ``process.pid``, ``os.type`` (the Privacy panel says the operating
@@ -109,7 +118,8 @@ def destinations() -> "tuple[OtlpDestination, ...]":
     """The Kiro telemetry destination as a one-element tuple, or ``()``.
 
     Cheap and side-effect free, as the provider seam requires: the session is
-    built once per process and opens no socket until the first export.
+    built once per process and opens no socket until the first export, and the
+    install id is only read, never created (:func:`machine_id_hash`).
     """
     from kiro_crew import beacon, edition
 
@@ -118,6 +128,10 @@ def destinations() -> "tuple[OtlpDestination, ...]":
     from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
     from kiro_crew.platform.interfaces import OtlpDestination
 
+    point_attributes = {CLIENT_TYPE_KEY: CLIENT_TYPE_VALUE}
+    machine_id = machine_id_hash()
+    if machine_id:
+        point_attributes[MACHINE_ID_KEY] = machine_id
     return (
         OtlpDestination(
             name=DESTINATION_NAME,
@@ -125,7 +139,7 @@ def destinations() -> "tuple[OtlpDestination, ...]":
             signals=frozenset({"metrics"}),
             session=_shared_session(),
             allow=PRODUCT_METRICS,
-            point_attributes=MappingProxyType({CLIENT_TYPE_KEY: CLIENT_TYPE_VALUE}),
+            point_attributes=MappingProxyType(point_attributes),
             resource_allow=RESOURCE_ALLOW,
             temporality="delta",
             process_env_credentials=False,
@@ -134,8 +148,22 @@ def destinations() -> "tuple[OtlpDestination, ...]":
 
 
 def is_builtin(dest: object) -> bool:
-    """Whether *dest* is this destination (not an operator entry of the same name)."""
-    return any(dest == own for own in destinations())
+    """Whether *dest* is this destination (not an operator entry of the same name).
+
+    Compared without the ``machineId`` point attribute, which appears once the
+    install id exists: a descriptor built before that and one built after are
+    the same destination. The shared session still tells an operator entry apart.
+    """
+    probe = _without_machine_id(dest)
+    return any(probe == _without_machine_id(own) for own in destinations())
+
+
+def _without_machine_id(dest: object) -> object:
+    attrs = getattr(dest, "point_attributes", None)
+    if not attrs or MACHINE_ID_KEY not in attrs or not dataclasses.is_dataclass(dest):
+        return dest
+    kept = {key: value for key, value in attrs.items() if key != MACHINE_ID_KEY}
+    return dataclasses.replace(dest, point_attributes=MappingProxyType(kept))  # type: ignore[type-var]
 
 
 def notice_shown(full_cfg: Any = None) -> bool:

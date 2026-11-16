@@ -864,6 +864,20 @@ def _build_recorder() -> _Build:
         logger.warning("opentelemetry not importable; telemetry disabled")
         return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
+    # Mint the persisted install id HERE, so the resource is labelled from the
+    # first export, and so the built-in Kiro destination resolved below already
+    # carries its hash as the ``machineId`` point attribute (``kiro_export``).
+    # The one write on this path (mkdir + mkstemp + link, race-safe per
+    # ``beacon.install_id``), once per install, and only with consent: a
+    # disabled build returns earlier and creates nothing. Its cost is noise
+    # beside this path's config load and ~57ms SDK import
+    # (docs/system-specs/modules/metrics.md); a failed mint loses only the
+    # attribute, never the recorder.
+    try:
+        beacon.install_id(create=True)
+    except Exception:
+        logger.debug("install id mint failed", exc_info=True)
+
     # Resolve egress destinations BEFORE any reader is started. Two reasons:
     # the seam belongs to the edition and a PlatformCompositionError from it must
     # not be folded into "telemetry init failed" below, and resolving first means
@@ -914,17 +928,6 @@ def _build_recorder() -> _Build:
                 started_readers.append(reader)
                 otlp_names.append(dest.name)
         otlp_active = bool(otlp_names)
-        # Mint the persisted install id HERE, so the resource is labelled from
-        # the first export. The one write on this path (mkdir + mkstemp + link,
-        # race-safe per ``beacon.install_id``), once per install, and only with
-        # consent: a disabled build returns earlier and creates nothing. Its
-        # cost is noise beside this path's config load and ~57ms SDK import
-        # (docs/system-specs/modules/metrics.md); a failed mint loses only the
-        # attribute, never the recorder.
-        try:
-            beacon.install_id(create=True)
-        except Exception:
-            logger.debug("install id mint failed", exc_info=True)
         # Read from the SAME load as the telemetry section, so a rebuild after a
         # config change labels the new resource with the new harness. Also
         # records the Claude Code seam for the per-session ``harness`` point
