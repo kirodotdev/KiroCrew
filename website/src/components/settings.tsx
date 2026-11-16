@@ -1,6 +1,5 @@
 import React from 'react'
 import { ChevronRight } from 'lucide-react'
-import Clickable from './Clickable'
 import InfoTip from './InfoTip'
 import SearchableSelect, { type SearchableSelectOption } from './SearchableSelect'
 import SimpleSelect from './SimpleSelect'
@@ -73,49 +72,44 @@ interface SettingsToggleProps {
   anchor?: boolean
 }
 
+/** A link or a button inside a row's description stays above the label's
+ *  stretched click layer, so it is pressed itself instead of the switch. */
+const PRESSABLE_ABOVE_ROW_CLS = '[&_a]:relative [&_button]:relative'
+
 export function SettingsToggle({ label, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
-  // Busy refuses the row click. The row is disabled for assistive tech while it
-  // runs -- `aria-disabled` plus `aria-busy`, out of the tab order -- so a screen
-  // reader does not announce an active button that does nothing. Focus is not
-  // lost: the inner switch carries its own `busy` and keeps its tab stop, so the
-  // user stays on the control they pressed. The dimmed look stays either way.
   const inert = disabled || busy
-  /**
-   * Did this activation come from the "?" tip rather than the row?
-   *
-   * Checked on the ROW's own handler rather than by stopping propagation on a
-   * wrapper around the tip. The row is keyboard-activatable -- `Clickable` turns
-   * Enter/Space into the same `onClick` -- so a click-only `stopPropagation` left
-   * Enter on the tip flipping the setting it was there to explain. One guard here
-   * covers both input paths.
-   */
-  const fromHint = (e?: React.MouseEvent | React.KeyboardEvent) =>
-    e?.target instanceof HTMLElement && e.target.closest('[data-settings-hint]') !== null
+  // The row's own text first, then the caller's note about a consequence: the
+  // order they are read on screen. A screen reader hears both, with the name and
+  // the on/off state, at the one stop the row has.
+  const switchId = React.useId()
+  const descriptionId = React.useId()
+  const hasDescription = Boolean(descriptionBadge || description)
+  const switchDescribedBy = [hasDescription ? descriptionId : null, describedBy].filter(Boolean).join(' ') || undefined
   return (
-    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} aria-busy={busy || undefined} className={`flex items-center justify-between py-1.5 group ${inert ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!inert && !fromHint(e)) onChange(!checked) }} disabled={inert}>
+    // The row itself is not a control and handles nothing. A row that was also
+    // a button gave every setting two Tab stops, and the first one read out as a
+    // button that never said on or off. The switch is the one control; the name
+    // beside it is its <label>, stretched over the row (`after:inset-0`) so a
+    // click anywhere on the row still presses the switch, the way a click on any
+    // label does. The tip, the switch and anything a description can press sit
+    // above that layer.
+    <div {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} className={`relative flex items-center justify-between py-1.5 group ${inert ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
-          <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
-          {/* Marked, not handled: `fromHint` above reads this attribute off the
-              event target, so the tip needs no handler of its own. */}
-          {hint && <span data-settings-hint><InfoTip text={hint} placement="top" /></span>}
+          <label htmlFor={switchId} className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors after:absolute after:inset-0 after:content-['']">{label}</label>
+          {hint && <span data-settings-hint className="relative"><InfoTip text={hint} placement="top" /></span>}
         </div>
         {descriptionBadge ? (
           // Badge and description each in their own block: two separate UI
           // units side by side, not one sentence built from two catalog keys.
-          <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted mt-0.5">
+          <div id={descriptionId} className={`flex flex-wrap items-center gap-1.5 text-[12px] text-muted mt-0.5 ${PRESSABLE_ABOVE_ROW_CLS}`}>
             <div className="shrink-0">{descriptionBadge}</div>
             {description && <div>{description}</div>}
           </div>
-        ) : description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
+        ) : description && <div id={descriptionId} className={`text-[12px] text-muted mt-0.5 ${PRESSABLE_ABOVE_ROW_CLS}`}>{description}</div>}
       </div>
-      {/* stopPropagation prevents the row's mouse-click convenience from double-
-          toggling; the inner Toggle carries all keyboard/AT semantics. */}
-      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
-      <div onClick={e => e.stopPropagation()}>
-        <Toggle checked={checked} onChange={onChange} disabled={disabled} busy={busy} label={label} describedBy={describedBy} />
-      </div>
-    </Clickable>
+      <Toggle id={switchId} checked={checked} onChange={onChange} disabled={disabled} busy={busy} label={label} describedBy={switchDescribedBy} />
+    </div>
   )
 }
 

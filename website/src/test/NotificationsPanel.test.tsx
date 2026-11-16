@@ -431,7 +431,8 @@ describe('NotificationsPanel', () => {
       expect(toggle.getAttribute('aria-disabled')).toBe('true')
       const describedBy = toggle.getAttribute('aria-describedby')
       expect(describedBy).toBeTruthy()
-      const hint = document.getElementById(describedBy!)
+      // The row's own text is described first; the blocked hint is the last id.
+      const hint = document.getElementById(describedBy!.split(' ').pop()!)
       // The hint is a SHORT back-reference to the System notifications row above
       // (#23984), not a second copy of that row's full "blocked" sentence: the
       // same page already shows the full sentence once, and repeating it read
