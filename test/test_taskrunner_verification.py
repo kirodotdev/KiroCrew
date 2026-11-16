@@ -24,7 +24,7 @@ import pytest
 from kiro_crew import task_executor
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.task_models import MAX_RETRIES
-from kiro_crew.task_reporter import build_status, format_completion_summary
+from kiro_crew.task_reporter import build_status, format_completion_summary, save_progress
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 
 
@@ -489,6 +489,72 @@ class TestRecordAndReport:
             "  Skipped S3",
             "  Passed S4",
         ]
+
+
+class TestTheNoticeShowsOnlyItsOwnFailures:
+    """The notice's step list never shows more failures than its header counts.
+
+    A replan marks the steps that never ran SKIPPED, so a run whose step 2 failed
+    and was replanned into two passing steps used to list two failures under a
+    header that counted one.
+    """
+
+    def test_the_failed_count_matches_the_failures_the_list_shows(self, tmp_path: Path) -> None:
+        """A run holding every status lists one failure, and the header counts one."""
+        statuses = (
+            StepStatus.PASSED,
+            StepStatus.FAILED,
+            StepStatus.SKIPPED,
+            StepStatus.CANCELLED,
+            StepStatus.PENDING,
+            StepStatus.PASSED,
+        )
+        steps = [
+            Step(index=i, title=f"S{i}", description="d", status=status)
+            for i, status in enumerate(statuses, start=1)
+        ]
+        run = _run(tmp_path, *steps)
+        run.started_at = 1.0
+        summary = format_completion_summary(run)
+        assert "**2/6** tasks passed · 1 failed" in summary
+        task_list = summary.split("**Tasks:**\n", 1)[1]
+        assert task_list.splitlines() == [
+            "  ✅ S1",
+            "  ❌ S2",
+            "  ⏭️ S3",
+            "  \U0001f6ab S4",
+            "  ⬜ S5",
+            "  ✅ S6",
+        ]
+        assert summary.count("❌") == 1
+
+    def test_the_progress_file_and_the_notice_mark_a_step_the_same_way(
+        self, tmp_path: Path
+    ) -> None:
+        """One map marks the step in both renderings, so they cannot drift apart."""
+        statuses = (
+            StepStatus.PASSED,
+            StepStatus.FAILED,
+            StepStatus.SKIPPED,
+            StepStatus.CANCELLED,
+            StepStatus.PENDING,
+        )
+        steps = [
+            Step(index=i, title=f"S{i}", description="d", status=status)
+            for i, status in enumerate(statuses, start=1)
+        ]
+        run = _run(tmp_path, *steps)
+        run.started_at = 1.0
+        run.finished_at = 2.0
+        save_progress(run)
+        progress = (tmp_path / "TASK_PROGRESS.md").read_text(encoding="utf-8")
+        notice = format_completion_summary(run).split("**Tasks:**\n", 1)[1]
+        progress_icons = [
+            line.split()[1] for line in progress.splitlines() if line.startswith("- ")
+        ]
+        notice_icons = [line.split()[0] for line in notice.splitlines()]
+        assert progress_icons == notice_icons
+        assert progress_icons == ["✅", "❌", "⏭️", "🚫", "⬜"]
 
 
 class TestARequeuedStepKeepsNoEarlierVerdict:
