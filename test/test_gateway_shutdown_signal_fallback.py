@@ -40,7 +40,9 @@ class _StubLoop:
         self.asked: list[signal.Signals] = []
         self.scheduled: list[Callable[..., object]] = []
 
-    def add_signal_handler(self, sig: signal.Signals, callback: Callable[..., object]) -> None:
+    def add_signal_handler(
+        self, sig: signal.Signals, callback: Callable[..., object], *args: object
+    ) -> None:
         self.asked.append(sig)
         raise self.refusal("this loop cannot install signal handlers")
 
