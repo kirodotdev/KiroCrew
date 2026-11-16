@@ -1705,10 +1705,12 @@ measures, never above.
   after that dir was deleted. `test/test_host_service_guard.py` ratchets the
   guarded set against the service tools `src/` actually names, so a new
   host-mutating call site cannot land outside the floor.
-- **Register the destruction of anything you create, in the same scope.** Prefer
-  pytest's `tmp_path`. If you must call `tempfile.mkdtemp()`, pair it with
-  `self.addCleanup(shutil.rmtree, path, ignore_errors=True)` **on the next line** —
-  not with an `rmtree` in `tearDown`, which is the shape that leaks:
+- **Register the destruction of anything you create, in the same scope.** Take a
+  directory from pytest's `tmp_path` or `tmp_path_factory.mktemp()`; pytest owns it,
+  removes it, and the temp-residue guard below does not scan it. In a `unittest`
+  class, an autouse fixture method hands `tmp_path` to `setUp`. A `tempfile.mkdtemp()`
+  or a held `tempfile.TemporaryDirectory()` lands in the shared temp dir instead, and
+  `kirocrew.test-shared-tmp-dir` refuses a new one (see the residue guard below):
 
   ```python
   # WRONG — unittest does NOT run tearDown when setUp raises, so this leaks on
@@ -1719,12 +1721,28 @@ measures, never above.
   def tearDown(self):
       shutil.rmtree(self.tmp, ignore_errors=True)
 
-  # RIGHT — registered immediately, runs even if the rest of setUp blows up
+  # RIGHT — pytest made the directory before setUp ran and removes it either way
+  @pytest.fixture(autouse=True)
+  def _per_test_dirs(self, tmp_path):
+      self.tmp = tmp_path / "root"
+      self.tmp.mkdir()
   def setUp(self):
-      self.tmp = Path(tempfile.mkdtemp())
-      self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
       self.client = build_client()
+
+  # WRONG — held on self, the directory lives until someone calls cleanup();
+  # a setUp failure, or a thread still writing after it, leaves it behind
+  def setUp(self):
+      self._td = tempfile.TemporaryDirectory()
+      self.root = Path(self._td.name)
+
+  # RIGHT — the same tmp_path fixture method; no handle to clean up
+  @pytest.fixture(autouse=True)
+  def _per_test_dirs(self, tmp_path):
+      self.root = tmp_path
   ```
+
+  `with tempfile.TemporaryDirectory() as d:` around synchronous code is still fine:
+  the block removes it, and the rule does not refuse it.
 
   The rootdir conftest contains the *class* as well: `tempfile`'s base is redirected
   per run to `<platform temp>/kc-pytest-<user>-<pid>`, which the run removes at the end,
@@ -1768,8 +1786,21 @@ measures, never above.
   root that cleanup just removed. In a `unittest` class, take that root from
   `tmp_path` through an autouse fixture method (`test_issue_radar_deps.py`'s
   `_per_test_dirs`), because pytest owns that directory and this guard does not scan it.
-  `kirocrew.test-radar-store-root-self-removed` in `semgrep/test-determinism.yaml`
-  refuses a new `TemporaryDirectory()` or `mkdtemp()` in the Issue Radar tests.
+
+  `kirocrew.test-shared-tmp-dir` in `semgrep/test-determinism.yaml` refuses a NEW line
+  in any test file (`test/**`, the builtin apps' `tests/` and `*_tests/`, `conftest.py`)
+  that makes a directory there pytest does not own: `tempfile.mkdtemp(...)` in any
+  spelling (`tempfile.mkdtemp`, an imported `mkdtemp`, a chain such as
+  `np.tempfile.mkdtemp`), unless `dir=` is `tmp_path`, and a `tempfile.TemporaryDirectory(...)`
+  that is held instead of used as a `with` header (assigned, stored on `self`, returned,
+  passed on, `.name` read, or entered by hand). An `ExitStack.enter_context(...)` of one
+  is allowed. Every such shape leaks the same ways: a `setUp` failure skips `tearDown`,
+  a thread or child process outlives the cleanup, or a reader `mkdir`s the root again.
+  The SAST job runs it diff-scoped, so the sites already in the tree are not
+  findings until a change adds one; a site that needs the shared temp dir on purpose (a
+  short AF_UNIX socket path under `short_tmp_base()`) says why with
+  `# nosemgrep: kirocrew.test-shared-tmp-dir`. The `mkstemp`, `NamedTemporaryFile(delete=False)`
+  and `gettempdir()` shapes are not refused: every current site of them cleans up.
 
   Why it is worth a guard rather than a convention: `/tmp` is commonly a tmpfs with a
   fixed **inode** budget (1,048,576 on the hosts this was measured on), and it returns
