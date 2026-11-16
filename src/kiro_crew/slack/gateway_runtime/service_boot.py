@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         logger,
         parse_dashboard_url,
         platform_compat,
+        prime_interpreter_env_seal,
         probe_data_home,
         redact_credentials,
         redact_exfiltration_urls,
@@ -1001,6 +1002,13 @@ async def run(self: GatewayOrchestrator) -> None:
         await asyncio.to_thread(warm_backend)
     except RuntimeError:
         logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
+    # Fix the gateway Python seal from sys.path as it is now, and report a
+    # hard-linked sealed file once. Off-loop and not awaited: the link check walks
+    # up to _LINK_CHECK_FILE_CAP files (about 0.4 s), and a spawn that comes first
+    # computes the same seal itself.
+    _seal_task = asyncio.create_task(asyncio.to_thread(prime_interpreter_env_seal))
+    self._background_tasks.add(_seal_task)
+    _seal_task.add_done_callback(self._background_tasks.discard)
 
     # LTS build only: no kiro sign-in, no Crew. Checked before any service
     # starts and long before the HTTP server binds; a failure exits non-zero. The

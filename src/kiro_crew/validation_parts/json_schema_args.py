@@ -62,7 +62,8 @@ def _bounded_pattern_search(pattern: str, value: str) -> bool | None:
         return None
     try:
         proc = subprocess.run(  # noqa: S603 — fixed argv, own interpreter
-            [sys.executable, "-I", "-c", _PATTERN_CHILD_SRC],
+            # -S: the child is stdlib only, so skip site (.pth / sitecustomize).
+            [sys.executable, "-I", "-S", "-c", _PATTERN_CHILD_SRC],
             input=json.dumps({"p": pattern, "v": value}).encode("utf-8"),
             capture_output=True,
             timeout=_PATTERN_TIMEOUT_SECS,

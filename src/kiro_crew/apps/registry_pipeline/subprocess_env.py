@@ -221,6 +221,12 @@ def minimal_env(**extra: str) -> dict[str, str]:
     return env
 
 
+#: Added to :func:`minimal_env` for a pip that writes the gateway's own environment
+#: (``gateway_env_writable``). ``HOME`` stays in that env, and the sandboxed agent can
+#: write ``~/.config/pip/pip.conf`` and the pip cache, so pip reads neither: no config
+#: file (as ``browser_harness/install.py`` does) and no cache.
+_GATEWAY_ENV_PIP_ENV = {"PIP_CONFIG_FILE": os.devnull, "PIP_NO_CACHE_DIR": "1"}
+
 # Env keys that let git present the gateway's *ambient* identity to a remote:
 # the SSH agent socket, and any GIT_SSH / GIT_SSH_COMMAND override that could
 # route auth through the owner's keys. Stripped for index-originated clones.

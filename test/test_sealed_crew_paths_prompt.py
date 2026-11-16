@@ -144,3 +144,25 @@ def test_the_named_paths_are_the_ones_the_sandbox_seals() -> None:
     assert "config.json" in sandbox_leaves._CREW_READONLY_LEAVES
     assert "config.local.json" in sandbox_leaves._CREW_READONLY_LEAVES
     assert "work-ledger" in sandbox_leaves._CREW_HIDDEN_LEAVES
+
+
+def test_the_default_contract_explains_the_read_only_gateway_env() -> None:
+    """The sandbox seals the gateway's Python env too; a ``pip install`` into it
+    fails with a bare errno, so the default contract names the cause and the route."""
+    shipped = Path(kiro_crew.__file__).parent / "config" / "prompt.md"
+    (bullet,) = [
+        line
+        for line in shipped.read_text(encoding="utf-8").splitlines()
+        if "The Python Kiro Crew itself runs on" in line
+    ]
+    for token in (
+        "read-only",
+        "global Python",
+        "Read-only file system",
+        "Permission denied",
+        "own terminal",
+        "own venv",
+        "every conda env",
+        "conda package cache",
+    ):
+        assert token in bullet

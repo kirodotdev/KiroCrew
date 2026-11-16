@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import builtins as _builtins
 import importlib as _importlib
-import importlib.util
 import json
 import logging
 import shutil
@@ -71,8 +70,9 @@ from kiro_crew.apps.manager import InstalledTreeRefused  # noqa: E402
 from kiro_crew.apps.manifest import AppManifest  # noqa: E402
 from kiro_crew.apps.registry_pipeline.checkout import _kill_process_group  # noqa: E402
 from kiro_crew.apps.registry_pipeline.install_clone import _InstallVerb, _refusal_line  # noqa: E402
-from kiro_crew.apps.registry_pipeline.install_desktop_gate import (  # noqa: E402
+from kiro_crew.apps.registry_pipeline.install_desktop_gate import (  # noqa: E402,F401
     DESKTOP_BUILD_STEP_UNSUPPORTED,
+    _build_refusal_code,
     _desktop_gate_probe,
 )
 from kiro_crew.apps.registry_pipeline.store_art import _is_safe_registry_subdir  # noqa: E402
@@ -104,13 +104,14 @@ async def _run_app_build(
                                  ``build`` script is declared)
       - ``pyproject.toml`` /
         ``setup.py`` /
-        ``requirements.txt``  → ``pip install .`` (or ``-r requirements.txt``)
+        ``requirements.txt``  → no install-time pip: refused, unless the
+                                 runtime provisions that requirements.txt
       - otherwise             → no build step (source is used as-is)
 
     *manifest* is the CLONED ``app.json``, typed — the same object the admission
     gate judged, and normalized the way the runtime's own loaders see it. It
-    decides one thing only: whether a bundled interpreter may pass a
-    requirements-only app through to the runtime's own provisioning (see
+    decides one thing only: whether a requirements-only app passes through to
+    the runtime's own provisioning (see
     :func:`_requirements_owned_by_the_runtime`). Required rather than
     defaulted, so a caller states what the app declares instead of inheriting a
     verdict; an empty ``AppManifest`` is the honest value for "declares nothing",
@@ -129,9 +130,10 @@ async def _run_app_build(
 
     The app's own ``setup.onInstall`` script (run later by
     ``install_from_registry``) can perform any additional steps.  A missing
-    build toolchain (no npm / no pip) is treated as a soft failure: the step
-    is skipped with a logged warning rather than aborting the install, so an
-    app that needs no build still installs cleanly.
+    npm is treated as a soft failure: the step is skipped with a logged
+    warning rather than aborting the install, so an app that needs no build
+    still installs cleanly. No Python build step runs: a checkout that needs
+    one is refused (see the Python branch below).
     """
     build_cmds: list[list[str]] = []
 
@@ -150,17 +152,45 @@ async def _run_app_build(
                 pass
         else:
             log_lines.append("npm not found on PATH — skipping JavaScript build step")
-    elif platform_compat.is_bundled_interpreter():
-        # The desktop gate decides for the bundled interpreter, ahead of the
-        # `is_file` detection the pip branch below uses, because it decides on
-        # the provisioner's own notion of presence (`lexists`): a dangling
-        # requirements.txt link that a declared consumer would try to read is
-        # refused here exactly as `provision_app_deps` refuses it at spawn,
-        # where `is_file` would have called it "no build step" and installed an
-        # app whose backend spawns without its deps and dies on import. What the
-        # refusal is about, and why a
-        # runtime-provisioned requirements.txt is waived, is the comment on the
-        # pip branch below; `_desktop_build_refusal` owns the verdict, and
+    else:
+        # No install-time pip runs on any gateway: the one interpreter that
+        # imports a Python app is the gateway's own (`sys.executable`), and that
+        # environment is out of reach of an app's build. The desktop build's
+        # bundled interpreter sits inside the signed application bundle (a pip
+        # write there breaks the signature and is discarded on every update);
+        # every other gateway's environment is read-only to sandboxed children,
+        # so an app cannot plant code the gateway later runs as itself.
+        # So `pyproject.toml` / `setup.py` (`pip install .` INTO this
+        # interpreter) are refused, LOUDLY: skipping the install while reporting
+        # success would leave a Python app whose imports never resolve.
+        #
+        # A root requirements.txt the RUNTIME provisions out of process is a
+        # different dependency: `backend_runtime/provisioning.py::provision_app_deps`
+        # (at the spawn of a `backend.entryPoint`) and
+        # `bridges_mcp.py::_maybe_provision_backendless_deps` (at the registration of
+        # a stdio `mcpServers` entry) both install that same file with `pip install
+        # --target` into the app's own deps dir, which never touches the gateway's
+        # environment. That file passes the gate and NOTHING is pip-installed here.
+        #
+        # The waiver is the runtime's own condition, mirrored in
+        # `_requirements_owned_by_the_runtime`: an out-of-process consumer is
+        # declared in a shape the provisioners actually serve (a FILE-style entry
+        # point, or a stdio server -- one without `url`; a module-style, dotted
+        # entry point is never provisioned and keeps the refusal) AND no
+        # `backend.hooks` field is, because a hook is imported INTO this process,
+        # which the app deps tree deliberately never reaches -- AND the registry
+        # entry is gateway-managed, because the provisioners run only for apps the
+        # gateway installs and spawns itself; a self-managed entry (`resources:
+        # "app"`) is registered from its manifest alone -- AND the file is one the
+        # provisioner will read (`requirements_in_tree`, its own fast-refusal rule,
+        # shared). requirements.txt BESIDE pyproject.toml/setup.py keeps the
+        # refusal, and so does one with NO out-of-process consumer: nothing would
+        # provision it, so a pass would be the silent-broken install.
+        #
+        # The gate decides on the provisioner's own notion of presence
+        # (`lexists`): a dangling requirements.txt link that a declared consumer
+        # would try to read is refused here exactly as `provision_app_deps` refuses
+        # it at spawn. `_desktop_build_refusal` owns the verdict, and
         # `install_from_registry` asks it again on the FINAL checkout, after
         # `setup.onInstall` has run, so a script that rewrites the manifest cannot
         # keep a waiver judged on the manifest that entered it. Off-loop: its
@@ -184,120 +214,20 @@ async def _run_app_build(
             # page shows must hold the refusal on this, the commonest path (an
             # already-trusted app whose checkout carries a build step).
             log_lines.append(_refusal_line(verb, refusal))
-            return {
-                "ok": False,
-                "name": app_name,
-                "error": refusal,
-                "code": DESKTOP_BUILD_STEP_UNSUPPORTED,
-            }
+            outcome: dict = {"ok": False, "name": app_name, "error": refusal}
+            code = _build_refusal_code()
+            if code:
+                outcome["code"] = code
+            return outcome
         if has_requirements:
             log_lines.append(
                 "requirements.txt is provisioned at runtime into this app's own deps "
                 "directory (for its backend entry point or stdio MCP server), so no "
-                "install-time pip step runs on the bundled interpreter"
+                "install-time pip step runs"
             )
             return {"ok": True}
         # Nothing here that would build (or a requirements.txt entry nothing
         # reads): no build step, reported below like any source-as-is checkout.
-    elif (
-        await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
-        or await asyncio.to_thread((build_dir / "setup.py").is_file)
-        or await asyncio.to_thread((build_dir / "requirements.txt").is_file)
-    ):
-        # `sys.executable -m pip`, NOT `shutil.which("pip")`.
-        #
-        # A Python app has to land in the interpreter that will IMPORT it — the one
-        # running this gateway. `which("pip")` resolves to whatever pip is first on
-        # PATH, which is routinely a different interpreter: `bin/kirocrew` execs
-        # `.venv/bin/kirocrew` WITHOUT putting the venv's `bin/` on PATH, and
-        # `service/common.py::service_path()` prepends `~/.local/bin` ahead of it. So the
-        # build pip was whatever the user happened to have.
-        #
-        # The failure is SILENT, which is why it survived. Measured on a host whose first
-        # pip was 3.7 and whose gateway venv was 3.12: with a version-incompatible pip the
-        # install failed loudly, but with a *compatible-but-different* pip (3.10) it
-        # reported "Successfully installed", the build step reported success, and the
-        # package landed in `~/.local/lib/python3.10/site-packages` — invisible to the
-        # gateway, with `ENABLE_USER_SITE = False` in a venv so there is no fallback. The
-        # app installs, the entry point never appears, and nothing anywhere says why.
-        #
-        # Our own packages only fail loudly because they declare `requires-python`; a
-        # third-party app without that constraint fails silently on EVERY mismatch.
-        #
-        # EXCEPTION: never run pip against the desktop app's bundled interpreter.
-        # The desktop build ships a python-build-standalone runtime inside the
-        # application bundle (`Resources/backend-dist/...`); on macOS that bundle is
-        # code-signed, so a pip install writing into its site-packages invalidates
-        # the signature and breaks subsequent launches/updates — and the write is
-        # discarded on every app update anyway. This is a LOUD failure, not a
-        # soft-skip: a Python app that declares a build step needs its packages
-        # importable by the gateway, and skipping the install while reporting
-        # success would recreate exactly the silent-broken-install shape this
-        # function is written to prevent. Detection lives in
-        # platform_compat.is_bundled_interpreter() — the single owner of the
-        # packaging-layout sentinel — so a bundler rename breaks its pinned test
-        # instead of silently un-matching an inline check here.
-        #
-        # What that refusal is ABOUT is the gateway's own import path, so it
-        # applies to what would have to land there: `pyproject.toml` / `setup.py`
-        # install INTO this interpreter (`pip install .`). A root requirements.txt
-        # the RUNTIME provisions out of process is a different dependency:
-        # `backend_runtime/provisioning.py::provision_app_deps` (at the spawn of a
-        # `backend.entryPoint`) and `bridges_mcp.py::_maybe_provision_backendless_deps` (at the
-        # registration of a stdio `mcpServers` entry) both install that same file
-        # with `pip install --target` into the app's own deps dir, which works on
-        # the bundled interpreter and never touches the bundle. Refusing it here
-        # would block exactly the app classes the runtime serves, so it passes
-        # the gate and NOTHING is pip-installed at install time — the runtime owns
-        # it. This is a capability check that matches what the runtime can do,
-        # not a widening of any boundary: the same file, on the same
-        # interpreter, is already provisioned by the runtime.
-        #
-        # The waiver is the runtime's own condition, mirrored in
-        # `_requirements_owned_by_the_runtime`: the shared provisioning predicate
-        # says an out-of-process consumer is declared in a shape the provisioners
-        # actually serve (a FILE-style entry point, or a stdio server — one
-        # without `url`; a module-style, dotted entry point is never provisioned
-        # and keeps the refusal) AND no `backend.hooks` field is, because a hook
-        # is imported INTO this process, which the app deps tree deliberately
-        # never reaches — AND the registry entry is gateway-managed, because the
-        # provisioners run only for apps the gateway installs and spawns itself;
-        # a self-managed entry (`resources: "app"`) is registered from its
-        # manifest alone, so nothing would ever install its file — AND the file
-        # is one the provisioner will read: a regular file, or a link that
-        # strictly resolves inside the app root (`requirements_in_tree`, the
-        # provisioner's own fast-refusal rule, shared); a link escaping the root
-        # is refused at spawn, so it is refused here.
-        #
-        # requirements.txt BESIDE pyproject.toml/setup.py keeps the refusal (the
-        # non-bundled branch below runs `pip install .` for that layout, so the
-        # gateway-import dependency is the one that decides), and a
-        # requirements.txt with NO out-of-process consumer keeps it too — nothing
-        # would provision it, so a pass would be the silent-broken install.
-        #
-        # All of that is decided by the bundled-interpreter branch ABOVE this one,
-        # so this branch is the non-bundled build only, and pip runs here.
-        #
-        # A missing `pip` module is a soft skip, exactly like a missing npm
-        # (see the docstring). `sys.executable` is the gateway interpreter, and a
-        # venv created with `--without-pip` — or any minimal runtime — has no `pip`
-        # module: running `-m pip` against it exits non-zero and would abort the
-        # whole registry install. Probe with `find_spec` on THIS interpreter (no
-        # subprocess: it is the interpreter that would run the build) and skip when
-        # pip is absent, so an app that needs no Python build still installs cleanly.
-        if importlib.util.find_spec("pip") is None:
-            log_lines.append(
-                "pip not available in the gateway interpreter — skipping Python build step"
-            )
-        else:
-            pip_cmd = platform_compat.isolated_python_argv("-m", "pip")
-            if await asyncio.to_thread((build_dir / "requirements.txt").is_file) and not (
-                await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
-                or await asyncio.to_thread((build_dir / "setup.py").is_file)
-            ):
-                build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
-            else:
-                build_cmds.append([*pip_cmd, "install", "."])
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
@@ -865,6 +795,7 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.install_desktop_gate import (  # noqa: F401
         _DESKTOP_BUILD_REFUSAL,
+        _SOURCE_BUILD_REFUSAL,
         Iterator,
         _absent,
         _desktop_build_refusal,
@@ -1017,6 +948,7 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.subprocess_env import (  # noqa: F401
         _DETECT_PROBE_ENV_KEYS,
+        _GATEWAY_ENV_PIP_ENV,
         _GIT_CLONE_LOCALE,
         _GIT_CREDENTIAL_ENV_KEYS,
         _GIT_NETWORK_ENV_KEYS,

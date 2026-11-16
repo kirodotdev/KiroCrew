@@ -6831,8 +6831,8 @@
         "update_failed_generic": "«{{app}}» n'a pas pu être mise à jour, et la confiance n'a pas été enregistrée.",
         "failed_generic_next_ask": "Choisis « Faire confiance et réessayer ». Si cela échoue encore, choisis « Demander à l'agent » pour savoir pourquoi.",
         "failed_generic_next_offline": "{{productName}} n'est pas connecté pour le moment, donc « Faire confiance et réessayer » reste désactivé jusqu'au rétablissement de la connexion.",
-        "failed_desktop_unsupported": "«{{app}}» ne peut pas être installée dans la version de bureau de {{productName}}, et rien n'a été modifié.",
-        "failed_desktop_unsupported_help": "Elle a besoin de paquets Python que la version de bureau ne peut pas ajouter ; demande à l’auteur de l’app de les livrer avec l’app, ou ouvre {{productName}} dans un navigateur web plutôt que dans la version de bureau."
+        "failed_desktop_unsupported": "«{{app}}» ne peut pas être installée dans {{productName}}, et rien n'a été modifié.",
+        "failed_desktop_unsupported_help": "Elle a besoin de paquets Python que {{productName}} n’installe pas pour les apps ; demande à l’auteur de l’app de les livrer avec l’app."
       },
       "registryTier": {
         "curated": "Vérifié par l'équipe",
@@ -12474,8 +12474,8 @@
       "failed_to_load_app": "Échec du chargement de l’application",
       "unavailable_notice": "Cette app n'a pas pu se charger au démarrage de la passerelle, sa page est donc indisponible. Raison : {{reason}}",
       "failed_to_uninstall": "Échec de la désinstallation",
-      "install_desktop_unsupported": "Cette app ne peut pas être installée dans la version de bureau de {{productName}}.",
-      "update_desktop_unsupported": "Cette app ne peut pas être mise à jour dans la version de bureau de {{productName}}.",
+      "install_desktop_unsupported": "Cette app ne peut pas être installée dans {{productName}}.",
+      "update_desktop_unsupported": "Cette app ne peut pas être mise à jour dans {{productName}}.",
       "install_desktop_unsupported_help": "{{help}} Une fois que l’auteur aura livré les paquets, ferme cet avis pour réinstaller.",
       "update_desktop_unsupported_help": "{{help}} Une fois que l’auteur aura livré les paquets, ferme cet avis pour mettre à jour à nouveau.",
       "install_log": "Journal d’installation",

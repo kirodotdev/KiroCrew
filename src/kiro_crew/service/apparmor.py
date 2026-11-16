@@ -469,8 +469,11 @@ def verify_enforcement(
             # Isolated mode: this python runs as root under `sudo
             # kirocrew service install`. -I keeps the caller's working
             # directory off sys.path and ignores the user site and every
-            # PYTHON* variable, so a planted ctypes.py, .pth line,
-            # sitecustomize or PYTHONPATH entry cannot run before the payload.
+            # PYTHON* variable, so a planted ctypes.py, user-site .pth or
+            # PYTHONPATH entry cannot run before the payload. -I does not
+            # skip `site`: a .pth or sitecustomize in this interpreter's own
+            # site-packages still runs (only -S stops that); python3 comes
+            # from a trusted system directory, whose site-packages root owns.
             "-I",
             "-c",
             _VERIFY_SNIPPET,

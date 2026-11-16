@@ -1450,8 +1450,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # JSON-Schema ``pattern`` validation for MCP app→gateway tool-call args
         # (validate_mcp_tool_arguments). The spawn's command surface is FULLY
         # fixed and NOT agent-selectable: binary is our own ``sys.executable``,
-        # argv is the constant ``-I -c <_PATTERN_CHILD_SRC>`` (``-I`` = isolated
-        # mode: no env, no user site, no PYTHON* vars), cwd is inherited (never
+        # argv is the constant ``-I -S -c <_PATTERN_CHILD_SRC>`` (``-I`` = isolated
+        # mode: no env, no user site, no PYTHON* vars; ``-S`` = no ``site``, so no
+        # .pth or sitecustomize), cwd is inherited (never
         # set from input). The only agent/server-influenced values — the regex
         # ``pattern`` (from the server's declared inputSchema) and the ``value``
         # (from the app) — are passed as a JSON **stdin** body, never as argv,

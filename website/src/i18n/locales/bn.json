@@ -6655,8 +6655,8 @@
         "update_failed_generic": "“{{app}}” আপডেট করা যায়নি, এবং বিশ্বাস সংরক্ষিত হয়নি।",
         "failed_generic_next_ask": "“বিশ্বাস করো এবং আবার চেষ্টা করো” বেছে নাও। আবার ব্যর্থ হলে, কারণ জানতে এজেন্টকে জিজ্ঞাসা করো।",
         "failed_generic_next_offline": "{{productName}} এখন সংযুক্ত নেই, তাই আবার সংযুক্ত না হওয়া পর্যন্ত “বিশ্বাস করো এবং আবার চেষ্টা করো” বন্ধ থাকবে।",
-        "failed_desktop_unsupported": "“{{app}}” {{productName}}-এর ডেস্কটপ সংস্করণে ইনস্টল করা যাবে না, এবং কিছুই বদলায়নি।",
-        "failed_desktop_unsupported_help": "এর জন্য এমন Python প্যাকেজ দরকার যা ডেস্কটপ বিল্ড যোগ করতে পারে না; অ্যাপের লেখককে বলো সেগুলো অ্যাপের সাথে দিতে, অথবা ডেস্কটপ সংস্করণের বদলে ওয়েব ব্রাউজারে {{productName}} খোলো।"
+        "failed_desktop_unsupported": "“{{app}}” {{productName}}-এ ইনস্টল করা যাবে না, এবং কিছুই বদলায়নি।",
+        "failed_desktop_unsupported_help": "এর জন্য এমন Python প্যাকেজ দরকার যা {{productName}} অ্যাপের জন্য ইনস্টল করে না; অ্যাপের লেখককে বলো সেগুলো অ্যাপের সাথে দিতে।"
       },
       "registryTier": {
         "curated": "টিম পর্যালোচিত",
@@ -12203,8 +12203,8 @@
       "failed_to_load_app": "অ্যাপ লোড করা যায়নি",
       "unavailable_notice": "গেটওয়ে চালু হওয়ার সময় এই অ্যাপটি লোড করা যায়নি, তাই এর পেজ উপলব্ধ নয়। কারণ: {{reason}}",
       "failed_to_uninstall": "আনইনস্টল করা যায়নি",
-      "install_desktop_unsupported": "এই অ্যাপ {{productName}}-এর ডেস্কটপ সংস্করণে ইনস্টল করা যাবে না।",
-      "update_desktop_unsupported": "এই অ্যাপ {{productName}}-এর ডেস্কটপ সংস্করণে আপডেট করা যাবে না।",
+      "install_desktop_unsupported": "এই অ্যাপ {{productName}}-এ ইনস্টল করা যাবে না।",
+      "update_desktop_unsupported": "এই অ্যাপ {{productName}}-এ আপডেট করা যাবে না।",
       "install_desktop_unsupported_help": "{{help}} লেখক প্যাকেজগুলি যুক্ত করলে, আবার ইনস্টল করতে এই বিজ্ঞপ্তিটি সরিয়ে দিন।",
       "update_desktop_unsupported_help": "{{help}} লেখক প্যাকেজগুলি যুক্ত করলে, আবার আপডেট করতে এই বিজ্ঞপ্তিটি সরিয়ে দিন।",
       "install_log": "ইনস্টল লগ",

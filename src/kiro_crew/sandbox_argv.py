@@ -86,6 +86,9 @@ from kiro_crew.sandbox_tiers import (
     _relocated_crew_targets,
     _relocated_policy_cache_dirs,
     _resolved_install_root_targets,
+    _resolved_interpreter_env_holes,
+    _resolved_interpreter_env_targets,
+    _resolved_interpreter_link_paths,
     _resolved_kiro_agents_targets,
     _sandbox_policy,
     configured_readonly_layer,
@@ -474,7 +477,15 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         )
     )
     kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
-    install_root_targets = tuple(_resolved_install_root_targets())
+    # The interpreter environment rides the install seal, listed first so the package
+    # directory's own seal mounts on top of it. A gateway-initiated install that must
+    # write the environment leaves it out; the package directory stays sealed.
+    env_targets = () if request.gateway_env_writable else _resolved_interpreter_env_targets()
+    install_root_targets = tuple(dict.fromkeys((*env_targets, *_resolved_install_root_targets())))
+    env_holes = () if request.gateway_env_writable else tuple(_resolved_interpreter_env_holes())
+    # The paths the gateway reaches that interpreter through (its executable, the venv's
+    # ``home``): a link on them, retargeted, swaps the interpreter the next start runs.
+    env_links = () if request.gateway_env_writable else _resolved_interpreter_link_paths()
     # A renamed parent carries a seal away on both backends, so every entry resolving a
     # seal steps on is guarded, and so are the parents of its own spelling, which keep a
     # name below one not created yet guarded on Seatbelt (the namespace launcher skips an
@@ -488,6 +499,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *(os.path.join(home, rel) for rel in (*_CREW_READONLY_TARGETS, *app_readonly)),
             *relocated_crew_readonly,
             *install_root_targets,
+            *env_links,
         )
         for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
     )
@@ -680,6 +692,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         voice_runtime_ancestor_guards=voice_runtime_ancestor_guards,
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
+        install_root_holes=env_holes,
         readonly_ancestor_guards=readonly_ancestor_guards,
         caller_ancestor_guards=caller_ancestor_guards,
         mask_parent_pins=mask_parent_pins,
@@ -719,6 +732,7 @@ def _spawn_plan(
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     seal_hidden_dirs: bool = False,
+    gateway_env_writable: bool = False,
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
@@ -745,6 +759,7 @@ def _spawn_plan(
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         extra_hidden_dirs=tuple(extra_hidden_dirs),
         seal_hidden_dirs=bool(seal_hidden_dirs),
+        gateway_env_writable=bool(gateway_env_writable),
         extra_hidden_dir_ids=tuple(extra_hidden_dir_ids),
         extra_alias_credential_ids=tuple(extra_alias_credential_ids),
         extra_visible_dirs=tuple(extra_visible_dirs),
@@ -771,6 +786,7 @@ def _build_launcher_script(
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     seal_hidden_dirs: bool = False,
+    gateway_env_writable: bool = False,
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
@@ -800,6 +816,7 @@ def _build_launcher_script(
             forward_ssh_auth_sock=forward_ssh_auth_sock,
             extra_hidden_dirs=extra_hidden_dirs,
             seal_hidden_dirs=seal_hidden_dirs,
+            gateway_env_writable=gateway_env_writable,
             extra_hidden_dir_ids=extra_hidden_dir_ids,
             extra_alias_credential_ids=extra_alias_credential_ids,
             extra_visible_dirs=extra_visible_dirs,
@@ -821,6 +838,7 @@ def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
     forward_ssh_auth_sock: bool = False,
+    gateway_env_writable: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -837,6 +855,7 @@ def _build_seatbelt_profile(
             sandbox_plan.BACKEND_SEATBELT,
             sandbox_level,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
+            gateway_env_writable=gateway_env_writable,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
@@ -854,6 +873,7 @@ def namespace_argv(
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     seal_hidden_dirs: bool = False,
+    gateway_env_writable: bool = False,
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
@@ -1013,6 +1033,7 @@ def namespace_argv(
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         extra_hidden_dirs=extra_hidden_dirs + tuple(m.path for m in alias_masks),
         seal_hidden_dirs=seal_hidden_dirs,
+        gateway_env_writable=gateway_env_writable,
         extra_hidden_dir_ids=extra_hidden_dir_ids,
         extra_alias_credential_ids=extra_alias_credential_ids,
         # The same paths again WITH the inode each one was at discovery, as the set whose
@@ -1089,6 +1110,7 @@ def sandbox_exec_argv(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gateway_env_writable: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
@@ -1219,6 +1241,7 @@ def sandbox_exec_argv(
         sandbox_level,
         # The ssh agent's socket stays reachable exactly when its env var is forwarded.
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        gateway_env_writable=gateway_env_writable,
         # These entries become path RULES, not binds over an inode. That is weaker than it
         # first appears: the rule keeps naming a path, and nothing here denies a write to the
         # alias's parent or its ancestors while the data home root stays writable in-sandbox,

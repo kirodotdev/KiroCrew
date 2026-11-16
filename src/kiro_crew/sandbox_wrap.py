@@ -525,6 +525,7 @@ def wrap_argv(
     forward_ssh_auth_sock_out: list[bool] | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     seal_hidden_dirs: bool = False,
+    gateway_env_writable: bool = False,
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
@@ -548,6 +549,10 @@ def wrap_argv(
             re-judged on the tier after the governance floor clamp, so it can
             only turn True into False.
         extra_hidden_dirs: Additional absolute directory trees to deny.
+        gateway_env_writable: Leave the gateway's interpreter environment writable
+            for this spawn (the ``kiro_crew`` package directory stays sealed). Only a
+            gateway-initiated install with a fixed argv passes it (memory embeddings
+            setup); never derive it from config, a tool argument or agent input.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them (the whole parent's mask is lifted).
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
@@ -916,6 +921,7 @@ def wrap_argv(
                     extra_private_dir_ids=extra_private_dir_ids,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
+                    gateway_env_writable=gateway_env_writable,
                 )
         else:
             delegated = _delegate_to_kiro_internal_sandbox(
@@ -967,6 +973,7 @@ def wrap_argv(
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 extra_hidden_dirs=extra_hidden_dirs,
                 seal_hidden_dirs=seal_hidden_dirs,
+                gateway_env_writable=gateway_env_writable,
                 extra_hidden_dir_ids=extra_hidden_dir_ids,
                 extra_alias_credential_ids=extra_alias_credential_ids,
                 extra_visible_dirs=extra_visible_dirs,
@@ -982,6 +989,7 @@ def wrap_argv(
                 sandbox_level,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                gateway_env_writable=gateway_env_writable,
             )
         # Caller deletes the generated launcher script. Its position is
         # ``1 + len(flags)``, NOT a hardcoded 1: the interpreter flags sit between
@@ -1002,6 +1010,7 @@ def wrap_argv(
                 sandbox_level,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                gateway_env_writable=gateway_env_writable,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_hidden_dir_ids=extra_hidden_dir_ids,
                 extra_visible_dirs=extra_visible_dirs,
@@ -1015,6 +1024,7 @@ def wrap_argv(
             sandbox_level,
             strip_python_env=strip_python_env,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
+            gateway_env_writable=gateway_env_writable,
         )
 
     if backend == "none":

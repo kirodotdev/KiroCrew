@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import stat
+import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -76,13 +78,9 @@ def install_root_targets_for(package_dir: str) -> list[str]:
     ``site-packages`` (or ``dist-packages``) directory: an installer copied it there (a wheel, the desktop
     bundle's embedded interpreter). The seal is the package directory itself, which
     holds the gateway's own sources and its served static assets (``static/dist`` with
-    the precompressed ``.br``/``.gz`` siblings). The surrounding ``site-packages`` and
-    the rest of the environment (its ``bin`` scripts, ``pyvenv.cfg``, other
-    distributions, ``.pth`` files) stay writable to the child: sandboxed provisioning
-    steps (an optional extra, an app's Python build) install into that same
-    ``site-packages``, so sealing it would break them. A child can therefore still
-    change what the interpreter loads at start-up through those paths; this seal covers
-    the package directory only.
+    the precompressed ``.br``/``.gz`` siblings). The surrounding environment is sealed
+    separately (:func:`_resolved_interpreter_env_targets`), so a gateway-initiated
+    install that must write ``site-packages`` can lift that seal and keep this one.
 
     An editable or from-source checkout (``pip install -e``, ``install.sh``, a Dev Fleet
     worktree) imports from a source tree, never directly from such a directory, and returns
@@ -197,9 +195,223 @@ def _resolved_install_root_targets() -> list[str]:
     return list(dict.fromkeys(targets))
 
 
+def _env_scan() -> ModuleType:
+    """:mod:`kiro_crew.sandbox_env_scan`, imported on first use (not at module load)."""
+    from kiro_crew import sandbox_env_scan
+
+    return sandbox_env_scan
+
+
 def _gateway_package_dir() -> str:
     """The directory the running gateway imports ``kiro_crew`` from."""
     return os.path.dirname(os.path.abspath(_kiro_crew_pkg.__file__ or ""))
+
+
+@functools.lru_cache(maxsize=1)
+def _interpreter_env_targets_cached(
+    package_dir: str,
+    prefixes: tuple[str, ...],
+    path_dirs: tuple[str, ...],
+    site_dirs: tuple[str, ...],
+    homes: tuple[str, ...],
+    executables: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Both spellings of every directory the gateway's interpreter imports from, to
+    seal for a packaged install, or empty.
+
+    That is a venv prefix whole (other prefixes as
+    :func:`~kiro_crew.sandbox_env_scan.prefix_seal_entries` says), each entry of the
+    gateway's ``sys.path`` at start (*path_dirs*), each ``site`` directory
+    (*site_dirs*), each directory a ``.pth`` file there adds (pipx's shared
+    ``site-packages``, for one) and the files of *executables* and ``libpython``:
+    ``site`` imports ``sitecustomize`` / ``usercustomize`` from any of those dirs, and
+    every later import searches them all. The gateway's own conda env is sealed whole
+    (:func:`_conda_seal_dirs`); a conda base it was built on, and other conda envs and
+    package caches, are treated like any other base prefix.
+
+    Empty for an editable or from-source checkout (:func:`install_root_targets_for`).
+    A search-path entry that does not exist yet is created and sealed
+    (:func:`_search_path_spellings`). Not sealed: a zip or egg file, a
+    directory this uid can neither write nor owns (a root-owned ``/usr``), and
+    one :func:`_never_sealed` keeps writable (a home or above, the cwd, a
+    sticky ``/tmp``).
+    """
+    if not install_root_targets_for(package_dir):
+        return ()
+    spellings: list[str] = []
+    own_env = prefixes[0] if prefixes else ""
+    for prefix in prefixes:
+        for spelling in _env_scan()._sealable_spellings(prefix, homes):
+            if _env_scan()._conda_root(spelling):
+                spellings.extend(_conda_seal_dirs(spelling, prefix == own_env))
+            else:
+                spellings.extend(_env_scan().prefix_seal_entries(spelling))
+    spellings.extend(_env_scan().interpreter_files(executables, prefixes))
+    # Excluded prefixes are dropped first, so they never stand in for a missing entry.
+    spellings = [s for s in spellings if not _env_scan()._never_sealed(s, homes)]
+    for entry in (*path_dirs, *site_dirs, *_env_scan()._pth_dirs(site_dirs)):
+        spellings.extend(_env_scan()._search_path_spellings(entry, homes, spellings))
+    # Prefix and conda candidates obey the same exclusions as search-path entries.
+    return tuple(s for s in dict.fromkeys(spellings) if not _env_scan()._never_sealed(s, homes))
+
+
+def _conda_seal_dirs(prefix: str, is_own_env: bool) -> list[str]:
+    """What to seal for a conda interpreter *prefix*: the gateway's own conda env
+    (*is_own_env*) whole, like a venv, so a sandboxed child cannot replace a module
+    it imports.
+
+    A conda base a venv or env was merely built on (*is_own_env* false) is not sealed
+    as a tree: its loaded stdlib, ``lib-dynload`` and ``site`` dirs are sealed through
+    the start-up search path and its interpreter and ``libpython`` through
+    :func:`~kiro_crew.sandbox_env_scan.interpreter_files`, so other conda envs
+    (``envs/*``) and the install's package caches (``pkgs``) stay writable. Those
+    caches hard-link into the env, so a sealed file there keeps a second writable
+    name; that residual is counted and logged at boot
+    (:func:`prime_interpreter_env_seal`), the same as a uv cache, not sealed.
+    """
+    return [prefix] if is_own_env else []
+
+
+def prime_interpreter_env_seal() -> None:
+    """Gateway boot hook: fix the interpreter seal from ``sys.path`` as it is at
+    start, and warn once when a sealed file has a hard link.
+
+    Blocking (a directory walk bounded by :data:`sandbox_env_scan._LINK_CHECK_FILE_CAP`); boot runs
+    it in a thread. One WARNING line, in the gateway log, when any sealed file
+    has another name. Never raises.
+    """
+    try:
+        started = time.monotonic()
+        targets = _resolved_interpreter_env_targets()
+        sealed_ms = (time.monotonic() - started) * 1000
+        if not targets:
+            return
+        count, example, truncated = _env_scan()._hard_linked_sealed_files(targets)
+        logger.info(
+            "sandbox: %d gateway Python dirs sealed read-only (%.0f ms, link check %.0f ms)",
+            len(targets),
+            sealed_ms,
+            (time.monotonic() - started) * 1000 - sealed_ms,
+        )
+        if count:
+            logger.warning(
+                "sandbox: %d%s file(s) in the sealed gateway Python environment have a "
+                "second name (hard link), e.g. %s; a name outside the sealed directories "
+                "stays writable to sandboxed commands",
+                count,
+                "+" if truncated else "",
+                example,
+            )
+    except Exception:
+        logger.debug("could not prime the interpreter seal", exc_info=True)
+
+
+@functools.lru_cache(maxsize=1)
+def _interpreter_link_paths_cached(
+    env_targets: tuple[str, ...], paths: tuple[str, ...], venv_cfg: str
+) -> tuple[str, ...]:
+    """The lexical paths the gateway reaches its interpreter through, or empty.
+
+    *paths* (``sys.executable``, ``sys._base_executable``, the console script) plus
+    the ``home`` line of the venv's *venv_cfg*. A link on one of them (a uv minor-version dir, Homebrew
+    ``opt/``, a mise version alias) picks the interpreter the next gateway start
+    runs, so the plan host guards every entry they resolve through. Empty when
+    *env_targets* is (nothing is sealed, nothing to keep in place).
+    """
+    if not env_targets:
+        return ()
+    found = [p for p in paths if p]
+    try:
+        with open(venv_cfg, encoding="utf-8") as handle:
+            for line in handle.read(1 << 16).splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key.strip() == "home" and value.strip():
+                    found.append(value.strip())
+    except (OSError, UnicodeDecodeError):
+        pass
+    return tuple(dict.fromkeys(os.path.abspath(p) for p in found))
+
+
+def _resolved_interpreter_link_paths() -> list[str]:
+    """:func:`_interpreter_link_paths_cached` for the running gateway. Never raises."""
+    try:
+        return list(
+            _interpreter_link_paths_cached(
+                tuple(_resolved_interpreter_env_targets()),
+                (
+                    sys.executable,
+                    getattr(sys, "_base_executable", ""),
+                    _env_scan().gateway_console_script(),
+                ),
+                os.path.join(sys.prefix, "pyvenv.cfg"),
+            )
+        )
+    except Exception:
+        return []
+
+
+@functools.lru_cache(maxsize=1)
+def _gateway_start_sys_path() -> tuple[str, ...]:
+    """``sys.path`` as it was the first time it was asked for, which a gateway does
+    at boot (:func:`prime_interpreter_env_seal`). The seal set follows what the
+    interpreter searches at start, not an entry code inserts later. Under
+    ``PYTHONSAFEPATH`` the interpreter never adds the console script's directory,
+    so it is here only when configured (``PYTHONPATH``, a ``.pth``), and then sealed."""
+    return tuple(sys.path)
+
+
+def _resolved_interpreter_env_targets() -> list[str]:
+    """:func:`_interpreter_env_targets_cached` for the running gateway: what it and
+    every Python child it spawns outside the sandbox load at start, so a child that
+    could write one would pick code the gateway runs as itself. Joined to
+    ``install_root_targets`` by the plan host; a spawn with ``gateway_env_writable``
+    leaves them out. Computed once per process. Never raises."""
+    try:
+        import site
+
+        prefixes = (sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix)
+        # The site dirs this interpreter actually uses: a venv without system
+        # site-packages does not read its base's .pth files.
+        site_dirs = list(site.getsitepackages())
+        if site.ENABLE_USER_SITE:
+            site_dirs.append(site.getusersitepackages())
+        home = os.path.normpath(os.path.abspath(str(Path.home())))
+        homes = tuple(dict.fromkeys((home, os.path.realpath(home))))
+        return list(
+            _interpreter_env_targets_cached(
+                _gateway_package_dir(),
+                prefixes,
+                _gateway_start_sys_path(),
+                tuple(dict.fromkeys(site_dirs)),
+                homes,
+                (
+                    sys.executable,
+                    getattr(sys, "_base_executable", ""),
+                    _env_scan().gateway_console_script(),
+                ),
+            )
+        )
+    except Exception:
+        logger.warning("sandbox: could not compute the gateway Python seal", exc_info=True)
+        return []
+
+
+def _resolved_interpreter_env_holes() -> list[str]:
+    """The unused ``site-packages`` dirs inside the interpreter seal, left writable
+    (:func:`~kiro_crew.sandbox_env_scan.unused_site_holes`); none when a prefix is a
+    conda install, whose files share inodes across envs and caches. Never raises."""
+    try:
+        import site
+
+        targets = tuple(_resolved_interpreter_env_targets())
+        prefixes = (sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix)
+        if not targets or any(_env_scan()._conda_root(p) for p in prefixes):
+            return []
+        in_use = (*site.getsitepackages(), site.getusersitepackages(), *_gateway_start_sys_path())
+        return _env_scan().unused_site_holes(prefixes, in_use, targets)
+    except Exception:
+        logger.warning("sandbox: could not compute the gateway Python seal holes", exc_info=True)
+        return []
 
 
 #: Hidden crew-home leaves one app's OWN backend must read and write.
@@ -1286,6 +1498,9 @@ _PYTHON_ENV_PREFIXES: list[str] = [
     "PYTHONHOME",
     "PYTHONPYCACHEPREFIX",
     "PYTHONDONTWRITEBYTECODE",
+    # The service runs the gateway with safe-path; an agent's own scripts must
+    # keep their folder on sys.path.
+    "PYTHONSAFEPATH",
 ]
 
 # Gateway-owned credentials must never reach agent-influenced subprocesses.
