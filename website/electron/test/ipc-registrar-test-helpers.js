@@ -50,6 +50,8 @@ const SHELL_HANDLES = [
   "image:copy-at",
   "local-gateway:get",
   "local-gateway:set",
+  "minimize-to-tray:get",
+  "minimize-to-tray:set",
   "pane:clear-http-cache",
   "relay-crew:close-all",
   "relay-crew:open",

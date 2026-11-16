@@ -210,6 +210,13 @@ def test_ties_are_ordered_by_id_and_flagged_ambiguous() -> None:
     assert d["ambiguous"] is True
 
 
+@pytest.mark.parametrize(("query", "lang"), [("minimize to tray", "en"), ("最小化到托盘", "zh-CN")])
+def test_a_settings_own_name_does_not_tie_with_another_rows_term(query: str, lang: str) -> None:
+    d = ui_index.find_ui(query, lang)
+    assert _top(d)["id"] == "setting:display.minimize-to-tray", d["results"]
+    assert d["ambiguous"] is False
+
+
 # ── newcomer wording: curated terms find it, one shared word does not ──
 
 
