@@ -6162,6 +6162,17 @@
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },
+    "sharedCrews": {
+      "empty": "Todavía no tienes Crews compartidas para abrir.",
+      "managed_by_admin": "Tu administrador gestiona las Crews compartidas en la AWS Management Console.",
+      "open_console": "Abrir la AWS Management Console",
+      "refusal_list_generic": "No se pudieron cargar tus Crews compartidas.",
+      "refusal_not_configured": "Las Crews compartidas a través del relé no están configuradas.",
+      "refusal_signed_out": "Inicia sesión en Kiro para ver tus Crews compartidas.",
+      "setup_desc": "Un administrador crea y gestiona las Crews compartidas en la AWS Management Console. Pide a tu administrador que configure una para tu equipo.",
+      "setup_title": "Configurar una nueva Crew compartida",
+      "title": "Crews compartidas"
+    },
     "warmBriefCard": {
       "asked": "Pediste",
       "checked": "Comprobado",

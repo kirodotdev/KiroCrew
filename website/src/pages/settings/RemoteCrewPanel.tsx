@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import DefaultDestinationCrewPicker from '../../components/DefaultDestinationCrewPicker'
+import SharedCrewsCards from '../../components/SharedCrewsCards'
 import {
   Server,
   Rocket,
@@ -1296,6 +1297,8 @@ export function RemoteCrewPanel() {
           </Card>
 
           <AddInstanceForm onAdded={reloadInstances} />
+
+          <SharedCrewsCards />
         </div>
       ) : (
         <div className="space-y-4">

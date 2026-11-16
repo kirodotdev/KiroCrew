@@ -6332,6 +6332,17 @@
     "agentLabel": {
       "builtin_conductor": "Дирижёр"
     },
+    "sharedCrews": {
+      "empty": "У тебя пока нет общих Crew, которые можно открыть.",
+      "managed_by_admin": "Общими Crew управляет твой администратор в AWS Management Console.",
+      "open_console": "Открыть AWS Management Console",
+      "refusal_list_generic": "Не удалось загрузить твои общие Crew.",
+      "refusal_not_configured": "Общие Crew через ретранслятор не настроены.",
+      "refusal_signed_out": "Войди в Kiro, чтобы увидеть свои общие Crew.",
+      "setup_desc": "Общие Crew создаёт и настраивает администратор в AWS Management Console. Попроси своего администратора настроить такой Crew для твоей команды.",
+      "setup_title": "Настроить новый общий Crew",
+      "title": "Общие Crew"
+    },
     "warmBriefCard": {
       "asked": "Твой запрос",
       "checked": "Проверено",

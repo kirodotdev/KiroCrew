@@ -5992,6 +5992,17 @@
     "agentLabel": {
       "builtin_conductor": "কন্ডাক্টর"
     },
+    "sharedCrews": {
+      "empty": "এখনও খোলার মতো কোনো শেয়ার্ড Crew তোমার নেই।",
+      "managed_by_admin": "শেয়ার্ড Crew তোমার অ্যাডমিন AWS Management Console-এ পরিচালনা করেন।",
+      "open_console": "AWS Management Console খোলো",
+      "refusal_list_generic": "তোমার শেয়ার্ড Crew লোড করা যায়নি।",
+      "refusal_not_configured": "রিলের মাধ্যমে শেয়ার্ড Crew সেট আপ করা নেই।",
+      "refusal_signed_out": "তোমার শেয়ার্ড Crew দেখতে Kiro-তে সাইন ইন করো।",
+      "setup_desc": "শেয়ার্ড Crew একজন অ্যাডমিন AWS Management Console-এ তৈরি ও পরিচালনা করেন। তোমার টিমের জন্য একটি সেট আপ করতে তোমার অ্যাডমিনকে বলো।",
+      "setup_title": "নতুন শেয়ার্ড Crew সেট আপ করো",
+      "title": "শেয়ার্ড Crew"
+    },
     "warmBriefCard": {
       "asked": "তুমি বলেছিলে",
       "checked": "যাচাই করা হয়েছে",

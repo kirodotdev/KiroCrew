@@ -5822,6 +5822,17 @@
     "agentLabel": {
       "builtin_conductor": "コンダクター"
     },
+    "sharedCrews": {
+      "empty": "開ける共有 Crew はまだありません。",
+      "managed_by_admin": "共有 Crew は管理者が AWS Management Console で管理します。",
+      "open_console": "AWS Management Console を開く",
+      "refusal_list_generic": "共有 Crew を読み込めませんでした。",
+      "refusal_not_configured": "リレー経由の共有 Crew は設定されていません。",
+      "refusal_signed_out": "共有 Crew を表示するには Kiro にサインインしてください。",
+      "setup_desc": "共有 Crew は管理者が AWS Management Console で作成・管理します。チーム用に設定するよう管理者に依頼してください。",
+      "setup_title": "新しい共有 Crew を設定",
+      "title": "共有 Crew"
+    },
     "warmBriefCard": {
       "asked": "ご依頼",
       "checked": "確認済み",

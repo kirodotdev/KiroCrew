@@ -5822,6 +5822,17 @@
     "agentLabel": {
       "builtin_conductor": "调度者"
     },
+    "sharedCrews": {
+      "empty": "你还没有可以打开的共享 Crew。",
+      "managed_by_admin": "共享 Crew 由你的管理员在 AWS Management Console 中管理。",
+      "open_console": "打开 AWS Management Console",
+      "refusal_list_generic": "无法加载你的共享 Crew。",
+      "refusal_not_configured": "尚未设置通过中继访问的共享 Crew。",
+      "refusal_signed_out": "登录 Kiro 以查看你的共享 Crew。",
+      "setup_desc": "共享 Crew 由管理员在 AWS Management Console 中创建和管理。请让你的管理员为你的团队设置一个。",
+      "setup_title": "设置新的共享 Crew",
+      "title": "共享 Crew"
+    },
     "warmBriefCard": {
       "asked": "你让我做的",
       "checked": "已核实",

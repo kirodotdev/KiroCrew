@@ -5807,6 +5807,17 @@
       "decrease": "Decrease",
       "increase": "Increase"
     },
+    "sharedCrews": {
+      "empty": "You don't have any Shared Crews to open yet.",
+      "managed_by_admin": "Shared Crews are managed by your admin in the AWS Management Console.",
+      "open_console": "Open the AWS Management Console",
+      "refusal_list_generic": "Couldn't load your Shared Crews.",
+      "refusal_not_configured": "Shared Crews over the relay aren't set up.",
+      "refusal_signed_out": "Sign in to Kiro to see your Shared Crews.",
+      "setup_desc": "Shared Crews are created and managed by an admin in the AWS Management Console. Ask your admin to set one up for your team.",
+      "setup_title": "Set up a new Shared Crew",
+      "title": "Shared Crews"
+    },
     "shortcutsModal": {
       "always_works": "always works",
       "close": "Close",
