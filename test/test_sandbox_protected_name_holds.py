@@ -497,6 +497,21 @@ class TestLeafOnlyPopulationIsRecorded:
     #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
     #: the data-home root, so leaf-only is the only hold, as for
     #: ``ssh_auth_sock_consent.json``.
+    #: One more root-level file, three entries per tier:
+    #: ``memory_provider_consent.json`` -- the owner's consent to send memory to a
+    #: provider app that keeps it off this machine, sealed read-only so an agent
+    #: cannot consent to its own egress; a file at the data-home root, so leaf-only
+    #: is the only hold, as for ``decisions_consent.json``.
+    #: One more root-level directory, three entries per tier:
+    #: ``memory_provider_migrations`` -- memory move jobs and their id ledgers,
+    #: sealed read-only so an agent cannot choose what a rollback deletes; a
+    #: directory at the data-home root beside writable siblings, so leaf-only is the
+    #: only hold, as for ``memory_stores``.
+    #: One more root-level directory, three entries per tier:
+    #: ``memory_provider_bench`` -- provider benchmark runs, their scratch-store
+    #: ledgers and own-memory eval sets, sealed read-only so an agent cannot choose
+    #: which store a cleanup resets; a directory at the data-home root, so leaf-only
+    #: is the only hold, as for ``memory_provider_migrations``.
     #:
     #: Four app-declared directories, a dozen entries per tier (the data and the
     #: lifecycle's move-aside spelling, at each data-home spelling):
@@ -612,6 +627,9 @@ class TestLeafOnlyPopulationIsRecorded:
         "<crew>/md-notebook-staging": (3, "standard cc strict"),
         "<crew>/member-memory-bindings": (3, "standard cc strict"),
         "<crew>/member-records": (3, "standard cc strict"),
+        "<crew>/memory_provider_bench": (3, "standard cc strict"),
+        "<crew>/memory_provider_consent.json": (3, "standard cc strict"),
+        "<crew>/memory_provider_migrations": (3, "standard cc strict"),
         "<crew>/memory_stores": (3, "standard cc strict"),
         "<crew>/microvm_crews.json": (3, "standard cc strict"),
         "<crew>/models": (3, "standard cc strict"),

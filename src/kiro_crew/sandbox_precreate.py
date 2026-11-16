@@ -47,6 +47,12 @@ from kiro_crew.sandbox_leaves import (
 #:      for both, so nothing is opted out (criterion 2 is argued at its entry);
 #:    * ``decisions_consent.json`` — ``decisions.consent.load_state`` reads ``{}``
 #:      as NOT CONSENTED, which is what an absent keystone means;
+#:    * ``memory_provider_consent.json`` — ``memory_provider.consent.read_grants``
+#:      reads ``{}`` as no grant, so every remote provider still asks for consent;
+#:    * ``memory_provider_migrations`` — an empty directory holds no move job, so
+#:      there is nothing to resume or roll back;
+#:    * ``memory_provider_bench`` — an empty directory holds no run or eval set, so
+#:      there is nothing to resume or clean up;
 #:    * ``shared_crew_preview.json`` — ``shared_crew.preview.read_stored`` reads
 #:      ``{}`` as OFF, which is what an absent keystone means;
 #:    * ``settings_seeds.json`` — ``acp.seed_provenance._load`` finds no ``seeds``
@@ -97,6 +103,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "subagents",
     "member-memory-bindings",
     "memory_stores",
+    # Memory move jobs and ledgers: absent, a sandbox could create the directory and
+    # seed a ledger that a rollback would then delete from.
+    "memory_provider_migrations",
+    # Benchmark runs and ledgers: absent, a sandbox could create the directory and seed
+    # a ledger whose stores a cleanup would then reset.
+    "memory_provider_bench",
     "profiles",
     # The crew webview template directory. A fence only fences an EXISTING path:
     # the Linux launcher skips the read-only mount for an absent target, so on a
@@ -376,6 +388,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
     "denied_commands.json",
     "decisions_consent.json",
+    # The owner's memory egress consent: absent until the first remote provider is
+    # chosen, and while absent a sandbox could create it holding a grant. Its writer
+    # rewrites in place, so a sandboxed reader sees the owner's record under the seal.
+    "memory_provider_consent.json",
     # The update armed for the next start: ``update_next_start.read`` answers an
     # absent, empty and unreadable record alike as nothing armed, so a pre-created
     # ``{}`` means what an absent file means (criterion 1); the writer publishes

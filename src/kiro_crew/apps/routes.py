@@ -444,6 +444,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _forwarded_query,
         _get_app_secret,
         _is_event_stream,
+        _is_memory_provider_route,
         _proxy_principal,
         _resolve_app_backend_url,
         invalidate_app_secret_cache,

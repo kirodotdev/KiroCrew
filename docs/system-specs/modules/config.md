@@ -607,6 +607,27 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   `kiro_crew.folder_steering` — the one layer every backend passes through, so
   no provider can silently drop it. See [providers](providers.md).
 
+## Memory provider (`memory.provider`)
+
+`memory.provider` is `{"mode", "id", "timeout_secs", "switched_at",
+"stop_learning_ack"}` (`config/memory_sections.MemoryProviderConfig`, normalized by
+`from_raw`: an unreadable value is the built-in default). `mode` is `builtin`
+(default), `replace` or `augment`; `id` names `app:<app>/<provider>`; `timeout_secs`
+(0.5 to 10, default 3) bounds the first message's wait for the provider's context.
+`memory_stores.<name>.provider_mode` (`inherit` or `builtin`) keeps one store on Crew's
+own memory. The section is live (no restart), and a change applies to new chats only:
+each chat is frozen to the choice it started with, store pins included
+(`ProviderSnapshot.builtin_stores`; memory-skills-hooks.md, "Memory
+providers"). Its one writer is the owner's `PUT /api/memory/provider`, which writes
+`switched_at` and keeps `id` across a switch back to `builtin`. The generic settings
+editor shows `mode`, `id`, `switched_at` and `stop_learning_ack` read-only
+(`config_all_settings.READONLY_REASONS`), so no switch skips that route's checks.
+`config.json` is READONLY in the sandbox, so an agent cannot switch it.
+
+Provider benchmarks add no config key. Their reader and judge use the existing
+`background` role (`agent.role_models.background`, `"auto"` by default); a run may name
+another model only when some role already uses it.
+
 ## Named Memory Stores (`memory_stores.py`)
 
 The reserved `agents.default` assistant uses the existing Global Memory **V1**.

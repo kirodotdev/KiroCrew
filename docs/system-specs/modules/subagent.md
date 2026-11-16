@@ -130,6 +130,12 @@ companion runtime can host a fenced remote session for it. When the inherited
 choice cannot be read or written the run fails; it never falls back to the
 gateway machine. Contract detail: [providers](providers.md).
 
+A child also inherits the memory its parent's chat is frozen to
+(`memory_provider.resolver.inherit_snapshot`, run before its first context build): a
+switch after the parent started never sends the child's reads or writes to another
+provider. A child already frozen keeps its own choice. Detail:
+[memory-skills-hooks](memory-skills-hooks.md), "Memory providers".
+
 ## Composition
 
 `kiro_crew/subagent.py` is the facade and the one namespace of the subagent family:

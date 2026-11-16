@@ -524,6 +524,38 @@ class TestApply:
         assert second["imported"]["memories"] == 0
         assert second["already_imported"] >= 2
 
+    def test_memories_sent_to_a_provider_still_import_into_crew_later(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.memory_provider import resolver
+
+        api = _api()
+        home = tmp_path / "home"
+        _write_lineage_memory_db(home / ".predecessor" / "memory.db")
+        data_home = tmp_path / "destination"
+        vector_store = VectorMemoryStore(db_path=data_home / "memory.db")
+        vector_store.init()
+        plan = _select(api.preview_import(home=home, env={}), ("predecessor", "memories"))
+        sent: list[str] = []
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(resolver, "route_for", lambda *_a, **_k: SimpleNamespace(replaces=True))
+                mp.setattr(
+                    api,
+                    "_write_to_provider",
+                    lambda item, *_a: sent.append(item.fingerprint)
+                    or api._WriteOutcome("imported"),
+                )
+                to_provider = api.apply_import(plan, data_home=data_home, vector_store=vector_store)
+            back_home = api.apply_import(plan, data_home=data_home, vector_store=vector_store)
+        finally:
+            vector_store.close()
+        assert to_provider["imported"]["memories"] == 2 and len(sent) == 2
+        # Crew's own store never got them, so the import into it writes them now.
+        assert back_home["imported"]["memories"] == 2
+
     def test_fallback_vector_store_uses_native_embedding_callable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

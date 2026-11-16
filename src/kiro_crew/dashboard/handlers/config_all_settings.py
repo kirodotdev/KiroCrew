@@ -45,6 +45,13 @@ WHY_COMPOUND = "compound"  # several values that must change together
 #: with a control of its own elsewhere in Settings is a link row instead
 #: (:data:`_OWNING_PAGES`), so it needs no entry here.
 READONLY_REASONS: dict[str, str] = {
+    # Which memory answers: only ``PUT /api/memory/provider`` switches, so its checks
+    # (mode gaps, consent, the Bot-store pin), the ``switched_at`` stamp that keeps
+    # open chats on their memory, and the audit record always apply.
+    "memory.provider.mode": WHY_OWNED,
+    "memory.provider.id": WHY_OWNED,
+    "memory.provider.switched_at": WHY_OWNED,
+    "memory.provider.stop_learning_ack": WHY_OWNED,
     # What the agent may run.
     "agent.conductor_own_child_verbs": WHY_SAFETY,
     "agent.sandbox_allow_no_isolation": WHY_SAFETY,

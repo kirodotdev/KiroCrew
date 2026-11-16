@@ -413,6 +413,48 @@ def decisions_consent_path() -> Path:
     return config_dir() / "decisions_consent.json"
 
 
+def memory_provider_consent_path() -> Path:
+    """Return path to memory_provider_consent.json — consent to send memory off this machine.
+
+    Same KEYSTONE class as :func:`decisions_consent_path`: a memory provider whose app
+    states ``egress: "remote"`` sends preferences, lessons and transcripts to a
+    service elsewhere, which is an egress authorization, not a preference. Each grant
+    is bound to one provider id and the app version the owner agreed to, so a new
+    version asks again. READONLY in the sandbox so an agent cannot grant itself the
+    egress; the only writer is the owner's ``PUT /api/memory/provider``. Every read
+    fails soft to NOT CONSENTED. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_consent.json"
+
+
+def memory_provider_migrations_dir() -> Path:
+    """Return the directory holding memory move jobs and their id ledgers.
+
+    Each job is ``<id>.json`` (state, options, checkpoint, counts) and
+    ``<id>.ledger.jsonl`` (one line per item moved: origin id, target id, outcome and
+    a text hash; never memory text). The ledger is the list a rollback deletes from
+    the target, so a writable copy would let an agent have Crew delete provider items
+    of its choosing: READONLY in the sandbox, written only by the gateway's
+    ``/api/memory/provider/migrations`` routes. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_migrations"
+
+
+def memory_provider_bench_dir() -> Path:
+    """Return the directory holding provider benchmark runs and own-memory eval sets.
+
+    A run is ``<id>.json`` (options, state, checkpoint), ``<id>.ledger.jsonl`` (one line
+    per scratch store a run created and whether its reset read back empty),
+    ``<id>.results.jsonl`` (ids and scores per query, never memory text) and
+    ``<id>.report.json``. ``evalsets/<id>/`` holds an own-memory snapshot copy and its
+    probes. The ledger names the stores a cleanup resets, so a writable copy would let
+    an agent point a reset at a store of its choosing: READONLY in the sandbox, written
+    only by the gateway's ``/api/memory/provider/bench`` routes. Respects
+    ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_bench"
+
+
 def credential_redaction_path() -> Path:
     """Return path to credential_redaction.json -- the credential-redaction switch.
 

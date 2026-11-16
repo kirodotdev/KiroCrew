@@ -99,7 +99,7 @@ def manifest_path() -> Path:
 
 def _jsonl_gz(path: Path, what: str) -> list[dict]:
     text = gzip.decompress(read_bytes_nofollow(path, what=what)).decode("utf-8")
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+    return [json.loads(line) for line in text.split("\n") if line.strip()]
 
 
 def read_beir(

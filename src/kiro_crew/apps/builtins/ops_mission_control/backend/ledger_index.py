@@ -148,6 +148,13 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
     cycle that asked for it.
     """
     result = {"scanned": 0, "written": 0, "skipped": 0}
+    from kiro_crew.memory_provider.resolver import builtin_writes_allowed, note_skip
+
+    # A provider that replaces Crew's memory takes no ledger episodes; Crew's own
+    # memory is left exactly as it is until it is switched back.
+    if not builtin_writes_allowed(""):
+        note_skip("ops ledger episode import", "")
+        return result
     try:
         entries = ledger.read_entries()
     except Exception:  # noqa: BLE001 — a ledger fault is reported, never fatal here

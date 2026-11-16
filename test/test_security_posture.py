@@ -1222,6 +1222,9 @@ class TestRedactionSinkRegistry:
             # _redact_meta (dashboard/handlers/steering.py) is `redact()`, both
             # scanners, over a steering listing's description or display path.
             "_redact_meta(",
+            # redact_model_written (memory_provider/migration.py) runs
+            # _redact_memory_field, both scanners, over an item's text and negative.
+            "redact_model_written(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

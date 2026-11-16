@@ -368,6 +368,22 @@ scheduled jobs.
   store refuses the import: use the dashboard copy, which keeps provenance.
   Embeddings are built later by the gateway; `memory stats` shows the progress.
 
+## Comparing Memory Providers
+
+You can compare memory providers, Crew's own memory included, on public benchmarks or
+on questions drawn from your own memory, through the owner's
+`/api/memory/provider/bench` routes. A plan shows which providers run, whether each
+keeps data on this machine, how the test data is cleaned up, and how many model calls
+answering and grading may take. Nothing runs until you start the planned run.
+
+- A run writes only to throwaway test stores, never to the memory you use.
+- Benchmark data is downloaded when first needed, from a fixed upstream version.
+- "Your own memory" works on a read-only copy. Anything that looks like a secret is
+  dropped from the copy, not masked. A provider that keeps data elsewhere gets the copy
+  only after you tick the box for that run.
+- Results keep ids and scores, not your memory's text.
+- An agent cannot start a run: there is no tool or CLI command for it.
+
 ## Editing Memory
 
 - **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
