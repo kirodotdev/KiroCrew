@@ -169,7 +169,8 @@ transcript, tasks, notes, and diagrams) and both app-owned sidecar directories
 (`edits/<id>` and `notes/<id>`). It removes the sidecars first and `session.json`
 last, each through `remove_with_retry`, so a file another program holds open on
 Windows is waited out for about three seconds; a longer hold answers
-`500 meeting_delete_failed` with an error naming the file and leaves
+`500 meeting_delete_failed` with a fixed message (the OS error, which names the
+file, goes to the server log only) and leaves
 `session.json`, so deleting again after the program lets go finishes. The route
 refuses a meeting with a live
 in-process session with `409 meeting_active`; the dashboard keeps the row's delete
