@@ -36,13 +36,14 @@ const call = (fetchFn, extra = {}) => requestRelayCrewToken({
 test("posts the endpoint ID with X-Local-Secret to the loopback token route, no redirects", async () => {
   const f = fakeFetch(200, {
     accessToken: TOKEN, expiresAt: 1000, renewInSeconds: 240, serverDate: 700,
-    crewUrl: CREW_URL, name: "Team Crew",
+    crewUrl: CREW_URL, relayDomain: "relay.example.test", name: "Team Crew",
   });
   const r = await call(f.fetchFn);
   assert.deepEqual(r, {
     ok: true,
     grant: { accessToken: TOKEN, expiresAt: 1000, renewInSeconds: 240, serverDate: 700 },
     crewUrl: CREW_URL,
+    relayDomain: "relay.example.test",
     name: "Team Crew",
     signInMarker: null,
   });
@@ -126,6 +127,7 @@ test("carries retryAfter for THROTTLED only, and nulls unusable renewal fields",
   }).fetchFn);
   assert.deepEqual(r.grant, { accessToken: TOKEN, expiresAt: 5, renewInSeconds: null, serverDate: null });
   assert.equal(r.name, "");
+  assert.equal(r.relayDomain, "", "a missing relay domain is empty, which opens no Crew");
 });
 
 test("a network failure, timeout or refused redirect is UNAVAILABLE and carries no secret", async () => {

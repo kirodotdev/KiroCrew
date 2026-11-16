@@ -48,7 +48,7 @@ function setup({ answers, createRenewal = createRelayCrewRenewal, openWindow } =
   const requests = [];
   const markers = [];
   const logs = [];
-  const queue = [...(answers || [{ ok: true, grant: GRANT, crewUrl: CREW_URL, name: "Team Crew" }])];
+  const queue = [...(answers || [{ ok: true, grant: GRANT, crewUrl: CREW_URL, relayDomain: "relay.example.test", name: "Team Crew" }])];
   const win = fakeWindowModule();
   const opener = createRelayCrewOpener({
     requestToken: async (id, signInMarker) => {
@@ -82,6 +82,7 @@ test("mints before the window opens, titles it with the Crew's name, and answers
   const { opts } = s.win.opened[0];
   assert.equal(opts.endpointId, ID);
   assert.equal(opts.crewUrl, CREW_URL);
+  assert.equal(opts.relayDomain, "relay.example.test");
   assert.equal(opts.title, "Team Crew");
   assert.equal(opts.getToken(), TOKEN, "the window reads E's holder");
   assertNoSecrets([r, ...s.logs]);

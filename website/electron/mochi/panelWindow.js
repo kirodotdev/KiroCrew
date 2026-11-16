@@ -198,6 +198,17 @@ function isRendererGone(win) {
   }
 }
 
+// Compared as parsed origins: a string prefix lets `${baseUrl}@evil.example`
+// or another port through. An opaque ("null") origin matches nothing.
+function sameOrigin(url, baseUrl) {
+  try {
+    const origin = new URL(baseUrl).origin;
+    return origin !== "null" && new URL(url).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 function createPanelWindow(baseUrl, token = "") {
   const wa = screen.getPrimaryDisplay().workArea;
   const win = new BrowserWindow({
@@ -262,7 +273,7 @@ function createPanelWindow(baseUrl, token = "") {
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith(baseUrl)) {
+    if (!sameOrigin(url, baseUrl)) {
       event.preventDefault();
       if (/^https?:/.test(url)) shell.openExternal(url);
     }

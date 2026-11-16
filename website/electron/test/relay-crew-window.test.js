@@ -10,7 +10,8 @@ const {
 } = require("../relay-crew-window");
 
 const ENDPOINT = "abcdefghij0123456789";
-const CREW_URL = `https://${ENDPOINT}.relay.example.test`;
+const DOMAIN = "relay.example.test";
+const CREW_URL = `https://${ENDPOINT}.${DOMAIN}`;
 const ORIGIN = CREW_URL;
 const TOKEN = "tok-SECRET-0123456789abcdef";
 
@@ -187,7 +188,7 @@ test("header rule: refuses a non-https origin", () => {
 
 test("view: in-memory partition, hardened prefs, no preload, permissions denied", () => {
   const f = fakeDeps();
-  const { view, origin } = createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const { view, origin } = createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   assert.strictEqual(origin, ORIGIN);
   assert.strictEqual(relayPartitionName(ENDPOINT), `relay-crew-${ENDPOINT}`);
   assert.deepStrictEqual(f.ses.partitions, [`relay-crew-${ENDPOINT}`]);
@@ -223,16 +224,46 @@ test("view: refuses a bad endpoint ID or a Crew URL that isn't its bare origin",
     [ENDPOINT, "nope"],
   ]) {
     assert.throws(
-      () => createRelayCrewView({ endpointId, crewUrl, getToken: () => TOKEN }, f.deps),
+      () => createRelayCrewView({ endpointId, crewUrl, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps),
       /invalid endpoint or crew URL/,
       `${endpointId} ${crewUrl}`,
     );
   }
 });
 
+test("view: trusts only exactly https://<endpointId>.<relayDomain> on the default port", () => {
+  const f = fakeDeps();
+  for (const [crewUrl, relayDomain] of [
+    // The endpoint ID as a prefix of a host the relay does not own.
+    [`https://${ENDPOINT}.evil.example`, DOMAIN],
+    [`https://${ENDPOINT}.${DOMAIN}.evil.example`, DOMAIN],
+    [`https://${ENDPOINT}x.${DOMAIN}`, DOMAIN],
+    [`https://x.${ENDPOINT}.${DOMAIN}`, DOMAIN],
+    [`https://${ENDPOINT}.evil${DOMAIN}`, DOMAIN],
+    [`https://${ENDPOINT}.${DOMAIN}:8443`, DOMAIN],
+    [`wss://${ENDPOINT}.${DOMAIN}`, DOMAIN],
+    // No relay domain configured: nothing is trusted.
+    [CREW_URL, ""],
+    [CREW_URL, undefined],
+    [CREW_URL, null],
+  ]) {
+    assert.throws(
+      () => createRelayCrewView({ endpointId: ENDPOINT, crewUrl, relayDomain, getToken: () => TOKEN }, f.deps),
+      /invalid endpoint or crew URL/,
+      `${crewUrl} ${relayDomain}`,
+    );
+  }
+  // The explicit default port is the same origin.
+  const { origin } = createRelayCrewView(
+    { endpointId: ENDPOINT, crewUrl: `https://${ENDPOINT}.${DOMAIN}:443/`, relayDomain: DOMAIN, getToken: () => TOKEN },
+    f.deps,
+  );
+  assert.strictEqual(origin, ORIGIN);
+});
+
 test("view: off-origin navigation and redirects are denied, same origin allowed", () => {
   const f = fakeDeps();
-  const { view } = createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const { view } = createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   const nav = (url) => {
     let prevented = false;
     view.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, url);
@@ -250,7 +281,7 @@ test("view: off-origin navigation and redirects are denied, same origin allowed"
 
 test("view: window opens are denied and other web origins go to the system browser", () => {
   const f = fakeDeps();
-  const { view } = createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const { view } = createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   const open = view.webContents.openHandler;
   assert.deepStrictEqual(open({ url: "https://docs.example.test/a" }), { action: "deny" });
   assert.deepStrictEqual(open({ url: `${ORIGIN}/popup` }), { action: "deny" });
@@ -261,7 +292,7 @@ test("view: window opens are denied and other web origins go to the system brows
 
 test("window: one per Crew, loads the origin, reports main-frame status, cleans up on close", async () => {
   const f = fakeDeps();
-  const opts = { endpointId: ENDPOINT, crewUrl: CREW_URL, title: "Team Crew", getToken: () => TOKEN };
+  const opts = { endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, title: "Team Crew", getToken: () => TOKEN };
   const handle = openRelayCrewWindow(opts, f.deps);
   assert.strictEqual(openRelayCrewWindow(opts, f.deps), handle);
   assert.strictEqual(f.windows.length, 1);
@@ -295,7 +326,7 @@ test("window: one per Crew, loads the origin, reports main-frame status, cleans 
 
 test("window: visibility changes report hidden on minimize and hide, shown on restore and show", () => {
   const f = fakeDeps();
-  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   const seen = [];
   handle.onVisibilityChange((hidden) => seen.push(hidden));
   for (const event of ["minimize", "restore", "hide", "show"]) f.windows[0].emit(event);
@@ -307,7 +338,7 @@ test("window: visibility changes report hidden on minimize and hide, shown on re
 
 test("window: focus restores a minimized window, then shows and focuses it", () => {
   const f = fakeDeps();
-  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   const w = f.windows[0];
   const seen = [];
   handle.onVisibilityChange((hidden) => seen.push(hidden));
@@ -321,7 +352,7 @@ test("window: focus restores a minimized window, then shows and focuses it", () 
 
 test("window: focus shows a hidden, not minimized window without restoring it", () => {
   const f = fakeDeps();
-  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   const w = f.windows[0];
   w.emit("hide");
   handle.focus();
@@ -331,7 +362,7 @@ test("window: focus shows a hidden, not minimized window without restoring it", 
 
 test("logs: never carry the token", () => {
   const f = fakeDeps();
-  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   send(f.ses, `${ORIGIN}/`, {});
   f.ses.completedRule.listener({ resourceType: "mainFrame", statusCode: 401 });
   f.views[0].webContents.emit("will-navigate", { preventDefault() {} }, "https://evil.example.test/");
@@ -351,7 +382,7 @@ function openWithClock() {
   f.deps.now = () => t;
   const advance = (ms) => { t += ms; };
   const handle = openRelayCrewWindow(
-    { endpointId: ENDPOINT, crewUrl: CREW_URL, title: "Team Crew", getToken: () => TOKEN },
+    { endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, title: "Team Crew", getToken: () => TOKEN },
     f.deps,
   );
   const unreachable = [];
@@ -377,9 +408,9 @@ function outage(w, ms, { statusAnswer = 502 } = {}) {
 
 test("window: the Crew's own session carries a relay-window marker in its user agent", () => {
   const f = fakeDeps();
-  createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   assert.strictEqual(f.ses.userAgent, "Mozilla/5.0 Electron/44 kiroCrewRelayWindow");
-  createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN }, f.deps);
   assert.strictEqual(f.ses.userAgent, "Mozilla/5.0 Electron/44 kiroCrewRelayWindow", "added once");
 });
 

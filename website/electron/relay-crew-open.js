@@ -58,6 +58,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       const answer = await requestToken(endpointId, crew.signInMarker || null);
       if (answer && answer.ok) {
         crew.crewUrl = answer.crewUrl;
+        crew.relayDomain = answer.relayDomain;
         crew.name = answer.name;
         if (!crew.signInMarker && answer.signInMarker) crew.signInMarker = answer.signInMarker;
         return answer.grant;
@@ -124,7 +125,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
 
   async function openNew(endpointId) {
     const holder = createTokenHolder();
-    const crew = { crewUrl: "", name: "", signInMarker: null };
+    const crew = { crewUrl: "", relayDomain: "", name: "", signInMarker: null };
     const at = epoch;
     const { renewal, error } = await startRenewal(endpointId, holder, crew);
     if (!renewal) {
@@ -139,7 +140,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     }
     let win;
     try {
-      win = openWindow({ endpointId, crewUrl: crew.crewUrl, title: crew.name, getToken: holder.current });
+      win = openWindow({ endpointId, crewUrl: crew.crewUrl, relayDomain: crew.relayDomain, title: crew.name, getToken: holder.current });
       wire({ win, renewal });
       win.onClosed(() => { if (windows.get(endpointId)?.win === win) windows.delete(endpointId); });
       // Registered once per window, not in wire(): a restart re-wires the same window.

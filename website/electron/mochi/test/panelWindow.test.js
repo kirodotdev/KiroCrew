@@ -525,6 +525,21 @@ test("open-external accepts http(s) only", () => {
  * the display. Nothing errors in that state — the rail is simply not visible —
  * so the geometry is pinned here.
  */
+test("the panel stays on the gateway origin, compared as a parsed origin", () => {
+  const { mod, openedExternal } = loadModule();
+  const win = openVisible(mod);
+  const navigate = (url) => {
+    const e = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    win.webContents.emit("will-navigate", e, url);
+    return e.defaultPrevented;
+  };
+  assert.strictEqual(navigate(`${BASE}/app-windows/mochi/panel.html`), false);
+  for (const url of [`${BASE}@evil.example/`, `${BASE}0/`, `${BASE}.evil.example/`, "https://evil.example/"]) {
+    assert.strictEqual(navigate(url), true, url);
+  }
+  assert.ok(openedExternal.includes(`${BASE}@evil.example/`), "an off-origin http link opens in the browser");
+});
+
 test("panelLeftForWidth pulls a growing panel back inside the work area", () => {
   const { mod } = loadModule();
   const wa = { x: 0, y: 0, width: 1440, height: 900 };

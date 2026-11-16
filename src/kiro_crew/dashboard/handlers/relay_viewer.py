@@ -343,6 +343,12 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     ):
         return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
     cps_url, ref, crew_domain = settings
+    # The desktop app opens only https://<endpointId>.<relay domain>, so with no
+    # domain no token is minted: the answer says what is missing instead.
+    if not crew_domain:
+        return _refused(
+            cps.CpsRefused(cps.NOT_SET_UP, "tunnel.relay_viewer_relay_domain is not set")
+        )
 
     async def _list_then_mint(
         bearer: str, token_type: str, profile_arn: str
@@ -425,6 +431,9 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             "renewInSeconds": grant.renew_in_seconds,
             "serverDate": grant.server_date,
             "crewUrl": crew.crew_url,
+            # The desktop app sends the token only to exactly
+            # https://<endpointId>.<relayDomain>, so it opens no Crew while this is empty.
+            "relayDomain": crew_domain,
             "name": crew.name,
             "signInMarker": marker,
         }
