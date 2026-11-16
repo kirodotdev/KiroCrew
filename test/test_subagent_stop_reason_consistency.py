@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from subagent_stop_reason_helpers import (
-    _RUN_CEILING,
     _STALL_EVIDENCE,
+    _await_run,
     _complete,
     _done_event,
     _manager,
@@ -1233,7 +1233,7 @@ async def test_a_run_another_path_already_ended_counts_no_success():
         info = mgr.spawn("do work")
         assert info is not None
         holder["info"] = info
-        await asyncio.wait_for(mgr._tasks[info.id], _RUN_CEILING)
+        await _await_run(mgr, info)
         await _wait_settled(mgr, info)
 
     assert not info._ending_claimed
@@ -1713,7 +1713,7 @@ async def test_a_transient_run_completes_without_touching_disk(
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("do work", _memory_mode=mode)
         assert info is not None
-        await asyncio.wait_for(mgr._tasks[info.id], _RUN_CEILING)
+        await _await_run(mgr, info)
 
     assert info.outcome == "completed"
     assert not (tmp_path / "subagents" / info.id).exists()
