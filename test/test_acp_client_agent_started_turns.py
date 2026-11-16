@@ -509,6 +509,43 @@ async def test_the_reader_runs_after_a_cancelled_turn() -> None:
     assert turns == [client]
 
 
+async def _run_entry(client: AcpClient, entry: str) -> None:
+    if entry == "send_message":
+        await client.send_message("first", timeout=FALLBACK_TIMEOUT_SECS)
+        return
+    stream = getattr(client, entry)("first", timeout=FALLBACK_TIMEOUT_SECS)
+    async with contextlib.aclosing(stream):
+        async for _event in stream:
+            pass
+
+
+@pytest.mark.parametrize("failure", ["refused", "cancelled"])
+@pytest.mark.parametrize("entry", ["stream_events", "send_message_stream", "send_message"])
+@pytest.mark.asyncio
+async def test_a_prompt_that_never_went_out_leaves_the_reader_free_to_start(
+    entry: str, failure: str
+) -> None:
+    """A prompt entry that ends before its prompt is sent ends its turn too.
+
+    Otherwise ``_turn_done`` stays clear, the idle reader never starts, and the
+    reply the agent sends next (a background command finishing) waits in the pipe
+    for the next prompt, which shows it under that message.
+    """
+    turns: list[AcpClient] = []
+    client, reader, _sent = _steering_client(on_turn=turns.append)
+    raised: type[BaseException] = AcpError if failure == "refused" else asyncio.CancelledError
+    client._send_prompt = AsyncMock(side_effect=raised("not sent"))
+
+    with pytest.raises(raised):
+        await _run_entry(client, entry)
+
+    assert client._turn_done.is_set()
+    _feed(reader, _chunk("the background job finished"))
+    await _reader_exits(client)
+    assert turns == [client]
+    assert client._agent_turn_pending() is True
+
+
 @pytest.mark.parametrize("case", ["no_callback", "turn_in_flight", "dead"])
 @pytest.mark.asyncio
 async def test_no_idle_reader_when_nothing_could_take_the_turn(case: str) -> None:

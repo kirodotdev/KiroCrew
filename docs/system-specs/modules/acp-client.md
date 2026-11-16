@@ -3484,7 +3484,13 @@ stdout while no request waits. Design record:
   `_cancel_idle_reader` dropped it on a kill or reset. It reads with the
   cancel-grace check off, since `_cancelled` belongs to the turn that ended,
   and it stops once `_buffer` is full (its `maxlen`, 100), leaving the rest in
-  the pipe.
+  the pipe. A prompt entry (`send_message`, `send_message_stream`,
+  `stream_events`) clears `_turn_done` before it sends, and the turn's read
+  (`_prompt_loop`) sets it again, so an entry that ends before its prompt is sent
+  (a raise or a cancel in `ensure_ready` or `_send_prompt`) sets it itself and
+  offers the reader a restart (`_release_unsent_turn`). Otherwise the reader
+  stays off until the next prompt, and a reply the agent sends meanwhile shows
+  under that prompt.
 - **Only the latest snapshot is held.** A frame that only reports state waits
   for the next turn, so when the reader reads a frame that supersedes one it
   holds, it drops the held one; the newer frame keeps its arrival position and
