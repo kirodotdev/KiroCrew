@@ -67,6 +67,37 @@ def test_on_a_conductor_turn_carries_the_offer_and_the_card_line(monkeypatch, ag
     # The card line comes with plain start/skip choices in the owner's language,
     # so the owner can answer on a surface that draws no discussion card.
     assert "[OPTIONS:] line of two choices in the owner's language" in text
+    # The card's key line is a wire value the conductor dedupes on, via the item title.
+    assert "`key: <value>` line" in text
+    assert "never translated, matched only as a whole line, its value opaque" in text
+    assert "end its item title with `grill key:<value>`" in text
+    assert "ends in exactly" in text
+    assert "open or closed" in text and "with no key line" in text
+
+
+def test_the_example_minutes_stay_15() -> None:
+    # The conductor always fills `minutes` from the example, so the example is the
+    # real default; the trial showed 10 minutes was too tight.
+    ref = (SKILL_DIR / "references" / "worker-grill.md").read_text(encoding="utf-8")
+    guidance = re.search(r"\[GRILL: (\{.*\})\]", grill.GUIDANCE).group(1)
+    example = re.search(r"^\s*\[GRILL: (\{.*\})\]$", ref, re.MULTILINE).group(1)
+    assert json.loads(guidance)["minutes"] == 15
+    assert json.loads(example)["minutes"] == 15
+
+
+def test_the_protocol_keys_dedupe_and_reports_before_round_one() -> None:
+    ref = (SKILL_DIR / "references" / "worker-grill.md").read_text(encoding="utf-8")
+    start = ref.split("3. **Start.**", 1)[1].split("4. **Steer.**", 1)[0]
+    assert "`key: <value>`" in start and "never translated" in start
+    assert "`grill key:<value>`" in start and "ends in exactly" in start
+    assert "open or closed" in start
+    assert "same question already has an open grill item" in start
+    assert "last 32 closed items" in start and "two moderators" in start
+    thread = ref.split("1. **Thread.**", 1)[1].split("2. **Rounds.**", 1)[0]
+    assert "Before round 1" in thread and "`discussion`" in thread
+    stop = ref.split("6. **Stop**", 1)[1].split("7. **Settle.**", 1)[0]
+    assert "start no new round; finish the round in flight" in stop
+    assert "6 rounds" in stop
 
 
 @pytest.mark.parametrize("agent", [None, "kirocrew", "kirocrew-worker"])
