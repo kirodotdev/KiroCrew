@@ -1570,6 +1570,9 @@ the routes still read that cache.
 | `baseline` | bool | optional | `true` when the entry carries the WHOLE committed item rather than a delta. | |
 | `board_copy` | bool | optional | True on the copy of a worker's report the gateway wrote into the board's own log. A report without it is a worker-log copy, which the rebuild's join of worker logs never lets undo a board copy. | |
 | `mirror` | bool | optional | True on the worker's own copy of a report whose board copy landed. The work and worktree folds skip it (the board copy is the record); the workers fold reads it as the worker's own report. | |
+| `peer_event_id` | string | optional | On a report the hub ingested from a remote peer: the peer's own id for that report event, verbatim (also the entry's `event_id`). The work fold files each peer event id once per binding and derives where ingest stands from the ids it holds. | |
+| `peer_seen` | array[string] | optional | On an ingested peer report: peer ids before it the hub passes over for good (reports that can never file, or, on a binding filed before peer ids were kept, the reports filed then). The work fold holds them as filed. | |
+| `peer_skipped` | int | optional | On an ingested peer report: places before it in the peer's reports the hub could not file. A peer log that rolled past where ingest stood counts one; a report that can never file counts one. | |
 | `relay` | string | optional | Set on a copy relayed up from a sub-board's log into its parent board's log: the origin entry as `<unit>:<seq>`. | |
 
 **Invariants** — A delta: only the fields the one `action` set are present,

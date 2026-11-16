@@ -20,6 +20,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import test_remote_dispatch_hub_ingest as hub
 import work_ledger_projection_helpers as helpers
 from test_remote_dispatch_hub_ingest import CONDUCTOR, StubCrew, _remote_item, _state
 
@@ -29,7 +30,7 @@ from kiro_crew.probes.work_ledger import WorkLedgerProbe, person_wait_fingerprin
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _isolated = helpers._isolated
-recorded = helpers.recorded
+recorded = hub.recorded
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +104,23 @@ def test_one_run_files_a_remote_done_and_the_probe_wakes(recorded, peer):
     assert item.status == "done" and item.pr == 7
     assert [d["status"] for _u, d in recorded if d.get("actor") == "worker"] == ["done"]
     assert any(key.startswith("report:") for key in _wakes())
+
+
+def test_a_question_then_progress_between_two_runs_still_wakes_for_the_question(recorded, peer):
+    async def go() -> str:
+        item_id = await _remote_item(peer)
+        peer.report("progress", "started", "2026-10-29T10:00:00+00:00")
+        await remote_puller.run_once(_state(peer))
+        peer.report("question", "which branch?", "2026-10-29T10:01:00+00:00")
+        peer.report("progress", "carrying on", "2026-10-29T10:02:00+00:00")
+        await remote_puller.run_once(_state(peer))
+        await remote_puller.run_once(_state(peer))
+        return item_id
+
+    item_id = asyncio.run(go())
+    assert work_ledger.read_work_item(CONDUCTOR, item_id).status == "progress"
+    (question,) = [e for e in work_ledger.read_events(CONDUCTOR, item_id) if e.status == "question"]
+    assert f"report:{question.id}" in _wakes()
 
 
 def test_a_second_run_files_nothing_new(recorded, peer):
@@ -264,7 +282,8 @@ def test_a_report_the_crew_log_refuses_is_retried_once_per_window(recorded, peer
     work_ledger.write_remote_state(CONDUCTOR, item_id, record)
     asyncio.run(remote_puller.run_once(_state(peer)))
     assert len(tries) == 2
-    # A new peer report is tried at once.
+    # A new peer report is tried at once: the unrecorded one it follows goes first,
+    # and the newer one waits behind it while the crew log still refuses.
     peer.report("done", "shipped again", "2026-10-29T10:05:00+00:00", pr=7)
     asyncio.run(remote_puller.run_once(_state(peer)))
     assert len(tries) == 3
@@ -283,10 +302,11 @@ def test_a_changed_snapshot_in_the_same_second_is_not_held(recorded, peer, monke
     )
     peer.report("progress", "almost", "2026-10-29T10:00:00+00:00")
     asyncio.run(remote_puller.run_once(_state(peer)))
-    # Same second, new fields: a different snapshot, so it is tried at once.
+    # Same second, new fields: a different snapshot, so the pull runs at once, and
+    # the unrecorded progress it follows goes first; the done waits behind it.
     peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=7)
     asyncio.run(remote_puller.run_once(_state(peer)))
-    assert tries == ["progress", "done"]
+    assert tries == ["progress", "progress"]
 
 
 def test_a_capped_run_rotates_so_no_board_is_left_out(monkeypatch):

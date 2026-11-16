@@ -43,6 +43,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror, platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.dashboard.handlers import remote_ingest_peer as peer_ingest
 from kiro_crew.dashboard.handlers.remote_ingest_report import (
     _ingest_report_locked,
     _is_remote_open,
@@ -74,9 +75,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Peer events asked for per pull. Only the peer item (the worker's latest
-#: fields) is filed, so one event is the least the route accepts.
-PULL_EVENT_LIMIT = 1
+#: Peer events a pull asks for first. When that tail holds none of the filed peer
+#: event ids and is not the peer's whole log, the pull asks again for the whole log
+#: (``work_ledger.MAX_EVENTS_PER_ITEM``), so every report since the last pull is
+#: reached (``remote_ingest_peer``).
+PULL_EVENT_LIMIT = 50
 
 #: Most remote items one read pulls; the rest keep their last state until the next.
 MAX_ITEMS_PER_READ = 32
@@ -594,15 +597,17 @@ async def _ingest_item(
     if crew not in slot_lists:
         slot_lists[crew] = await _slot_list(state, crew)
     listed = slot_lists[crew]
+    # Only for the paging choice; the filing reads the fold again under the lock.
+    filed_ids = await _filed_ids_hint(board, item.item_id)
+    limit = PULL_EVENT_LIMIT
     try:
-        status, payload = await routes.peer_call(
-            mgr,
-            crew,
-            "GET",
-            f"api/chat/slots/{quote(slot, safe='')}/work-item",
-            params={"limit": str(PULL_EVENT_LIMIT)},
-        )
+        status, payload = await _read_peer_item(routes, mgr, crew, slot, limit)
+        if 200 <= status < 300 and peer_ingest.needs_page(payload, filed_ids, limit):
+            limit = work_ledger.MAX_EVENTS_PER_ITEM
+            status, payload = await _read_peer_item(routes, mgr, crew, slot, limit)
     except routes.CrewCallError as exc:
+        # A failed read changes nothing that says where ingest stands; the next
+        # pull reads again.
         if exc.status == 503:
             await _mark_down(board, item.item_id, "disconnected", exc.code)
         else:
@@ -644,7 +649,16 @@ async def _ingest_item(
         else:
             floor = _report_floor(record, item)
             record.error = await _ingest_report_locked(
-                state, board, unit, item.item_id, crew, slot, payload, floor
+                state,
+                board,
+                unit,
+                item.item_id,
+                crew,
+                slot,
+                payload,
+                floor,
+                limit,
+                record_floor_known=record.report_floor_known,
             )
             failed = record.error == "crew_log_unrecorded"
             record.unrecorded_key = _snapshot_key(payload) if failed else None
@@ -664,6 +678,29 @@ async def _ingest_item(
         and not conductor_trusts(state, board)
     ):
         await revoke_peer_trust(mgr, crew, slot)
+
+
+async def _read_peer_item(
+    routes: Any, mgr: Any, crew: str, slot: str, limit: int
+) -> tuple[int, Any]:
+    """The peer's ``GET work-item`` with its newest *limit* events. Raises
+    ``CrewCallError`` as ``peer_call`` does."""
+    status, payload = await routes.peer_call(
+        mgr,
+        crew,
+        "GET",
+        f"api/chat/slots/{quote(slot, safe='')}/work-item",
+        params={"limit": str(limit)},
+    )
+    return status, payload
+
+
+async def _filed_ids_hint(board: str, item_id: str) -> tuple[str, ...] | None:
+    """The peer event ids the fold holds as filed, or ``None`` when it cannot be read."""
+    try:
+        return (await asyncio.to_thread(peer_ingest.read_folded_peer, board, item_id)).ids
+    except Exception:  # noqa: BLE001 - the filing reads it again and says why
+        return None
 
 
 async def _board_unit(state: "DashboardState", board: str) -> tuple[str, str | None]:
@@ -1093,6 +1130,7 @@ REMOTE_ROW_FIELDS: tuple[str, ...] = (
     "crew_down_since",
     "pending_approval",
     "remote_error",
+    "remote_reports_skipped",
 )
 
 
@@ -1124,6 +1162,8 @@ def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
         "crew_down_since": record.crew_down_since,
         "pending_approval": record.pending_approval,
         "remote_error": record.error,
+        # Places in the peer's reports the hub could not file, from the crew log.
+        "remote_reports_skipped": peer_ingest.folded_skipped(board, item.item_id),
     }
 
 
@@ -1137,11 +1177,15 @@ _EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded
 _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.remote_ingest_report import (  # noqa: F401
+        _RETRY_LATER,
         _SNAPSHOT_FIELDS,
+        CODE_LOG_UNRECORDED,
         UNRECORDED_RETRY_SECS,
         _already_filed,
         _clean_report,
         _file_one,
+        _peer_fields,
+        _peer_report_fields,
         _snapshot_report,
     )
 

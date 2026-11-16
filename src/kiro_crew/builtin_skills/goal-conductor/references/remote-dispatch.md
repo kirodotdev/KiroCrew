@@ -62,17 +62,21 @@ or one an open item of yours is bound to. After a hub restart only the open
 item counts, so close the worker's session before you `close` its item. A
 `decide` whose forward fails says it "did NOT reach the worker's crew"; record
 it again to retry. A remote row adds `worker_instance_id`, `crew_state`,
-`crew_down_since`, `pending_approval` and `remote_error`.
+`crew_down_since`, `pending_approval`, `remote_error` and
+`remote_reports_skipped`.
 
-**Reports reach you by a pull.** The hub pulls the worker's latest report from
-each open remote item's crew and files it as an ordinary report, so
+**Reports reach you by a pull.** The hub pulls every report the worker filed
+since the last pull from each open remote item's crew, in order, and files each
+as an ordinary report, so
 `accept_eval.py`, `accept` and `close` work as for a local item. A background
 puller does this every 30 seconds with no model turn, so a remote `done`,
 `blocked`, `question` or `reply` wakes your work-ledger patrol like a local
 one; a `work_ledger_read` pulls too. Each pull is best effort (a read takes at
-most 32 items in about 6 seconds). Only the latest report is filed: a status
-the worker passed through between two pulls never reaches you, and a row whose
-pull failed keeps its last state.
+most 32 items in about 6 seconds), and a row whose pull failed keeps its last
+state until the next pull files what it missed. `remote_reports_skipped` counts
+places in the worker's reports the hub could not file (a report it can never
+file, or a worker log that rolled past the last pull); above 0, read the
+worker's session for what you missed.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
 open, `session_send` the question in an owner turn, and tell it to answer with
