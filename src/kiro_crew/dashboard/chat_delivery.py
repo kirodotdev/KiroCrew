@@ -1281,6 +1281,11 @@ START_BACKGROUND_META_KEY = "start_background"
 #: person's message is never in it. Weak, so a finished task leaves on its own.
 BACKGROUND_START_TASKS: "weakref.WeakSet[asyncio.Task[Any]]" = weakref.WeakSet()
 
+#: Entry meta key marking a retry of a Bot's Heartbeat wake (``_queue_recovery``): it mirrors
+#: only its reply, as the wake did. Honoured only when every consumed entry carries it, so a
+#: person's message drained beside it keeps the normal mirror.
+MIRROR_REPLY_ONLY_META_KEY = "mirror_reply_only"
+
 
 def queue_for_next_turn(
     state: "DashboardState",

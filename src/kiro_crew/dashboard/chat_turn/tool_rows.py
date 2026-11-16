@@ -569,11 +569,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # before probing anything when no peer steer is recorded -- so paying
     # it per event costs nothing on a turn nobody interfered with. The
     # stream's destination is the thread cached at turn start, judged
-    # as the room it is beside the live comparison.
+    # as the room it is beside the live comparison. A Bot's Heartbeat wake
+    # (``_mirror_reply_only``) opens no stream: the thread gets only its reply.
     if (
         _mirror_chan
         and _mirror_thread
         and state.slack_client
+        and not turn._mirror_reply_only
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
     ):

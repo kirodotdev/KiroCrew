@@ -370,7 +370,13 @@ def app_is_stopping(state: Any) -> bool:
 
 
 def dispatch_hidden_turn(
-    state: Any, slot: Any, prompt: str, *, human_seen: bool, actor: str = "gateway"
+    state: Any,
+    slot: Any,
+    prompt: str,
+    *,
+    human_seen: bool,
+    actor: str = "gateway",
+    mirror_reply_only: bool = False,
 ) -> bool:
     """Run *prompt* as one gateway-authored turn in *slot*, with no user row for it.
 
@@ -382,6 +388,9 @@ def dispatch_hidden_turn(
     may run (a guide, ``update_self``, most cards) refuse inside it; in a
     crewmate's own thread its goal, milestones and check-ins cards are still
     admitted (``handlers.guide.REQ_OWN_GOAL_TURN``).
+
+    With *mirror_reply_only* a linked thread or channel gets only the turn's
+    final reply (the goal check-ins' Heartbeat passes it).
 
     Returns False, starting nothing, while the app is stopping
     (:func:`app_is_stopping`). A restart cancels every running turn, and a
@@ -414,6 +423,7 @@ def dispatch_hidden_turn(
                 prompt,
                 _synthetic_payload=True,
                 _turn_actor=actor,
+                _mirror_reply_only=mirror_reply_only,
             ),
         ),
     )
