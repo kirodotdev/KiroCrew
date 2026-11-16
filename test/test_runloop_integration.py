@@ -1234,11 +1234,25 @@ async def test_pump_arms_a_timer_at_the_coordinator_deadline():
     # exist, because a wait the store did not record arms no scope.
     generation = _live_row(mgr, "ghost-task")
     coordinator.report("ghost-task", signal, generation=generation)
-    mgr._taskq_pump()
+    loop = asyncio.get_running_loop()
+    armed: list[tuple[asyncio.TimerHandle, float]] = []
+    real_call_later = loop.call_later
+
+    def _recording_call_later(delay, callback, *args, **kwargs):
+        handle = real_call_later(delay, callback, *args, **kwargs)
+        armed.append((handle, delay))
+        return handle
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(loop, "call_later", _recording_call_later)
+        mgr._taskq_pump()
     timer = mgr._taskq_pump_timer
     assert timer is not None and not timer.cancelled()
-    loop = asyncio.get_running_loop()
-    assert 0.0 < timer.when() - loop.time() <= 0.5 + 0.01
+    # Armed at the coordinator's 0.5 s deadline: the delay handed to the loop,
+    # read as a value rather than as the time left on the loop clock.
+    delays = [delay for handle, delay in armed if handle is timer]
+    assert len(delays) == 1, f"the pump timer was not armed through call_later: {armed!r}"
+    assert 0.0 < delays[0] <= 0.5 + 0.01
 
 
 #: The Windows ``monotonic()`` tick, and that platform's loop

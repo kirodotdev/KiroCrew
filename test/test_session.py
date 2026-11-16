@@ -89,8 +89,11 @@ class TestSessionManager:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("thread1")
         mgr._sessions["thread1"].last_used = time.monotonic() - 9999
+        released_at = time.monotonic()
         mgr.release("thread1")
-        assert mgr._sessions["thread1"].last_used > time.monotonic() - 5
+        # Stamped at the release itself: no earlier than the clock read just
+        # before it, so the backdated value is gone.
+        assert mgr._sessions["thread1"].last_used >= released_at
         await mgr.close_all()
 
     @pytest.mark.asyncio

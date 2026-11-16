@@ -381,17 +381,32 @@ def test_the_grace_is_a_fraction_of_the_budget_so_a_tight_budget_stays_tight(
     the loosest caller's tail.
     """
     stalled = _StalledResolver()
+    granted: list[float] = []
+    real_resolve_here = security.paths._resolve_on_calling_thread
+
+    def _recording_resolve_here(worker, expanded: str, timeout: float):
+        # The deadline the stalled resolution runs under, read as the value the
+        # gate hands it: the whole of the caller's wait, budget and grace.
+        granted.append(timeout)
+        return real_resolve_here(worker, expanded, timeout)
+
+    # Through the facade: its mirror writes the name into the owner that reads it.
+    monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _recording_resolve_here)
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/home/someone/ws/file")
-        elapsed = time.monotonic() - started
     finally:
         stalled.release.set()
     budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS  # 0.2 under the autouse fixture
     ceiling = budget * (1 + security.paths._PATH_RESOLVE_GRACE_FACTOR)
-    assert elapsed < ceiling + 0.6, f"blocked {elapsed:.2f}s against a {budget:.2f}s budget"
+    # The grace scales with this budget: well under the fixed cap, the deadline is
+    # the budget plus its fraction, not the cap's multi-second tail.
+    assert ceiling < security.paths._PATH_RESOLVE_GRACE_MAX_SECS
+    assert len(granted) == 1, f"expected one bounded resolution: {granted!r}"
+    assert (
+        0.0 < granted[0] <= ceiling + 1e-6
+    ), f"granted {granted[0]:.3f}s against a {budget:.2f}s budget"
 
 
 def test_the_stall_prefix_counts_components_past_the_drive(monkeypatch) -> None:
