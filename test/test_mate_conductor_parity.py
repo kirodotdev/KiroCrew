@@ -33,10 +33,10 @@ and that is not drift.
 Conductor mode runs ``kirocrew-conductor`` by default
 (``crew_mode.DEFAULT_CREW_MODE_AGENT``), the root conductor compared above. A person
 can still set ``agent.crew_mode_agent`` to a third agent, ``kirocrew-team-lead``.
-Its system prompt carries none of the shared rules: it reaches them only through
-the ``team-lead`` skill, which points at ``goal-conductor``. The last section holds
-that chain and each shared rule's counterpart in ``goal-conductor/SKILL.md``
-(:data:`CONDUCTOR_MODE_SKILL_ANCHORS`).
+``goal-conductor/SKILL.md`` points at the shared rules instead of restating them,
+so the team lead carries them in its prompt (``_SHARED_CONDUCTOR_RULES_BLOCK``);
+the last section holds that, the prompt -> ``team-lead`` -> ``goal-conductor``
+chain, and the skill's pointers (:data:`SKILL_POINTERS`).
 """
 
 from __future__ import annotations
@@ -572,111 +572,73 @@ def test_every_allowlist_entry_is_still_a_difference(specs) -> None:
 
 _SKILLS_DIR = Path(agent.__file__).parent / "builtin_skills"
 
-#: Each shared rule's counterpart in ``goal-conductor/SKILL.md``: anchor phrases,
-#: matched after :func:`_words`, so rewording around them does not break the test.
-#: ``kirocrew-team-lead`` reaches these rules only through that skill. A new
-#: ``_LEDGER_CONDUCTOR_RULES`` key lands here with its anchors, or in
-#: :data:`CONDUCTOR_MODE_GAPS` with a reason. That is the extension point for a new shared
-#: rule (``host_pressure``, ``resource_wave``) or a reworded one: add its key or
-#: an anchor here.
-CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
-    "acceptance": ("verify every done with the evaluator", "never by believing the claim"),
-    "dispatch_create": ("work_ledger_record action=create, with the item's title and its",),
-    "dispatch_bind": ("work_ledger_record action=bind with that item_id and",),
-    "dispatch_seed": ("session_send the seed prompt",),
-    "bind_before_seed": (
-        "bind before you seed",
-        "an unbound running worker is neither visible nor recoverable",
-    ),
-    "patrol_watch": ('watch="work-ledger"', 'monitor_update(watch="work-ledger")'),
-    "patrol_bounds": ("pass no interval_secs, max_cycles or max_runtime_secs",),
-    "patrol_final_report": (
-        "one final report: what landed, what is left, and the links",
-        "autonudge_stop",
-    ),
-    "act_by_status": ("act on three statuses, and only three", "compact=true"),
-    "claimed_pr": ("claimed pr is never read as the bar", "action=accept"),
-    "read_message_detail": ("session_read_message for detail the record does not carry",),
-    "close_item": ("work_ledger_record action=close with the item's state",),
-    "resource_wave": ("resource_status decides the wave", "never ask to raise the cap"),
-    "goal_plan": ("a finding rewrites the plan at once", "rewrite the goal text's plan and"),
-    "patrol_requested": ("a reply saying requested confirms receipt only", "monitor_inspect"),
-    "dependent_calls": (
-        "a call that depends on another goes in a later step, never the same block",
-        "calls that truly do not depend on each other",
-    ),
-    # The rule IS "read goal-conductor"; its conductor mode counterpart is the chain itself.
-    "skill_first": ("name: goal-conductor",),
-    "item_budget": ("every item gets a time budget", "budget: <n>m"),
-    "own_files": (
-        "one owner per shared file, one integrator per output",
-        "an author grading its own work",
-    ),
-    "merge_lines": ("merge two lines of work when they stop being two",),
-    "plan_reviewer": ("a reviewer grills your plan and what no lane reviews",),
-    "bar_pr_merged": (
-        "a code change is done when it lands",
-        "pr_merged (with repo), not pr_checks",
-    ),
-    "wake_check": ("a wake with no news is a check",),
-    "routine_incidents": (
-        "run from the goal: handle routine incidents yourself",
-        "record the decision first",
-    ),
-    "report_before_park": ("report before you park", "a turn that ends having reported nothing"),
-}
-
-#: Shared rules the team lead does not reach today, as ``key -> (anchor, reason)``.
-#: The anchor is the rule's own phrase; once ``goal-conductor/SKILL.md`` carries it
-#: the entry is stale and the test says so. Remove it then and add the key above.
-CONDUCTOR_MODE_GAPS: dict[str, tuple[str, str]] = {}
-
 
 def _skill_text(name: str) -> str:
     return _words((_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8"))
 
 
-def test_every_shared_rule_has_a_conductor_mode_counterpart_or_a_named_gap() -> None:
-    rules = set(agent._LEDGER_CONDUCTOR_RULES)
-    mapped = set(CONDUCTOR_MODE_SKILL_ANCHORS)
-    gaps = set(CONDUCTOR_MODE_GAPS)
-    assert mapped & gaps == set(), f"keys both mapped and gapped: {sorted(mapped & gaps)}"
-    assert sorted(rules - mapped - gaps) == [], (
-        f"shared rules with no conductor mode counterpart: {sorted(rules - mapped - gaps)}. "
-        f"kirocrew-team-lead reaches shared rules only through goal-conductor/SKILL.md: "
-        f"add the key to CONDUCTOR_MODE_SKILL_ANCHORS with phrases from the skill, or to CONDUCTOR_MODE_GAPS "
-        f"with a reason."
-    )
-    assert (
-        sorted((mapped | gaps) - rules) == []
-    ), f"entries that name no shared rule: {sorted((mapped | gaps) - rules)}"
+def _team_lead_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME
+
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    service_agents._install_team_lead_agent()
+    spec = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
+    return spec["prompt"]
 
 
-def test_goal_conductor_skill_carries_each_mapped_rule() -> None:
-    skill = _skill_text("goal-conductor")
+def test_a_team_lead_carries_every_shared_rule_in_its_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``goal-conductor/SKILL.md`` points at "your prompt's" shared rules instead of
+    restating them, so every agent that conducts from it carries them in its prompt:
+    the root charter and a Bot's ``conductor.patrol`` (above), and a team lead set as
+    ``agent.crew_mode_agent``, through ``_SHARED_CONDUCTOR_RULES_BLOCK``."""
+    prompt = _team_lead_prompt(tmp_path, monkeypatch)
     missing = sorted(
-        f"{key}: {anchor!r}"
-        for key, anchors in CONDUCTOR_MODE_SKILL_ANCHORS.items()
-        for anchor in anchors
-        if anchor not in skill
+        name for name, rule in agent._LEDGER_CONDUCTOR_RULES.items() if rule.strip() not in prompt
     )
-    assert missing == [], (
-        f"goal-conductor/SKILL.md lost the conductor mode counterpart of shared rules: {missing}. "
-        f"Restore the rule in the skill, or update the anchor if it was only reworded."
+    assert missing == [], f"shared rules the team lead's prompt lacks: {missing}"
+
+
+def test_the_team_lead_check_sees_a_lost_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control: a block missing one rule is reported by key."""
+    rule = agent._LEDGER_CONDUCTOR_RULES["close_item"].strip()
+    monkeypatch.setattr(
+        agent,
+        "_SHARED_CONDUCTOR_RULES_BLOCK",
+        agent._SHARED_CONDUCTOR_RULES_BLOCK.replace(rule, ""),
     )
-
-
-def test_every_conductor_mode_gap_is_still_a_gap() -> None:
-    skill = _skill_text("goal-conductor")
-    closed = sorted(key for key, (anchor, _why) in CONDUCTOR_MODE_GAPS.items() if anchor in skill)
-    assert closed == [], f"CONDUCTOR_MODE_GAPS entries the skill now carries; move them: {closed}"
-
-
-def test_the_anchor_check_sees_a_lost_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Positive control: an anchor the skill does not hold is reported by key."""
-    monkeypatch.setitem(CONDUCTOR_MODE_SKILL_ANCHORS, "close_item", ("a phrase no skill holds",))
     with pytest.raises(AssertionError, match="close_item"):
-        test_goal_conductor_skill_carries_each_mapped_rule()
+        test_a_team_lead_carries_every_shared_rule_in_its_prompt(tmp_path, monkeypatch)
+
+
+#: Shared rules goal-conductor/SKILL.md names by a pointer instead of restating:
+#: the phrase that points at each. A pointer the skill drops leaves a reader who
+#: only skims the skill with no hint the rule exists.
+SKILL_POINTERS: dict[str, str] = {
+    "dependent_calls": "your prompt's rule on dependent calls",
+    "goal_plan": "the five parts your prompt's goal-plan rule names",
+    "resource_wave": "as your prompt says, resource_status decides the wave",
+    "own_files": "your prompt's rules on one owner per shared file",
+    "item_budget": "your prompt's item-budget rule",
+    "bind_before_seed": "bind before you seed, as your prompt's rule says",
+    "patrol_watch": "exactly as your prompt's patrol rules say",
+    "routine_incidents": "your prompt's routine-incidents rule lists them",
+    "report_before_park": "report before you park, as your prompt's rule says",
+    "claimed_pr": "your prompt's claimed-pr rule",
+    "bar_pr_merged": "as your prompt's rule on landed code says",
+    "plan_reviewer": "as your prompt's plan-reviewer rule says",
+    "wake_check": "a wake with no news is a check, as your prompt's rule says",
+}
+
+
+def test_goal_conductor_points_at_each_shared_rule_it_no_longer_restates() -> None:
+    skill = _skill_text("goal-conductor")
+    assert set(SKILL_POINTERS) <= set(agent._LEDGER_CONDUCTOR_RULES)
+    missing = sorted(key for key, phrase in SKILL_POINTERS.items() if phrase not in skill)
+    assert missing == [], f"goal-conductor/SKILL.md lost its pointer to shared rules: {missing}"
 
 
 def test_conductor_mode_runs_the_root_conductor_by_default() -> None:

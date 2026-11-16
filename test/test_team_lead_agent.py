@@ -35,7 +35,10 @@ from kiro_crew.agent_materialization import (
 #: governed tail closes its charter with the one line that says so.
 _SEED_RULE_TAIL = f"\n{auto_approve.SEED_AFTER_CREATE_RULE}\n"
 _INSTALLED_PROMPT = (
-    conductor_agents.with_conductor_ask(agent._TEAM_LEAD_SYSTEM_PROMPT) + _SEED_RULE_TAIL
+    conductor_agents.with_conductor_ask(
+        f"{agent._TEAM_LEAD_SYSTEM_PROMPT.rstrip()}\n\n{agent._SHARED_CONDUCTOR_RULES_BLOCK}"
+    )
+    + _SEED_RULE_TAIL
 )
 
 _SKILL = (
@@ -282,12 +285,15 @@ class TestTheLeadCanDispatch:
         from kiro_crew.context_assembly.output_contract import ASK_CORE, CONDUCTOR_ASK_TAIL
 
         rule = ASK_CORE + CONDUCTOR_ASK_TAIL
-        shared = rule.splitlines()
+        block = agent._SHARED_CONDUCTOR_RULES_BLOCK
+        shared = rule.splitlines() + block.splitlines()
         charter = prompt.removesuffix(_SEED_RULE_TAIL)
-        # The charter body, the shared ask rule's own lines left out, stays at 40 lines.
-        rule_lines = len(rule.rstrip("\n").splitlines())
+        # The charter body, the shared ask rule's and shared conductor rules' own
+        # lines left out, stays at 40 lines.
+        rule_lines = len(rule.rstrip("\n").splitlines()) + len(block.rstrip("\n").splitlines()) + 1
         assert len(charter.splitlines()) - rule_lines <= 40
-        # Nothing copied from the conductor charter; the one shared rule is named, not copied.
+        # Nothing copied from the conductor charter; the shared rules are the one
+        # source both read, not a copy.
         for line in agent._CONDUCTOR_SYSTEM_PROMPT.splitlines():
             if len(line) > 60 and line not in shared:
                 assert line not in prompt, line

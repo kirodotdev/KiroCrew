@@ -813,7 +813,12 @@ def _install_team_lead_agent() -> None:
         "items, does the small focused ones itself, dispatches a session for every "
         "other one, and patrols that fleet."
     )
-    config["prompt"] = conductor_agents.with_conductor_ask(agent_mod._TEAM_LEAD_SYSTEM_PROMPT)
+    # The shared conductor rules ride in the prompt, because the goal-conductor
+    # skill points at "your prompt's" rules instead of restating them.
+    config["prompt"] = conductor_agents.with_conductor_ask(
+        f"{agent_mod._TEAM_LEAD_SYSTEM_PROMPT.rstrip()}\n\n"
+        f"{agent_mod._SHARED_CONDUCTOR_RULES_BLOCK}"
+    )
     # The skills this agent is told to read: ``team-lead`` ("read it before acting on
     # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
     # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate

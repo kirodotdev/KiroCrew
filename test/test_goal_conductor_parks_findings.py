@@ -30,12 +30,18 @@ def _section(body: str, heading: str, next_heading: str) -> str:
 
 
 def test_goal_text_has_a_parked_part_before_changed():
+    """The five parts are the shared ``goal_plan`` rule every conductor prompt renders;
+    the skill's planning section points at it and keeps the order."""
+    from kiro_crew import agent
+
     round0 = _section(_goal(), "### Round 0", "### Dispatch a round")
-    assert "The goal text is the plan in five parts" in round0
-    assert "Parked (findings that no Done when condition needs" in round0
+    assert "The goal text is the plan, in the five parts your prompt's goal-plan" in round0
+    assert "(Outcome, Done when, Plan, Parked, Changed; Changed last)" in round0
+    rule = " ".join(agent._LEDGER_CONDUCTOR_RULES["goal_plan"].split())
+    assert "Parked: findings that no Done when condition needs" in rule
     # The Board reads the Changed part to the end of the goal text, so a Parked
     # part written after it would show up as the latest change.
-    assert "Keep Changed last" in round0
+    assert "to five parts, Changed last" in rule
 
 
 def test_patrol_parks_a_finding_no_done_when_condition_needs():

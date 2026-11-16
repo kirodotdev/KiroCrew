@@ -44,8 +44,12 @@ def test_goal_conductor_steers_a_working_fleet_like_one_worker():
 
 
 def test_goal_conductor_handles_routine_incidents_itself():
+    """The incident list and the record-first rule are the shared ``routine_incidents``
+    rule every conductor prompt renders; the skill points at it and keeps the rest."""
     patrol = _section(_goal(), "### Patrol", "### Close the round")
     assert "**Run from the goal: handle routine incidents yourself.**" in patrol
+    assert "Your prompt's routine-incidents rule lists them" in patrol
+    rule = _flat(agent._LEDGER_CONDUCTOR_RULES["routine_incidents"])
     for incident in (
         "out of disk or memory",
         "a stuck or late worker",
@@ -53,19 +57,16 @@ def test_goal_conductor_handles_routine_incidents_itself():
         "a CI stall",
         "a feature branch whose gates are green",
     ):
-        assert incident in patrol, incident
+        assert incident in rule, incident
     assert (
         "Escalate to the person only an ask case (a)-(e); a change to an owner ruling "
         "is (e). Send a conflict with another lead to the lead that dispatched you as "
         "`question`; with none, decide it and record it." in patrol
     )
     # A merge or a cleanup is recorded before it happens, with its target and reason.
-    assert (
-        "Before you merge a feature branch or clear build output, record the decision "
-        "first: `work_ledger_record` `action=decide` on the item, or a "
-        "`session_ledger_record` event, naming the PR or path, the head sha, and the reason"
-        in patrol
-    )
+    assert "record the decision first" in rule
+    assert "naming the PR or path, the head sha and the reason" in rule
+    assert "`session_ledger_record` event serves when no item fits" in patrol
 
 
 def test_goal_conductor_dispatches_remote_workers_as_visible_sessions():

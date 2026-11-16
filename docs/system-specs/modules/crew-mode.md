@@ -4639,12 +4639,12 @@ that copies root charter text instead of naming the rule; and on an allowlist
 entry that no longer names a difference. The check runs one way: what only the
 Bot's conductor has (cron, guide and Bot servers, the default built-ins, its
 front-desk wording) is not drift. Conductor mode chats run `kirocrew-conductor`
-by default, the root conductor compared above. A `kirocrew-team-lead` that
-`agent.crew_mode_agent` names reaches the shared rules only through the
-`team-lead` then `goal-conductor` skills: the same
-test holds each rule to anchor phrases in `goal-conductor/SKILL.md`
-(`CONDUCTOR_MODE_SKILL_ANCHORS`), or to a named gap with a reason
-(`CONDUCTOR_MODE_GAPS`, empty today), and fails on a gap the skill has closed.
+by default, the root conductor compared above. `goal-conductor/SKILL.md` points
+at the shared rules ("your prompt's ... rule") instead of restating them, so a
+`kirocrew-team-lead` that `agent.crew_mode_agent` names carries every shared rule
+in its own prompt (`_SHARED_CONDUCTOR_RULES_BLOCK`, the same text). The same test
+fails when the team lead's installed prompt lacks a shared rule, and when the
+skill drops one of its pointers (`SKILL_POINTERS`).
 
 **The two workers stay in step.** `kirocrew-worker` and `kirocrew-mate-worker`
 both work one item for a conductor through `work_brief` and `work_report`, from
@@ -5781,7 +5781,7 @@ at nothing for it. None of the four kinds sets the flag.
 | `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a Bot's conductor is dispatched like any caller's |
-| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught; every shared rule has its anchor phrases in `goal-conductor/SKILL.md` (the skill `kirocrew-team-lead` follows when `agent.crew_mode_agent` names it) or a named gap that is still a gap |
+| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught; the team lead's installed prompt carries every shared rule and `goal-conductor/SKILL.md` keeps a pointer to each one it no longer restates |
 | `test/test_mate_worker_parity.py` | Every section of `kirocrew-worker`'s prompt is a shared work-protocol rule the Bot's worker is told or allowlisted with a reason; `worker.principles` names only shared rules and copies no worker text; the Bot's worker is told its reply reaches its Bot and never that a silent turn wakes nobody; both workers carry the same coding rules; no allowlist entry is stale; a planted worker-only section and a reworded copy are caught |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
