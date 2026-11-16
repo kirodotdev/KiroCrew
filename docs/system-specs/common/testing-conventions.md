@@ -5329,6 +5329,29 @@ production really does `chdir` and really does install a record factory, and a t
 that code cannot avoid inheriting it. Restore either way — the damage is to other tests, and
 stopping it propagating is the part that is never optional.
 
+**That rule did not stop #37659, so check it before push.** #37659 added
+`secrets.read_audit._loaded`, the audit switch read from `config.json` and reused for
+`CONFIG_TTL_SECS` (30 s) when there is no live config snapshot, consulted on every vault
+read that returns a secret. It reset the global only in its own test file.
+`test_wakatime_handlers.py::test_status_loads_config_off_the_event_loop` counts
+`KiroCrewConfig.load` calls on the WakaTime status route: one when another test on the
+worker had read the vault in the last 30 s, two when the cache was cold. On Linux it failed
+alone 20 times in 20, in 3 of 5 `-n 4` runs of its file and in 4 of 9 shuffled runs, and it
+reddened backend shard 1 on unrelated PRs. #37726 pinned the test cold and #37754 added the
+floor entry. The rule above is one sentence, nothing checks it, and #37659's own CI was
+green, as the sharding described above allows. So run this on a product change before you push, and run it as a reviewer
+of one:
+
+```bash
+git diff origin/main -- 'src/kiro_crew/*.py' \
+  | grep -nE '^\+(_[A-Za-z0-9_]+ *(:[^=]+)?= *(None|\{\}|\[\]|dict\(|set\(|OrderedDict\()|@(functools\.)?(lru_cache|cache)\b| +global )'
+```
+
+On #37659 it prints `_seen`, `_loaded` and `global _loaded`. Every hit at module scope on a
+path other tests drive gets its entry in `test/conftest_resets.py` in the same PR. The line
+only knows those initializer spellings; a global bound to anything else still needs a
+reviewer's eye.
+
 **Work QUEUED by a test is shared state too, and resetting the object it runs against is
 not enough.** MEASURED: a member row's event is fire-and-forget on the single `eventlog-io`
 worker (`eventlog_hooks.submit`), and the member log's path is resolved from

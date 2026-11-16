@@ -376,6 +376,17 @@ once in five loaded runs. Gate the stub on a `threading.Event`, poll until every
 reader is registered, then release it. Whatever the count of assemblies asserts, the
 test must first establish the concurrency it is asserting about.
 
+The last one is for the author of a **product** change, not a test: **a new
+process-wide cache makes OTHER people's tests order-dependent.** When your change adds a
+module-level cache, memo or singleton on a path existing tests drive, any of them that
+counts a side effect on that path (config loads, spawns, writes) now passes warm and
+fails cold. #37659's `secrets.read_audit._loaded` did exactly that to
+`test_status_loads_config_off_the_event_loop`, which then failed whenever it ran first on
+a worker. Ship its floor entry in `test/conftest_resets.py` with the change, not only a reset in
+your own test file, and find the new state with the `git diff ... | grep` line in
+[testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
+§ 4 Order dependence and shared state ("That rule did not stop #37659").
+
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 
 - **Route POSIX calls through `platform_compat`.** See docs/system-specs/common/platform-compat.md. Most
@@ -750,6 +761,10 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       `code_fingerprint()`) is pinned at MODULE scope with an explicit opt-out fixture — pinning
       only the flagged tests moves the real spawn to the next reader; a class-local copy of a
       conftest fixture re-implements ALL of its pins or requests the original instead
+- [ ] A product change that ADDS a module-level cache, memo or singleton on a path other
+      tests drive (`read_audit._loaded`) resets it in `test/conftest_resets.py`, not only in its
+      own test file; a test that counts calls on a cached path pins that cache to the state its
+      count assumes (`monkeypatch.setattr(read_audit, "_loaded", None)`)
 - [ ] A production `git -C <scratch>` spawn the test cannot pass `cwd=` to runs under a
       fixture `monkeypatch.chdir(tmp_path)`, so nothing inherits the checkout as process cwd;
       the product keeps `cwd=None` there on purpose (a missing clone must stay git's rc=128,
