@@ -476,6 +476,29 @@ class TestStreamAndCollectThrottleFallback:
         assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "fb-2")
 
     @pytest.mark.asyncio
+    async def test_a_per_user_rate_limit_never_walks_the_chain(self) -> None:
+        """Kiro's per-user limit counts every model: the budget is spent and the
+        original error surfaces with no model swap (#38028)."""
+        from kiro_crew.acp.user_rate_limit_errors import USER_RATE_LIMIT_TEXT
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            raise AcpError(USER_RATE_LIMIT_TEXT)
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        # flake-ok: patch of the stdlib asyncio.sleep, scoped to this with-block, as in the tests above
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError):
+            await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert call_count == _TRANSIENT_RETRIES + 1
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_chain_exhaustion_surfaces_original_error_class(self) -> None:
         """Every candidate fails: the ORIGINAL error class propagates, carrying
         the chain's story for the delivering surface."""

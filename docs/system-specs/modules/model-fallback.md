@@ -56,6 +56,12 @@ no emitted or thought activity, and `subagent_manager/run_turn.py::_run_inner_im
 requires no activity. Post-activity recovery does not enter the model-fallback
 walk.
 
+Kiro's per-user request-rate limit (HTTP 429 `USER_REQUEST_RATE_EXCEEDED`,
+`acp/user_rate_limit_errors.error_is_user_rate_limit`) never enters the walk on
+any of the three surfaces: the limit counts every model, so a swap cannot clear
+it, and the error surfaces with the limit's own wording (#37834) once the
+same-model budget is spent.
+
 `llm_helpers.advance_fallback_candidate` owns candidate selection for all three
 paths. It preserves the original primary from an existing provider marker when
 available, otherwise from the active model. It then skips the primary, the

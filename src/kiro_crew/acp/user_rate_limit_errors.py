@@ -36,3 +36,15 @@ USER_RATE_LIMIT_TEXT = (
 def is_user_rate_limit(text: str) -> bool:
     """Whether *text* (the frame's ``data`` and ``message``) names the per-user rate limit."""
     return bool(_RE_USER_RATE_LIMIT.search(text))
+
+
+def error_is_user_rate_limit(exc: BaseException) -> bool:
+    """Whether a raised error is Kiro's per-user rate limit.
+
+    Read by the model-fallback walk: the limit counts every model, so a swap
+    cannot clear it. The raised message is usually the rewritten
+    :data:`USER_RATE_LIMIT_TEXT`; an unformatted one still carries the frame's
+    own token or sentence.
+    """
+    text = str(exc)
+    return USER_RATE_LIMIT_TEXT in text or is_user_rate_limit(text)

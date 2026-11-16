@@ -148,6 +148,7 @@ async def _run_inner_impl(
         raise ValueError("memory_unavailable: the recorded memory identity is malformed")
     # Local imports: this body runs on ``kiro_crew.subagent``'s globals
     # (bind_component_globals), which do not export these names.
+    from kiro_crew.acp.user_rate_limit_errors import error_is_user_rate_limit
     from kiro_crew.agent_sdk import capture_prompt_timeout
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
     from kiro_crew.recovery.ladder import InfraError
@@ -991,7 +992,8 @@ async def _run_inner_impl(
                     # (FALLBACK_CANDIDATE_ATTEMPTS), ~2s backoff each —
                     # NOT the exponential same-model curve; see
                     # llm_helpers Case 2.75 for the rationale.
-                    if not _fb_state.chain:
+                    # Kiro's per-user limit counts every model, so a swap cannot clear it.
+                    if not _fb_state.chain or error_is_user_rate_limit(exc):
                         raise
                     if not _fb_state.should_retry_active():
                         _cand = await advance_fallback_candidate(

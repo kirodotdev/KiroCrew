@@ -78,6 +78,7 @@ from kiro_crew.acp.types import (
     TurnUsage,
     classify_stop_reason,
 )
+from kiro_crew.acp.user_rate_limit_errors import error_is_user_rate_limit
 from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -1414,6 +1415,8 @@ async def _run_chat(
             and slot._transient_5xx_retries >= TRANSIENT_RETRIES
             and _prompt_depth == 0
             and not _should_suppress_requeue(slot)
+            # Kiro's per-user limit counts every model, so a swap cannot clear it.
+            and not error_is_user_rate_limit(exc)
             and (_fb_candidate := await _fallback_swap_for_turn(slot, turn.client)) is not None
         ):
             await _on_acp_transient_exhausted(turn, exc, _fb_candidate)

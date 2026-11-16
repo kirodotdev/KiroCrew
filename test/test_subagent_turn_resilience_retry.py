@@ -810,6 +810,43 @@ async def test_throttle_fallback_chain_exhausted_propagates():
 
 
 @pytest.mark.asyncio
+async def test_a_per_user_rate_limit_does_not_walk_the_fallback_chain():
+    """Kiro's per-user limit counts every model: the same-model budget is spent
+    and the error surfaces with no swap (#38028)."""
+    from kiro_crew.acp.user_rate_limit_errors import USER_RATE_LIMIT_TEXT
+
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            raise _TransientError(USER_RATE_LIMIT_TEXT)
+            yield  # noqa: unreachable — async generator marker
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = sessions._provider
+    provider.available_models = MagicMock(return_value=[{"modelId": "fb-1"}])
+    provider.served_model = "primary-model"
+    provider._model = "primary-model"
+    provider.set_model = AsyncMock()
+
+    mgr = _manager(sessions)
+    with (
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+        patch("kiro_crew.subagent.configured_fallback_chain", return_value=("fb-1",)),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.done is True
+    assert "every model counts" in info.error
+    assert len(calls) == 1 + TRANSIENT_RETRIES
+    provider.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_throttle_fallback_ladder_routes_through_shared_budget_body():
     """DRIFT PIN: the ladder must consult
     FallbackState.should_retry_active for the per-candidate budget. Forcing

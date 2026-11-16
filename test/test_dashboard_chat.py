@@ -666,6 +666,44 @@ class TestRunChatModelFallback:
         assert slot._active_fallback_model == ""
 
     @pytest.mark.asyncio
+    async def test_a_per_user_rate_limit_does_not_swap_the_model(self, tmp_path, monkeypatch):
+        """Kiro's per-user limit counts every model, so the configured chain is
+        not walked: no swap, no "is throttled" notice, the limit's own error row
+        (#38028)."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.acp.user_rate_limit_errors import USER_RATE_LIMIT_TEXT
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._agent_fallback_chain",
+            lambda: ("fallback-model",),
+        )
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            raise AcpError(USER_RATE_LIMIT_TEXT)
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert call_count == TRANSIENT_RETRIES + 1
+        client.set_model.assert_not_awaited()
+        assert not self._notice_texts(slot)
+        assert any("every model counts" in t for t in self._err_texts(slot))
+        assert slot._active_fallback_model == ""
+
+    @pytest.mark.asyncio
     async def test_chain_exhaustion_surfaces_error_with_story(self, tmp_path, monkeypatch):
         """Every candidate also fails: the terminal ❌ carries the chain's
         story (primary throttled + which fallbacks were tried), and each

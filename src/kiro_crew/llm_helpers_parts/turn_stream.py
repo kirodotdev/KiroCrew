@@ -15,6 +15,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.user_rate_limit_errors import error_is_user_rate_limit
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
     EVENT_COMPLETE,
@@ -555,6 +556,8 @@ async def stream_and_collect(
                 and _fb_state is not None
                 and acp_error_is_transient(exc)
                 and transient_attempts >= _TRANSIENT_RETRIES
+                # Kiro's per-user limit counts every model, so a swap cannot clear it.
+                and not error_is_user_rate_limit(exc)
             ):
                 if _fb_state.should_retry_active():
                     # Final attempt on the current candidate — the shared
