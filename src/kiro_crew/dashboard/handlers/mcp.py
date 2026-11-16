@@ -1243,6 +1243,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _measure_progress,
         _probe_currency,
         _probe_view,
+        _probed_rows,
         _quarantine_verdicts,
         _read_global_mcps,
         _recheck_routed,
@@ -1254,6 +1255,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_measure_start,
         api_mcp_probe,
         api_mcp_probe_cached,
+        api_mcp_probe_one,
         api_mcp_quarantine_clear,
         api_mcp_servers,
     )
