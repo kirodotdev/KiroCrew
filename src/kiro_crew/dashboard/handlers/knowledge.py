@@ -149,6 +149,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sources import _create_source_audited  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _file_path_restricted  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _folder_file_rows  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _folder_spellings  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _insert_bedrock_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _LocalUriProbe  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _pause_source_row  # noqa: F401

@@ -575,7 +575,8 @@ user confirms, and no code path treats it as a bound.
 **One row per folder spelling.** The add dedupes on the exact `uri` (`409
 source_exists`). For a folder source it also looks up the plain spelling and
 that spelling with a trailing separator or a trailing `.` segment
-(`<dir>`, `<dir>/`, `<dir>/.`). A hit answers `200` with `status: exists`,
+(`<dir>`, `<dir>/`, `<dir>/.`), once with each separator the platform accepts
+(`os.sep` and `os.altsep`), so on Windows `C:/x/` and `C:\x` are one folder. A hit answers `200` with `status: exists`,
 the row's `id` and a `warning`, and adds nothing: a second row would ingest
 the same folder again. It is a 200, not the exact re-add's 409, because the
 Knowledge tab's add form shows a 409 as a failed add, and these spellings

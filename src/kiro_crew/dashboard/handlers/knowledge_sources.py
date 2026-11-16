@@ -139,6 +139,25 @@ def _source_exists_response(source_type: str, source_id: str) -> web.Response:
     return web.json_response({"error": error, "id": source_id, "code": "source_exists"}, status=409)
 
 
+def _folder_spellings(plain: str, sep: str, altsep: str | None) -> list[str]:
+    """Spellings that name the folder ``plain`` (``str(Path(uri))``) lexically.
+
+    ``<dir>``, ``<dir><sep>`` and ``<dir><sep>.``, once with each separator the
+    platform accepts, so on Windows ``C:/x/`` matches a later ``C:\\x``. Shortcut:
+    a path mixing both separators in its body is not matched; it would need a
+    normalized-uri column to cover every mix. A bare Windows drive (``C:``) is a
+    drive-relative path, so it gets no separator: ``C:\\`` is the drive root.
+    """
+    if sep == "\\" and plain.endswith(":") and PureWindowsPath(plain).drive == plain:
+        return [plain]
+    out: list[str] = []
+    for s in (sep, altsep):
+        if s:
+            base = plain.replace(sep, s)
+            out += [base, base + s, base + s + "."]
+    return list(dict.fromkeys(out))
+
+
 def _set_file_state(store, source_id: str, file_path: str, status: str) -> None:
     """Reset one scanned file to *status* and clear its error, in one off-loop take.
 
@@ -837,8 +856,7 @@ async def add_source(request: web.Request) -> web.Response:
     # is never collapsed, since that can change which directory a symlinked
     # path names.
     if source_type in ("local_folder", "obsidian_vault") and probe is not None and probe.is_dir:
-        plain = str(Path(uri))
-        for spelling in dict.fromkeys((plain, plain + os.sep, plain + os.sep + ".")):
+        for spelling in _folder_spellings(str(Path(uri)), os.sep, os.altsep):
             if spelling == uri:
                 continue
             same = await asyncio.to_thread(store.get_source_by_uri, spelling)
