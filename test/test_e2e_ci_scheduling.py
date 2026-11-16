@@ -310,12 +310,19 @@ finally:
         self.assertEqual(proc.returncode, 0, output)
 
     def test_drain_preserves_direct_popen_exit_status(self):
+        # The child's shutdown outlasts the drain's rescan interval with its
+        # handler already gone, as interpreter finalization does on a slow
+        # runner, so a repeated SIGTERM would replace status 23 with -15.
         probe = """
 import pathlib, runpy, subprocess, sys, time
 m = runpy.run_path(sys.argv[1])
 ready = pathlib.Path('ready')
 code = '''import pathlib, signal, sys, time
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(23))
+def stop(*_):
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    time.sleep(.3)
+    sys.exit(23)
+signal.signal(signal.SIGTERM, stop)
 pathlib.Path('ready').touch()
 time.sleep(60)
 '''
@@ -331,12 +338,12 @@ def spawn(*args, **kwargs):
     return child
 subprocess.Popen = spawn
 try:
-    result = m['_supervise']({'child': [sys.executable, '-c', code]}, timeout=.1, grace=.5)
+    result = m['_supervise']({'child': [sys.executable, '-c', code]}, timeout=.1, grace=5)
     print('result=', result, 'status=', children[0].returncode, flush=True)
 finally:
     for child in children:
         if child.poll() is None:
-            child.terminate()
+            child.kill()
         child.wait(timeout=5)
 """
         proc = self.start({"probe": [sys.executable, "-c", probe, str(HELPER)]})

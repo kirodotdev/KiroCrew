@@ -49,9 +49,13 @@ def _drain(grace: float, direct: dict[int, subprocess.Popen]) -> bool:
     """Reap dead children; stop live residue, including adopted setsid descendants."""
     remaining = _children()
     had_live_children = False
+    # SIGTERM goes to each PID once: a repeat would land while the child is
+    # already shutting down, after its handler may be gone, and kill it with
+    # -15 instead of its own exit status. Only SIGKILL repeats, after grace.
+    terminated: set[int] = set()
     deadline = time.monotonic() + grace
     while remaining:
-        sig = signal.SIGTERM if time.monotonic() < deadline else signal.SIGKILL
+        escalate = time.monotonic() >= deadline
         for pid in remaining:
             # /proc lists zombies too. Reap before classifying or signalling,
             # and let Popen retain the wait status for each direct child.
@@ -69,8 +73,11 @@ def _drain(grace: float, direct: dict[int, subprocess.Popen]) -> bool:
             # An unreaped child pins this PID even if it exits before kill.
             # Never signal a PID after waitpid has released that ownership.
             had_live_children = True
+            if not escalate and pid in terminated:
+                continue
+            terminated.add(pid)
             try:
-                os.kill(pid, sig)
+                os.kill(pid, signal.SIGKILL if escalate else signal.SIGTERM)
             except ProcessLookupError:
                 pass
         # Parent exit adopts descendants; rescan until none remain, including
