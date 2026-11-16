@@ -105,6 +105,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.metrics.chat_runtime_share import (
     chat_leases_on,
+    on_shared_process,
     record_turn_ended,
     record_turn_started,
 )
@@ -960,6 +961,7 @@ async def _run_turn(
     # on its host's process, a background runtime), and whether this turn's
     # first event has been counted yet.
     _share_tenants = chat_leases_on(self._runtime, getattr(self, "_session_key", ""))
+    _share_shared = on_shared_process(self._runtime)
     _share_backend = getattr(self._runtime, "acp_backend", None)
     _share_started = False
     # A provider failure that codex-acp wrote as text (see
@@ -1013,6 +1015,7 @@ async def _run_turn(
                     tenants=_share_tenants,
                     delay_secs=time.monotonic() - _sent_at,
                     backend=_share_backend,
+                    shared=_share_shared,
                 )
             _out: list[AcpEvent] = [_incoming]
             _failure: dict[str, Any] | None = None

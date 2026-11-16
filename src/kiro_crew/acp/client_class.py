@@ -384,6 +384,13 @@ class AcpClient:
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
         self._session_key = session_key
+        # Set by ``runtime_ownership.acquire_session_lease`` once the gateway
+        # registers this client's session: the one tenant of its own process,
+        # where a runtime-backed session would take a lease instead.
+        self._registered_session = False
+        # The clock ``stream_events`` times a turn's start with. A test hands this
+        # one object a fake; the module's ``time`` stays the shared binding.
+        self._turn_clock: Callable[[], float] = time.monotonic
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
         # knowledge llm_pool) that have no external audit loop. Left None for

@@ -23,8 +23,8 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``,
 Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``,
 ``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``,
-``_process``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
-``_session_key``, ``_steer_turn``, ``_turn_lock``.
+``_process``, ``_registered_session``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
+``_session_key``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -122,6 +122,7 @@ from kiro_crew.agent_sdk.backends import (
     prompt_command_issue,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.metrics.chat_runtime_share import record_turn_started
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.tracing import turn_anomalies
 from kiro_crew.tracing import turns as trace_turns
@@ -964,6 +965,9 @@ async def stream_events(
     except BaseException:
         _release_unsent_turn(self)
         raise
+    _turn_clock = getattr(self, "_turn_clock", None) or time.monotonic
+    _sent_at = _turn_clock()
+    _started = False
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
@@ -973,6 +977,20 @@ async def stream_events(
         )
     ) as events:
         async for event in events:
+            if not _started and not event.synthetic_completion:
+                # The same span ``session_handle_turn._run_turn`` counts, on the
+                # arm a session that does not share takes: this client owns its
+                # process alone, so never shared. A session the gateway registered
+                # (a chat on any channel, a cron or task session) is the one
+                # tenant, as its lease reads on the handle arm; an unregistered
+                # one (a subagent, a worker-pool client) holds none and reads 0.
+                _started = True
+                record_turn_started(
+                    tenants=1 if getattr(self, "_registered_session", False) is True else 0,
+                    delay_secs=_turn_clock() - _sent_at,
+                    backend=self.backend,
+                    shared=False,
+                )
             yield event
 
 
