@@ -16,7 +16,7 @@ owner modules. Two halves:
   `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
   `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
-  `session_move_to_column`, `work_dispatch`. These reach another session.
+  `session_move_to_column`, `work_dispatch`, `crew_list`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -503,6 +503,10 @@ handed it to. It passes the
 same gate as the other session tools: an archived session is not open
 (`target_not_found`), and scheduled-run, incognito, app-scoped, channel-linked
 and mirrored sessions are refused.
+
+### `crew_list`
+
+Takes no arguments. Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), and its agent and model names. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
 
 ### `session_adopt` and `session_release`
 
@@ -1245,7 +1249,7 @@ are blocked and refused at dispatch in the same way, because they rearrange the
 person's board.
 `session_broadcast` is blocked for that reason multiplied by the fleet, and
 `session_status` because its rows carry other sessions' titles — the names of the
-user's private work, in front of whoever is in the thread.
+user's private work, in front of whoever is in the thread, and `crew_list` for the same reason: it names the person's machines and their agents.
 
 A session linked to a messaging thread (Slack, Telegram, Discord and the rest)
 is refused when it calls `session_create`: `linked_session_caller`, or

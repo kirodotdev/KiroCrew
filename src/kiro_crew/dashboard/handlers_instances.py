@@ -1647,5 +1647,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_instances_chat_slots,
         api_instances_proxy,
         api_instances_versions,
+        read_peer_capabilities,
         read_peer_slots,
     )

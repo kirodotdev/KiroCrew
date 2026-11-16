@@ -91,6 +91,7 @@ from kiro_crew.validation_parts.core_turn_schemas import (
 )
 from kiro_crew.validation_parts.field_engine import ToolSchema
 from kiro_crew.validation_parts.messaging_session_schemas import (
+    CREW_LIST_SCHEMA,
     DISMISS_NOTIFICATION_SCHEMA,
     GET_CHAT_SESSION_SCHEMA,
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
@@ -253,6 +254,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_summary": SESSION_SUMMARY_SCHEMA,
     "work_dispatch": WORK_DISPATCH_SCHEMA,
     "session_queue": SESSION_QUEUE_SCHEMA,
+    "crew_list": CREW_LIST_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,

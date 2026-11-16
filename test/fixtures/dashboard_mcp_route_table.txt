@@ -207,6 +207,8 @@ GET /api/crew-sessions/list api_crew_sessions_list
 HEAD /api/crew-sessions/read api_crew_sessions_read
 GET /api/crew-sessions/read api_crew_sessions_read
 POST /api/session-control/queue api_session_control_queue
+HEAD /api/session-control/crews api_session_control_crews
+GET /api/session-control/crews api_session_control_crews
 HEAD /api/browser/status api_browser_harness_status
 GET /api/browser/status api_browser_harness_status
 POST /api/browser/install api_browser_harness_install

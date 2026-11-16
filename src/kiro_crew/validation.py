@@ -417,6 +417,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SEND_MESSAGE_SESSION_RE,
         _SLACK_TS_RE,
         _TARGET_ID_RE,
+        CREW_LIST_SCHEMA,
         DISMISS_NOTIFICATION_SCHEMA,
         GET_CHAT_SESSION_SCHEMA,
         KNOWLEDGE_ADD_DOCUMENT_SCHEMA,

@@ -13,6 +13,7 @@ and board rows, and binds ``_session_tools`` so it reads and patches as
 from __future__ import annotations
 
 from kiro_crew.config.sections import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
+from kiro_crew.mcp_crew_list import crew_list_tool
 from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_adopt,
     _run_session_broadcast,
@@ -1175,4 +1176,5 @@ def _session_tools() -> tuple[Tool, ...]:
             identity="strict",
             routes=("POST /api/session-control/queue",),
         ),
+        crew_list_tool(),
     )

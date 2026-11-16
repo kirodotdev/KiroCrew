@@ -617,6 +617,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/session-control/queue", _deferred("session_control", "api_session_control_queue")
     )
+    # crew_list: the remote-dispatch crew roster (handlers/remote_crew_list.py).
+    app.router.add_get(
+        "/api/session-control/crews",
+        _deferred("remote_crew_list", "api_session_control_crews"),
+    )
     # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
     # the engine's install state and connection, the install job, a bounded
     # connect test and a disconnect. Owner cookie/token only; every one of them
