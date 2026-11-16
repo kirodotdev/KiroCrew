@@ -102,8 +102,12 @@ def test_off_the_skill_keeps_mains_debate_offer() -> None:
     # the skill names it only as what replaces that rule when the guidance is there.
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     section = skill.split("### Worker debate", 1)[1].split("\n## ", 1)[0]
-    assert "Offer one unasked only when the task is a complex analysis" in section
+    assert "Offer a debate only for a costly, contested choice" in section
+    assert '"When to offer a debate"' in section
     assert "references/worker-debate.md" in section
+    debate = (SKILL_DIR / "references" / "worker-debate.md").read_text(encoding="utf-8")
+    offer = debate.split("## When to offer a debate", 1)[1]
+    assert "Offer one unasked only when the task is a complex analysis" in offer
     assert '"Worker grill preview is on" paragraph,\nit replaces the unasked offer' in section
     assert "[GRILL:" not in section
     assert (SKILL_DIR / "references" / "worker-debate.md").is_file()

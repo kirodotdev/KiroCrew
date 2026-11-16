@@ -319,3 +319,24 @@ Count a participant's report only when its round file exists and its round and
 - Each round costs one relay per participant. Keep relays to paths and ids, let
   each critic list everything in one file per round, and stop early when the
   checkpoint allows.
+
+## When to offer a debate
+
+**Offer a debate for a costly, contested choice.** Offer one when the owner
+asks for it. When the owner says "discuss", "debate", "讨论" or "grill" and it
+is unclear whether they want a debate or one worker proposing a solution,
+pick the likelier reading, state it, and go on. Offer one unasked only when the task is a complex analysis: two or
+more plausible approaches, AND a wrong choice is costly. Costly means it
+crosses a security, data, approval or trust boundary, changes a contract
+others depend on, or follows a prior failed attempt or a design block from a
+reviewer. Size alone
+(about 150 lines, two or more modules) is not a reason, and neither is an RFC
+unless both conditions hold. A debate costs about 45 minutes and several work
+items. To offer it, put "debate first" in your Round 0 plan as one Assumption
+line: the question, the participants and their roles, the rounds, a time
+estimate and the work items it uses. Do not offer it for a small change with
+a clear fix, CI or rebase work, wording, an emergency, a design the owner
+already decided, or when fewer than half the goal's work items are left.
+"Skip the debate", "just do it" or any gate-skipping message drops it. A
+standing preference the owner stated ("always debate first", "stop suggesting
+debates") wins over these rules.
