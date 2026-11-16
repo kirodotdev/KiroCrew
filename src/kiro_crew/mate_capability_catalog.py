@@ -60,7 +60,9 @@ def _strings(value: Any) -> list[str]:
 def _servers(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
-    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, dict)}
+    return {
+        k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, dict)
+    }
 
 
 def _mounted(spec: dict[str, Any]) -> dict[str, Any]:
@@ -70,7 +72,9 @@ def _mounted(spec: dict[str, Any]) -> dict[str, Any]:
     selector for gives the worker no tool, so it is not one the worker has.
     """
     servers = _servers(spec.get("mcpServers"))
-    return {name: entry for name, entry in servers.items() if server_selectors(spec, [name])}
+    return {
+        name: entry for name, entry in servers.items() if server_selectors(spec, [name])
+    }
 
 
 def worker_has(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, Any]:
@@ -84,8 +88,13 @@ def worker_has(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, Any]:
             {ref.split("/", 1)[1] for ref in allowed if ref.startswith(f"@{name}/")}
             | set(_strings(entry.get("autoApprove")))
         )
-        row: dict[str, Any] = {"name": name, "runs_without_asking": "all" if whole else tools}
-        off = sorted(ref.split("/", 1)[1] for ref in excluded if ref.startswith(f"@{name}/"))
+        row: dict[str, Any] = {
+            "name": name,
+            "runs_without_asking": "all" if whole else tools,
+        }
+        off = sorted(
+            ref.split("/", 1)[1] for ref in excluded if ref.startswith(f"@{name}/")
+        )
         if off:
             row["switched_off"] = off
         servers.append(row)
@@ -112,7 +121,9 @@ def gateway_lacks(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, An
 
         rows = list_servers()
     except Exception:  # noqa: BLE001 - an unreadable config lists no server
-        logger.warning("MCP config unreadable; the catalog lists no gateway server", exc_info=True)
+        logger.warning(
+            "MCP config unreadable; the catalog lists no gateway server", exc_info=True
+        )
         rows = []
     for row in rows:
         name = getattr(row, "name", "")
@@ -133,7 +144,10 @@ def gateway_lacks(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, An
 #: Bounds of the dispatch summary: names listed per line, characters per name.
 _SUMMARY_NAMES = 12
 _SUMMARY_NAME_CHARS = 48
-_SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/ -]+")
+# ``:`` is kept because it separates an app-shipped server's app from its server
+# (``auto-improvement:auto-improvement``); dropping it named a server that
+# matches nothing in the specs or the logs (#37402).
+_SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/ :-]+")
 
 
 def _summary_names(names: list[str], how: dict[str, str] | None = None) -> str:
@@ -172,7 +186,9 @@ def session_unusable(report: dict[str, Any] | None) -> dict[str, str]:
     unusable: dict[str, str] = {}
     for bucket, how in _UNUSABLE:
         for name in _strings(report.get(bucket)):
-            signed_out = bucket == "failed" and is_recoverable_auth_failure(reasons.get(name))
+            signed_out = bucket == "failed" and is_recoverable_auth_failure(
+                reasons.get(name)
+            )
             unusable.setdefault(name, _SIGNED_OUT if signed_out else how)
     return unusable
 
@@ -213,7 +229,9 @@ def dispatch_summary(
     """
     unusable = session_unusable(report)
     has = [
-        row["name"] for row in worker_has(spec, catalog)["servers"] if row["name"] not in unusable
+        row["name"]
+        for row in worker_has(spec, catalog)["servers"]
+        if row["name"] not in unusable
     ]
     # A server the user switched off cannot be added (``additions_to_draft``
     # refuses it), so it is not offered.
@@ -229,7 +247,9 @@ def dispatch_summary(
         unusable_line(spec, unusable),
     ]
     if lacks:
-        lines.append(crewmate_prompts.fill("dispatch.gateway_has", names=_summary_names(lacks)))
+        lines.append(
+            crewmate_prompts.fill("dispatch.gateway_has", names=_summary_names(lacks))
+        )
     return " ".join(line for line in lines if line)
 
 
@@ -260,11 +280,18 @@ def addition_operations(
     """
     ops: list[dict[str, Any]] = []
     if transport is not None:
-        ops.append({"section": "mcpServers", "id": name, "action": "set", "value": transport})
+        ops.append(
+            {"section": "mcpServers", "id": name, "action": "set", "value": transport}
+        )
     ops.append({"section": "tools", "id": f"@{name}", "action": "set", "value": True})
     for tool in dict.fromkeys(auto_approve):
         ops.append(
-            {"section": "allowedTools", "id": f"@{name}/{tool}", "action": "set", "value": True}
+            {
+                "section": "allowedTools",
+                "id": f"@{name}/{tool}",
+                "action": "set",
+                "value": True,
+            }
         )
     return ops
 
@@ -306,7 +333,9 @@ def clean_origins(value: Any) -> dict[str, dict[str, str]]:
         ):
             out[name] = {"source": SOURCE_REGISTRY, "registry_id": rid}
             continue
-        raise ValueError("an origin is {source: gateway} or {source: registry, registry_id}")
+        raise ValueError(
+            "an origin is {source: gateway} or {source: registry, registry_id}"
+        )
     return out
 
 
@@ -379,7 +408,9 @@ def origin_rows(
         rows.append({"label": f"{name}: comes from", "after": where})
         tools = granted.get(name) or []
         if name in whole:
-            rows.append({"label": f"{name}: runs without asking", "after": "every tool"})
+            rows.append(
+                {"label": f"{name}: runs without asking", "after": "every tool"}
+            )
         elif tools:
             rows.append({"label": f"{name}: runs without asking", "add": sorted(tools)})
         else:
