@@ -67,6 +67,7 @@ from kiro_crew.work_ledger_store import (
 )
 from kiro_crew.work_vocab import (
     MAX_RETIRED_BINDINGS,
+    WORK_CONDUCTOR_RETIRE_REASONS,
     WORK_MAX_INSTANCE_ID_CHARS,
     WORK_MAX_PEER_SLOT_CHARS,
     WORK_REASON_STATUSES,
@@ -451,8 +452,9 @@ def apply_remote_bind(
 #: The refusal for a retire while every kept binding still waits to be closed.
 CODE_RETIRED_HISTORY_FULL = "retired_history_full"
 
-#: Why a binding was retired (rfc §5b).
-RETIRE_REASONS: frozenset[str] = frozenset({"crew_unreachable"})
+#: Why a binding was retired (rfc §5b): the hub's own ``crew_unreachable``, or a
+#: reason the owning conductor gives on ``work_ledger_record action=retire``.
+RETIRE_REASONS: frozenset[str] = frozenset({"crew_unreachable", *WORK_CONDUCTOR_RETIRE_REASONS})
 
 
 def apply_remote_retire(
@@ -465,8 +467,10 @@ def apply_remote_retire(
 ) -> dict[str, Any]:
     """Retire an item's current remote binding. Conductor-owned, event kind ``retire``.
 
-    Reached only from the hub's own ingest. Needs the item open and still bound to
-    exactly this pair; moves the pair into ``retired_bindings`` and leaves the item
+    Reached only through ``remote_ingest._record_retire``: the hub's own ingest
+    (``crew_unreachable``) and the owning conductor's ``work_ledger_record
+    action=retire`` (``login_blocked``, ``wrong_crew``). Needs the item open and
+    still bound to exactly this pair; moves the pair into ``retired_bindings`` and leaves the item
     unbound, so the next ingest reads nothing from that slot and a placement may
     bind it again. Marking an entry ``destroyed`` once its slot is closed belongs to
     the peer half (wave 8b).

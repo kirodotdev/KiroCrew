@@ -194,6 +194,10 @@ WORK_MAX_ARTIFACT_VALUE_CHARS: int = 512
 #: A retire reason and a stamp, as stored on a retired binding.
 WORK_MAX_RETIRE_REASON_CHARS: int = 64
 WORK_MAX_STAMP_CHARS: int = 64
+#: The retire reasons a conductor may give on ``work_ledger_record action=retire``
+#: (rfc-conductor-remote-dispatch §5b): the worker is stuck on a login, or the crew
+#: lacks what the item needs. ``crew_unreachable`` is the hub's own, never a caller's.
+WORK_CONDUCTOR_RETIRE_REASONS: tuple[str, ...] = ("login_blocked", "wrong_crew")
 
 #: Each retired binding's text fields and their caps.
 _RETIRED_BINDING_TEXT: dict[str, int] = {
