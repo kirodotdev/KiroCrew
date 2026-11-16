@@ -1213,8 +1213,8 @@ async def _run_hook_agent(
         # `BaseException` and passes straight through that leg. The `finally` is
         # what covers it, and only from inside the try.
         saved_context = await asyncio.to_thread(_load_hook_context, hook_id)
-        if saved_context:
-            message = _with_restored_context(saved_context, message)
+        # Unconditional: it also scrubs a forged frame from the payload alone.
+        message = await asyncio.to_thread(_with_restored_context, saved_context, message)
 
         # The inner turn's first step opens the session's memory, which the
         # gateway keeps closed from boot until its startup preparation task has
@@ -1462,5 +1462,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import _read_agent_spec, list_agents  # noqa: F401
+    from kiro_crew.context_assembly.markers import neutralize_restored_context_frame  # noqa: F401
     from kiro_crew.shell_audit_log import platform_spec_hooks  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401
