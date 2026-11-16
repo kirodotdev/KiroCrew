@@ -1243,7 +1243,8 @@ class AcpProvider(LLMProvider):
         """Whether a fresh conversation can start on this session's live process now.
 
         True on the shared runtime of a backend whose session teardown evicts
-        (``ACP_BACKENDS_SESSION_EVICTION``), and not for a session placed on a remote
+        (``ACP_BACKENDS_SESSION_EVICTION``), unless a closed session leaves its MCP
+        servers running (``AcpSessionProvider.close_leaves_mcp_servers``), and not for a session placed on a remote
         or cloud workspace, whose session start records its placement
         (``record_cloud_session``) where :meth:`new_conversation` does not. A dead
         process is not read here: ``AcpSessionProvider.new_conversation`` refuses it
@@ -1256,6 +1257,7 @@ class AcpProvider(LLMProvider):
         return (
             isinstance(client, AcpSessionProvider)
             and client.backend in ACP_BACKENDS_SESSION_EVICTION
+            and not client.close_leaves_mcp_servers
             and remote_workspace_for(self._owning_session_key()) is None
         )
 

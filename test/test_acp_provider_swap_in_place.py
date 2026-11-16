@@ -13,13 +13,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.providers.acp import AcpProvider
 
 
 def _provider(*, backend: str = ACP_BACKEND_KAS) -> AcpProvider:
     client = MagicMock(spec=AcpSessionProvider)
     client.backend = backend
+    client.close_leaves_mcp_servers = backend == ACP_BACKEND_CODEX
     client.new_conversation = AsyncMock()
     provider = AcpProvider.__new__(AcpProvider)
     provider._client = client  # type: ignore[assignment]
@@ -36,6 +42,34 @@ def test_a_live_shared_runtime_swaps(backend, monkeypatch) -> None:
 def test_a_backend_without_session_eviction_does_not_swap(monkeypatch) -> None:
     monkeypatch.setattr("kiro_crew.session_environment.remote_workspace_for", lambda _k: None)
     assert _provider(backend=ACP_BACKEND_CLAUDE).swaps_conversation_in_place is False
+
+
+def test_codex_does_not_swap(monkeypatch) -> None:
+    """A closed codex session leaves its MCP servers running, so the chat's fresh
+    conversation takes the discard and cold start instead."""
+    monkeypatch.setattr("kiro_crew.session_environment.remote_workspace_for", lambda _k: None)
+    assert _provider(backend=ACP_BACKEND_CODEX).swaps_conversation_in_place is False
+
+
+@pytest.mark.asyncio
+async def test_a_pooled_codex_reuse_refuses_through_the_provider() -> None:
+    """The warm pool calls ``AcpProvider.new_conversation``; on codex it must raise
+    the ``NotImplementedError`` the pool answers with a kill and respawn, with no
+    fresh session opened on the old process."""
+    runtime = MagicMock()
+    runtime.acp_backend = ACP_BACKEND_CODEX
+    runtime.is_alive.return_value = True
+    runtime.create_session = AsyncMock()
+    old = MagicMock()
+    old.destroy = AsyncMock()
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = AcpSessionProvider(old, runtime)  # type: ignore[assignment]
+
+    with pytest.raises(NotImplementedError):
+        await provider.new_conversation()
+
+    runtime.create_session.assert_not_awaited()
+    old.destroy.assert_not_awaited()
 
 
 def test_a_remote_workspace_does_not_swap(monkeypatch) -> None:

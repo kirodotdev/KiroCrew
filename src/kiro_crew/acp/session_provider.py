@@ -52,6 +52,7 @@ from kiro_crew.acp.runtime import (
     AcpSessionHandle,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
@@ -390,6 +391,18 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
 
+    @property
+    def close_leaves_mcp_servers(self) -> bool:
+        """Whether ``session/close`` leaves the closed session's MCP servers running.
+
+        True on codex: its close evicts the session, but the stdio MCP servers it
+        started for it from ``config.toml`` keep running under the process, so a
+        fresh conversation on the same process would add one more set each time.
+        :meth:`new_conversation` refuses such a backend, and
+        ``AcpProvider.swaps_conversation_in_place`` reads this too.
+        """
+        return self.backend == ACP_BACKEND_CODEX
+
     async def new_conversation(self, *, member_session_key: str = "", channel_id: str = "") -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
 
@@ -434,6 +447,13 @@ class AcpSessionProvider(LLMProvider):
                 f"backend {self.backend!r} does not evict sessions on teardown, so "
                 "warm conversation reuse would accumulate resident sessions -- "
                 "use the hard-reset path instead"
+            )
+        if self.close_leaves_mcp_servers:
+            # Every caller turns this refusal into a kill and respawn, which ends
+            # the closed sessions' MCP servers with the process.
+            raise NotImplementedError(
+                "codex leaves a closed session's MCP servers running, so a fresh "
+                "conversation needs a new process"
             )
         if not self._runtime.is_alive():
             raise AcpProcessDied("Runtime is not alive — cannot start a new conversation")
