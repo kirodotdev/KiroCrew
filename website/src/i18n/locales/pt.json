@@ -13265,8 +13265,10 @@
         "hidden_scratch_folder": "A pasta deste chat era uma pasta temporária de uma execução anterior e não pode mais ser aberta. O chat agora trabalha na pasta padrão."
       },
       "folderPanel": {
+        "back": "Voltar",
         "clear_search": "Limpar pesquisa",
         "empty_folder": "Pasta vazia",
+        "forward": "Avançar",
         "includes_subfolders": "inclui subpastas",
         "listing_timed_out": "A listagem da pasta expirou",
         "loading": "Carregando…",

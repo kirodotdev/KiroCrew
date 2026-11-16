@@ -12701,8 +12701,10 @@
         "hidden_scratch_folder": "このチャットのフォルダーは以前の実行で作られた一時フォルダーで、もう開けません。このチャットは既定のフォルダーで動作するようになりました。"
       },
       "folderPanel": {
+        "back": "戻る",
         "clear_search": "検索をクリア",
         "empty_folder": "空のフォルダー",
+        "forward": "進む",
         "includes_subfolders": "サブフォルダーを含む",
         "listing_timed_out": "フォルダーの一覧表示がタイムアウトしました",
         "loading": "読み込み中…",

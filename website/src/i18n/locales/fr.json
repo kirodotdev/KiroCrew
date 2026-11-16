@@ -13265,8 +13265,10 @@
         "hidden_scratch_folder": "Le dossier de ce chat était un dossier temporaire d’une exécution précédente et ne peut plus être ouvert. Le chat utilise désormais le dossier par défaut."
       },
       "folderPanel": {
+        "back": "Retour",
         "clear_search": "Effacer la recherche",
         "empty_folder": "Dossier vide",
+        "forward": "Suivant",
         "includes_subfolders": "sous-dossiers inclus",
         "listing_timed_out": "Délai de listage du dossier dépassé",
         "loading": "Chargement…",

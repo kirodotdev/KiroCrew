@@ -13265,8 +13265,10 @@
         "hidden_scratch_folder": "La cartella di questa chat era una cartella temporanea di un’esecuzione precedente e non può più essere aperta. La chat ora lavora nella cartella predefinita."
       },
       "folderPanel": {
+        "back": "Indietro",
         "clear_search": "Cancella ricerca",
         "empty_folder": "Cartella vuota",
+        "forward": "Avanti",
         "includes_subfolders": "include sottocartelle",
         "listing_timed_out": "Elenco della cartella scaduto",
         "loading": "Caricamento…",

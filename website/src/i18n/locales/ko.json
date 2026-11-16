@@ -12701,8 +12701,10 @@
         "hidden_scratch_folder": "이 채팅의 폴더는 이전 실행에서 만든 임시 폴더라 더 이상 열 수 없습니다. 이제 이 채팅은 기본 폴더에서 작업합니다."
       },
       "folderPanel": {
+        "back": "뒤로",
         "clear_search": "검색 지우기",
         "empty_folder": "빈 폴더",
+        "forward": "앞으로",
         "includes_subfolders": "하위 폴더 포함",
         "listing_timed_out": "폴더 목록 시간 초과",
         "loading": "불러오는 중…",

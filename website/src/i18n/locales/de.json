@@ -12983,8 +12983,10 @@
         "hidden_scratch_folder": "Der Ordner dieses Chats war ein temporärer Ordner aus einem früheren Lauf und kann nicht mehr geöffnet werden. Der Chat arbeitet jetzt im Standardordner."
       },
       "folderPanel": {
+        "back": "Zurück",
         "clear_search": "Suche löschen",
         "empty_folder": "Leerer Ordner",
+        "forward": "Vorwärts",
         "includes_subfolders": "einschließlich Unterordner",
         "listing_timed_out": "Zeitüberschreitung beim Auflisten des Ordners",
         "loading": "Wird geladen…",
