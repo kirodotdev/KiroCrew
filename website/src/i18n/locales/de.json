@@ -11457,14 +11457,17 @@
       "not_sent": "Diese Ansicht hat kein Chatfeld zum Senden.",
       "question": "Frage",
       "send_decline": "Keine Diskussion nötig",
+      "send_failed": "Nicht gesendet. Versuch es noch einmal.",
       "send_must": "Muss: {{text}}",
       "send_question": "Frage: {{text}}",
       "send_skip": "Nicht besprochen: {{text}}",
       "send_start": "Starte die Diskussion",
+      "sending": "Wird gesendet …",
       "sent": "Gesendet.",
       "skip": "Nicht besprochen",
       "staged": "Ins Chatfeld gelegt. Von dort senden.",
       "start": "Starten",
+      "unconfirmed": "Nicht bestätigt. Es ist vielleicht schon raus. Steht es nicht im Chat, lade die Seite neu und versuch es noch einmal.",
       "who": "Wer spricht"
     },
     "voiceMuteButton": {

@@ -11715,14 +11715,17 @@
       "not_sent": "Esta vista no tiene un cuadro de chat al que enviar.",
       "question": "Pregunta",
       "send_decline": "No hace falta discutir",
+      "send_failed": "No se envió. Vuelve a intentarlo.",
       "send_must": "Debe: {{text}}",
       "send_question": "Pregunta: {{text}}",
       "send_skip": "No se discute: {{text}}",
       "send_start": "Empieza la discusión",
+      "sending": "Enviando…",
       "sent": "Enviado.",
       "skip": "No se discute",
       "staged": "Se puso en el cuadro de chat. Envíalo desde allí.",
       "start": "Empezar",
+      "unconfirmed": "Sin confirmar. Puede que ya se haya enviado. Si no está en el chat, recarga la página y vuelve a intentarlo.",
       "who": "Quién participa"
     },
     "voiceMuteButton": {

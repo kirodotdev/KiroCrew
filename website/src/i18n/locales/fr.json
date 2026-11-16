@@ -11715,14 +11715,17 @@
       "not_sent": "Cette vue n'a pas de zone de chat où envoyer.",
       "question": "Question",
       "send_decline": "Pas besoin de discussion",
+      "send_failed": "Non envoyé. Réessaie.",
       "send_must": "Doit : {{text}}",
       "send_question": "Question : {{text}}",
       "send_skip": "Hors discussion : {{text}}",
       "send_start": "Lance la discussion",
+      "sending": "Envoi…",
       "sent": "Envoyé.",
       "skip": "Hors discussion",
       "staged": "Placé dans la zone de chat. Envoie-le depuis là.",
       "start": "Commencer",
+      "unconfirmed": "Non confirmé. Il est peut-être déjà parti. S'il n'est pas dans le chat, recharge la page pour réessayer.",
       "who": "Qui participe"
     },
     "voiceMuteButton": {

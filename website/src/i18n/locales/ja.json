@@ -11199,14 +11199,17 @@
       "not_sent": "この画面には送信先のチャット欄がありません。",
       "question": "問い",
       "send_decline": "ディスカッションは不要",
+      "send_failed": "送信されませんでした。もう一度お試しください。",
       "send_must": "必須：{{text}}",
       "send_question": "問い：{{text}}",
       "send_skip": "話さないこと：{{text}}",
       "send_start": "ディスカッションを始めて",
+      "sending": "送信中…",
       "sent": "送信しました。",
       "skip": "話さないこと",
       "staged": "チャット欄に入れました。そこから送信してください。",
       "start": "開始",
+      "unconfirmed": "未確認です。送信済みの可能性があります。チャットにない場合は、ページを再読み込みしてもう一度お試しください。",
       "who": "参加者"
     },
     "voiceMuteButton": {

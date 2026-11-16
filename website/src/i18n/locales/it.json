@@ -11715,14 +11715,17 @@
       "not_sent": "Questa vista non ha una casella di chat a cui inviare.",
       "question": "Domanda",
       "send_decline": "Non serve discutere",
+      "send_failed": "Non inviato. Riprova.",
       "send_must": "Deve: {{text}}",
       "send_question": "Domanda: {{text}}",
       "send_skip": "Fuori discussione: {{text}}",
       "send_start": "Avvia la discussione",
+      "sending": "Invio…",
       "sent": "Inviato.",
       "skip": "Fuori discussione",
       "staged": "Inserito nella casella di chat. Invialo da lì.",
       "start": "Inizia",
+      "unconfirmed": "Non confermato. Potrebbe essere già partito. Se non è nella chat, ricarica la pagina per riprovare.",
       "who": "Chi partecipa"
     },
     "voiceMuteButton": {
