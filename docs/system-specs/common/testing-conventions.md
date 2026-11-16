@@ -5909,6 +5909,84 @@ CI-equivalent load (the suite's own bounded `-n`, no co-tenant saturating the co
 reproduce a race with the forced condition rather than with host load. Record the
 commands and both outputs in the pull request.
 
+### A Playwright spec that passed only on a retry: read what the page received
+
+The E2E gate fails a run when any spec passes only on a retry (`MAX_FLAKY_SPECS` is 0).
+In the 48 hours to 2026-11-16, four specs did that in 26 PR jobs. In every case the
+value Playwright received was one the PAGE produced after the spec's action. None of them
+was a spec that read too early. In three of the four, a longer timeout or one more wait in
+the spec would have hidden a real defect. So before you touch the spec, read the
+`Received` line and name who wrote it.
+
+- **Received is the page you just left.** `settings.spec.ts` clicked About and kept seeing
+  `/settings/display/view`. `embed-popout.spec.ts` saw `/embed/chat/...` and then
+  `/embed/settings?sub=view` again. In both, an effect wrote a replace navigation from a
+  render that still carried the old location. `BrowserRouter` applies a history change
+  inside `startTransition`. An urgent update (here the sub-nav's ResizeObserver width) can
+  commit first with the previous `useLocation()`, and the effect's `replace` then
+  overwrites the entry the click or redirect made. This is a product race. Fix the write,
+  not the spec ([PR #37885](https://github.com/kirodotdev/KiroCrew/pull/37885)):
+
+  ```tsx
+  // WRONG: re-runs when the width lands, and builds its target from a location that can
+  // lag the history by one pending transition
+  useEffect(() => {
+    if (width !== null && twoPane && !selectedKey) select(items[0].key)
+  }, [width, twoPane, selectedKey])
+
+  // RIGHT: skip while a newer entry is pending. The check changes identity with
+  // location.key, so the effect runs again once the router renders that entry.
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
+  useEffect(() => {
+    if (width !== null && twoPane && !selectedKey && renderedLocationIsCurrent()) select(items[0].key)
+  }, [width, twoPane, selectedKey, renderedLocationIsCurrent])
+  ```
+
+  Measured: 3 red runs (settings) and 2 (embed) in 48 hours before the fix; after it, 30
+  of 30 each at `--retries=0` on Linux, idle and with 6 of 8 cores busy.
+
+- **Received is the state from before an API write the spec made.** `session-tags-e2e.spec.ts`
+  test 8 posted a drop over `request` as soon as the column rendered, and the slot never
+  reached the Done column. The page's own `GET /api/chat/slots` was serialized before the
+  drop and applied after the drop's push, so the old row came back and nothing pushed
+  again. Wait for the page's read to finish before the write
+  ([PR #37286](https://github.com/kirodotdev/KiroCrew/pull/37286)):
+
+  ```ts
+  // WRONG: the column renders before the page's slot read has returned
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${col.id}"]`)
+  await request.post(`/api/chat/slots/${slotKey}/drop`, { data: { column_id: col.id } })
+
+  // RIGHT: arm the wait BEFORE goto, so a fast reply is not missed
+  const slotListRead = page.waitForResponse(r =>
+    r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${col.id}"]`)
+  await (await slotListRead).finished()
+  await request.post(`/api/chat/slots/${slotKey}/drop`, { data: { column_id: col.id } })
+  ```
+
+  Measured: 19 red runs in 48 hours, all before the fix; after it, 30 of 30 at
+  `--retries=0`, idle and under the same load. A user can hit the same reorder. If that ever matters, the fix is a
+  version check on the read in the product, not a wait.
+
+- **Received is a real miss.** `chat-form-switch-anchor.spec.ts` found the reader's row
+  33 to 54 px lower after a 1400 -> 382 px resize. Two virtualizer defects caused it. The
+  anchor was dropped on the scroll event its own write raised
+  ([PR #37931](https://github.com/kirodotdev/KiroCrew/pull/37931)). And under load a
+  window recompute ran before the fire that paid a reflow, and unmounted the reader's row
+  ([PR #37965](https://github.com/kirodotdev/KiroCrew/pull/37965)). Widening
+  `PX_TOLERANCE`, the quiet window or a timeout would have shipped both. Measured with 6
+  of 8 cores busy: 10 of 30 red after the first fix, 30 of 30 green after the second.
+
+To check a fix, run the spec through the harness gateway (`test/test_playwright_e2e.py`) with
+`--repeat-each=30 --retries=0` and expect 30 of 30. A spec that stays green idle can still
+be red under load: the form-switch miss was 0 of 30 idle and 10 of 30 with most cores busy.
+So reproduce the red first, with load if needed, and judge the fix against that red; a
+green run under load proves nothing alone. Raising retries, `test.skip`, a
+`waitForTimeout` and a looser assertion are not fixes.
+
 ### The gateway harness runs on all three platforms
 
 `kiro_crew.testing.harness.spawn_feature_gateway` boots a real gateway subprocess
