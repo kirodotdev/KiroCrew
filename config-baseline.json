@@ -73,7 +73,8 @@
         "chat_runtime_sharing_harnesses": {
           "kas": true,
           "codex": false,
-          "claude": false
+          "claude": false,
+          "goose": false
         },
         "agent_started_turns": true,
         "max_subagents": 0,
@@ -1176,13 +1177,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Chat Runtime Sharing: harnesses",
-      "help": "Which harnesses may share one agent process between dashboard chats while the chat_runtime_sharing feature preview is on, by harness name, each true or false. A harness switched off keeps one process per chat. A harness that is absent takes its default (KAS: on, codex: off, claude: off). Has no effect while the preview is off. Applies to chats started after the change.",
+      "help": "Which harnesses may share one agent process between dashboard chats while the chat_runtime_sharing feature preview is on, by harness name, each true or false. A harness switched off keeps one process per chat. A harness that is absent takes its default (KAS: on, codex: off, claude: off, goose: off). Has no effect while the preview is off. Applies to chats started after the change.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
         "kas": true,
         "codex": false,
-        "claude": false
+        "claude": false,
+        "goose": false
       }
     },
     {
@@ -1222,6 +1224,20 @@
       "sensitive": false,
       "tags": [],
       "label": "claude",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.chat_runtime_sharing_harnesses.goose",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "goose",
       "help": "",
       "hasChildren": false,
       "enumValues": null,

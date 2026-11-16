@@ -253,6 +253,7 @@ _REVIEWED_EDITABLE = frozenset(
         "agent.chat_runtime_sharing_harnesses.kas",
         "agent.chat_runtime_sharing_harnesses.codex",
         "agent.chat_runtime_sharing_harnesses.claude",
+        "agent.chat_runtime_sharing_harnesses.goose",
         # Local trace and metric sizes and ages: how much a cron run's trace field
         # keeps, how long and how large the on-disk shards grow. They send nothing.
         "cron_history.cron_trace_cap_kb",

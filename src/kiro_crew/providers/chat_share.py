@@ -61,7 +61,12 @@ from kiro_crew.acp.chat_runtime_sharing import (
     share_tree_root_of,
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_KAS,
+)
 from kiro_crew.agent_sdk.codex_transcripts import codex_home
 from kiro_crew.metrics.chat_runtime_share import record_placed, record_refused
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP, Acquisition
@@ -76,6 +81,26 @@ logger = logging.getLogger(__name__)
 #: shortcut: never pruned; one entry per distinct codex sign-in this gateway
 #: process has seen, which stays a handful. Prune if sign-ins ever churn.
 _CODEX_ERA_TOKENS: dict[str, str] = {}
+
+#: :func:`goose_spawn_identity`'s random token per provider and credential set seen
+#: by this process. shortcut: never pruned, like ``_CODEX_ERA_TOKENS``; one entry per
+#: distinct key rotation, which stays a handful. Prune if rotations ever churn.
+_GOOSE_ERA_TOKENS: dict[str, str] = {}
+
+#: Endings of the environment names a goose provider reads its credential from
+#: (``OPENAI_API_KEY``, ``DATABRICKS_TOKEN``, ``AWS_SECRET_ACCESS_KEY``,
+#: ``AWS_PROFILE`` and the like): goose looks a secret up in the environment first.
+_GOOSE_CREDENTIAL_ENDINGS = ("_KEY", "_KEY_ID", "_TOKEN", "_SECRET", "_PROFILE")
+
+#: The environment names goose locates its home from: config, data (sessions) and
+#: state directories.
+_GOOSE_HOME_VARIABLES = (
+    "GOOSE_PATH_ROOT",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+)
 
 
 def _codex_jwt_claim_user(jwt: object) -> str:
@@ -235,7 +260,89 @@ def _self_signed_era(backend: str, env_overrides: Mapping[str, str] | None = Non
         return codex_spawn_identity(env_overrides)
     if backend == ACP_BACKEND_CLAUDE:
         return claude_spawn_identity(env_overrides=env_overrides)
+    if backend == ACP_BACKEND_GOOSE:
+        return goose_spawn_identity(env_overrides=env_overrides)
     return None
+
+
+def goose_spawn_identity(
+    environ: Mapping[str, str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+) -> str:
+    """The account era of a goose start: which model provider a new process talks to.
+
+    goose never reads Kiro's sign-in. It resolves its provider from
+    ``GOOSE_PROVIDER`` (the environment over its ``config.yaml``) and the provider's
+    endpoint from that provider's ``*_HOST`` keys; its key comes from the
+    environment first, else the system keyring or ``secrets.yaml``. The era names
+    the goose home, the provider, those hosts and the credential the environment
+    hands the child, so another home, provider or endpoint, or a rotated
+    environment key, founds a new process instead of joining one that holds the
+    old one.
+
+    Not the whole ``config.yaml`` and not ``secrets.yaml``: goose writes config keys
+    (the last model chosen among them) while it runs, and a token refresh rewrites
+    the secrets, so a digest of either would move between two chats and no chat
+    would ever join another.
+
+    A config that cannot be read or parsed, or no provider at all, is ``""``,
+    which the placement turns into a key nothing can match: fail closed.
+
+    With no *environ*, the environment goose is launched with: the gateway's, under
+    ``agent.env`` (which can name the provider, and which a chat's child takes).
+    *env_overrides* is the start's ``extra_env``, over either.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    from kiro_crew.acp.harness.goose import goose_config_dir
+
+    if environ is None:
+        from kiro_crew.acp.agent_env import agent_env_overlay
+
+        env: dict[str, str] = {**os.environ, **agent_env_overlay()}
+    else:
+        env = dict(environ)
+    env.update(env_overrides or {})
+    path = goose_config_dir(env) / "config.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return ""
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return ""
+    provider = env.get("GOOSE_PROVIDER") or data.get("GOOSE_PROVIDER")
+    if not isinstance(provider, str) or not provider:
+        return ""
+    # Every endpoint key goose could read, from the file and the environment alike,
+    # the environment winning as goose resolves it. An unrelated ``*_HOST`` in the
+    # environment only makes the key stricter.
+    host_keys = {key for key in (*data, *env) if isinstance(key, str) and key.endswith("_HOST")}
+    hosts = sorted((key, str(env.get(key) or data.get(key))) for key in host_keys)
+    # The credential the child inherits from the environment, where goose looks a
+    # secret up first: a running gateway changes it (``config/live.py`` applies an
+    # edited ``.env`` key), and a running child keeps the old one, so a rotated key
+    # founds a new process instead of joining one holding the revoked key. An
+    # unrelated variable with such an ending only makes the key stricter.
+    creds = sorted(
+        (key, value) for key, value in env.items() if key.endswith(_GOOSE_CREDENTIAL_ENDINGS)
+    )
+    # Which goose home the child runs on: the resolved config path, and the
+    # variables goose finds its data and state directories from (its session store
+    # among them). A live ``.env`` reload can move any of them, and a running child
+    # keeps the old home, so another home founds a new process.
+    homes = [(key, env.get(key, "")) for key in _GOOSE_HOME_VARIABLES]
+    stable = json.dumps([str(path), homes, provider, hosts, creds])
+    # A random token per distinct value, as codex does: the era only has to be equal
+    # within this process, and a random token carries nothing of the key, so no
+    # digest of an API key exists to be guessed against.
+    token = _GOOSE_ERA_TOKENS.get(stable)
+    if token is None:
+        token = _GOOSE_ERA_TOKENS.setdefault(stable, secrets.token_hex(16))
+    return "goose:" + token
 
 
 #: How many placements a start makes while a keyed input keeps moving between the
@@ -938,5 +1045,6 @@ __all__ = [
     "ChatSharePlacement",
     "claude_spawn_identity",
     "codex_spawn_identity",
+    "goose_spawn_identity",
     "resolve_chat_share",
 ]

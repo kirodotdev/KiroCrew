@@ -8,7 +8,8 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_abandoned_steering``, ``_steering_answers``,
+Instance fields written: ``_abandoned_steering``, ``_goose_active_run_id``,
+``_goose_steers``, ``_steering_answers``,
 ``_steering_cancel_tasks``, ``_steering_settled``, ``_steers_accepted``,
 ``_steers_proven``, ``_turn_steering_denied``.
 
@@ -28,16 +29,23 @@ from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead
 from kiro_crew.acp.types import (
     ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
+    EVENT_STEER_CONSUMED,
     MAX_STEERING_ANSWERS,
     MAX_STEERING_TEXT_CHARS,
     METHOD_CANCEL,
+    METHOD_GOOSE_SESSION_STEER,
     METHOD_SESSION_STEER_CLEAR,
     METHOD_SESSION_STEERING,
+    OWN_STEERING_REQUEST_METHODS,
     STEER_CLEAR_ANSWER_WAIT_SECS,
     STEERING_ANSWER_WAIT_SECS,
     STEERING_INJECTED,
     STEERING_STARTED_NEW_TURN,
     STOP_REASON_END_TURN,
+    AcpEvent,
+    JsonRpcMessage,
+    goose_announced_run,
+    goose_steer_echo_id,
     steering_advertised,
     steering_outcome,
     wrap_user_message,
@@ -77,6 +85,13 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
     text = (message or "").strip()
     if not text or not self._session_id:
         return False
+    if self._runtime.acp_backend in OWN_STEERING_REQUEST_METHODS:
+        # goose takes its own request, not ``_session/steering``, which it never
+        # advertises: without this a shared goose chat queued every steer.
+        sent = await self._steer_via_goose_request(text)
+        if sent:
+            trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
+        return sent
     if self._runtime.acp_backend in ACP_BACKENDS_STEERING_REQUEST:
         if not steering_advertised(self.initialize_result):
             # The process's handshake did not advertise ``_session/steering``
@@ -562,3 +577,130 @@ def _note_steering_denial(self: AcpSessionHandle) -> None:
     if self._runtime.acp_backend not in ACP_BACKENDS_STEERING_REQUEST:
         return
     self._turn_steering_denied = True
+
+
+async def _steer_via_goose_request(self: AcpSessionHandle, text: str) -> bool:
+    """Deliver a user steer over goose's ``_goose/unstable/session/steer``.
+
+    The shared-runtime twin of ``AcpClient._steer_via_request``. The request names
+    the run it is for (``expectedRunId``, the id goose announced on
+    ``session_info_update._meta.goose.activeRunId``, :meth:`_note_goose_run`), so it
+    is sent only while a turn of ours is running, its prompt has been written, its
+    run id is known, and no approval is open: goose's agent loop is parked on the
+    approval and cannot take the text. The answer is read off the session queue
+    (``send_request_for_answer``), so the turn's dispatch loop never sees it, and is
+    awaited until it arrives, the turn ends, or ``STEERING_ANSWER_WAIT_SECS`` pass.
+
+    True means goose queued the text for the running turn, not that the turn read
+    it. goose echoes each steer it drains as a ``user_message_chunk`` carrying
+    ``_meta.goose.steer`` and the answer's ``messageId``, which
+    :meth:`_goose_steer_echo` reports as ``EVENT_STEER_CONSUMED``. A steer still
+    queued when its run ends is discarded by goose and never echoed, so the
+    caller's pending entry is queued by the turn's teardown
+    (``steer_needs_loss_recovery``). False -- an error answer (an older goose
+    answers ``-32601``), no answer in time, or no run to aim at -- sends the caller
+    down its queue path.
+    """
+    run_id = self._goose_active_run_id
+    if (
+        not self.is_turn_active
+        or not self._prompt_written
+        or self._awaiting_permission
+        or not run_id
+        or len(text) > MAX_STEERING_TEXT_CHARS
+        or len(self._goose_steers) >= MAX_STEERING_ANSWERS
+    ):
+        return False
+    wrapped = wrap_user_message(text)
+    entry: list[tuple[asyncio.Future[dict[str, Any]], str]] = []
+
+    def _register(fut: "asyncio.Future[dict[str, Any]]") -> None:
+        # Before the write, so an echo read before this call resumes still
+        # finds the answer to match (:meth:`_goose_steer_echo`).
+        entry.append((fut, wrapped))
+        self._goose_steers.append(entry[0])
+
+    def _forget() -> None:
+        if entry and entry[0] in self._goose_steers:
+            self._goose_steers.remove(entry[0])
+
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
+    turn_done = self._turn_done
+    try:
+        answer = await self._runtime.send_request_for_answer(
+            METHOD_GOOSE_SESSION_STEER,
+            {
+                "sessionId": self._session_id,
+                "expectedRunId": run_id,
+                "prompt": [{"type": "text", "text": text}],
+            },
+            on_registered=_register,
+        )
+    except BaseException as exc:
+        if entry:
+            self._runtime.forget_request(entry[0][0])
+        _forget()
+        if not isinstance(exc, Exception):
+            raise
+        if getattr(exc, "ambiguous_delivery", False) is True:
+            raise
+        logger.debug("goose steer not written for %s: %s", self._session_id, type(exc).__name__)
+        return False
+    ended: asyncio.Future[Any] = asyncio.ensure_future(turn_done.wait())
+    waiters: set[asyncio.Future[Any]] = {answer, ended}
+    try:
+        await asyncio.wait(
+            waiters, timeout=STEERING_ANSWER_WAIT_SECS, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        ended.cancel()
+    message_id = _goose_message_id(answer)
+    if not message_id:
+        # The class only: the error text is the harness's.
+        logger.info(
+            "goose steer on %s not accepted: %s",
+            self._session_id,
+            "no answer" if not answer.done() else "refused",
+        )
+        if not answer.done():
+            self._runtime.forget_request(answer)
+        _forget()
+        return False
+    self._last_steer_monotonic = time.monotonic()
+    return True
+
+
+def _goose_message_id(answer: "asyncio.Future[dict[str, Any]]") -> str:
+    """The ``messageId`` an accepted goose steer answer carries, or ``""``."""
+    if not answer.done() or answer.cancelled() or answer.exception() is not None:
+        return ""
+    result = answer.result()
+    message_id = result.get("messageId") if isinstance(result, dict) else None
+    return message_id if isinstance(message_id, str) else ""
+
+
+def _note_goose_run(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:
+    """Track the run id goose announces for this session's running prompt
+    (``goose_announced_run``, the reader ``AcpClient`` uses too)."""
+    announced, run_id = goose_announced_run(msg.params)
+    if announced:
+        self._goose_active_run_id = run_id
+
+
+def _goose_steer_echo(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
+    """``EVENT_STEER_CONSUMED`` for goose's echo of a steer this session sent.
+
+    Matched by the ``messageId`` the steer's answer returned (``goose_steer_echo_id``,
+    the reader ``AcpClient`` uses too), never by text. A steer spanning several
+    content blocks echoes once per block; the first settles it.
+    """
+    if not self._goose_steers:
+        return None
+    echoed = goose_steer_echo_id(msg.params)
+    if not echoed:
+        return None
+    for held in self._goose_steers:
+        if _goose_message_id(held[0]) == echoed:
+            self._goose_steers.remove(held)
+            return AcpEvent(kind=EVENT_STEER_CONSUMED, text=held[1])
+    return None

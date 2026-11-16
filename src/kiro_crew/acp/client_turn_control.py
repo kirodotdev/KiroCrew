@@ -62,19 +62,21 @@ from kiro_crew.acp.types import (
     MAX_STEERING_TEXT_CHARS,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
+    METHOD_GOOSE_SESSION_STEER,
     METHOD_PROMPT,
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_STEERING,
     METHOD_SESSION_UPDATE,
     OUTCOME_CANCELLED,
+    OWN_STEERING_REQUEST_METHODS,
     STEERING_ANSWER_WAIT_SECS,
     STEERING_INJECTED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
-    UPDATE_SESSION_INFO,
-    UPDATE_USER_MESSAGE_CHUNK,
     AcpEvent,
     JsonRpcMessage,
+    goose_announced_run,
+    goose_steer_echo_id,
     steering_outcome,
     wrap_user_message,
 )
@@ -347,8 +349,8 @@ def parse_slash_command(command: str) -> tuple[str, dict]:
 # neither is not offered a steer on this client. The wait for the answer and the
 # bounds on steers held for one turn are the shared ``STEERING_ANSWER_WAIT_SECS``,
 # ``MAX_STEERING_TEXT_CHARS`` and ``MAX_STEERING_ANSWERS``.
-_GOOSE_SESSION_STEER = "_goose/unstable/session/steer"
-_CLIENT_STEERING_REQUEST_METHODS: dict[str, str] = {ACP_BACKEND_GOOSE: _GOOSE_SESSION_STEER}
+_GOOSE_SESSION_STEER = METHOD_GOOSE_SESSION_STEER
+_CLIENT_STEERING_REQUEST_METHODS: dict[str, str] = OWN_STEERING_REQUEST_METHODS
 
 
 async def command_result(
@@ -1082,20 +1084,12 @@ async def _steer_via_concurrent_prompt(self: AcpClient, text: str) -> bool:
 
 
 def _note_active_run(self: AcpClient, msg: JsonRpcMessage) -> None:
-    """Track the run id goose announces for the running prompt.
-
-    goose sends ``session_info_update`` with ``_meta.goose.activeRunId`` set
-    when a prompt starts and null when it ends; a steer must name it.
-    """
+    """Track the run id goose announces for the running prompt (``goose_announced_run``)."""
     if self.backend not in _CLIENT_STEERING_REQUEST_METHODS:
         return
-    update = (msg.params or {}).get("update")
-    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_SESSION_INFO:
-        return
-    goose = (update.get("_meta") or {}).get("goose")
-    if isinstance(goose, dict) and "activeRunId" in goose:
-        run_id = goose.get("activeRunId")
-        self._active_run_id = run_id if isinstance(run_id, str) and run_id else None
+    announced, run_id = goose_announced_run(msg.params)
+    if announced:
+        self._active_run_id = run_id
 
 
 def _settle_steer_answer(self: AcpClient, msg: JsonRpcMessage) -> bool:
@@ -1140,13 +1134,10 @@ def _steer_echo_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
     held = getattr(self, "_steers_awaiting_echo", None)
     if not held:
         return None
-    update = (msg.params or {}).get("update")
-    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_USER_MESSAGE_CHUNK:
+    echoed = goose_steer_echo_id(msg.params)
+    if not echoed:
         return None
-    goose = (update.get("_meta") or {}).get("goose")
-    if not isinstance(goose, dict) or goose.get("steer") is not True:
-        return None
-    wrapped = held.pop(str(goose.get("messageId") or ""), None)
+    wrapped = held.pop(echoed, None)
     if wrapped is None:
         return None
     return AcpEvent(kind=EVENT_STEER_CONSUMED, text=wrapped)

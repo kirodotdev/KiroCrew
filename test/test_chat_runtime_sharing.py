@@ -203,6 +203,37 @@ class TestChatSharingEligibility:
             == "backend_not_chat_shareable"
         )
 
+    def test_a_goose_chat_shares_only_from_the_dashboard_with_its_switch_on(self):
+        """goose shares only for a dashboard chat whose switch is on, and is served by
+        the shared runtime only for such a chat; a Side Chat (``side:`` origin), a
+        channel or a switched-off chat keeps its own process."""
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_GOOSE,
+            ACP_BACKENDS_ACP_RUNTIME,
+            ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
+        )
+
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_GOOSE,
+            member_context=False,
+            harness_enabled=True,
+        )
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS
+        assert ACP_BACKEND_GOOSE not in ACP_BACKENDS_ACP_RUNTIME
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "harness_enabled": False})
+            == "harness_switched_off"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "session_key": "side:dashboard:chat-12:1"})
+            == "origin_not_dashboard"
+        )
+
     def test_a_claude_chat_shares_only_from_the_dashboard_with_its_switch_on(self):
         """claude shares only for a dashboard chat whose switch is on; a channel,
         a member or a switched-off chat keeps its own process."""
@@ -381,6 +412,15 @@ class TestPerHarnessSwitches:
         on = self._cfg({ACP_BACKEND_CLAUDE: True})
         assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_CLAUDE) is True
 
+    def test_goose_is_off_until_its_switch_is_stored_true(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg({}), ACP_BACKEND_GOOSE) is False
+        assert chat_runtime_sharing_harness_enabled(self._cfg(None), ACP_BACKEND_GOOSE) is False
+        on = self._cfg({ACP_BACKEND_GOOSE: True})
+        assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_GOOSE) is True
+
     def test_codex_is_off_until_its_switch_is_stored_true(self):
         from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
 
@@ -393,12 +433,13 @@ class TestPerHarnessSwitches:
         from kiro_crew.config.loader_builders import _chat_runtime_sharing_harnesses
         from kiro_crew.config.sections import AgentConfig
 
-        defaults = {"kas": True, "codex": False, "claude": False}
+        defaults = {"kas": True, "codex": False, "claude": False, "goose": False}
         assert AgentConfig().chat_runtime_sharing_harnesses == defaults
         assert _chat_runtime_sharing_harnesses({"kas": False, "codex": True, "kiro": True}) == {
             "kas": False,
             "codex": True,
             "claude": False,
+            "goose": False,
         }
         assert _chat_runtime_sharing_harnesses({"kas": 0}) == defaults
         assert _chat_runtime_sharing_harnesses("x") == defaults

@@ -114,7 +114,7 @@ def test_the_spawn_loads_the_developer_builtin_under_gooses_own_mask(
 
 
 def test_the_process_seeds_the_required_mode_and_keeps_the_operators_home(harness):
-    """The child reads the goose home the operator chose, as the per-chat client does."""
+    """The child reads the goose home the operator chose, the one the era reads too."""
     env = {"GOOSE_MODE": "auto", "GOOSE_PATH_ROOT": "/operator/goose", "PATH": "/bin"}
     harness.apply_spawn_env(env)
     assert env["GOOSE_MODE"] == "approve"
@@ -429,3 +429,47 @@ def test_both_drivers_decide_the_identity_refusals_with_one_function():
         client_permissions._unclassified_tool_call
     )
     assert names <= _called(goose_mod.GooseHarness.permission_refusal)
+
+
+# ── Routing: only a dashboard chat whose switch is on takes the shared runtime ──
+
+
+def test_a_side_session_is_never_prepared_on_the_shared_process(harness):
+    """Its goose home is the child's GOOSE_PATH_ROOT, which a shared process cannot
+    give one session; the placement refuses it first (``side:`` is not a dashboard
+    origin), and the harness refuses it again here."""
+
+    async def _prepare_side() -> Any:
+        return await harness.prepare_session(
+            work_dir="/w",
+            agent="kirocrew",
+            model="",
+            session_key="side:dashboard:a:1",
+            channel_id="",
+            memory_mode="persistent",
+            options={"side_read_only": True},
+        )
+
+    with pytest.raises(AcpToolGateUnroutable):
+        asyncio.run(_prepare_side())
+    normal = asyncio.run(_prepare(harness))
+    assert normal is not None
+
+
+def test_a_goose_placement_keys_on_gooses_own_provider(monkeypatch):
+    """goose never reads Kiro's sign-in, so its era is its provider identity."""
+    from kiro_crew.providers import chat_share
+
+    seen: list[object] = []
+    monkeypatch.setattr(
+        chat_share,
+        "goose_spawn_identity",
+        lambda environ=None, env_overrides=None: seen.append(env_overrides) or "goose:x",
+    )
+    assert chat_share._self_signed_era(ACP_BACKEND_GOOSE, {"A": "1"}) == "goose:x"
+    # The start's extra_env reaches the reader.
+    assert seen == [{"A": "1"}]
+    monkeypatch.setattr(
+        chat_share, "goose_spawn_identity", lambda environ=None, env_overrides=None: ""
+    )
+    assert chat_share._self_signed_era(ACP_BACKEND_GOOSE) == ""

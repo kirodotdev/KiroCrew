@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
+    OWN_STEERING_REQUEST_METHODS,
     PROVIDER_LABEL_BY_BACKEND,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_CODEX,
@@ -1572,8 +1573,12 @@ def test_steer_advertisement_matches_the_steer_table(backend):
     ``True`` for years and was honest only while ``AcpRuntime`` served one host.
     """
     handle = _handle_for(backend)
-    # A ``_session/steering`` member steers only once its handshake advertised it.
-    assert handle.supports_steer is (backend in ACP_BACKENDS_STEER)
+    # A ``_session/steering`` member steers only once its handshake advertised it;
+    # one whose own request the handle speaks (``OWN_STEERING_REQUEST_METHODS``:
+    # goose) is offered it without.
+    assert handle.supports_steer is (
+        backend in ACP_BACKENDS_STEER or backend in OWN_STEERING_REQUEST_METHODS
+    )
     handle._runtime.initialize_result = {"_meta": {"steering": {"supported": True}}}
     assert handle.supports_steer is (
         backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST

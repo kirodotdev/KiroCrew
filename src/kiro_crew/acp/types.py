@@ -8,8 +8,13 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
-# The ``_session/steering`` readers, re-exported for existing importers.
-from kiro_crew.acp.steering_wire import steering_advertised, steering_outcome  # noqa: F401
+# The steer-request readers, re-exported for existing importers.
+from kiro_crew.acp.steering_wire import (  # noqa: F401
+    goose_announced_run,
+    goose_steer_echo_id,
+    steering_advertised,
+    steering_outcome,
+)
 
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
@@ -199,6 +204,14 @@ METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
 # (``ACP_BACKENDS_STEERING_REQUEST``) take a user's mid-turn message on, and the
 # outcomes that decide delivery.
 METHOD_SESSION_STEERING = "_session/steering"
+# goose's own mid-turn steer request, ``{sessionId, expectedRunId, prompt}``,
+# answered ``{runId, messageId}``; spoken by ``AcpClient`` and the shared handle.
+METHOD_GOOSE_SESSION_STEER = "_goose/unstable/session/steer"
+# Members of ``ACP_BACKENDS_STEERING_REQUEST`` whose own steer request a driver
+# speaks in place of ``_session/steering``, which they never advertise: offered a
+# steer without the handshake's ``_meta.steering.supported``. Read by
+# ``AcpClient`` and by the shared runtime's ``AcpSessionHandle`` alike.
+OWN_STEERING_REQUEST_METHODS: dict[str, str] = {ACP_BACKEND_GOOSE: METHOD_GOOSE_SESSION_STEER}
 STEERING_INJECTED = "injected"
 STEERING_STARTED_NEW_TURN = "startedNewTurn"
 # Bounds on what a session holds for steers it has sent and not settled: at most

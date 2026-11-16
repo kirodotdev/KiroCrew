@@ -88,6 +88,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    OWN_STEERING_REQUEST_METHODS,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -1077,6 +1078,13 @@ async def _dispatch_events(
                 if host_checks_sessions(self._runtime):
                     self._note_permission_state(msg)
                     await self._refuse_moved_permission_state()
+                if self._runtime.acp_backend in OWN_STEERING_REQUEST_METHODS:
+                    # The run id a goose steer must name, and goose's echo of a
+                    # steer it drained into this turn (``_steer_via_goose_request``).
+                    self._note_goose_run(msg)
+                    _echo = self._goose_steer_echo(msg)
+                    if _echo is not None:
+                        yield _echo
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this
