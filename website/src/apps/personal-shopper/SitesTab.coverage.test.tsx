@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { SitesTab } from './SitesTab'
 import * as shopApi from './api'
 import { renderWithProviders } from '../../test/helpers'
+import { stubPlainHttpCrypto } from '../../test/plainHttpCrypto'
 import { i18nT } from '../../i18n/t'
 
 vi.mock('./api', () => ({
@@ -116,6 +117,24 @@ describe('SitesTab', () => {
       }),
     )
     await waitFor(() => expect(screen.queryByPlaceholderText(i18nT(`${K}.url_e_g_store_example_com`))).not.toBeInTheDocument())
+  })
+
+  it('adds a site on a plain-HTTP dashboard, which has no crypto.randomUUID', async () => {
+    stubPlainHttpCrypto()
+    seed([])
+    renderWithProviders(<SitesTab />)
+    await screen.findByText(i18nT(`${K}.no_sites_configured`))
+
+    openAddForm()
+    fireEvent.change(nameInput(), { target: { value: 'Plain' } })
+    fireEvent.change(urlInput(), { target: { value: 'plain.example' } })
+    fireEvent.click(addButton())
+
+    await waitFor(() =>
+      expect(mockPut).toHaveBeenCalledWith('/sites', {
+        sites: [expect.objectContaining({ id: expect.stringMatching(/^[0-9a-f-]{36}$/), name: 'Plain' })],
+      }),
+    )
   })
 
   it('keeps a URL that already starts with http as typed', async () => {

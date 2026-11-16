@@ -9,6 +9,7 @@ import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/me
 import { findTokenRanges, readStoredPasteForSend, type PasteBlock } from '../../utils/pasteTokens'
 import { readRelay, type RelaySender } from '../../pages/chat/sessionRelay'
 import type { KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
+import { secureRandomId } from '../../utils/secureId'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -229,5 +230,5 @@ export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<Response[
  *  payload without the store, so both surfaces see one entry shape. */
 export function normalizeQueueEntries(raw: unknown): SlotQueueItem[] {
   type QueueItem = string | { content: string; id: string; meta?: unknown; editRev?: unknown }
-  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta), ...(Number.isInteger(q.editRev) ? { editRev: q.editRev as number } : {}) })
+  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: secureRandomId(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta), ...(Number.isInteger(q.editRev) ? { editRev: q.editRev as number } : {}) })
 }
