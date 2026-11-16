@@ -256,6 +256,36 @@ async def wait_for_mounts(bound: float = MOUNT_WAIT_S) -> None:
         pass
 
 
+#: codex-acp's own session/new knob: hold the reply until every requested MCP
+#: server has finished starting (or failed), up to this many ms. Without it the
+#: first turn goes out with whichever servers are up, and a slow kirocrew-core
+#: leaves its tools off the measured request.
+CODEX_MCP_STARTUP_AWAIT_MS = 60_000
+
+
+def await_codex_mcp_startup(harness) -> None:
+    """Make codex's ``session/new`` wait for every MCP server it was handed.
+
+    ``wait_for_mounts`` can only see the probe servers, which write a start line;
+    Crew's own servers do not, so codex's own startup signal is the one that covers
+    them. Product code does not send this meta, so it is added here, on this
+    driver's *harness* object, through ``session_request``: the seam every
+    ``session/new`` passes through just before it goes out."""
+    from kiro_crew.acp.types import METHOD_SESSION_NEW
+
+    own = harness.session_request
+
+    def with_startup_wait(method, params, agent, **kwargs):
+        params, agent = own(method, params, agent, **kwargs)
+        if method == METHOD_SESSION_NEW:
+            meta = {**(params.get("_meta") or {})}
+            meta["mcpStartupAwaitTimeoutMs"] = CODEX_MCP_STARTUP_AWAIT_MS
+            params = {**params, "_meta": meta}
+        return params, agent
+
+    harness.session_request = with_startup_wait
+
+
 async def drive_client(turn_s: float = 120.0) -> dict:
     from kiro_crew.acp.client import AcpClient
 
@@ -281,6 +311,8 @@ async def drive_runtime(turn_s: float = 120.0) -> dict:
     from kiro_crew.acp.runtime import AcpRuntime
 
     rt = AcpRuntime(work_dir=WORK, acp_backend=BACKEND)
+    if BACKEND == "codex":
+        await_codex_mcp_startup(rt._harness)
     rec: dict = {}
     try:
         await asyncio.wait_for(rt.spawn(), timeout=180)
