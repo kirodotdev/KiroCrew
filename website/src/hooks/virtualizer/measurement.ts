@@ -455,7 +455,9 @@ export function useRowMeasurement<T>(ctx: {
   // `holdsBottom`: the fire credited the row's own re-wrap as a straddler's,
   // keeping its bottom where the reader saw it. Until the next frame is read
   // afresh, later fires keep that same edge (see the anchor pass).
-  const firedAnchorRef = useRef<{ node: Element; wantedTop: number; holdsBottom: boolean } | null>(null)
+  // `carried`: kept through a scroll event's re-read (see noteRowTops), so it
+  // holds only while the width gate stays unsettled.
+  const firedAnchorRef = useRef<{ node: Element; wantedTop: number; holdsBottom: boolean; carried?: boolean } | null>(null)
   const { lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef } = ctx.follow
   const noteRowTops = useCallback((el: HTMLDivElement) => {
     if (typeof el.getBoundingClientRect !== 'function') return
@@ -475,8 +477,26 @@ export function useRowMeasurement<T>(ctx: {
       if (box.height > 0) heights.set(node, box.height)
     }
     // A whole frame read afresh: the reader's row is chosen anew next fire.
+    // Except a straddler held by its bottom while the width transition is
+    // still unsettled, when the scroll is not the reader's: that is the
+    // scroll event of the fire's own write. The write can bring the row's
+    // top inside the fold (a shrink), so chosen anew the reader's row would
+    // become the row above it, and the held row's next re-wrap would move
+    // the content below it, what the reader was reading, by its whole change.
+    // A scroll that took the row off screen (a jump no reader input caused)
+    // has left it, so the reader's row is chosen anew then too.
+    const fired = firedAnchorRef.current
+    const firedTop = fired ? tops.get(fired.node) : undefined
+    const firedHeight = fired ? heights.get(fired.node) : undefined
+    const firedOnScreen = firedTop !== undefined && firedHeight !== undefined &&
+      firedTop < el.clientHeight && firedTop + firedHeight > 0
+    if (fired?.holdsBottom && !readerGesture && measurementIndex() === null && firedOnScreen) {
+      fired.wantedTop = firedTop
+      fired.carried = true
+      return
+    }
     firedAnchorRef.current = null
-  }, [elIndexRef, lastHardInputAtRef])
+  }, [elIndexRef, lastHardInputAtRef, measurementIndex])
   const shiftRowTops = useCallback((delta: number) => {
     const tops = liveTopRef.current
     for (const [node, top] of tops) tops.set(node, top - delta)
@@ -542,6 +562,9 @@ export function useRowMeasurement<T>(ctx: {
     // wrote keeps its reader's row: after that write only ITS position on
     // record is exact (shiftRowTops), so choosing afresh could pick a row
     // whose carried position is off by the layout pushes it did not see.
+    // A carried hold ends with the transition: once the width settles, a row
+    // that grows in place is not a re-wrap, and its top stays the reader's.
+    if (firedAnchorRef.current?.carried && measurementIndex() !== null) firedAnchorRef.current = null
     const fired = firedAnchorRef.current
     if (fired && seenTops.has(fired.node) && elIndexRef.current.has(fired.node)) {
       const prevHeight = seenHeightOf(fired.node)
@@ -761,7 +784,10 @@ export function useRowMeasurement<T>(ctx: {
       const nowTop = anchor.node.getBoundingClientRect().top - foldTop
       const wantedTop = anchor.prevTop - anchorOwnReprice
       aboveFoldReprice += nowTop - wantedTop
-      firedAnchorRef.current = { node: anchor.node, wantedTop, holdsBottom: anchor.holdsBottom || anchorOwnReprice !== 0 }
+      firedAnchorRef.current = {
+        node: anchor.node, wantedTop, holdsBottom: anchor.holdsBottom || anchorOwnReprice !== 0,
+        carried: fired?.carried === true && fired.node === anchor.node,
+      }
       // The reader's row is re-recorded from this frame, top and height
       // together (see seenHeightRef): where it is now, at the height it has
       // now. A write then carries it to `wantedTop` (shiftRowTops); a fire
