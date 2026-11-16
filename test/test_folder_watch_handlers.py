@@ -457,6 +457,41 @@ class TestEditIgnorePatterns:
         assert "ignore_patterns" not in json.loads(row["properties"] or "{}")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("patterns,limit", [
+        (["p"] * 1001, "1000 patterns"),
+        (["x" * 1025], "1024 characters"),
+    ])
+    async def test_too_many_or_too_long_patterns_are_refused_naming_the_limit(
+            self, store, tmp_path, patterns, limit):
+        sid = store.add_source("Notes", "local_folder", str(tmp_path))
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": patterns})
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["code"] == "ignore_patterns_too_large"
+            assert limit in body["error"]
+            create = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": str(tmp_path / "other"),
+                "properties": {"ignore_patterns": patterns}})
+            assert create.status == 400
+            assert limit in (await create.json())["error"]
+        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert "ignore_patterns" not in json.loads(row["properties"] or "{}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("patterns", ["sub/*", [{"p": "x" * 2000}], ["ok", 3]])
+    async def test_create_refuses_ignore_patterns_that_are_not_a_list_of_strings(
+            self, store, tmp_path, patterns):
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": str(tmp_path),
+                "properties": {"ignore_patterns": patterns}})
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "ignore_patterns must be a list of strings"
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+
+    @pytest.mark.asyncio
     async def test_a_source_deleted_before_the_write_is_a_404_not_a_success(
             self, store, tmp_path, monkeypatch):
         sid = store.add_source("Notes", "local_folder", str(tmp_path))
