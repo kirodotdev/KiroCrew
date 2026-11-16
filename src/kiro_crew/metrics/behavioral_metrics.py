@@ -10,7 +10,7 @@ inventory gauges that make up almost all of the ``kiro_crew`` scope.
 Every point on that scope carries two closed attributes the collectors in this
 family key on:
 
-* ``Feature`` -- the Crew area, a constant per metric (``tips``, ``milestone``).
+* ``Feature`` -- the Crew area, a constant per metric (``tips``, ``milestone``, ``app``).
 * ``Activity`` -- what happened: the value of one closed attribute the emit site
   already sets (a tip's ``action``), or, when the metric has none, the last
   segment of its name (``reached`` for ``kirocrew.milestone.reached``).
@@ -51,6 +51,7 @@ _SHAPES: "Dict[str, Tuple[str, Optional[str], Optional[str]]]" = {
     "kirocrew.milestone.mark_all_done": ("milestone", None, None),
     "kirocrew.milestone.notice_shown": ("milestone", None, None),
     "kirocrew.milestone.features_completed": ("milestone", None, None),
+    "kirocrew.app.installed": ("app", None, "app"),
 }
 
 #: The reviewed behavioral metrics: a subset of ``PRODUCT_METRICS``.
