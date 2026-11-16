@@ -387,9 +387,31 @@ class TestCollectionCostPerItem:
             "Running on a machine with little RAM)."
         )
 
+    def test_items_are_counted_as_collected_not_as_selected(
+        self, root_conftest, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``-k``/``-m`` drop items after collection, but VmHWM already paid for them.
+
+        A count taken from ``session.items`` would shrink the budget under ``-k`` and fail
+        a healthy run, so each collected item counts once, in ``pytest_itemcollected``.
+        """
+        monkeypatch.setattr(root_conftest, "_ITEMS_AT_COLLECTION", 0)
+        monkeypatch.setattr(root_conftest, "compact_collected_item", lambda _item: None)
+
+        for _ in range(3):
+            root_conftest.pytest_itemcollected(object())
+
+        assert root_conftest._ITEMS_AT_COLLECTION == 3
+
     def test_the_hooks_recorded_what_the_budget_reads(self, root_conftest, request) -> None:
         if root_conftest._RSS_AT_CONFIGURE_KIB is None:
             pytest.skip("needs /proc/self/status")
         assert root_conftest._HWM_AT_COLLECTION_KIB >= root_conftest._RSS_AT_CONFIGURE_KIB
-        # Counted before ``-k``/``-m`` deselection, so never fewer than were selected.
-        assert root_conftest._ITEMS_AT_COLLECTION >= len(request.session.items) > 0
+        # Counted before ``-k``/``-m`` deselection: every collected item is either still
+        # selected or was deselected. A count overwritten from ``session.items`` after
+        # deselection fails here under any ``-k``.
+        selected = len(request.session.items)
+        assert selected > 0
+        assert root_conftest._ITEMS_AT_COLLECTION == (
+            selected + root_conftest._DESELECTED_AT_COLLECTION
+        )

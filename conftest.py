@@ -533,6 +533,8 @@ _FROZEN_AT_COLLECTION: int | None = None
 _RSS_AT_CONFIGURE_KIB: int | None = None
 _HWM_AT_COLLECTION_KIB: int | None = None
 _ITEMS_AT_COLLECTION = 0
+#: Items ``-k``/``-m`` (or any plugin, through ``pytest_deselected``) dropped after that.
+_DESELECTED_AT_COLLECTION = 0
 
 
 def _proc_status_kib(field: str) -> int | None:
@@ -771,6 +773,11 @@ def pytest_itemcollected(item: pytest.Item) -> None:
     global _ITEMS_AT_COLLECTION
     _ITEMS_AT_COLLECTION += 1
     compact_collected_item(item)
+
+
+def pytest_deselected(items) -> None:
+    global _DESELECTED_AT_COLLECTION
+    _DESELECTED_AT_COLLECTION += len(items)
 
 
 def pytest_runtest_logfinish(nodeid: str, location) -> None:
