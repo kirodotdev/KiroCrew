@@ -20,6 +20,7 @@ import WorkflowsRuns, {
   type RunDetail,
   type RunSummary,
 } from "../components/workflows/WorkflowsRuns";
+import { i18next } from "../i18n/all";
 import { i18nT } from "../i18n/t";
 
 const TASK_PLAN_SOURCE = "agents:\n  verify:\n    prompt: run tests\n";
@@ -159,7 +160,7 @@ describe("WorkflowsRuns", () => {
 
     fireEvent.click(
       await screen.findByRole("button", {
-        name: i18nT("apps.workflows.workflowsRuns.cancel"),
+        name: i18nT("apps.workflows.workflowsRuns.cancel_run", { name: "Debug plan" }),
       }),
     );
 
@@ -197,7 +198,7 @@ describe("WorkflowsRuns", () => {
       renderRuns();
 
       const cancel = await screen.findByRole("button", {
-        name: i18nT("apps.workflows.workflowsRuns.cancel"),
+        name: i18nT("apps.workflows.workflowsRuns.cancel_run", { name: "Debug plan" }),
       });
       cancel.focus();
       await user.keyboard(key);
@@ -304,10 +305,11 @@ describe("WorkflowsRuns — run-scoped outcomes", () => {
 
     // Open B, then cancel A from its row.
     fireEvent.click(await screen.findByText("Second run"));
-    const cancels = await screen.findAllByRole("button", {
-      name: i18nT("apps.workflows.workflowsRuns.cancel"),
-    });
-    fireEvent.click(cancels[0]);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: i18nT("apps.workflows.workflowsRuns.cancel_run", { name: "Debug plan" }),
+      }),
+    );
     // The failure brings A up with its error.
     expect(await screen.findByText(/cancel → 409/)).toBeInTheDocument();
     // Opening B again does not carry A's failure over to it.
@@ -324,9 +326,14 @@ describe("WorkflowsRuns — run-scoped outcomes", () => {
       return m ? new Promise<Response>((resolve) => { settle[m[1]] = resolve; }) : null;
     });
     renderRuns();
-    const cancelName = i18nT("apps.workflows.workflowsRuns.cancel");
     const cancellingName = i18nT("apps.workflows.workflowsRuns.cancelling");
-    const [cancelA, cancelB] = await screen.findAllByRole("button", { name: cancelName });
+    // Each Cancel names the run it stops, so two running rows are told apart.
+    const cancelA = await screen.findByRole("button", {
+      name: i18nT("apps.workflows.workflowsRuns.cancel_run", { name: "Debug plan" }),
+    });
+    const cancelB = screen.getByRole("button", {
+      name: i18nT("apps.workflows.workflowsRuns.cancel_run", { name: "Second run" }),
+    });
     fireEvent.click(cancelA);
     fireEvent.click(cancelB);
     await waitFor(() => expect(Object.keys(settle)).toHaveLength(2));
@@ -334,6 +341,10 @@ describe("WorkflowsRuns — run-scoped outcomes", () => {
     expect(cancelA).toBeDisabled();
     expect(cancelB).toBeDisabled();
     expect(cancelA).toHaveTextContent(cancellingName);
+    // The accessible name follows the visible Cancelling state.
+    expect(cancelA).toHaveAccessibleName(
+      i18nT("apps.workflows.workflowsRuns.cancelling_run", { name: "Debug plan" }),
+    );
     // A fails after B was pressed; B then succeeds.
     await act(async () => {
       settle.wf_task_plan({ ok: false, status: 409, json: () => Promise.resolve({}) } as Response);
@@ -380,7 +391,11 @@ describe("WorkflowsRuns — run-scoped outcomes", () => {
         : null,
     );
     renderRuns();
-    fireEvent.click(await screen.findByRole("button", { name: i18nT("apps.workflows.workflowsRuns.cancel") }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: i18nT("apps.workflows.workflowsRuns.cancel_run", { name: "Second run" }),
+      }),
+    );
     await waitFor(() => expect(refuse).toBeDefined());
     // Open the paused run and its Save dialog while the cancel of the other is in flight.
     fireEvent.click(screen.getByText("Debug plan"));
@@ -435,4 +450,54 @@ describe("WorkflowsRuns — run-scoped outcomes", () => {
     fireEvent.click(screen.getByText("Debug plan"));
     expect(await screen.findByText("/workflow debug-plan")).toBeInTheDocument();
   });
+});
+
+describe("WorkflowsRuns — row counts", () => {
+  afterEach(async () => {
+    await i18next.changeLanguage("en");
+  });
+
+  it("joins the agent and event counts with the language's own separator", async () => {
+    // Japanese joins the two counts with 「・」 and no spaces, which a separator
+    // hard-coded in the component cannot produce.
+    await i18next.changeLanguage("ja");
+    const withAgents = { ...taskPlanRun, agent_count: 2 } as RunSummary;
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/workflows/runs") return jsonResponse({ runs: [withAgents] });
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    renderRuns();
+
+    const agents = i18nT("apps.workflows.workflowsRuns.agents", { count: 2 });
+    const events = i18nT("apps.workflows.workflowsRuns.events", { count: 1 });
+    const counts = await screen.findByText(
+      i18nT("apps.workflows.workflowsRuns.agents_and_events", { agents, events }),
+    );
+    expect(counts.textContent).toBe(`${agents}・${events}`);
+  });
+});
+
+describe("WorkflowsRuns — Cancel names", () => {
+  afterEach(async () => {
+    await i18next.changeLanguage("en");
+  });
+
+  // The accessible name must contain the visible label (WCAG 2.5.3), so a
+  // voice-control user who says what they see still reaches the button.
+  it.each(["en", "bn", "de", "es", "fr", "hi", "it", "ja", "ko", "pt", "ru", "zh-CN"])(
+    "each Cancel's accessible name contains its visible label in %s",
+    async (lng) => {
+      await i18next.changeLanguage(lng);
+      const strip = (s: string) => s.replace(/[….]+$/u, "").trim().toLowerCase();
+      const name = "Run X";
+      for (const [visible, label] of [
+        ["cancel", "cancel_run"],
+        ["cancelling", "cancelling_run"],
+      ] as const) {
+        const shown = strip(i18nT(`apps.workflows.workflowsRuns.${visible}`));
+        const spoken = i18nT(`apps.workflows.workflowsRuns.${label}`, { name }).toLowerCase();
+        expect(spoken).toContain(shown);
+      }
+    },
+  );
 });

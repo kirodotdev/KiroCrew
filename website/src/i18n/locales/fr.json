@@ -5683,7 +5683,10 @@
         "events_one": "{{count}} événement",
         "events_many": "{{count}} événements",
         "events_other": "{{count}} événements",
-        "view_label": "Vue"
+        "view_label": "Vue",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "Annuler {{name}}",
+        "cancelling_run": "Annulation de {{name}}"
       }
     },
     "awsControl": {

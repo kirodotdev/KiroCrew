@@ -5287,7 +5287,10 @@
         "view_tree": "树",
         "agents_other": "{{count}} 个代理",
         "events_other": "{{count}} 个事件",
-        "view_label": "视图"
+        "view_label": "视图",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "取消 {{name}}",
+        "cancelling_run": "正在取消 {{name}}"
       }
     },
     "commandBar": {

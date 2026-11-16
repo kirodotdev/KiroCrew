@@ -5369,7 +5369,10 @@
         "view_tree": "ツリー",
         "agents_other": "{{count}} 個のエージェント",
         "events_other": "{{count}} 件のイベント",
-        "view_label": "表示"
+        "view_label": "表示",
+        "agents_and_events": "{{agents}}・{{events}}",
+        "cancel_run": "{{name}} をキャンセル",
+        "cancelling_run": "{{name}} をキャンセル中"
       }
     },
     "awsControl": {

@@ -5369,7 +5369,10 @@
         "view_tree": "트리",
         "agents_other": "에이전트 {{count}}개",
         "events_other": "이벤트 {{count}}개",
-        "view_label": "보기"
+        "view_label": "보기",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "{{name}} 취소",
+        "cancelling_run": "{{name}} 취소 중"
       }
     },
     "awsControl": {

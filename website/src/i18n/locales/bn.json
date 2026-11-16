@@ -5443,7 +5443,10 @@
         "agents_other": "{{count}}টি এজেন্ট",
         "events_one": "{{count}}টি ইভেন্ট",
         "events_other": "{{count}}টি ইভেন্ট",
-        "view_label": "দৃশ্য"
+        "view_label": "দৃশ্য",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "{{name}} বাতিল করো",
+        "cancelling_run": "{{name}} বাতিল করা হচ্ছে"
       }
     },
     "commandBar": {

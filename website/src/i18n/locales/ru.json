@@ -5755,7 +5755,10 @@
         "events_few": "{{count}} события",
         "events_many": "{{count}} событий",
         "events_other": "{{count}} события",
-        "view_label": "Вид"
+        "view_label": "Вид",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "Отменить {{name}}",
+        "cancelling_run": "Отмена {{name}}"
       }
     },
     "commandBar": {

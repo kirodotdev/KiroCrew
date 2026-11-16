@@ -5226,7 +5226,10 @@
         "unknown": "[Ùñķñøẁñ ···········]",
         "view_graph": "[Ğŕàþĥ ········]",
         "view_tree": "[Ţŕèè ······]",
-        "view_label": "[Ṽìèẁ ······]"
+        "view_label": "[Ṽìèẁ ······]",
+        "agents_and_events": "[{{agents}} · {{events}} ·····]",
+        "cancel_run": "[Çàñçèĺ {{name}} ···········]",
+        "cancelling_run": "[Çàñçèĺĺìñğ {{name}} ··········]"
       },
       "workflowRunGraph": {
         "failed_see_tree": "[Ƒàìĺèð. Øþèñ Ţŕèè ƒøŕ ţĥè ðèţàìĺ. ·················]",

@@ -5599,7 +5599,10 @@
         "events_one": "{{count}} evento",
         "events_many": "{{count}} eventi",
         "events_other": "{{count}} eventi",
-        "view_label": "Vista"
+        "view_label": "Vista",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "Annulla {{name}}",
+        "cancelling_run": "Annullamento in corso di {{name}}"
       }
     },
     "commandBar": {

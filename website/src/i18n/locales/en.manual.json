@@ -1142,7 +1142,10 @@
         "unknown": "Unknown",
         "view_graph": "Graph",
         "view_tree": "Tree",
-        "view_label": "View"
+        "view_label": "View",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "Cancel {{name}}",
+        "cancelling_run": "Cancelling {{name}}"
       }
     },
     "crewCompanion": {
