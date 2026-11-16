@@ -922,13 +922,14 @@ def scrub_reason(
     if warnings:
         return ERROR_SCRUBBED_CREDENTIAL
     try:
-        from kiro_crew.security import redact_exfiltration_urls
+        # The blocking scan, not the redaction pass: a URL is judged here, never rewritten.
+        from kiro_crew.security import scan_exfiltration_urls
 
-        _cleaned, warnings = redact_exfiltration_urls(text)
+        flagged = scan_exfiltration_urls(text)
     except Exception:
         logger.warning("decisions: exfiltration URL scan failed; refusing the state")
         return ERROR_SCRUBBED_SCAN_FAILED
-    return ERROR_SCRUBBED_URL if warnings else None
+    return ERROR_SCRUBBED_URL if flagged else None
 
 
 def _request_needs(

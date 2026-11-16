@@ -37,8 +37,9 @@ def _straddling(bound: int) -> str:
     fragment matches nothing and leaks; the same is true after a slice-then-
     redact reorder. Redact-then-slice yields the marker's tail instead.
     """
-    tail = "e" * (bound - len(_RIGHT))
-    return "p" * 40 + _FAKE_KEY + tail
+    # Blanks around the key: a token glued to a letter is no token by its format.
+    tail = " " + "e" * (bound - len(_RIGHT) - 1)
+    return "p" * 39 + " " + _FAKE_KEY + tail
 
 
 def _two_markers(bound: int) -> str:

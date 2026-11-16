@@ -33,6 +33,7 @@ from kiro_crew import (  # noqa: F401
     mcp_apps_render,
     model_registry,
     prompt_segments,
+    redaction_seams,
     resource_status,
     runtime_death,
     session_directive,
@@ -327,7 +328,6 @@ from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
-    BLOCKED_LINKS_ORDERED_KEY,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,
@@ -477,7 +477,6 @@ from kiro_crew.security import (
     oauth_url_contains_credential,
     redact_credentials,
     redact_exfiltration_urls,
-    redact_exfiltration_urls_with_records,
 )
 from kiro_crew.sel import sel, sel_is_warm
 from kiro_crew.session import (
@@ -752,14 +751,17 @@ def _hands_off_queue_on_exit(
             # (shared_crew.turn_gate); a pass-through when admission is off.
             from kiro_crew.shared_crew.turn_gate import gate_turn
 
-            await gate_turn(
-                state,
-                slot,
-                args[0] if args else "",
-                kwargs,
-                lambda: fn(state, slot, turn_exit, *args, **kwargs),
-                stop_reason=lambda: turn_exit.stop_reason,
-            )
+            # The turn is the chat output seam: with the owner's redaction setting
+            # off, nothing it streams, saves or shows is redacted (redaction_seams).
+            with redaction_seams.output_seam(redaction_seams.CHAT):
+                await gate_turn(
+                    state,
+                    slot,
+                    args[0] if args else "",
+                    kwargs,
+                    lambda: fn(state, slot, turn_exit, *args, **kwargs),
+                    stop_reason=lambda: turn_exit.stop_reason,
+                )
         except GeneratorExit:
             closing = True
             raise

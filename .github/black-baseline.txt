@@ -448,7 +448,6 @@ test/test_hook_matcher_modes.py
 test/test_hooks_json_shared_file.py
 test/test_host_service_guard.py
 test/test_image_artifacts.py
-test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
 test/test_is_interrupted.py
@@ -638,7 +637,6 @@ test/test_socketsec.py
 test/test_source_providers.py
 test/test_source_providers_comment_guard.py
 test/test_source_summary.py
-test/test_spawn_list_redaction.py
 test/test_stable_release_gate.py
 test/test_steering_api.py
 test/test_stop_kill_cancel.py
@@ -696,7 +694,6 @@ test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py
 test/test_workflows_resilience.py
-test/test_workflows_run_bounds.py
 test/test_workflows_store.py
 test/test_workspace_absolute_paths.py
 test/test_write_secret_file.py

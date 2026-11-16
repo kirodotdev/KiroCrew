@@ -21,9 +21,10 @@ from source_providers_helpers import _app
 
 from kiro_crew.dashboard.source_providers import cache, linear, links
 from kiro_crew.secrets import SecretVault
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _KEY = "lin_api_" + "k" * 40
-_SECRET = "ghp_" + "b" * 36
+_SECRET = github_classic(seed=111)
 _URL = "https://linear.app/acme/issue/ENG-77"
 
 

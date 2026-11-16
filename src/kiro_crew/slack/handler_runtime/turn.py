@@ -293,9 +293,13 @@ class _SlackTurn:
         still intact in ``answer.accumulated``.
         """
         if self._hook_turn is not None and self._turn_completed_ok:
-            await slack_script_hooks.stop_hooks_after(
-                self._hook_turn, self._stop_reason, redact(self.answer.accumulated)
-            )
+            # A hook is a sink no output seam lists: it reads the answer redacted in
+            # full, inside the turn's channel seam with the owner's redaction off too.
+            from kiro_crew.security.redaction_switch import always_scan
+
+            with always_scan():
+                shown = redact(self.answer.accumulated)
+            await slack_script_hooks.stop_hooks_after(self._hook_turn, self._stop_reason, shown)
 
     # Release the retained permit once delivery and accounting have run. Called
     # explicitly right after accounting so a queued turn can proceed while the

@@ -47,10 +47,11 @@ from kiro_crew.dashboard.peer_redaction import redact_peer_text
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
 from kiro_crew.mcp_session_crew import CREW_TOOLS, with_crew_schema
 from kiro_crew.remote_dispatch import REMOTE_DISPATCH_DISABLED
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-#: A GitHub-style personal access credential, built at runtime so no scanner
-#: reads this file as holding one.
-PLANTED = "ghp_" + "Ab3x9" * 7 + "Z"
+#: A GitHub personal access token with a valid checksum, built at runtime so no
+#: scanner reads this file as holding one.
+PLANTED = github_classic(seed=51)
 
 INSTANCE = "inst-lab"
 

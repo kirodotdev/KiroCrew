@@ -323,7 +323,6 @@ def shown_failure_text(text: str, limit: int | None = FAILURE_TEXT_CHARS) -> str
     ``kirocrew update``'s own print.
     """
     full = _redacted(text)
-    logger.debug("Wheel update failure detail: %s", full)
     if limit is None or len(full) <= limit:
         return full
     head_end = full.find(": ")

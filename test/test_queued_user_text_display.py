@@ -19,8 +19,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard.chat import api_chat_slot_queue_cancel
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+#: A token with a valid checksum; the AWS documentation example key ID is no credential.
+_SECRET = github_classic(seed=98)
 _TYPED = f"use https://docs.example.com/page?key={_SECRET} for this"
 
 

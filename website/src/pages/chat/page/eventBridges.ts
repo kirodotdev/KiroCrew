@@ -189,11 +189,10 @@ export function useChatEventBridges({
     window.addEventListener('mc:compose-send', handler)
     return () => window.removeEventListener('mc:compose-send', handler)
   }, [composeSend])
-  // A redaction card's "Allow for this host" (or its Undo): the reply was saved
-  // with the link removed, and the server shows allowed hosts' links again when
-  // it serves the slot, so reload it to show the link in place of the chip.
-  // `messageTs` names the card's reply so the reload re-serves that row even
-  // when it sits above the newest page (#17023).
+  // A Blocked link card's "Allow for this host" (or its Undo): the server
+  // decides which links render live when it serves the slot, so reload it to
+  // show the link in place of the chip. `messageTs` names the card's reply so
+  // the reload re-serves that row even when it sits above the newest page.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail

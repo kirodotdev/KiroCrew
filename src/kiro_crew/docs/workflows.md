@@ -63,7 +63,7 @@ and send.
 
 ## What comes back
 
-Credentials and exfiltration-shaped URLs are stripped from every workflow
+Credentials, inside URLs too, are stripped from every workflow
 response before it reaches you, including from mapping *keys* and not only
 values — agent output is parsed into these structures, so a credential can arrive
 as a key.

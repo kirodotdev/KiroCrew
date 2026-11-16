@@ -311,9 +311,11 @@ class TestVoiceOut:
         be spoken aloud.
         """
         d, _, _ = _dispatcher({1})
-        from redaction_structured_cases import aws_secret
+        from redaction_structured_cases import github_classic
 
-        key = aws_secret(seed=60)
+        # A token by its published format: a bare 40-character AWS-shaped run with no
+        # label or key ID beside it is no credential, joined or not.
+        key = github_classic(seed=60)
         head, tail = key[:4], key[4:]
         spoken: list[str] = []
 

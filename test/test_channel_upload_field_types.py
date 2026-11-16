@@ -153,6 +153,27 @@ async def test_a_description_at_the_cap_reaches_the_transport_in_full(tmp_path, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("off", [False, True])
+async def test_the_caption_follows_the_owners_redaction_setting(
+    tmp_path, outbox_file, monkeypatch, off
+):
+    """The caption is channel egress (``redaction_seams.CHANNELS``), and a channel is not
+    the owner's alone: a credential in it is masked whatever the owner's setting."""
+    from redaction_structured_cases import github_classic
+
+    from kiro_crew import redaction_seams
+
+    monkeypatch.setattr(redaction_seams, "_redaction_off", off)
+    caption = "deploy token " + github_classic(seed=153)
+    payload = {"file_path": str(outbox_file), "filename": "report.txt", "description": caption}
+    transport = _transport()
+    status, body = await _post_channel(tmp_path, outbox_file, payload, transport)
+    assert status == 200 and body["delivered"] is True, body
+    shown = transport.send_document.call_args.kwargs["caption"]
+    assert shown.startswith("deploy token ") and shown != caption
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("channel_type,limit", [("telegram", 1024), ("discord", 2000)])
 async def test_the_channel_leg_refuses_a_description_over_its_cap(
     tmp_path, outbox_file, channel_type, limit

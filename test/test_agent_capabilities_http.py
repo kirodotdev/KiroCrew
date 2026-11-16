@@ -260,7 +260,11 @@ async def test_resolved_removals_respect_ambient_mcp(
         (["--", "-e", "DB_PASSWORD=p7!=tail=", "--user", "demo:ordinary"], [2]),
         (["--", "--api-key", "ordinary", "--user", "demo:ordinary", "MODE=dev"], []),
         (["DB_PASSWORD=", "MODE=dev", "PASSWORD", "ordinary"], []),
-        (["9DB_PASSWORD=ordinary", "DB.PASSWORD=ordinary"], []),
+        # Neither name is an environment variable, so no argument rule masks the
+        # value. Both still read as credential labels to the rule table (a name that
+        # ends in ``PASSWORD``, a properties-file label), which masks a written value
+        # of 8 or more characters after them; ``p7!`` is shorter.
+        (["9DB_PASSWORD=p7!", "DB.PASSWORD=p7!"], []),
     ],
 )
 async def test_argument_only_credentials_http_roundtrip(editor, capability_app, args, masked):

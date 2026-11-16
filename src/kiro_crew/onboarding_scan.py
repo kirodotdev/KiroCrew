@@ -498,6 +498,18 @@ def _sanitize_text(text: str, scan: _Scan) -> str:
     return cleaned.strip()
 
 
+def _refuses_text(text: str) -> bool:
+    """Whether an imported item holding *text* is dropped: the refusal every gate reads.
+
+    A credential read in full whatever the setting, or a URL the exfiltration scan
+    flags, over the same bounded text :func:`_sanitize_text` redacts.
+    """
+    from kiro_crew.security import redact
+    from kiro_crew.security.exfil import refuses
+
+    return refuses(text[:_MAX_TEXT_CHARS], redact)
+
+
 def _count_secret_fields(value: Any) -> int:
     if isinstance(value, dict):
         count = 0
@@ -639,7 +651,7 @@ def _skill_package(
             return None
         screened, credential_warnings, url_warnings = redact_with_findings(text)
         scan.secret_count += len(credential_warnings) + len(url_warnings)
-        if credential_warnings or url_warnings or screened != text:
+        if credential_warnings or url_warnings or screened != text or _refuses_text(text):
             scan.diagnostic("skills", "credential_bearing_skill")
             return None
         if path.name == "SKILL.md":
@@ -1005,7 +1017,7 @@ def _decoded_value_is_unsafe(value: Any, scan: _Scan) -> str:
     except _TooDeepToScreen:
         return "unscreenable_memory_record"
     for text in texts:
-        if _sanitize_text(text, scan) != text[:_MAX_TEXT_CHARS].strip():
+        if _sanitize_text(text, scan) != text[:_MAX_TEXT_CHARS].strip() or _refuses_text(text):
             return "credential_bearing_memory"
         if contains_injection(text):
             return "injection_memory_excluded"

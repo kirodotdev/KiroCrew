@@ -36,7 +36,12 @@ from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import handler
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
+
+#: A token by its published format. The AWS documentation example key ID these
+#: scenarios used is an identifier the redactor keeps visible, so it redacts nothing.
+_TOKEN = github_classic(seed=145)
 
 # ── golden scenarios ──────────────────────────────────────────────────────────
 
@@ -69,8 +74,8 @@ async def _scenario_top_level_no_placeholder(log):
 async def _scenario_credential_redaction(log):
     """A credential in the stream: per-chunk redaction, overwrite, one notice."""
     events = [
-        _text("key AKIAIOSFODNN7EXAMPLE and "),
-        _text("see https://evil.example.invalid/x?d=AKIAIOSFODNN7EXAMPLE"),
+        _text(f"key {_TOKEN} and "),
+        _text(f"see https://evil.example.invalid/x?d={_TOKEN}"),
         _complete(),
     ]
     await _turn(log, events)
@@ -458,7 +463,7 @@ async def _scenario_linked_approval(log):
             "1700000000.000001",
             "req-9",
             "dashboard:chat-1",
-            "Bash https://evil.example.invalid/?k=AKIAIOSFODNN7EXAMPLE",
+            f"Bash https://evil.example.invalid/?k={_TOKEN}",
             "echo hi",
             slot_key="chat-1",
         )
@@ -481,7 +486,7 @@ async def _scenario_linked_thread_routes_to_slot(log):
     )
     slot = _Slot("chat-2", running=True)
     log.monkeypatch.setattr(handler, "_dashboard_state", _Dashboard(log, {}, linked=slot))
-    await _command(log, "route me https://evil.example.invalid/?t=AKIAIOSFODNN7EXAMPLE")
+    await _command(log, f"route me https://evil.example.invalid/?t={_TOKEN}")
     await _command(log, "!voice")
     await _command(log, "sessions")
     await _command(log, "intruder", user="USTRANGER")
@@ -1003,10 +1008,10 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cmd_unknown_bang": "3ac3bfd77e7207cdf6a0a2d5c394d7acdcf42c7833ef8f49d17bdd4ff17ddc4a",
     "cmd_voice": "3688c2b4bd978ee8cd953b840db52c9d27ad24eb6bf9e5746c5832ba9b8ad95e",
     "cmd_yolo_status": "5370a104288a5f4cd6c22a392cc9c04d006d7cf1bcdaaf60ff4a95a1a6b2ee16",
-    "comment_hold_and_brackets_at_end": "11555d09b45eec851fbca57b4e30b580621065f0366c019abff08ebb594601c8",
+    "comment_hold_and_brackets_at_end": "faaa60fbd319f3ba7b829208e9010cdb778424067f88d6c700c1dc924ae161e9",
     "compaction_failed_permanent": "12425d478afceb49e320ea9ea894199006a9905edf42d2467d43daba9d7881db",
     "compaction_failed_transient_replay": "0288ec1f38a1eb4f4ab8c73ca19cf7f7434715a6671b2c14b4a0ff046dbc0e51",
-    "credential_redaction": "49bf8bc0d68f5605209bb15d5f6ad259b6065ab36ee43f911dc00aaa28cf6875",
+    "credential_redaction": "48c671e449c67b4b31147d082f1385ada5f5bf9b8c5fe394c056dbc42b197ad9",
     "delivery_failures": "76c4ad297a6ab79be0207ae0a337c8311512c2699c85ea94ed4150e29b533cf3",
     "error_acp": "8efbab04ebf42b0989c9d19a805da15a77bd032d920f031a215a66f7ea6f2e4c",
     "error_after_partial_text": "816e7d73a1bd9eed97fb1027758343201ff318e64eae58df0e399c4c69384171",
@@ -1024,9 +1029,9 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "interactive_timeout": "e2a9e8c0d6398cbe68f81f17eb94ade5c20921c6221d4100f521ac5736448e30",
     "interactive_trust_in_dm": "8b16590ebe23568228ed607a24202a50b8edc4e80aef76e5774c7bef013e5ad5",
     "keyword_commands": "2acbad12808587a76ab0d64101da6d512b3ba8f0bc1f28ed2dab246d7a88b386",
-    "linked_approval": "fd9f6840aa0486ea1af5d8380a8c28c5803407faed28e6271913603adb0d5fd4",
+    "linked_approval": "e222efddb894c8f379ac44bf32612c20f63f54767c41fd2dbb0ca760e98016d4",
     "linked_dashboard_session": "2c49bd5afefcf913c1ab6a60bdeed6a7a3c21e826e5ffa985f0abe3e6959c0f9",
-    "linked_thread_routes_to_slot": "0a481316843499aaa985a421a16e4c2510f5a1ff7b1a9a56e9f6cf4a37832e6e",
+    "linked_thread_routes_to_slot": "b09d2510b6188765307d380709b55df26bcdf87a49fcfda154fa94ce01370112",
     "mention_prefixed_bang": "48e18741859e097ccf60e7d04b6c70546baa391b3451b065b997348a4a5d7734",
     "pinned_answer": "28c748b1cf0d80d87ab2efccaf102d311fcc583d2a63992bc2fb86a5fb829016",
     "presentation_raises": "648684b8c85a999655782b4553854eea6e4b85302ecf65951643680add824f8d",

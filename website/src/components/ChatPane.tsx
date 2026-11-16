@@ -617,7 +617,7 @@ export default function ChatPane({
     }
   }, [slotDetail, slotKey, dispatch, hydrateLimit, paneIsActive])
   // A Blocked link card's Allow / Undo on this slot: re-read it so the link
-  // shows in place of the chip (#36862).
+  // shows in place of the chip.
   useRedactionHostsReload(slotKey)
   // Whether this pane's transcript is its loaded page, for the footer's stall
   // watch: the active slot's page comes from the slot switch; a background

@@ -273,8 +273,19 @@ async def _on_permission_prompt(
     # transport's boolean provenance as well.  It contains no
     # secret itself and prevents two different hidden commands
     # from collapsing to one durable trust pattern.
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.security.exfil import refuses
+
+    def _shown(text: str) -> str:
+        return redact_credentials(redact_exfiltration_urls(text)[0])[0]
+
+    # A grant names these bytes, so the refusal every gate reads decides: a
+    # credential read in full whatever the setting, or a URL the exfil scan flags.
     _command_grantable = (
-        bool(_full) and bool(_trust_key) and not event.tool_input_redacted and _safe_full == _full
+        bool(_full)
+        and bool(_trust_key)
+        and not event.tool_input_redacted
+        and not refuses(_full, _shown)
     )
     if _command_grantable:
         perm_meta["full_command"] = _safe_full
@@ -318,7 +329,7 @@ async def _on_permission_prompt(
     _base = _extract_base_command(_trust_key) if event.is_shell else ""
     _safe_base, _ = redact_exfiltration_urls(_base)
     _safe_base, _ = redact_credentials(_safe_base)
-    if _command_grantable and _base and _safe_base == _base:
+    if _command_grantable and _base and not refuses(_base, _shown):
         perm_meta["base_command"] = _safe_base
         perm_meta["trust_base_grantable"] = "1"
     # A deny-rules refusal the person may override (tool_approval): the card

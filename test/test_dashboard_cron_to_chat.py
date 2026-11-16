@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.cron import CronJob
 from kiro_crew.dashboard.cron_inject import (
@@ -826,8 +827,8 @@ class TestInjectCronResultToDashboard:
         Both sides of the compare are post-redaction, so the reference resolves
         to exactly the bytes a verbatim copy would have stored.
         """
-        secret_a = "ghp_" + "A" * 36
-        secret_b = "ghp_" + "B" * 36
+        secret_a = github_classic(seed=68)
+        secret_b = github_classic(seed=69)
         first = f"{_LONG_INSTRUCTION}Authenticate with {secret_a}\n"
         second = f"{_LONG_INSTRUCTION}Authenticate with {secret_b}\n"
         assert first != second, "the raw instructions must genuinely differ"

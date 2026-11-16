@@ -17,7 +17,10 @@ from kiro_crew.dashboard.state import (
     _persist_notification,
 )
 from kiro_crew.notifications.bus import payload_from_legacy
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token: a bare 40-character run is no credential by itself.
+_TOKEN = github_classic(seed=60)
 
 
 class TestDashboard:
@@ -78,7 +81,7 @@ class TestNotificationPersistence:
         """Rows persisted before delivery-time redaction are redacted at load."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         path = tmp_path / "notifications.jsonl"
-        secret = SAMPLE_AWS_SECRET
+        secret = _TOKEN
         row = {
             "kind": "cron",
             "title": "Job",
@@ -204,9 +207,9 @@ class TestNotificationPersistence:
             start_time=0.0,
         )
         note = state.notification_bus.push(
-            payload_from_legacy("cron", f"key {SAMPLE_AWS_SECRET} via bus", "b")
+            payload_from_legacy("cron", f"key {_TOKEN} via bus", "b")
         )
-        assert SAMPLE_AWS_SECRET not in note["title"]
+        assert _TOKEN not in note["title"]
 
     def test_deliver_note_redacts_nested_strings(self, monkeypatch, tmp_path) -> None:
         """Redaction descends into nested structures like action labels.
@@ -226,26 +229,26 @@ class TestNotificationPersistence:
             {
                 "ts": "2026-07-12T00:00:00Z",
                 "kind": "cron",
-                "title": f"key {SAMPLE_AWS_SECRET} in title",
+                "title": f"key {_TOKEN} in title",
                 "body": "b",
                 "actions": [
-                    {"id": "a1", "label": f"key {SAMPLE_AWS_SECRET} in label"},
+                    {"id": "a1", "label": f"key {_TOKEN} in label"},
                 ],
-                "extra": {"nested": [f"key {SAMPLE_AWS_SECRET} in list"]},
+                "extra": {"nested": [f"key {_TOKEN} in list"]},
             }
         )
 
         note = state._notification_log[0]
         # Top-level strings still redacted
-        assert SAMPLE_AWS_SECRET not in note["title"]
+        assert _TOKEN not in note["title"]
         # Nested strings inside lists of dicts redacted
-        assert SAMPLE_AWS_SECRET not in note["actions"][0]["label"]
+        assert _TOKEN not in note["actions"][0]["label"]
         assert note["actions"][0]["id"] == "a1"
         # Arbitrary nesting (dict -> list) redacted
-        assert SAMPLE_AWS_SECRET not in note["extra"]["nested"][0]
+        assert _TOKEN not in note["extra"]["nested"][0]
         # Persisted JSONL is clean too
         loaded = _load_notifications()
-        assert SAMPLE_AWS_SECRET not in json.dumps(loaded[0])
+        assert _TOKEN not in json.dumps(loaded[0])
 
     def test_state_loads_existing_on_init(self, monkeypatch, tmp_path) -> None:
         """DashboardState.__init__ loads existing notifications from disk."""

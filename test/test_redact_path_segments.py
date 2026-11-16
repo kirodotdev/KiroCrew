@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from collections.abc import Iterator
 
 import pytest
-from redaction_structured_cases import github_classic, structured_engine
+from redaction_structured_cases import aws_key_id, github_classic
 
 from kiro_crew import security
 from kiro_crew.security import _exports, redact, redact_path_segments
@@ -29,22 +28,17 @@ from kiro_crew.security.redaction import (
 )
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
-
 # Two DISTINCT GitHub classic tokens with valid checksums. Their alphabet has no
 # ``/``, so each sits inside one path segment. Key IDs are kept visible, so the
 # fixtures are secrets the plan redacts.
 _KEY_A = github_classic(seed=11)
 _KEY_B = github_classic(seed=12)
-# A bare 40-char secret-shaped key that contains ``/`` -- it spans two path
-# segments and is matched only by the whole-string pass.
+# An AWS secret beside its key ID. The secret contains ``/``, so it spans path
+# segments, and only the whole-string pass sees it beside the key ID that marks it.
+# A ``/`` on either side of the pair would make it part of a longer run, so the
+# path opens with a word and a space and the secret ends it.
 _SPANNING_SECRET = SAMPLE_AWS_SECRET
+_SPANNING = f"{aws_key_id(seed=9)} {_SPANNING_SECRET}"
 
 _SEP = _PATH_SEGMENT_DISCRIMINATOR_SEP
 
@@ -239,8 +233,8 @@ class TestNeverLessRedactionThanTheWholeString:
             f"models/{_KEY_A}_model.txt",
             f"cdk.out/{_KEY_A}/index.js",
             f"{_KEY_A}",
-            f"a/{_SPANNING_SECRET}/b",
-            f"{_SPANNING_SECRET}",
+            f"keys {_SPANNING}",
+            f"{_SPANNING}",
         ],
     )
     def test_the_original_sensitive_bytes_never_survive(self, path: str) -> None:
@@ -254,7 +248,8 @@ class TestNeverLessRedactionThanTheWholeString:
         assert redact(out) == out
 
     def test_a_token_spanning_segments_falls_back_to_the_whole_string_result(self) -> None:
-        path = f"a/{_SPANNING_SECRET}/b"
+        path = f"keys {_SPANNING}"
+        assert redact(path) != path
         assert redact_path_segments(path) == redact(path)
         assert _SEP not in redact_path_segments(path)
 

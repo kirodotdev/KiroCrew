@@ -2,7 +2,10 @@
 
 Each format row has literal anchors (its prefixes). One ``str.find`` loop per anchor
 finds candidates; around each, the token is read by set membership and checked in
-order: prefix, body alphabet and length per part, right boundary, checksum.
+order: prefix, body alphabet and length per part, right boundary, checksum. A row
+with a checksum skips both boundaries, because the checksum alone decides it. A
+Secret row without one skips a body a documented example writes
+(``xoxb-your-bot-token``, ``sk_live_xxxxxxxx``).
 
 Every detector here returns ``(hits, opens)``. ``opens`` lists the start of each unit
 that the text read so far cannot decide yet (``final=False`` only): a token whose run
@@ -15,8 +18,8 @@ from __future__ import annotations
 import bisect
 
 from .charsets import B64URL, B64URL_DOT, cached, run_end
-from .checks import CHECKSUMS, b64url_json_object, is_placeholder
-from .model import Hit
+from .checks import CHECKSUMS, b64url_json_object, is_placeholder, is_placeholder_body
+from .model import SECRET, Hit
 from .table import FormatRow, JoseRow, PairRow, Part
 
 # JOSE runs longer than every JOSE row's maximum are decided (rejected) once read.
@@ -69,9 +72,13 @@ def detect_formats(
         if head not in text:
             continue
         for prefix, row in members:
+            # A checksum decides a token by itself, so a row with one reads the token
+            # glued to a word too: whitespace a renderer strips at a message edge must
+            # not hand the reader a key the redactor refuses to see.
+            glued = row.checksum is not None
             i = text.find(prefix)
             while i != -1:
-                if i == 0 or text[i - 1] not in row.left:
+                if glued or i == 0 or text[i - 1] not in row.left:
                     r = run_end(text, i, row.run_chars, row.max_total + 1)
                     if not final and r == n and r - i <= row.max_total:
                         opens.append(i)
@@ -79,8 +86,13 @@ def detect_formats(
                         e = _match_parts(text, i + len(prefix), row.parts)
                         if (
                             e is not None
-                            and (e == n or text[e] not in row.right)
+                            and (glued or e == n or text[e] not in row.right)
                             and (row.checksum is None or CHECKSUMS[row.checksum](text[i:e]))
+                            and not (
+                                row.checksum is None
+                                and row.tier == SECRET
+                                and is_placeholder_body(text[i + len(prefix) : e])
+                            )
                         ):
                             hits.append(Hit(i, e, row.id, row.tier, "token_format", row.certainty))
                 i = text.find(prefix, i + 1)
@@ -172,6 +184,8 @@ def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list
             # (a JWE may end in an empty tag).
             for keep in range(dots + 1):
                 cand = token[: len(stripped) + keep]
+                if row.allow_values and cand.rsplit(".", 1)[0] in row.allow_values:
+                    break
                 if _jose_ok(row, cand.split(".")):
                     hits.append(Hit(i, i + len(cand), row.id, row.tier, "jose", "jose"))
                     break

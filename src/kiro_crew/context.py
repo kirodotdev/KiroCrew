@@ -1292,8 +1292,8 @@ def build_session_replay(
         return None
 
     replay = _replay.replay_text(messages, model_window, budget_chars=budget_chars)
-    replay, _ = redact_exfiltration_urls(replay)
-    # An output seam: the owner's seams switch may stand the credential pass down here.
+    # An output seam: the owner's redaction setting may stand the credential pass down here.
+    # The credential pass masks a credential inside a URL as well; no URL is replaced whole.
     with redaction_seams.output_seam(redaction_seams.ACP_PROMPT):
         replay, _ = redact_credentials(replay)
     return replay.translate(_MULTIBYTE_TABLE)

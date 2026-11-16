@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.dashboard.chat_runner import _native_subagent_close_all, _native_subagent_sync
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "codex_native_subagents"
 
@@ -740,7 +741,7 @@ def _state(parent: str, child: str, state: str) -> dict:
 
 def _split_token() -> tuple[str, str, str]:
     """A GitHub token split after its first three characters, as two chunks would carry it."""
-    token = "ghp" + "_" + "A1b2C3d4" * 4 + "Zz9Y"
+    token = github_classic(seed=140)
     return token, "here it is: " + token[:3], token[3:] + " done"
 
 
@@ -797,7 +798,7 @@ def test_the_provider_exposes_the_handles_flush() -> None:
 async def test_a_legacy_agent_path_is_redacted_before_it_becomes_a_name() -> None:
     # Folding "_" into a space would break the token, so the name would carry
     # it past a redactor that does not recognise the folded form.
-    token = "ghp" + "_" + "A1b2C3d4" * 4 + "Zz9Y"
+    token = github_classic(seed=140)
     update = {
         "sessionUpdate": "tool_call",
         "toolCallId": "call-1",

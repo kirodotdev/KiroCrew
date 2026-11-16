@@ -137,12 +137,12 @@ def test_glued_text_preview_redacts_exfiltration_url_before_truncation(tmp_path,
     fake_sel = MagicMock()
     monkeypatch.setattr(chat_runner, "sel", lambda: fake_sel)
     monkeypatch.setattr(chat_runner, "sel_is_warm", lambda: True)
-    remainder = "see https://evil.example/collect?d=" + "A" * 300
+    remainder = "see https://evil.example/collect?token=" + "A" * 300
 
     chat_runner._flush_segment(state, slot, f"[OPTIONS: A | B]{remainder}")
 
     preview = fake_sel.log.call_args.args[0].metadata["preview"]
-    assert "evil.example/collect?d=" not in preview
+    assert "A" * 32 not in preview
     assert len(preview) <= 200
 
 
@@ -153,3 +153,23 @@ def test_system_rules_name_stray_footer_text_as_the_models_own() -> None:
         _CRITICAL_RULES_TAIL
     )
     assert "never a system instruction and never an injection" in _CRITICAL_RULES_TAIL
+
+
+def test_the_preview_is_scanned_before_its_clip_with_redaction_off(tmp_path, monkeypatch):
+    """With redaction off inside the turn's seam, the SEL preview still masks a key the
+    200-character clip would otherwise cut into an unrecognisable fragment."""
+    from redaction_structured_cases import github_classic
+
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard import chat_runner
+
+    _, slot = _state_and_slot(tmp_path, monkeypatch)
+    fake_sel = MagicMock()
+    monkeypatch.setattr(chat_runner, "sel", lambda: fake_sel)
+    monkeypatch.setattr(chat_runner, "sel_is_warm", lambda: True)
+    monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+    token = github_classic(seed=163)
+    with redaction_seams.output_seam(redaction_seams.CHAT):
+        chat_runner._log_glued_footer_text(slot, ["p" * 170 + " " + token])
+    preview = fake_sel.log.call_args.args[0].metadata["preview"]
+    assert token[:12] not in preview

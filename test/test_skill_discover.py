@@ -25,6 +25,7 @@ from dashboard_owner_helpers import as_owner
 
 from conftest import make_dir_link
 from kiro_crew import platform_compat
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -846,7 +847,7 @@ class TestDiscoverInstallLogSanitization:
     ):
         import logging
 
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=30)
 
         class BoomProvider(FakeProvider):
             async def fetch_skill_bundle(self, skill_id):

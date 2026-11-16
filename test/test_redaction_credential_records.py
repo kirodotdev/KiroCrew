@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
-from redaction_structured_cases import session_token, structured_engine
+from redaction_structured_cases import aws_key_id, github_classic, session_token
 
 from kiro_crew.security.redaction import (
     redact_credentials,
@@ -13,17 +10,9 @@ from kiro_crew.security.redaction import (
 )
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
-
 # Built at runtime so no literal key shape sits in the source.
 _SECRET = SAMPLE_AWS_SECRET
-_GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+_GH = github_classic(seed=164)
 
 
 def test_text_and_warnings_match_plain_redactor() -> None:
@@ -55,8 +44,10 @@ def test_session_token_label() -> None:
 
 
 def test_unlabelled_rule_ids() -> None:
-    _, _, matches = redact_credentials_with_records(f"here {_GH} and {_SECRET} end")
-    assert [m.rule for m in matches] == ["github_token", "bare_aws_secret"]
+    # The AWS secret beside its key ID: a bare 40-character run stays visible.
+    text = f"here {_GH} and {aws_key_id()} {_SECRET} end"
+    _, _, matches = redact_credentials_with_records(text)
+    assert [m.rule for m in matches] == ["github_token", "aws_secret_access_key"]
     assert all(m.label == "" for m in matches)
 
 

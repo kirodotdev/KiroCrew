@@ -363,7 +363,8 @@ class TestCheckCrewLabel:
         assert exc.value.other == other
 
     @pytest.mark.parametrize(
-        "label", ["Two\nLines", " padded ", "..", "x" * 501, "https://user:password@example.com"]
+        "label",
+        ["Two\nLines", " padded ", "..", "x" * 501, "https://user:Sup3rS3cretPw@example.com"],
     )
     def test_an_unusable_label_is_refused(self, label):
         from kiro_crew.members import MemberNameError, check_crew_label

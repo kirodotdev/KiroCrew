@@ -771,7 +771,7 @@ class TestFolderIconRedaction:
         guard on the API path.)"""
         from kiro_crew.dashboard.handlers.artifacts import _serialize_folder
 
-        payload = "https://evil.example.com/x?d=" + "A" * 64
+        payload = "https://evil.example.com/x?access_token=" + "A" * 64
         out = _serialize_folder({"id": "f1", "name": "ok", "icon": payload})
         assert payload not in json.dumps(out)
         assert "REDACTED" in out["icon"]

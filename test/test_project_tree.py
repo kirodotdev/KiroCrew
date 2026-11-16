@@ -719,7 +719,7 @@ class TestProjectTree:
 
         Uses a real ls-files collision: two files whose only differing segment is
         a credential-shaped token (two distinct GitHub tokens) both flatten to
-        ``[REDACTED: credential]_model.txt`` under the whole-string redact().
+        ``[REDACTED: credential]-model.txt`` under the whole-string redact().
         Each path is redacted with ``redact_path_segments`` so each member of
         the collision carries an opaque label keyed per gateway process --
         distinct between the two and stable across responses -- and neither
@@ -727,11 +727,12 @@ class TestProjectTree:
         raw tokens never leak.
         """
         # Two DISTINCT keys are the point: the test proves two different
-        # credential-shaped names collapse to ONE placeholder.
+        # credential-shaped names collapse to ONE placeholder. A ``-`` ends each
+        # token: one glued to ``_`` and a word is no token by its format.
         key_a = _KEY_A
         key_b = _KEY_B
-        (repo / f"{key_a}_model.txt").write_text("one\n")
-        (repo / f"{key_b}_model.txt").write_text("two\n")
+        (repo / f"{key_a}-model.txt").write_text("one\n")
+        (repo / f"{key_b}-model.txt").write_text("two\n")
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.get(f"/api/project/tree?path={repo}")
             data = await resp.json()
@@ -739,9 +740,9 @@ class TestProjectTree:
         # Both files survive, each redacted and distinct from the other, each
         # carrying exactly the keyed label of its own original segment...
         sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
-        redacted = [p for p in paths if p.startswith(f"[REDACTED: credential]_model.txt{sep}")]
+        redacted = [p for p in paths if p.startswith(f"[REDACTED: credential]-model.txt{sep}")]
         assert sorted(redacted) == sorted(
-            f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{k}_model.txt')}"
+            f"[REDACTED: credential]-model.txt{sep}{_path_segment_label(f'{k}-model.txt')}"
             for k in (key_a, key_b)
         ), paths
         assert len(paths) == len(set(paths))
@@ -760,16 +761,16 @@ class TestProjectTree:
         colliding neighbour and one of which does not."""
         key_a = _KEY_A
         key_b = _KEY_B
-        (repo / f"{key_a}_model.txt").write_text("one\n")
+        (repo / f"{key_a}-model.txt").write_text("one\n")
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.get(f"/api/project/tree?path={repo}")
             alone = await resp.json()
-            (repo / f"{key_b}_model.txt").write_text("two\n")
+            (repo / f"{key_b}-model.txt").write_text("two\n")
             resp = await client.get(f"/api/project/tree?path={repo}")
             with_neighbour = await resp.json()
         sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
         label_a = (
-            f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{key_a}_model.txt')}"
+            f"[REDACTED: credential]-model.txt{sep}{_path_segment_label(f'{key_a}-model.txt')}"
         )
         assert label_a in alone["paths"]
         assert label_a in with_neighbour["paths"]

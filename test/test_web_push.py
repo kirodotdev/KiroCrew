@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from kiro_crew.notifications import vapid_keys, web_push
 from kiro_crew.notifications.push_store import PushSubscriptionError, PushSubscriptionStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -719,7 +720,7 @@ def test_flattening_never_reassembles_a_credential_into_the_push_body(splitter):
     from kiro_crew.dashboard.state_parts.dashboard_services import _web_push_payload
     from kiro_crew.dashboard.state_parts.notification_log import _redact_note_value
 
-    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    token = github_classic(seed=142)  # a ghp_ without a valid checksum is no token
     split = token[:10] + splitter + token[10:] + splitter
     raw = f"build done {split} ok"
     assert token not in _redact_note_value(raw)  # the delivery-time pass misses it

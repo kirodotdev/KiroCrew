@@ -555,7 +555,7 @@ class TestFormatAcpError:
         err = {
             "code": -32000,
             "message": "weird upstream",
-            "data": f"leak: {SAMPLE_AWS_SECRET}",
+            "data": f"leak: aws_secret_access_key={SAMPLE_AWS_SECRET}",
         }
         out = _format_acp_error(err)
         assert SAMPLE_AWS_SECRET not in out
@@ -596,7 +596,7 @@ class TestFormatAcpError:
         err = {
             "code": -32000,
             "message": "weird upstream",
-            "data": f"leak: {SAMPLE_AWS_SECRET}",
+            "data": f"leak: aws_secret_access_key={SAMPLE_AWS_SECRET}",
         }
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
             _format_acp_error(err)

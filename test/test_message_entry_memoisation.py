@@ -28,6 +28,7 @@ import threading
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import jwt
 
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard.chat_persistence import (
@@ -35,15 +36,16 @@ from kiro_crew.dashboard.chat_persistence import (
     _build_message_entry_uncached,
     _entry_cache,
 )
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN, github_classic
 
 # Shapes verified against the live detector rather than assumed: each of these
 # is redacted by ``redact_credentials``. Kept in one place so a detector change
-# surfaces as one failure.
-SECOND_SECRET = "kR7pQ2mXvL9/Tn4bWc8Z" + "e1HsYd6Fu3JgAo5NiE0y"
-AWS_SECRET = SAMPLE_AWS_SECRET
-BEARER = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghij.klmnopqrst"
-TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+# surfaces as one failure. (A bare 40-character run and an AWS key ID stay
+# visible by design, so neither is here.)
+SECOND_SECRET = github_classic(seed=154)
+AWS_SECRET = SAMPLE_SLACK_BOT_TOKEN
+BEARER = "Bearer " + jwt()
+TOKEN = github_classic(seed=155)
 SECRETS = (SECOND_SECRET, AWS_SECRET, BEARER, TOKEN)
 
 TRANSIENT_ROLES = ("chunk", "done", "streaming", "queued", "permission")

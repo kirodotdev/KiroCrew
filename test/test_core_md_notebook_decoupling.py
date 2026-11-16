@@ -46,7 +46,7 @@ _LEGACY_TEMP_SWEEP = (
 _POSTURE_REASON = (
     "Every md-notebook API error body. Handlers drive git and filesystem work over "
     "caller-supplied vault URLs, ids and note paths, so an unmodeled exception carries "
-    "absolute paths and git stderr; `_safe_error` scrubs credentials, exfiltration URLs and "
+    "absolute paths and git stderr; `_safe_error` scrubs credentials (inside URLs too) and "
     "host paths before the JSON reaches the browser \N{EM DASH} the same output-boundary "
     "reason as the dashboard error sinks."
 )

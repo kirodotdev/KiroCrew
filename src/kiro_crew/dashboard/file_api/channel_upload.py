@@ -26,6 +26,9 @@ if TYPE_CHECKING:
         read_bounded_json,
         redact,
         redact_for_display,
+        redaction_seams,
+        redaction_switch,
+        refuses,
         safe_read_file_bytes,
         upload_destination,
         wide_content_is_flagged,
@@ -165,8 +168,13 @@ def _gate_upload_file(
     # with the file. Checked in the shared gate so no leg can drift from the
     # others, and before path resolution so a sensitive name never even
     # selects a file. Mirrors the MCP-side file_send refusal.
-    if redact(filename) != filename:
-        _audit_denial(f"sensitive_filename_rejected: {redact(filename)}")
+    # Safety decisions: the name here and the text below are scanned in full whatever
+    # the owner's setting, inside a channel seam or an owner view too; the binary and
+    # wide scans read the full verdicts ``platform.context`` keeps.
+    with redaction_switch.always_scan():
+        shown_name = redact(filename)
+    if shown_name != filename:
+        _audit_denial(f"sensitive_filename_rejected: {shown_name}")
         return (
             web.json_response(
                 {
@@ -276,8 +284,7 @@ def _gate_upload_file(
             )
     if text is not None:
         try:
-            redacted = redact(text)
-            if redacted != text:
+            if refuses(text, redact):
                 _audit_denial(f"content_redacted: {filename}")
                 return (
                     web.json_response(
@@ -379,10 +386,12 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         from kiro_crew.messaging.transport import TransportCapabilities
 
         # Slack parses broadcast and user mentions, so the default capabilities
-        # (mention_grammars=True) apply the defang.
-        initial_comment = display_safe_for(
-            raw_description, TransportCapabilities(), redactor=redact
-        )
+        # (mention_grammars=True) apply the defang. The comment is channel egress:
+        # with the owner's redaction setting off it stays as written.
+        with redaction_seams.output_seam(redaction_seams.CHANNELS):
+            initial_comment = display_safe_for(
+                raw_description, TransportCapabilities(), redactor=redact
+            )
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content
     # (no-blocking-call-on-event-loop).
     error_resp, resolved, raw = await asyncio.to_thread(
@@ -529,8 +538,9 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     # channel's renderer strips markup at display time — ``AKIA**…**`` passes
     # a literal scan and displays as an intact key. Same boundary rule every
     # renderer sink applies (``redact_for_display``) before text reaches a
-    # transport.
-    description, _ = redact_for_display(raw_description or "", redact)
+    # transport. The caption is channel egress, as the Slack leg's comment is.
+    with redaction_seams.output_seam(redaction_seams.CHANNELS):
+        description, _ = redact_for_display(raw_description or "", redact)
     too_long = _description_too_long("channel", description, link.channel_type)
     if too_long is not None:
         return too_long

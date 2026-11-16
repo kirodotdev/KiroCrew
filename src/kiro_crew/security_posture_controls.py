@@ -79,7 +79,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (*_GATEWAY_SINKS, *_DELIVER
 _CREDENTIAL_FAMILIES: tuple[tuple[str, str], ...] = (
     (
         "AWS access keys",
-        "AKIA / ASIA key IDs, plus labelled secret-access-key and session-token forms",
+        "secret access keys beside their key ID or after their label, and labelled "
+        "session tokens; a key ID alone is an identifier and stays visible",
     ),
     (
         "Private keys",
@@ -114,7 +115,7 @@ _CREDENTIAL_FAMILIES: tuple[tuple[str, str], ...] = (
     ),
     (
         "Base64-encoded variants",
-        "40+ char base64 chunks are decoded and re-scanned against every family above",
+        "base64 or hex runs that decode to a credential in a family above",
     ),
 )
 
@@ -464,9 +465,9 @@ _CONTROLS: tuple[PostureControl, ...] = (
         unit="output paths",
         summary=(
             "Every boundary where agent output reaches a human or an external "
-            "service runs a redaction pass first. Most run both scanners; the few "
-            "that run only one, or that the owner can narrow to one for their own "
-            "view, say so on their own row."
+            "service runs a redaction pass first while credential redaction is on "
+            "(Settings → Security → Redaction). Most run both scanners; the few "
+            "that run only one say so on their own row."
         ),
         source="src/kiro_crew/security_posture.py",
         items_fn=_redaction_sink_items,
@@ -476,8 +477,9 @@ _CONTROLS: tuple[PostureControl, ...] = (
         label="Credential patterns",
         unit="credential families",
         summary=(
-            "Credential classes the redaction scanner recognizes, in plaintext and "
-            "base64-encoded form."
+            "Credential classes the credential plan masks (the rule table and its few "
+            "fixed branches), in plaintext and encoded form. Only the value is masked; "
+            "identifiers stay visible."
         ),
         source="src/kiro_crew/security/redaction_patterns.py",
         items_fn=_credential_family_items,
@@ -488,7 +490,8 @@ _CONTROLS: tuple[PostureControl, ...] = (
         unit="heuristics",
         summary=(
             "Domain-agnostic — flags the payload, not the destination. A URL matching "
-            "any heuristic is replaced with a redaction marker."
+            "any heuristic refuses the request that carries it; no output text is "
+            "rewritten by these checks."
         ),
         source="src/kiro_crew/security/exfil.py",
         items_fn=_exfil_heuristic_items,

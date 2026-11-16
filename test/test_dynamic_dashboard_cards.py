@@ -26,16 +26,6 @@ from kiro_crew.testing.wait import await_until
 _KEY = github_classic(seed=1)
 
 
-@pytest.fixture
-def _structured_detectors_off():
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(False)
-    yield
-    compat.publish_use_rule_table(before)
-
-
 def test_layout_can_be_reused_but_first_publication_needs_one():
     first = normalize_card(
         {"html": '<p data-dashboard-field="result"></p>', "data": {"result": "A"}}
@@ -651,8 +641,9 @@ async def test_model_input_and_published_output_cross_the_registered_redaction_s
     from kiro_crew.dashboard import card_lifecycle
 
     service, slot, state = lifecycle
-    credential = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
-    exfil_url = "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
+    credential = _KEY
+    value = "aB3" * 70
+    exfil_url = f"https://collect.attacker.example/?token={value}&host=corp-laptop"
     evidence = f"Release evidence {credential} {exfil_url}"
     slot.messages = [{"role": "assistant", "content": evidence}]
     prompts = []
@@ -668,10 +659,13 @@ async def test_model_input_and_published_output_cross_the_registered_redaction_s
     assert result["card"] is not None
     for boundary in (prompts[0], result["card"]["html"], result["card"]["data"]["lede"]):
         assert credential not in boundary
-        assert exfil_url not in boundary
-        assert "corp-laptop" not in boundary
+        assert value not in boundary
         assert "[REDACTED: credential]" in boundary
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in boundary
+        # Only the token's value goes: the rest of the URL stays readable.
+        assert (
+            "https://collect.attacker.example/?token=[REDACTED: credential]&host=corp-laptop"
+            in boundary
+        )
         assert "Release evidence" in boundary
 
 
@@ -685,7 +679,7 @@ async def test_decoded_card_output_is_redacted(lifecycle, monkeypatch, field, se
 
     service, slot, _ = lifecycle
     sensitive = (
-        "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef1234"
+        _KEY
         if secret == "credential"
         else "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
     )
@@ -748,10 +742,11 @@ async def test_html_entities_cannot_publish_decoded_secrets(
 
     from kiro_crew.dashboard import card_lifecycle
 
+    # A credential URL parameter: a URL is judged by the credential values in it.
     sensitive = (
-        "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef1234"
+        _KEY
         if secret == "credential"
-        else "https://collect.attacker.example/?payload=" + "aB3" * 70 + "&host=corp-laptop"
+        else "https://collect.attacker.example/?access_token=" + "aB3" * 70 + "&host=corp-laptop"
     )
     character = "_" if secret == "credential" else ":"
     reference = {
@@ -800,39 +795,6 @@ def test_safe_html_entities_and_literal_data_survive_without_reserialization():
 
 
 _SPLIT_LABEL_MARKUP = "<p><b>aws_secret_access_key:</b> <code>" + "A" * 40 + "</code></p>"
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_markup_cannot_hold_a_labelled_credential_apart_from_its_label():
-    """A labelled credential is one run of text; a tag between the label and the
-    value misleads a raw scan, not the browser. The output side refuses
-    the card. Negative control: the same text with the tag boundary closed is caught
-    by the raw scan, and a layout that names the label with no value publishes.
-
-    Covers the plan with the structured detectors off: with them on, a value that
-    has the shape of a secret is redacted with or without its label."""
-    import json
-
-    from kiro_crew.dashboard.card_lifecycle import _redact, _redact_card_output
-
-    # The raw scan takes the closing tag for the value: label gone, value kept.
-    assert "A" * 40 in _redact(_SPLIT_LABEL_MARKUP)
-    assert _redact_card_output(json.dumps({"html": _SPLIT_LABEL_MARKUP, "data": {}}), None) is None
-    joined = "<p>aws_secret_access_key: " + "A" * 40 + "</p>"
-    assert _redact(joined) != joined
-    # Parity with plain text is the bar: a value the text scan takes for the
-    # credential is refused here too, and a label with no value publishes.
-    assert (
-        _redact_card_output(
-            json.dumps(
-                {"html": "<p><b>aws_secret_access_key:</b> <code>rotated</code></p>", "data": {}}
-            ),
-            None,
-        )
-        is None
-    )
-    labelled = {"html": "<p><b>aws_secret_access_key:</b> <code></code></p>", "data": {}}
-    assert _redact_card_output(json.dumps(labelled), None) is not None
 
 
 @pytest.mark.parametrize("reference", ["&#65;", "&#x41;", "&sol;"])
@@ -893,22 +855,17 @@ def test_markup_cannot_split_a_credential_token_across_tags(split):
 
 
 def test_markup_cannot_split_a_suspicious_url_across_tags():
-    """The exfiltration heuristics judge a URL by its shape, not by a label, so a
-    URL cut by an inline tag is whole on screen and in neither half for the raw
-    scan. The shown text is scanned again after the raw scan; a URL it still
-    redacts was kept from that scan by markup, and the card is refused. Negative
-    control: the same URL inside one element is redacted by the raw scan and
-    published without it."""
+    """A credential URL parameter is read inside its URL, so a URL cut by an inline
+    tag is whole on screen and its parameter outside any URL for the raw scan. The
+    shown text is scanned again after the raw scan; a value it still redacts was
+    kept from that scan by markup, and the card is refused. Negative control: the
+    same URL inside one element is redacted by the raw scan and published without it."""
     import json
 
     from kiro_crew.dashboard.card_lifecycle import _hides_secret, _redact, _redact_card_output
 
-    url = "https://collect.attacker.example/?payload=" + "aB3" * 70 + "&host=corp-laptop"
+    url = "https://collect.attacker.example/?access_token=" + "aB3" * 70 + "&host=corp-laptop"
     cut = url.index("?") + 1
-    # The raw scan reads past a bare tag's ``>``, so it catches a URL split by one.
-    bare = "<p><span>" + url[:cut] + "</span><span>" + url[cut:] + "</span></p>"
-    assert "aB3" * 10 not in _redact(bare)
-    # A double quote in the second tag still ends the URL for the raw scan.
     markup = "<p><span>" + url[:cut] + '</span><span class="v">' + url[cut:] + "</span></p>"
     # Neither half is a suspicious URL on its own: the raw scan leaves the markup alone.
     assert _redact(markup) == markup

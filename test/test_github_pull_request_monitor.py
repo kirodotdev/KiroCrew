@@ -33,6 +33,7 @@ from kiro_crew.monitoring.github_pull_request import (
     parse_github_pull_request_target,
 )
 from kiro_crew.monitoring.models import MonitorObservationStatus
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def test_blank_check_label_keeps_the_provider_state_under_an_opaque_identity() -> None:
@@ -249,7 +250,7 @@ def test_reordered_and_volatile_provider_values_keep_the_fingerprint_stable() ->
 
 def test_check_identity_is_redacted_before_it_enters_canonical_state() -> None:
     """A provider-controlled check label cannot turn monitor state into a secret sink."""
-    token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890ABCD"
+    token = github_classic(seed=133)  # a ghp_ without a valid checksum is no token
     provider, _ = _provider(
         _primary(
             statusCheckRollup=[

@@ -257,9 +257,9 @@ class TestWhatAnAgenticValueCarriesToThePage:
     #: A short Slack-shaped token: its placeholder is longer than the value it replaces.
     SHORT_KEY = "xoxb-" + synth(12, ALNUM, 59)
 
-    #: A long base64-looking query on a host nobody allowed, which is the shape the
-    #: exfiltration redactor removes.
-    URL = "https://evil.example.com/?d=" + "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY"
+    #: A credential parameter in a link: the URL pass masks its value and keeps the link.
+    URL_VALUE = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY"
+    URL = "https://evil.example.com/?access_token=" + URL_VALUE
 
     def array_field(self) -> dashboard_agentic.Instance:
         return instance(series={"type": "array", "source": {"agentic": True}})
@@ -275,7 +275,8 @@ class TestWhatAnAgenticValueCarriesToThePage:
         """Both helpers run, so a value carrying an address rather than a key is
         covered by the same pass."""
         written = dashboard_agentic.check_write(instance(), "risk_note", f"see {self.URL}")
-        assert "evil.example.com/?d=" not in written["value"]["v"]
+        assert self.URL_VALUE not in written["value"]["v"]
+        assert "https://evil.example.com/?access_token=[REDACTED" in written["value"]["v"]
 
     def test_the_scrub_reaches_strings_nested_in_arrays_and_objects(self) -> None:
         """A string is nested inside a row as often as it stands alone, so a scrub of

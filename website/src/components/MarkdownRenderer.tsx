@@ -681,14 +681,7 @@ const MD_COMPONENTS = {
   // resolves the component by tag name at runtime regardless of the static type.
   'blocked-link'({ node }: { node?: HastElement }) {
     const p = node?.properties
-    return (
-      <BlockedLinkChip
-        domain={String(p?.domain ?? '')}
-        placeholder={String(p?.placeholder ?? '')}
-        block={String(p?.block ?? '')}
-        tail={String(p?.tail ?? '')}
-      />
-    )
+    return <BlockedLinkChip domain={String(p?.domain ?? '')} block={String(p?.block ?? '')} />
   },
   'cred-tag'({ node }: { node?: HastElement }) {
     return <CredentialTag ordinal={Number(node?.properties?.ordinal)} placeholder={String(node?.properties?.placeholder ?? '')} />
@@ -896,6 +889,18 @@ const stripStrayToolUseTags = (content: string) => stripStrayTags(content, '<too
 
 const noSubscribe = () => () => {}
 
+/** The markers of a streaming reply with no records yet: its web links are drawn as
+ *  text until the reply lands with its blocked-link records. */
+const STREAMING_LINK_HOLD: RedactionMarkers = Object.freeze({
+  ordinals: new Set<number>(),
+  links: [],
+  held: new Set<string>(),
+  credentials: new Map(),
+  base: 0,
+  block: 0,
+  pending: true,
+})
+
 /**
  * One parse of a block's prepared text. react-markdown parses again on every
  * render, and the streaming tail block renders on every animation frame, so
@@ -926,7 +931,7 @@ const ParsedMarkdown = memo(function ParsedMarkdown({ text, sourcePos, glow, smo
   // the injected marker elements are not stripped and the glow/reveal passes
   // have already claimed the trailing text. Only added when the message
   // carries records, so every other surface is untouched.
-  if (markers && (markers.ordinals.size > 0 || markers.domains.size > 0)) {
+  if (markers && (markers.pending || markers.ordinals.size > 0 || markers.links.length > 0 || (markers.held?.size ?? 0) > 0)) {
     rehypePlugins = [...rehypePlugins, [rehypeRedactionMarkers, markers]]
   }
   // Last, so it wraps the root shape every other plugin has finished producing:
@@ -1047,7 +1052,7 @@ function isMarkdownBlock(lang: string | undefined, content: string): boolean {
  *  control overrides per card. Only mounted for a COMPLETE fence — see the
  *  caller in BlockRenderer. */
 const MarkdownContentCard = memo(function MarkdownContentCard(
-  { content, lang }: { content: string; lang?: string },
+  { content, lang, markers }: { content: string; lang?: string; markers?: RedactionMarkers },
 ) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [view, setView] = useState<'formatted' | 'raw'>('formatted')
@@ -1080,7 +1085,9 @@ const MarkdownContentCard = memo(function MarkdownContentCard(
           Formatted would silently discard them. Keeping it mounted preserves
           that state across any number of view switches. */}
       <div className={view === 'formatted' ? undefined : 'hidden'}>
-        <MarkdownBlock content={content} />
+        {/* The reply's link decisions reach the formatted card too: a blocked link
+            is its chip here, never a live anchor. */}
+        <MarkdownBlock content={content} markers={markers} />
       </div>
       <div className={view === 'raw' ? undefined : 'hidden'}>
         <EditableCodeBlock code={content} lang={lang} complete={true} />
@@ -1187,7 +1194,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       // Only fenced content whose CLOSE has arrived is offered a rendered view:
       // a half-streamed markdown source would flip structure as delimiters land.
       if (mdCardToggle && block.complete && isMarkdownBlock(block.language, block.content)) {
-        const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
+        const mdNode = <MarkdownContentCard content={block.content} lang={block.language} markers={markers} />
         return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
       }
       // `readOnlyCode`: the content is a record the reader must not be able to
@@ -1225,7 +1232,8 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
           <MarkdownBlock content={block.content.trim()} sourcePos={false} startLine={block.startLine} glow={false} smooth={false} softBreaks={softBreaks} live={false} unfurl={unfurl} markers={markers} />
         </MarkdownWidget>
       }
-      return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
+      return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey}
+        blockedLinks={markers?.links} linksPending={markers?.pending} />
     case 'markdown':
       // `live` = this block is the streaming tail (see MarkdownRenderer), and
       // `typing` = its text is still arriving. Both are ORed with the block's
@@ -1235,7 +1243,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false, redactionSlot }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.blocked_links` off the assistant message — the step-3 suspicious-URL records this message's redaction placeholders render from. Validated here; absent/malformed leaves every placeholder as plain text. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean; /** The LOCAL slot the reply's removed credentials were kept for, so the lock-tag card can offer the owner's reveal; falls back to `slotKey`. A host drawing another gateway's rows (the crew window) passes neither. */ redactionSlot?: string }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false, redactionSlot }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.link_blocks` off the assistant message: the links the server decided are not rendered live (`security/blocked_links.py`). Validated here; a link whose address matches one is drawn as a Blocked link chip, and the text keeps the address as written. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean; /** The LOCAL slot the reply's removed credentials were kept for, so the lock-tag card can offer the owner's reveal; falls back to `slotKey`. A host drawing another gateway's rows (the crew window) passes neither. */ redactionSlot?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // One message = one config-rule scan pool. The blocks below each mount their
   // OWN remark tree, so the rearm cannot live at the plugin's tree entry — a
@@ -1318,8 +1326,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // The message's redaction records, validated once. The sets are what the
   // injection pass gates on; the full records ride down through context.
   // A host allowed from a card still open keeps that card's records here:
-  // the reloaded reply shows the host's links as plain links and no longer
-  // carries them.
+  // the reloaded reply renders the host's links live and carries none of
+  // them, so they describe the card, never a link to draw as a chip.
   const replyKey = (redactionSlot ?? slotKey) && messageTs ? `${redactionSlot ?? slotKey}|${messageTs}` : undefined
   const holds = useAllowHolds(replyKey)
   const ownBlocked = useMemo(() => normalizeBlockedLinks(blockedLinks), [blockedLinks])
@@ -1337,7 +1345,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // So a reply carrying any redaction record is never split into paragraph
   // pieces: its block numbering must match the reloaded render.
   const blocks = useBlockAssembler(content, streaming, blockedRecords.length === 0 && credentialRecords.length === 0)
-  const blockedDomains = useMemo(() => new Set(blockedRecords.map(r => r.domain)), [blockedRecords])
   const credentialMap = useMemo(() => new Map(credentialRecords.map(r => [r.ordinal, r])), [credentialRecords])
   const credentialOrdinals = useMemo(() => new Set(credentialMap.keys()), [credentialMap])
   const sessionActions = useMemo<SessionActions>(
@@ -1414,14 +1421,18 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // Each block renders its own sub-document, so the credential ordinal its
   // first tag carries is the count of tags in every block before it.
   const blockMarkers = useMemo<Array<RedactionMarkers | undefined>>(() => {
-    if (credentialOrdinals.size === 0 && blockedDomains.size === 0) return blocks.map(() => undefined)
+    if (credentialOrdinals.size === 0 && ownBlocked.length === 0 && heldDomains.size === 0) {
+      // One shared object while only the streaming hold applies, so a block whose
+      // text did not change keeps its parse.
+      return blocks.map(() => (streaming ? STREAMING_LINK_HOLD : undefined))
+    }
     let base = 0
     return blocks.map((b, block) => {
-      const m: RedactionMarkers = { ordinals: credentialOrdinals, domains: blockedDomains, held: heldDomains, credentials: credentialMap, base, block }
+      const m: RedactionMarkers = { ordinals: credentialOrdinals, links: ownBlocked, held: heldDomains, credentials: credentialMap, base, block, pending: streaming }
       base += countCredentialTags(b.content)
       return m
     })
-  }, [blocks, credentialOrdinals, blockedDomains, heldDomains, credentialMap])
+  }, [blocks, credentialOrdinals, ownBlocked, heldDomains, credentialMap, streaming])
 
   // Settle the reveal edge once the content stops changing, and NEVER un-settle
   // it. One-way is the whole point: `.ft-word` spans persist across chunks

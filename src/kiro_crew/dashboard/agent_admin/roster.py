@@ -9,6 +9,7 @@ if TYPE_CHECKING:
         KiroCrewAgentConfig,
         _redact_external,
         _safe_avatar,
+        refuses,
     )
 
 
@@ -58,7 +59,7 @@ def _roster_mask(value: object) -> str:
 
     if not isinstance(value, str):
         return _SENSITIVE_MASK
-    return value if _redact_external(value) == value else _SENSITIVE_MASK
+    return _SENSITIVE_MASK if refuses(value, _redact_external) else value
 
 
 def _carries_mask(incoming: object) -> bool:

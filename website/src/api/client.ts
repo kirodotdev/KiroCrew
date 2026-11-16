@@ -125,7 +125,6 @@ export type {
   ConfigPendingChange,
   ConfigPendingData,
   ConfigPendingLeaf,
-  CredentialRedactionEngine,
   CredentialRedactionState,
   McpBodyFieldRow,
   McpBodyFieldsData,

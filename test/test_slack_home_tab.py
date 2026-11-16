@@ -11,7 +11,7 @@ import pytest
 
 from kiro_crew.slack import events as events_mod
 from kiro_crew.slack.events import _publish_home_tab
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import finished
 
 # Helpers
@@ -663,7 +663,7 @@ class TestPublishHomeTabSessions:
         ordering across all three surfaces.
         """
         orch = _make_orch()
-        leaked_key = SAMPLE_AWS_SECRET
+        leaked_key = github_classic(seed=93)
         with (
             patch(
                 "kiro_crew.slack.sessions_view._collect_recent_sessions",

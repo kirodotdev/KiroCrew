@@ -31,7 +31,7 @@ from collections import deque
 from typing import Any
 
 from kiro_crew.security import reveal_store
-from kiro_crew.security.exfil import redact_exfiltration_urls
+from kiro_crew.security.exfil import redact_exfiltration_urls, refuses
 from kiro_crew.security.redaction import (
     CREDENTIAL_REDACTION_TAGS,
     CredentialMatch,
@@ -65,9 +65,7 @@ SESSION_TOKEN_RULES = frozenset({"aws_session_token"})
 #: Rules the AWS credentials-file templates cover, with the key each reads.
 _AWS_TEMPLATE_KEYS = {
     "aws_secret_access_key": "aws_secret_access_key",
-    "bare_aws_secret": "aws_secret_access_key",
     "aws_session_token": "aws_session_token",
-    "aws_access_key_id": "aws_access_key_id",
 }
 
 RECORD_KEYS = frozenset({"ordinal", "rule", "label", "source", "view_command", "profile_command"})
@@ -124,9 +122,7 @@ def _is_clean(value: str) -> bool:
         return False
     if any(tag in value for tag in CREDENTIAL_REDACTION_TAGS) or "[REDACTED" in value:
         return False
-    if redact_credentials(value)[0] != value:
-        return False
-    return redact_exfiltration_urls(value)[0] == value
+    return not refuses(value, lambda text: redact_credentials(text)[0])
 
 
 def _tool_source(tool_input: str, *, is_shell: bool) -> dict[str, Any] | None:

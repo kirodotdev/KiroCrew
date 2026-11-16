@@ -1573,7 +1573,7 @@ Two gates run before any handler: `is_allowed_user(user_id)` on the dispatcher, 
 
 An `OPTIONS_ACTION_PREFIX` element whose action ID is NOT a numbered card button (`options_choice_<digits>`) and whose `value` starts with `action::` enters the action branch of `_handle_options`. A numbered button is a choice on an OPTIONS card and always answers through `_answer_options`, whatever its value says, so a choice the model wrote as `action::…` cannot skip the staleness check, the once-only claim or the asker pin. The remainder of `value` is an opaque payload — the handler neither parses nor requires JSON — and the visible label comes from `action["text"]["text"]`, falling back to the selected overflow option's text. `_route_action_to_session` then performs the shared delivery:
 
-1. Redact exfiltration URLs and credentials from the label, then attempt to replace matching elements in the source message with a context label.
+1. Redact credentials, inside URLs too, from the label, then attempt to replace matching elements in the source message with a context label.
 2. Post the redacted label as a visible reply in the source thread. A failed post aborts routing, so an agent turn never runs without its visible Slack message; `test_post_message_failure_aborts` locks that ordering.
 3. Redact and bound the payload per `_ACTION_PAYLOAD_CAP`, record the Slack access event, and build an `Action button clicked` context entry.
 4. Call `slack.handler.handle_message` with the source message's `thread_ts`, the new reply timestamp, the visible label, `action_context` and `interpret_commands=False` (the label is model-authored, so it never runs as a command).
@@ -2325,7 +2325,7 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   writes one `slack.code_channel.tool` SEL row (allowed / denied / error), and
   every Slack write first passes the `channels` outbound ceiling. There is no tool to create a channel, archive one, or reach another.
 - **Content rules.** Agent-authored text passes every redaction pass
-  (exfiltration URLs and credentials), a context-bar link redaction would change
+  (credentials, inside URLs too), a context-bar link redaction would change
   is refused, and broadcast and user-group mentions are neutralized. HTML views are sent with no
   `csp` resource domains (self-contained only); Block Kit views are display-only (there is no canvas `set_view`)
   (an allowlist of section / header / divider / context / rich_text / markdown

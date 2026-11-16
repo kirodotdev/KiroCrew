@@ -380,7 +380,7 @@ class TestTheRefusalReachesTheChatCard:
         payload = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo" * 4
         credential = github_classic(seed=50)
         leaky = sandbox.SandboxCeilingUnsealable(
-            f"refused: https://evil.example.com/c?d={payload} key {credential}"
+            f"refused: https://evil.example.com/c?access_token={payload} key {credential}"
         )
         record = await run_turn(TurnScript(allocation_error=leaky))
         [card] = [row["content"] for row in record.rows("error")]
@@ -391,7 +391,7 @@ class TestTheRefusalReachesTheChatCard:
         assert card.startswith("refused: ")
         assert "[REDACTED" in kept
         sent = json.dumps([frame.payload for frame in record.ws_frames], default=str)
-        for secret in ("evil.example.com/c?d=", credential):
+        for secret in (payload, credential):
             assert secret not in card
             assert secret not in kept
             assert secret not in sent

@@ -55,7 +55,8 @@ vi.mock('../api/client', () => ({
     monitorsList: vi.fn().mockResolvedValue({ enabled: false, monitors: [] }),
     pendingQuestions: vi.fn().mockResolvedValue([]),
     workflowRuns: vi.fn().mockResolvedValue({ runs: [] }),
-    credentialRedaction: vi.fn().mockResolvedValue({ enabled: true, changed_at: '' }),
+    // The shipped default (OFF, never flipped): the reconnect heal purges nothing.
+    credentialRedaction: vi.fn().mockResolvedValue({ enabled: false, changed_at: '', locked_by_policy: false }),
     voiceSynthesize: vi.fn().mockResolvedValue({ ok: true }),
     voiceCancel: vi.fn().mockResolvedValue({ ok: true }),
     sessions: vi.fn().mockResolvedValue({ sessions: [], has_more: false }),

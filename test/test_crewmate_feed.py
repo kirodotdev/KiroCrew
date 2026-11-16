@@ -23,6 +23,7 @@ from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import schema as lg
 from kiro_crew.dashboard import crewmate_feed
 from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
 
 ASK = "Open a PR for the docs fix? [OPTIONS: Open the PR | Not yet]"
@@ -849,7 +850,7 @@ def test_the_goal_fold_takes_the_snapshots_own_totals():
 
 
 def test_a_goal_snapshot_redacts_a_credential_in_goal_and_milestone_text():
-    token = "ghp_" + "a" * 36
+    token = github_classic(seed=305)
     rec = {
         "goals": [{"text": f"Rotate {token}"}],
         "key_results": [

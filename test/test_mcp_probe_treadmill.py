@@ -571,7 +571,7 @@ class TestMcpHeaderRedaction:
 
         fake_key = SAMPLE_AWS_SECRET
         redacted = disc.redact_mcp_error(
-            f"remote rejected key {fake_key} during handshake",
+            f"remote rejected aws_secret_access_key={fake_key} during handshake",
             {"Authorization": "Bearer unrelated-configured-value"},
         )
 

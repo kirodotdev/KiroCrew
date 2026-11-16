@@ -22,7 +22,8 @@ from test_snapshot import unpinnable_argv
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
-TOKEN = "8412345678:AAH9xSECRETtokenvalue_here12345"
+# A Telegram bot token in its published form: an 8 to 10 digit bot id, ``:``, 35 characters.
+TOKEN = "8412345678:" + "AAH9xSECRETtokenvalue_here123456789"
 # A GitHub token with a valid checksum. An AWS key id would stay visible, since it is
 # an identifier, not a secret.
 KEY = github_classic(seed=11)
@@ -123,7 +124,7 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
         FTS5 keeps two `WITHOUT ROWID` shadow tables. The index must be rebuilt after
         redacting, or a stale inverted index still answers a search for the credential.
         """
-        key = "ghp_" + "C" * 36
+        key = github_classic(seed=99)
         stage = tmp_path / "stage"
         (stage / "workspace" / "knowledge").mkdir(parents=True)
         db = stage / "workspace" / "knowledge" / "knowledge.db"
@@ -197,7 +198,7 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
         standard fts5 fixture would pass without the rebuild, since writing through the
         virtual table fixes both halves there.
         """
-        key = "ghp_" + "E" * 36
+        key = github_classic(seed=100)
         stage = tmp_path / "stage"
         stage.mkdir()
         db = stage / "knowledge.db"

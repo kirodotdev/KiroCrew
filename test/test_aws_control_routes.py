@@ -30,6 +30,7 @@ costs and the library, and backup.
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import json
 import logging
@@ -70,11 +71,10 @@ _GITHUB_TOKEN = github_classic(seed=52)
 class TestHelpers:
     def test_safe_error_runs_both_redaction_passes(self):
         # Every outbound error string must be scrubbed of BOTH credentials and
-        # exfiltration URLs — a leaked AWS key or the base64 beacon payload in
-        # AWS CLI stderr is exactly what this boundary strips before it reaches
-        # a body. (The URL redactor keeps the bare host in its marker; the
-        # secret is the query payload, which must be gone.)
-        beacon_payload = "QUJDREVGR0hJSktMTU5PUFFS" * 3
+        # the credential values in URLs: a leaked AWS key, or a beacon payload
+        # that base64-encodes a token, in AWS CLI stderr is exactly what this
+        # boundary strips before it reaches a body. The URL keeps its host.
+        beacon_payload = base64.b64encode(github_classic(seed=39).encode()).decode()
         exc = AWSError(
             f"failed: aws_secret_access_key={_AWS_SECRET} via "
             "https://collector.example.net/c?d=" + beacon_payload

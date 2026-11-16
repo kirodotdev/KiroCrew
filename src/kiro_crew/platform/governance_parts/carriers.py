@@ -751,6 +751,10 @@ class GovernanceCeiling:
     # Set per composition, never carried over: a refresh with no lower tier is False.
     # Read by ``redaction_switch.owner_may_disable``.
     lower_tier_folded: bool = False
+    # The retired rows (``catalog.RETIRED_SCOPES``) this document named, grant or deny.
+    # A policy that names one governs the host even when no live row is left, so
+    # ``redaction_switch`` never reads it as ungoverned.
+    retired_rows: Tuple[str, ...] = ()
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)

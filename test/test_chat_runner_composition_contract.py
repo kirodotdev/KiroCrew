@@ -291,7 +291,7 @@ _BASE_NAMES = frozenset("""
         record_activity record_agent_selection record_interaction_event
         record_provider_agent_switch redact redact_and_truncate redact_credentials
         redact_credentials_with_records redact_exfiltration_urls
-        redact_exfiltration_urls_with_records redact_for_display redact_log_via_context
+        redact_for_display redact_log_via_context
         redact_via_context reflow_and_label_glued_option_marker refresh_materialized_agents
         refresh_tag_grants_cache refusal_card_text refusal_for_command_off_loop
         refuse_stale_switch register_guarded_history_write register_images_off_loop

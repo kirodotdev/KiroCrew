@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from redaction_structured_cases import ALNUM, synth
+from redaction_structured_cases import github_classic
 
 from kiro_crew.monitoring.targets import (
     infer_pull_request_kind,
@@ -11,8 +11,9 @@ from kiro_crew.monitoring.targets import (
     parse_gitlab_merge_request_target,
 )
 
-# A 40-char AWS secret drawn without `/` or `+`, so it fits a path segment.
-_CREDENTIAL = synth(40, ALNUM, seed=7)
+# A 40-char GitHub token with a valid checksum, which fits a path segment. A bare
+# 40-character run with no label or key ID beside it is no credential by itself.
+_CREDENTIAL = github_classic(seed=7)
 
 
 @pytest.mark.parametrize(

@@ -267,6 +267,8 @@ def _intersect_ceilings(
         controls=merged,
         updates=_intersect_update_pins(authority.updates, subordinate.updates),
         yolo_max_seconds=_lower_cap(authority.yolo_max_seconds, subordinate.yolo_max_seconds),
+        # A retired row either tier names keeps the folded host governed.
+        retired_rows=tuple(dict.fromkeys((*authority.retired_rows, *subordinate.retired_rows))),
     )
 
 

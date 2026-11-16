@@ -39,6 +39,7 @@ import pytest
 from source_corpus import repo_root
 
 from kiro_crew.slack import handler
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _FACADE_PATH = Path(handler.__file__).resolve()
 _RUNTIME_DIR = _FACADE_PATH.parent / "handler_runtime"
@@ -890,7 +891,7 @@ def test_the_slack_messages_sink_redacts_what_its_render_let_through(
     from conftest import MockSlackClient
     from kiro_crew.providers.base import LLMEvent
 
-    key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+    key = github_classic(seed=175)  # a token; a bare 40-character run stays visible
     monkeypatch.setattr(
         handler,
         "render_one_for_slack",

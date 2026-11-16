@@ -18,7 +18,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import name_grant
+from kiro_crew import name_grant, redaction_seams
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
@@ -376,6 +376,7 @@ async def _side_read_only_tools(side_backend: str | None) -> bool:
     return True
 
 
+@redaction_seams.in_seam(redaction_seams.CHAT)
 async def _run_side_turn(
     state: DashboardState,
     slot,
@@ -1026,14 +1027,26 @@ async def api_side_open(request: web.Request) -> web.Response:
     )
 
 
-def _wire_side_row(entry: dict[str, Any]) -> dict[str, Any]:
-    """One stored side row as ``GET .../side`` returns it, redacted like its frame."""
+@redaction_seams.in_seam(redaction_seams.CHAT)
+def _wire_side_row(entry: dict[str, Any], workspace: str | None = None) -> dict[str, Any]:
+    """One stored side row as ``GET .../side`` returns it, redacted like its frame.
+
+    An answer carries the blocked-link records of its text under the hosts allowed
+    in *workspace*, as its final frame does.
+    """
     row: dict[str, Any] = {
         "id": entry.get("id", ""),
         "role": entry.get("role", ""),
         "content": redact(entry.get("content", "") or ""),
         "ts": entry.get("ts", ""),
     }
+    if row["role"] == "assistant":
+        # Body-scope import, for the cycle ``api_side_turn`` explains.
+        from kiro_crew.dashboard.chat_utils import blocked_links_for_workspace
+
+        records = blocked_links_for_workspace(row["content"], workspace)
+        if records:
+            row["link_blocks"] = records
     if entry.get("run_id"):
         row["run_id"] = entry["run_id"]
     if entry.get("steer"):
@@ -1084,7 +1097,7 @@ async def api_side_state(request: web.Request) -> web.Response:
             # The busy gate ``api_side_turn`` applies, so the panel offers steer and
             # queue exactly when a submit would get them.
             "running": side.turn_in_flight,
-            "messages": [_wire_side_row(entry) for entry in side.messages],
+            "messages": [_wire_side_row(entry, slot.workspace) for entry in side.messages],
             "queue": [
                 {
                     "id": entry["id"],

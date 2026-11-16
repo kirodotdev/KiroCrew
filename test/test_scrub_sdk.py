@@ -28,22 +28,12 @@ def test_outbound_redacts_a_credential_and_counts_it() -> None:
 def test_nothing_the_seam_reports_can_carry_a_payload() -> None:
     """The reported fields are counts, so a secret cannot ride out in them.
 
-    Core's own URL warning embeds the domain and the first 60 characters of the
-    path and query -- a real fragment of the URL it removed, and exactly where a
-    token that escaped the credential patterns sits. Returning those strings would
-    move the secret out of the published text and into the app's logs, so the seam
-    reports lengths only. Pinned against core's raw output so a future warning
-    format cannot reopen it.
+    Core's warnings describe what was removed. A warning format that quoted a
+    fragment of it would move the secret out of the published text and into the
+    app's logs, so the seam reports counts only, whatever the format becomes.
     """
-    from kiro_crew.security import redact_with_findings
-
     secret = "ZmFrZS1zZWNyZXQtdmFsdWUtdGhhdC1lc2NhcGVzLXBhdHRlcm5z"
-    url = f"https://evil.example.com/collect?sid={secret}&pad=" + "a" * 220
-
-    # Core really does echo the secret back in its warning -- this is the hazard,
-    # not a hypothetical. If this stops holding, the seam is still safe.
-    _, _, raw_url_warnings = redact_with_findings(url)
-    assert any(secret[:20] in w for w in raw_url_warnings)
+    url = f"https://evil.example.com/collect?access_token={secret}&pad=" + "a" * 220
 
     out = ScrubSDK().outbound(url)
     assert secret not in out.text
@@ -142,3 +132,58 @@ def test_every_app_gets_scrub_with_no_permission_declared(tmp_path) -> None:
     ctx = build_app_context("demo", tmp_path, permissions={})
     assert isinstance(ctx.scrub, ScrubSDK)
     assert ctx.cron is None, "a capability SDK still requires its permission"
+
+
+# ── a link the dashboard blocks ──────────────────────────────────────────────
+
+#: A link whose query carries data out: the dashboard draws it as a Blocked link chip.
+_EXFIL_URL = "https://collector.example/c?d=" + "aGVsbG8gd29ybGQgdGhpcyBpcyBkYXRh" * 4
+
+
+@pytest.fixture
+def allowed_hosts_store(tmp_path, monkeypatch):
+    """An empty allowed-hosts store of this test's own."""
+    from kiro_crew.security import redaction_allow
+
+    monkeypatch.setattr(redaction_allow, "_path_override", tmp_path / "hosts.json")
+    monkeypatch.setattr(redaction_allow, "_snapshot", None)
+    monkeypatch.setattr(redaction_allow, "_loading", False)
+    monkeypatch.setattr(redaction_allow, "_load_thread", None)
+    return redaction_allow
+
+
+def test_a_link_the_dashboard_blocks_leaves_app_egress_as_the_placeholder(
+    allowed_hosts_store,
+) -> None:
+    """The same URL is a chip on the dashboard and the placeholder in app egress: an
+    app's page has no chip, so the link must not leave it live."""
+    from kiro_crew.security.blocked_links import blocked_links
+
+    text = f"see {_EXFIL_URL} and https://example.com/docs?page=2 done"
+    assert [r["url"] for r in blocked_links(text)] == [_EXFIL_URL]
+    out = ScrubSDK().outbound(text)
+    assert out.text == (
+        "see [REDACTED: suspicious URL to collector.example] and "
+        "https://example.com/docs?page=2 done"
+    )
+    assert out.urls_removed == 1 and out.redacted is True
+
+
+def test_an_allowed_host_passes_untouched_in_both(allowed_hosts_store) -> None:
+    from kiro_crew.security.blocked_links import blocked_links
+
+    assert allowed_hosts_store.allow_host(None, "collector.example")
+    hosts = allowed_hosts_store.allowed_hosts_for(None)
+    text = f"see {_EXFIL_URL} done"
+    assert blocked_links(text, allowed_hosts=hosts) == []
+    out = ScrubSDK().outbound(text)
+    assert out.text == text
+    assert out.urls_removed == 0 and out.redacted is False
+
+
+def test_any_other_link_is_masked_at_the_value_only(allowed_hosts_store) -> None:
+    text = f"open https://example.com/p?access_token={_TOKEN} now"
+    out = ScrubSDK().outbound(text)
+    assert _TOKEN not in out.text
+    assert out.text.startswith("open https://example.com/p?access_token=")
+    assert "suspicious URL" not in out.text

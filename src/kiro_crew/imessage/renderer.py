@@ -142,7 +142,10 @@ class IMessageRenderer(Renderer):
         ok = stop_reason != "error"
         content = self.delivery_text() or ("…" if ok else _ERROR_TEXT)
         chunks = chunk_plaintext(content, self.capabilities.max_message_chars) or ["…"]
-        for index, chunk in enumerate(chunks):
+        # A plain counter numbers the chunks, so the log line below carries no
+        # value read from the answer text.
+        sent = 0
+        for chunk in chunks:
             try:
                 await self._client.send(self._handle, chunk)
             except (RpcError, RpcTransportError) as exc:
@@ -157,11 +160,12 @@ class IMessageRenderer(Renderer):
                 logger.error(
                     "imessage: delivery to %s failed on chunk %d of %d: %s",
                     redact_handle(self._handle),
-                    index + 1,
+                    sent + 1,
                     len(chunks),
                     exc,
                 )
                 raise
+            sent += 1
 
         # The answer shipped. If either redactor rewrote it -- a credential, or a
         # suspicious URL `_default_redactor` also strips -- the reader is holding
@@ -175,9 +179,7 @@ class IMessageRenderer(Renderer):
         # the way out, so re-redacting the assembled answer reports nothing while
         # the placeholders are plainly visible. Sum every tag the redactor can emit
         # (`CREDENTIAL_REDACTION_TAGS`) so an encoded-credential-only answer is not
-        # missed, and count the URL tag by `EXFILTRATION_REDACTION_TAG_PREFIX`
-        # prefix (it interpolates the domain, so it has no constant form). The two
-        # stay separate because the notice is worded by kind: the remedies differ.
+        # missed (`count_redaction_tags`).
         #
         # Best-effort AFTER the answer succeeded: a failure to deliver the notice
         # must NOT re-raise and convert an already-delivered answer into a failed

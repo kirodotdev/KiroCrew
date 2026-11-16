@@ -7,9 +7,8 @@ import { api } from '../api/client'
 // the chip is. Allow from an entry shows its outcome under that entry and never
 // marks any entry as the inspected link.
 const host = 'reviews.example-sink.net'
-const PH = `[REDACTED: suspicious URL to ${host}]`
-const records = [1, 2, 3].map(i => ({ domain: host, rule: 'exfil_query_length', path: `/p${i}`, query_chars: 290, url: `https://${host}/p${i}?q=x`, url_withheld: null }))
-const content = records.map((_, i) => `Link ${i + 1}: ${PH}`).join('\n\n')
+const records = [1, 2, 3].map(i => ({ url: `https://${host}/p${i}?q=x`, domain: host, rule: 'exfil_query_length', query_chars: 290, withheld: null }))
+const content = records.map((r, i) => `Link ${i + 1}: ${r.url}`).join('\n\n')
 afterEach(() => vi.restoreAllMocks())
 
 it('a host with several records never marks an entry, even after Allow from one', async () => {

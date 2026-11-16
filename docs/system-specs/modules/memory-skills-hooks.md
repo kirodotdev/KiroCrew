@@ -5093,7 +5093,7 @@ scope.
 successful `$skillname` selection as one `system` row with
 `meta.kind=skill_load`. `meta.skills` keeps the ordered `{name, body}` list that
 entered that turn. `resolve_dollar_skills` has already removed frontmatter, and
-the runner applies credential and outbound-URL redaction before it writes either
+the runner applies credential redaction, inside URLs too, before it writes either
 the model block or the snapshot. The snapshot therefore remains accurate if a
 skill changes or disappears later and adds no second filesystem read. Existing
 dollar-skill count and file-read caps bound the row. The dashboard renders the
@@ -5488,8 +5488,8 @@ in-context copy is not sufficient rather than trying and failing.
 
 **Both tools label their output untrusted**, because a registry publisher's text
 reaches the model verbatim: `skill_fetch` prefixes the body, and `skill_discover`
-leads with the label. The gateway's `_redact_external` scrubs credential shapes
-and exfiltration URLs but cannot tell imperative prose from a description, so the
+leads with the label. The gateway's `_redact_external` scrubs credential shapes,
+inside URLs too, but cannot tell imperative prose from a description, so the
 label is the only signal — and it must **lead**, not trail. `sanitize_response`
 drops the TAIL at `MAX_RESPONSE_LEN` (100k) and `SkillSearchResult` puts no bound
 on `id` / `name` / `author`, so a trailing label could be padded off the end by
@@ -6367,8 +6367,8 @@ bundled names from `.bundled_manifest` and hub-installed names/install paths
 from `.hub/lock.json`; `.archive`, `.hub`, dependency, and cache trees are
 pruned before the file budget, leaving only active local packages selectable.
 Accepted packages retain their ordinary assets. Every regular UTF-8 text asset
-in a complete, package-bounded traversal is screened in full for credentials
-and exfiltration URLs; clean assets are copied byte-for-byte, including leading
+in a complete, package-bounded traversal is screened in full for credentials,
+inside URLs too; clean assets are copied byte-for-byte, including leading
 and trailing whitespace. No per-asset preview truncation is used for either the
 security decision or the copied content.
 
@@ -6572,7 +6572,7 @@ reuse_count: 0                          # omitted when zero
 ### Safety rails (non-negotiable per `security.md`)
 
 1. **Sensitive-session skip** — `_session_touched_sensitive()` scans all tool names across the session; any match in `_SENSITIVE_TOOL_PATTERNS` (AWS/SSH/GPG/netrc/.env/IMDS) skips extraction entirely. Complements the runtime hook-layer block; if the LLM *tried* to read credentials, we still don't synthesize a skill from the session.
-2. **Output redaction** — `redact_credentials()` + `redact_exfiltration_urls()` applied to `description`, `triggers`, and `procedure_md` before the SKILL.md is written. `AKIA*`, `ASIA*`, private key headers, Slack tokens, base64-encoded credentials all get scrubbed. Defense even against a prompt-injected LLM that tries to embed credentials in the procedure.
+2. **Output redaction** — `redact_credentials()` + `redact_exfiltration_urls()` applied to `description`, `triggers`, and `procedure_md` before the SKILL.md is written. AWS secret keys, private-key blocks, Slack tokens and base64-encoded credentials all get scrubbed, inside URLs too. Defense even against a prompt-injected LLM that tries to embed credentials in the procedure.
 3. **Size cap** — `AUTO_SKILL_MAX_PROCEDURE_CHARS = 10_240`; oversized outputs are rejected entirely (indicates the aux LLM went off-task).
 4. **Similarity dedup** — `find_similar()` rejects near-duplicates above `skills.auto_similarity_threshold` (default 0.85) Jaccard overlap on description words.
 5. **Namespace lock** — `update_auto_skill()` refuses to touch any skill whose name doesn't start with `auto/`, preventing the refine path from ever clobbering hand-authored skills.

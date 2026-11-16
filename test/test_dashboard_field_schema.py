@@ -17,6 +17,7 @@ import pytest
 from kiro_crew import dashboard_agentic
 from kiro_crew.dashboard_templates.manifest import ManifestError, load_template, parse_manifest
 from kiro_crew.mcp_panel import _render_fields
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 BUILTIN = Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard_templates/builtin"
 FIXTURES = Path(__file__).resolve().parent / "fixtures/dashboard_templates"
@@ -214,7 +215,7 @@ class TestTheWriteChecksTheShape:
         A credential-shaped choice passes the check, then the scrub turns it into a
         placeholder outside the declared choices; a plain `string` check would miss it.
         """
-        secret = "ghp_" + "A" * 36
+        secret = github_classic(seed=104)
         manifest = parse_manifest(_raw(type="string", enum=[secret, "ok"]))
         instance = dashboard_agentic.Instance(manifest=manifest, instance_version=1)
         with pytest.raises(dashboard_agentic.WriteRefused) as caught:

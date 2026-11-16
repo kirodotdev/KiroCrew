@@ -34,7 +34,6 @@ from kiro_crew.memory_stores import memory_stores_root
 from kiro_crew.platform.context import PlatformCompositionError, current_context, set_context
 from kiro_crew.platform.governance import parse_policy
 from kiro_crew.providers.acp import AcpProvider
-from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.security.redaction import REDACTED_CREDENTIAL_TAG
 from kiro_crew.testing.links import make_dir_link
 from kiro_crew.testing.synthetic_credentials import aws_secret
@@ -321,9 +320,9 @@ async def test_generated_prompt_is_redacted_only_in_transcript(tmp_path):
     logged_prompt = next(message["content"] for message in messages if message["role"] == "user")
     assert "Investigate this candidate." in logged_prompt
     assert secret not in logged_prompt
-    assert exfil_url not in logged_prompt
+    # A URL is never replaced whole: with no credential in it, it stays readable.
+    assert exfil_url in logged_prompt
     assert REDACTED_CREDENTIAL_TAG in logged_prompt
-    assert EXFILTRATION_REDACTION_TAG_PREFIX in logged_prompt
     assert sessions.released == sessions.removed == [key]
 
 
@@ -365,10 +364,10 @@ async def test_member_result_redaction_preserves_raw_return(tmp_path, output):
         stored = next(row["content"] for row in rows if row.get("role") == "assistant")
     assert "Provider diagnostic." in stored
     assert secret not in transcript
-    assert exfil_url not in transcript
+    # A URL is never replaced whole: with no credential in it, it stays readable.
+    assert exfil_url in stored
     assert private_token not in transcript
     assert REDACTED_CREDENTIAL_TAG in stored
-    assert EXFILTRATION_REDACTION_TAG_PREFIX in stored
     assert "[REDACTED-MEMBER-TOKEN]" in stored
     assert sessions.released == sessions.removed == [key]
     assert sessions.providers[0].shutdowns == 1

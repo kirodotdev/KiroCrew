@@ -78,8 +78,10 @@ def _lesson_scope_suffix(scope: str | None) -> str:
     # Strip terminal controls FIRST, then judge the stripped text: a credential
     # split by an embedded escape sequence would pass the redactor whole and be
     # reassembled by the stripping, so only the value that is printed is judged.
+    from kiro_crew.security import refuses
+
     printable = _TERMINAL_CTRL_RE.sub("", scope)
-    if not printable or redact(printable) != printable:
+    if not printable or refuses(printable, redact):
         return " (scope: unusable)"
     return f" (scope: {printable})"
 

@@ -786,9 +786,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_segment_row_meta",
             "function",
-            # links_ordered and text: keyword-only and defaulted, so every old caller keeps its shape.
-            "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None,"
-            " *, links_ordered: 'bool' = False, text: 'str | None' = None) -> 'dict | None'",
+            # text: keyword-only and defaulted, so every old caller keeps its shape.
+            "(slot: '_ChatSlot', redactions: 'list[dict] | None' = None,"
+            " *, text: 'str | None' = None) -> 'dict | None'",
         ),
         ("_SEGMENT_RAW_MAX_CHARS", "value", "int"),
         (
@@ -799,19 +799,14 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_redact_segment",
             "function",
-            # _ordered_out: keyword-only and defaulted, so every old caller keeps its shape.
-            "(slot: '_ChatSlot', text: 'str', *, _ordered_out: 'list[bool] | None' = None)"
-            " -> 'tuple[str, list[dict], list[dict]]'",
+            "(slot: '_ChatSlot', text: 'str') -> 'tuple[str, list[dict]]'",
         ),
         (
             "_redact_segment_text",
             "function",
-            # judged_sri_values: defaulted, so every old caller keeps its shape.
-            # _ordered_out: keyword-only and defaulted, likewise.
-            # _reveal_pending: keyword-only and defaulted, likewise.
-            "(slot: '_ChatSlot', text: 'str', judged_sri_values: 'Collection[str]' = (),"
-            " *, _ordered_out: 'list[bool] | None' = None,"
-            " _reveal_pending: 'dict[str, str] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
+            # _reveal_pending: keyword-only and defaulted, so every old caller keeps its shape.
+            "(slot: '_ChatSlot', text: 'str', *,"
+            " _reveal_pending: 'dict[str, str] | None' = None) -> 'tuple[str, list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
         ("_TOOL_GROUP_ROLES", "value", "frozenset"),

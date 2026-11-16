@@ -327,12 +327,14 @@ def test_a_credential_cannot_survive_the_overflow_split_at_any_offset():
     for offset in range(0, len(secret) + 1, 7):
         emit.reset_caches()
         _open_session()
-        filler_before = "f" * max(0, boundary - offset)
+        # Blanks around it: a label glued to a word, or a value glued to the next,
+        # is no credential.
+        filler_before = "f" * max(0, boundary - offset - 1) + " "
         emit.on_message_sent(
             SESSION,
             1,
             step=1,
-            text=filler_before + secret + "t" * 8000,
+            text=filler_before + secret + " " + "t" * 7999,
         )
         assert_drained()
         blob = _log_path().read_text(encoding="utf-8")

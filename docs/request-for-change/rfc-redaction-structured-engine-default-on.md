@@ -1,6 +1,6 @@
 ---
 title: The structured credential detectors are on by default
-status: draft
+status: superseded
 author: Crew Tasks Bot, directed by mbriones98
 created: 2026-11-09
 last-audited: 2026-11-09
@@ -9,12 +9,14 @@ doc-pr:
 implementation-prs: [29369, 31863, 29423]
 tracking-issues: [22552, 31895, 31690, 31692]
 supersedes: []
-superseded-by: []
+superseded-by: [../decisions/2026-11-15-credential-redaction-off-by-default.md]
 ---
 
 # RFC: The structured credential detectors are on by default
 
-Status: draft. This document lands on its own, before
+Status: superseded on 2026-11-15, before acceptance, by the decision
+[2026-11-15-credential-redaction-off-by-default.md](../decisions/2026-11-15-credential-redaction-off-by-default.md):
+redaction is one owner switch, off by default. While it was a draft, this document landed on its own, before
 [#29423](https://github.com/kirodotdev/KiroCrew/pull/29423), because that PR
 changes a default for every install. Code citations name a file and a symbol,
 not a line number, and were read at #29423's head `76fc1c61e8` unless they say

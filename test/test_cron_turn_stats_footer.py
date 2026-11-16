@@ -121,10 +121,10 @@ def test_stats_redact_a_credential_shaped_model() -> None:
 
 
 def test_stats_redact_a_url_shaped_model() -> None:
-    url = "https://evil.example.com/c?d=" + "A" * 120
+    url = "https://evil.example.com/c?access_token=" + "A" * 120
     stats = turn_stats_meta(10, 0.0, 0.0, url)
     assert stats is not None
-    assert "evil.example.com/c?d=" not in stats.get("model", "")
+    assert "A" * 32 not in stats.get("model", "")
 
 
 def test_replay_without_stats_stamps_nothing(tmp_path) -> None:

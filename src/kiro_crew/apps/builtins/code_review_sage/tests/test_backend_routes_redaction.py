@@ -14,6 +14,8 @@ import unittest
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import github_classic
+
 
 class TestRedactionReachesNestedValues:
     """Redacting top-level strings covered every KEY, not every VALUE.
@@ -24,12 +26,13 @@ class TestRedactionReachesNestedValues:
     structure, so no shape passes content through untouched.
     """
 
-    # Assembled at runtime, never written as one literal: the redactor only fires
-    # on credential-SHAPED input (a plain sentinel passes through untouched, so the
-    # test would prove nothing), but a real key shape sitting in the source trips
-    # the internal-content-scan credential rules. Splitting it satisfies both — the
-    # value is key-shaped when the redactor sees it, and no line here matches.
-    SECRET = "glpat-" + "1234567890EXAMPLE"
+    # Built at runtime, never written as one literal: the redactor only fires on a
+    # token in its published format (a plain sentinel passes through untouched, so the
+    # test would prove nothing), but a real key shape sitting in the source trips the
+    # internal-content-scan credential rules. A generated GitHub token with a valid
+    # checksum satisfies both: it is a token when the redactor sees it, and no line
+    # here matches.
+    SECRET = github_classic(seed=31)
 
     def _leaks(self, obj) -> bool:
         return self.SECRET in repr(obj)
@@ -90,7 +93,7 @@ class TestNoFindingFieldIsExemptFromRedaction:
     still left alone: `_redact_deep` only touches strings.
     """
 
-    SECRET = "glpat-" + "1234567890EXAMPLE"  # split: see the sentinel note above
+    SECRET = github_classic(seed=32)  # built: see the sentinel note above
 
     def test_a_credential_in_line_is_redacted(self):
         from sage_lib import report
@@ -129,7 +132,7 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
 
     # Assembled at runtime: the scan reads source text, while the redactor only
     # fires on credential-shaped input.
-    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = github_classic(seed=33)
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -237,7 +240,7 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
     """
 
     # Assembled at runtime so the scan sees no credential-shaped literal.
-    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = github_classic(seed=33)
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -336,7 +339,7 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
 
     # Assembled at runtime: the scan reads source text, the redactor only fires
     # on credential-shaped input.
-    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = github_classic(seed=33)
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

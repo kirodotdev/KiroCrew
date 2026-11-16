@@ -7,12 +7,11 @@ content scanners do not read this file as holding a key.
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import pathlib
 import string
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
@@ -62,23 +61,6 @@ def assert_linear_work(build: Callable[[int], str], run: Callable[[str], object]
     small = package_lines(lambda: run(build(1 << 18)))
     large = package_lines(lambda: run(build(1 << 19)))
     assert large <= small * 5 // 2 + 1000, (small, large)
-
-
-@contextlib.contextmanager
-def structured_engine() -> Iterator[None]:
-    """Select the structured engine for the block, then restore the previous choice.
-
-    A file whose expectations are the structured engine's output pins it with this,
-    so the same file still passes when the suite runs with the legacy engine selected.
-    """
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(True)
-    try:
-        yield
-    finally:
-        compat.publish_use_rule_table(before)
 
 
 def b64url_json(obj: dict[str, object]) -> str:
@@ -148,11 +130,24 @@ PEM_BEGIN_PLAIN = "-----BEGIN " "PRIVATE KEY-----"
 PEM_END_PLAIN = "-----END " "PRIVATE KEY-----"
 PGP_BEGIN = "-----BEGIN PGP " "PRIVATE KEY BLOCK-----"
 PGP_END = "-----END PGP " "PRIVATE KEY BLOCK-----"
+OPENSSH_BEGIN = "-----BEGIN OPENSSH " "PRIVATE KEY-----"
+OPENSSH_END = "-----END OPENSSH " "PRIVATE KEY-----"
 CERT_BEGIN = "-----BEGIN CERTIFICATE-----"
 CERT_END = "-----END CERTIFICATE-----"
 PEM_BODY = "\n".join(synth(64, B64, s) for s in range(4))
 PEM_BLOCK = f"{PEM_BEGIN}\n{PEM_BODY}\n{PEM_END}"
 PGP_BLOCK = f"{PGP_BEGIN}\n\n{PEM_BODY}\n{PGP_END}"
+# The published jwt.io examples: the older sample (secret ``secret``) and the default.
+JWTIO_OLDER = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9"
+    ".TJVA95OrM7E2cBab30RMHrHDcEfxjoYZgeFONFh7HgQ"
+)
+JWTIO_DEFAULT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0"
+    ".KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30"
+)
 
 
 # (name, text, expected redacted text, expected secret rule ids)
@@ -165,6 +160,16 @@ def secret_cases() -> list[tuple[str, str, str, list[str]]]:
     cases: list[tuple[str, str, str, list[str]]] = [
         ("github.classic", f"token {gh} end", f"token {T} end", ["github.classic"]),
         ("github.classic.gho", f"x={github_classic('gho_', 9)}", f"x={T}", ["github.classic"]),
+        # The checksum decides the token, so one glued to a word is still read: a
+        # renderer that strips whitespace at a message edge must not hand over a key.
+        ("github.glued", f"x{gh}", f"x{T}", ["github.classic"]),
+        ("github.too_long", f"{gh}Z", f"{T}Z", ["github.classic"]),
+        (
+            "encoded.percent_in_url",
+            "https://example.test/?data=" + "".join(f"%{ord(c):02X}" for c in gh[:4]) + gh[4:],
+            f"https://example.test/?data={T}",
+            ["encoded_credential"],
+        ),
         (
             "github.fine_grained",
             f"pat: {github_fine_grained()}",
@@ -250,6 +255,13 @@ def secret_cases() -> list[tuple[str, str, str, list[str]]]:
             f"{key_id} {T}",
             ["aws.secret_access_key"],
         ),
+        # A value written after a label that names a credential is masked, in prose too.
+        (
+            "labelled.access_token_in_prose",
+            "set access_token=" + synth(30, B64URL, 43) + " in the env",
+            f"set access_token={T} in the env",
+            ["labelled.secret"],
+        ),
         (
             "url.oauth.client_secret_query",
             f"https://auth.example.test/token?client_id=app1&client_secret={synth(40, B64URL, 31)}&x=1",
@@ -292,36 +304,50 @@ def secret_cases() -> list[tuple[str, str, str, list[str]]]:
             f"https://app.example.test/#/cb?access_token={T}",
             ["url.oauth_param.access_token"],
         ),
-        ("pem", f"key:\n{PEM_BLOCK}\nafter", f"key:\n{T}\nafter", ["pem.private_key"]),
+        # A private key: only the body goes; the BEGIN and END lines stay.
+        (
+            "pem",
+            f"key:\n{PEM_BLOCK}\nafter",
+            f"key:\n{PEM_BEGIN}\n{T}\n{PEM_END}\nafter",
+            ["pem.private_key"],
+        ),
         (
             "pem.plain_type",
             f"{PEM_BEGIN_PLAIN}\n{PEM_BODY}\n{PEM_END_PLAIN} tail",
-            f"{T} tail",
+            f"{PEM_BEGIN_PLAIN}\n{T}\n{PEM_END_PLAIN} tail",
             ["pem.private_key"],
         ),
         (
             "pem.json_escaped",
             '{"private_key": "' + PEM_BLOCK.replace("\n", "\\n") + '\\n", "x": 1}',
-            '{"private_key": "' + T + '\\n", "x": 1}',
+            '{"private_key": "' + PEM_BEGIN + "\\n" + T + "\\n" + PEM_END + '\\n", "x": 1}',
             ["pem.private_key"],
         ),
         (
+            # Verifier corpus L07: an OpenSSH key pasted into prose.
+            "pem.openssh",
+            f"Here is the deploy key from the old box:\n{OPENSSH_BEGIN}\n{PEM_BODY}\n{OPENSSH_END}",
+            f"Here is the deploy key from the old box:\n{OPENSSH_BEGIN}\n{T}\n{OPENSSH_END}",
+            ["pem.private_key"],
+        ),
+        (
+            # No END line: the body runs to the end of the text (fail closed).
             "pem.unterminated",
             f"before\n{PEM_BEGIN}\n{PEM_BODY}\nmore text",
-            f"before\n{T}",
+            f"before\n{PEM_BEGIN}\n{T}",
             ["pem.private_key_unterminated"],
         ),
         (
             "pem.end_type_mismatch",
             f"{PEM_BEGIN}\n{PEM_BODY}\n{PEM_END_PLAIN}\nafter",
-            T,
+            f"{PEM_BEGIN}\n{T}",
             ["pem.private_key_unterminated"],
         ),
-        ("pgp", f"{PGP_BLOCK}\nok", f"{T}\nok", ["pgp.private_key"]),
+        ("pgp", f"{PGP_BLOCK}\nok", f"{PGP_BEGIN}\n\n{T}\n{PGP_END}\nok", ["pgp.private_key"]),
         (
             "pgp.unterminated",
             f"x {PGP_BEGIN}\n{PEM_BODY}",
-            f"x {T}",
+            f"x {PGP_BEGIN}\n{T}",
             ["pgp.private_key_unterminated"],
         ),
         (
@@ -460,9 +486,85 @@ def secret_cases() -> list[tuple[str, str, str, list[str]]]:
         ),
         (
             "pem.contains_token",
-            f"{PEM_BEGIN}\n{github_classic(seed=22)}\n{PEM_END}",
-            T,
+            f"{PEM_BEGIN}\n{github_classic(seed=22)}\n{PEM_BODY}\n{PEM_END}",
+            f"{PEM_BEGIN}\n{T}\n{PEM_END}",
             ["pem.private_key"],
+        ),
+        # A labelled value after a listed name, in env, properties, YAML, JSON and a flag
+        # (verifier corpus L43, L13, L11, and its name probe).
+        (
+            "labelled.shape.env_vendor_tokens",
+            f"# .env.production\nSENTRY_AUTH_TOKEN=sntrys_{synth(60, B64URL, 50)}\n"
+            f"TWILIO_AUTH_TOKEN={synth(32, HEX, 51)}\nJWT_SECRET={synth(48, ALNUM, 52)}\n",
+            f"# .env.production\nSENTRY_AUTH_TOKEN={T}\nTWILIO_AUTH_TOKEN={T}\nJWT_SECRET={T}\n",
+            ["labelled.secret"] * 3,
+        ),
+        (
+            "labelled.shape.properties",
+            "spring.datasource.url=jdbc:postgresql://kc-prod.internal:5432/kc\n"
+            "spring.datasource.username=kc_admin\n"
+            f"spring.datasource.password={synth(14, ALNUM, 53)}#9\n",
+            "spring.datasource.url=jdbc:postgresql://kc-prod.internal:5432/kc\n"
+            f"spring.datasource.username=kc_admin\nspring.datasource.password={T}\n",
+            ["labelled.secret"],
+        ),
+        (
+            "labelled.shape.yaml_lower_case",
+            "database:\n  host: kc-prod.internal\n  user: kc_admin\n"
+            f"  password: {synth(32, ALNUM, 54)}\n  pool_size: 10\n",
+            f"database:\n  host: kc-prod.internal\n  user: kc_admin\n  password: {T}\n"
+            "  pool_size: 10\n",
+            ["labelled.secret"],
+        ),
+        (
+            "labelled.shape.json_camel_case_and_flag",
+            f'{{"clientSecret": "{synth(32, ALNUM, 55)}"}} then '
+            f"tool --db-password {synth(24, ALNUM, 56)} --region us-east-1",
+            f'{{"clientSecret": "{T}"}} then tool --db-password {T} --region us-east-1',
+            ["labelled.secret", "labelled.secret"],
+        ),
+        (
+            # Verifier corpus L42: ``aws ecr get-authorization-token`` output.
+            "labelled.shape.ecr_authorization_token",
+            '{\n    "authorizationData": [{\n        "authorizationToken": "'
+            + base64.b64encode(("AWS:eyJwYXlsb2FkIjoi" + synth(200, B64, 57)).encode()).decode()
+            + '",\n        "expiresAt": "2026-11-14T19:30:00+00:00"\n    }]\n}',
+            '{\n    "authorizationData": [{\n        "authorizationToken": "'
+            + T
+            + '",\n        "expiresAt": "2026-11-14T19:30:00+00:00"\n    }]\n}',
+            ["labelled.secret"],
+        ),
+        (
+            # Verifier corpus L39: Secrets Manager JSON keeps its escaped closing quote.
+            "labelled.escaped_json_keeps_the_escape",
+            '"SecretString": "{\\"username\\":\\"kc_admin\\",\\"password\\":\\"Pg-'
+            + synth(18, ALNUM, 58)
+            + '\\"}"',
+            '"SecretString": "{\\"username\\":\\"kc_admin\\",\\"password\\":\\"' + T + '\\"}"',
+            ["labelled.secret"],
+        ),
+        (
+            # Verifier corpus L33: the password glued to ``-p``.
+            "cli.mysql_glued_password",
+            f"$ mysql -h kc-prod.internal -u root -pRt{synth(12, ALNUM, 59)} -e 'SHOW DATABASES;'",
+            f"$ mysql -h kc-prod.internal -u root -p{T} -e 'SHOW DATABASES;'",
+            ["cli.mysql_password"],
+        ),
+        (
+            # Verifier corpus L34.
+            "cli.docker_login_password",
+            f"docker login -u kcbot -p {synth(20, ALNUM, 60)} registry.internal.example.com",
+            f"docker login -u kcbot -p {T} registry.internal.example.com",
+            ["cli.docker_login_password"],
+        ),
+        (
+            # Verifier corpus L25: one entry across lines, one on a line.
+            "netrc.password",
+            f"machine github.com\n  login octocat\n  password {synth(24, ALNUM, 61)}\n"
+            f"machine artifactory.internal.example.com login ci password {synth(18, ALNUM, 62)}",
+            f"machine github.com\n  login octocat\n  password {T}\n"
+            f"machine artifactory.internal.example.com login ci password {T}",
+            ["netrc.password", "netrc.password"],
         ),
     ]
     out = []
@@ -482,8 +584,6 @@ def benign_cases() -> list[tuple[str, str]]:
         ("bolin.api_token_placeholder", "export API_TOKEN=<your-token-here>"),
         ("bolin.password_changeme", "password=changeme"),
         ("github.bad_checksum", "ghp_" + synth(30, ALNUM, 1) + "AAAAAA"),
-        ("github.glued", "xghp_" + github_classic()[4:]),
-        ("github.too_long", github_classic() + "Z"),
         (
             "github.fine_grained.short",
             "github_pat_" + synth(22, ALNUM, 2) + "_" + synth(50, ALNUM, 3),
@@ -522,7 +622,6 @@ def benign_cases() -> list[tuple[str, str]]:
         ("aws.label.example", "aws_secret_access_key=example"),
         ("aws.label.key_id_value", f"aws_secret_access_key={key_id}"),
         ("aws.label.39", f"aws_secret_access_key={secret[:39]}"),
-        ("aws.label.glued_name", f"MyAppSecretAccessKey={secret}"),
         ("aws.label.template", "aws_secret_access_key=${AWS_SECRET}"),
         ("aws.label.env_ref", "SecretAccessKey: $AWS_SECRET_ACCESS_KEY"),
         ("aws.session.short", "aws_session_token=" + synth(60, B64, 4)),
@@ -554,20 +653,111 @@ def benign_cases() -> list[tuple[str, str]]:
         ("git.sha1_right_after_key_id", f"{key_id} {synth(40, HEX, 5)}"),
         ("git.sha256_beside_key_id", f"{key_id}\nobject {synth(64, HEX, 9)}\n"),
         # Exact OAuth keys only: other parameters and the key outside a URL stay.
+        # The token-parameter pass, not the table, masks a ``token=`` value
+        # (test_redaction_urls_value_only.py); the table leaves the rest as written.
         (
             "url.oauth.other_params_stay",
             "https://auth.example.test/cb?code="
             + synth(30, B64URL, 40)
             + "&state="
             + synth(30, B64URL, 41)
-            + "&token="
-            + synth(30, B64URL, 42)
             + "&client_id=app1&secret_hint=x",
         ),
-        ("url.oauth.key_in_prose", "set access_token=" + synth(30, B64URL, 43) + " in the env"),
         (
             "url.oauth.key_name_glued",
             "https://h.example.test/x?my_access_token=abc&access_tokens=d",
         ),
         ("url.oauth.empty_value", "https://h.example.test/x?client_secret=&password="),
+        # Documented examples after a credential name or a token prefix (verifier corpus
+        # B109 to B133, and the ambiguous doc literals it reported).
+        (
+            "doc.env_example",
+            "# .env.example, copy to .env and fill in\nSLACK_BOT_TOKEN=xoxb-your-bot-token\n"
+            "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+            "STRIPE_SECRET_KEY=sk_test_YOUR_KEY_HERE\nAPI_KEY=<redacted>\n",
+        ),
+        (
+            "doc.jwtio_older_sample_bearer",
+            "Example (the older jwt.io sample, HS256 with the secret `secret`): "
+            f"`Authorization: Bearer {JWTIO_OLDER}`",
+        ),
+        ("doc.jwtio_default", f"From jwt.io, the default example token:\n{JWTIO_DEFAULT}"),
+        (
+            "doc.mysql_image_password",
+            "docker run --name some-mysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql:8.4",
+        ),
+        ("doc.basic_username_password", "Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ="),
+        (
+            "cfg.references",
+            "    username: ${{ vars.DOCKERHUB_USERNAME }}\n"
+            "    password: ${{ secrets.DOCKERHUB_TOKEN }}\n"
+            "spring.datasource.password=${DB_PASSWORD:}\n"
+            'export OPENAI_API_KEY="sk-..."\nexport ANTHROPIC_API_KEY="your-key-here"\n'
+            "[client]\nuser = app\npassword = {{ vault_db_password }}\n"
+            '  "api_key": "<your-api-key>",\n      POSTGRES_PASSWORD: example\n'
+            'TOKEN="$(aws secretsmanager get-secret-value --secret-id ci/github)"\n'
+            'gh auth login --with-token <<<"$TOKEN"\n',
+        ),
+        (
+            "code.annotations_and_calls",
+            'class DbConfig:\n    password: str = field(default="", repr=False)\n'
+            "    api_key: Optional[str] = None\n    secret: SecretStr\n"
+            "export interface Credentials {\n  secretAccessKey: string;\n"
+            "  sessionToken?: string;\n}\n"
+            'client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])\n'
+            'password = os.getenv("DB_PASSWORD", "")\n'
+            "    if user is None or not bcrypt.checkpw(password.encode(), user.password_hash):\n"
+            "    return Session.issue(user, token=secrets.token_urlsafe(32))\n",
+        ),
+        (
+            "tf.plan_sensitive",
+            "      ~ password              = (sensitive value)\n"
+            "      + encrypted_secret               = (known after apply)\n"
+            "      + ses_smtp_password_v4           = (sensitive value)\n"
+            "  password          = var.db_password\n"
+            "db_password = <sensitive>\n",
+        ),
+        (
+            "k8s.secret_references",
+            "      DB_PASSWORD:  <set to the key 'password' in secret 'kc-db'>  Optional: false\n"
+            "      API_KEY:      <set to the key 'api_key' in secret 'kc-api'>  Optional: false\n"
+            "password:  24 bytes\n"
+            "default-token-x7k2p   kubernetes.io/service-account-token   3      120d\n"
+            "RUN --mount=type=secret,id=pip_token pip install -r requirements.txt\n",
+        ),
+        (
+            "prose.credential_words",
+            "Author: Ada Lovelace <ada@example.com>\n"
+            'password: see the 1Password vault "Team Infra", item "kc-prod db".\n'
+            "We store only a bcrypt hash of the password, and the secret_key used for session "
+            "signing lives in Secrets Manager. The access_token is never written to disk.\n"
+            "Tip: `git config --global credential.helper osxkeychain` stores your token.",
+        ),
+        # Values after a credential-shaped name that grant nothing: a page or an
+        # idempotency token, a working directory or a key file path, a SigV4 scope.
+        (
+            "names.page_and_client_tokens",
+            f'{{"NextToken": "{synth(80, B64, 63)}", "ClientToken": "{synth(36, B64URL, 64)}"}}',
+        ),
+        (
+            "names.path_values",
+            "PWD=/home/dev/work/followup\nOLDPWD=/home/dev\n"
+            "GOOGLE_APPLICATION_CREDENTIALS=/home/dev/keys/sa.json\n",
+        ),
+        (
+            "names.sigv4_credential_scope",
+            f"Authorization: AWS4-HMAC-SHA256 Credential={key_id}/20261114/us-east-1/s3/"
+            f"aws4_request, SignedHeaders=host;x-amz-date, Signature={synth(64, HEX, 65)}",
+        ),
+        (
+            "names.url_query_credential",
+            "https://kc.s3.us-west-2.amazonaws.com/r.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            f"&X-Amz-Credential={key_id}%2F20261114%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Expires=60",
+        ),
+        (
+            "cli.flags_without_a_password",
+            "docker run -p 8080:80 nginx\nmysql -u root -p mydb\n"
+            "aws ecr get-login-password --region us-west-2 | docker login --username AWS "
+            "--password-stdin 123456789012.dkr.ecr.us-west-2.amazonaws.com\nmkdir -p build/out",
+        ),
     ]

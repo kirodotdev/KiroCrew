@@ -931,11 +931,13 @@ def notify_channel_recipient_dropped(
     channel_type, conversation_id, principal = recipient
     # circular import: chat_runner imports this module's helpers at module level.
     from kiro_crew.dashboard.chat_runner import _resolve_channel_target
-    from kiro_crew.dashboard.chat_utils import _redact_for_display
+    from kiro_crew.messaging.renderer import display_safe
 
     link = ChannelLink(channel_type, channel_id=conversation_id)
     session_key = slot_history_key(target_slot)
-    excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+    # The channel sink, not the dashboard's display battery: that one opens the CHAT
+    # seam, which stands down with the owner's redaction off.
+    excerpt = display_safe(sanitize_outbound(send_drop_excerpt(text)))
     notice = (
         "⚠️ Your queued message to that session was dropped before it ran: "
         + describe_containment_change(constraints, mirror_unverified=mirror_unverified)

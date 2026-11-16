@@ -266,7 +266,9 @@ def test_a_bundled_skill_must_pair_with_its_folder_and_its_skill_md():
 
 
 def test_a_carried_file_with_a_credential_is_refused():
-    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    token = github_classic(seed=411)  # the GitHub row checks the CRC32 checksum
     data = _zip({**_carrying(), "crons/run.py": f"TOKEN = '{token}'\n"})
     assert _refused(data) == "invalid_text"
 

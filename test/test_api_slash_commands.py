@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import (
     SLASH_COMMAND_DESCRIPTIONS,
 )
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture(autouse=True)
@@ -295,7 +296,7 @@ class TestSessionAdvertisedCommands:
 
     @pytest.mark.asyncio
     async def test_an_advertised_description_reaches_the_menu_scrubbed(self):
-        token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        token = github_classic(seed=408)
         frame = copy.deepcopy(_ADVERTISED)
         frame["params"]["update"]["availableCommands"][1]["description"] = f"Post with {token}"
         payload, _ = await _get_for_slot(await _provider_after_frame(frame=frame))

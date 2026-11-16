@@ -38,9 +38,10 @@ from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers import member_export
 from kiro_crew.portability_archive import EXPORT_EXCLUDE
 from kiro_crew.portability_templates import AGENT_TEMPLATE_SECRET_PLACEHOLDER
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: Credential-shaped values that must never reach the file.
-TOKEN = "ghp_" + "a" * 36
+TOKEN = github_classic(seed=79)
 SECRET = "sk-proj-" + "Ab3dE" * 10
 MEMBER = "scout"
 

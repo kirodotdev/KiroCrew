@@ -8,7 +8,7 @@ import types
 
 import pytest
 from instances_helpers import _body, _enable, _FakeReq, _State
-from redaction_structured_cases import aws_secret
+from redaction_structured_cases import ALNUM, synth
 
 
 class TestProxyHandlerPolicy:
@@ -355,9 +355,10 @@ class TestProxyRedactsPeerReplies:
     the read-path redaction point: a credential the peer emits never reaches
     the browser, in a JSON body or in an SSE frame."""
 
-    # A synthetic 40-char AWS secret; it starts with "A" so ``\u0041`` can
-    # spell its first character.
-    SECRET = "A" + aws_secret(seed=11)[1:]
+    # A synthetic Google API key by its published format; it starts with "A" so
+    # ``\u0041`` can spell its first character. A bare 40-character AWS-shaped
+    # run is no credential by itself.
+    SECRET = "AIza" + synth(35, ALNUM, 11)
 
     def _req(self, tmp_path, monkeypatch, *, path, chunks, content_type):
         _enable(tmp_path, monkeypatch)
@@ -534,7 +535,7 @@ class TestRedactSseEvent:
     """The browser joins an event's data lines before parsing, so redaction
     must see the joined payload, whatever the line ending."""
 
-    SECRET = "A" + aws_secret(seed=11)[1:]
+    SECRET = "AIza" + synth(35, ALNUM, 11)
 
     def test_secret_split_over_data_lines_behind_an_escape_is_redacted(self):
         from kiro_crew.dashboard.handlers_instances import _redact_sse_event

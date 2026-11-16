@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import jwt
 
 from kiro_crew import mcp_apps_render
 from kiro_crew.acp.types import (
@@ -1086,8 +1087,9 @@ class TestACollapsedCallIdFlagsNothing:
     #: segment is public (an algorithm name), the payloads differ, the signature is filler.
     _JWT_HEAD = "eyJhbGciOiJIUzI1NiJ9"
     _JWT_SIG = "s" * 20
-    ID_APP = f"{_JWT_HEAD}.{'a' * 30}.{_JWT_SIG}"
-    ID_OTHER = f"{_JWT_HEAD}.{'b' * 30}.{_JWT_SIG}"
+    # Signed JWTs whose claims decode: the shape the plan reads as a credential.
+    ID_APP = jwt(seed=200)
+    ID_OTHER = jwt(seed=201)
 
     def _premise(self) -> str:
         """The collapse this class is about, asserted rather than assumed.
@@ -1268,7 +1270,7 @@ class TestAnIdThatAlreadyIsTheRedactionTag:
         return REDACTED_CREDENTIAL_TAG
 
     #: A credential-shaped id, in the JWT shape the sibling class explains.
-    ID_APP = f"eyJhbGciOiJIUzI1NiJ9.{'c' * 30}.{'s' * 20}"
+    ID_APP = jwt(seed=202)
 
     def _premise(self) -> str:
         """Both halves of the collision, asserted rather than assumed."""

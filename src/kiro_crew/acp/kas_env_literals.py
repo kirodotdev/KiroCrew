@@ -62,9 +62,10 @@ def _relayable_literal(key: str, value: Any) -> bool:
     if _credential_shaped_env_key(key):
         return False
     from kiro_crew.external_text import redact_external_text
+    from kiro_crew.security import refuses
 
-    return all(
-        redact_external_text(text) == text for text in (value, f"{key}={value}", f"{key}: {value}")
+    return not any(
+        refuses(text, redact_external_text) for text in (value, f"{key}={value}", f"{key}: {value}")
     )
 
 

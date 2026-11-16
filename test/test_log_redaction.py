@@ -8,12 +8,24 @@ import logging
 import sys
 
 import pytest
+from redaction_structured_cases import jwe, jwt
 
 from kiro_crew.log_redaction import (
     SecretRedactionFilter,
+    _redact_floor,
     install_log_redaction,
     uninstall_log_redaction,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+#: A signed JWT. With the security package loaded the filter runs the credential plan,
+#: which reads a Bearer value after an ``Authorization`` header name, and a JWT in its
+#: published form, so the fixtures below use both. Before that it runs the floor, which
+#: writes ``[REDACTED]`` where the plan writes ``[REDACTED: credential]``; which one a
+#: test sees depends on what ran before it, so the tags are matched on their prefix.
+_JWT = jwt()
+#: A direct-key JWE in its published five-segment form.
+_JWE = jwe(direct=True)
 
 
 class TestSecretRedactionFilter:
@@ -34,14 +46,14 @@ class TestSecretRedactionFilter:
 
     def test_redacts_bearer_token(self) -> None:
         filt = SecretRedactionFilter([])
-        result = filt.redact("Auth header: Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig")
-        assert "eyJhbGciOiJSUzI1NiJ9" not in result
-        assert "Bearer [REDACTED]" in result
+        result = filt.redact(f"Authorization: Bearer {_JWT}")
+        assert _JWT not in result
+        assert "Bearer [REDACTED" in result
 
     def test_redacts_bearer_case_insensitive(self) -> None:
         filt = SecretRedactionFilter([])
-        result = filt.redact("header: bearer eyJhbGciOiJSUzI1NiJ9.payload.sig")
-        assert "eyJhbGciOiJSUzI1NiJ9" not in result
+        result = filt.redact(f"authorization: bearer {_JWT}")
+        assert _JWT not in result
 
     def test_passthrough_non_secret_text(self) -> None:
         filt = SecretRedactionFilter([])
@@ -64,33 +76,29 @@ class TestSecretRedactionFilter:
     def test_empty_patterns_builtin_coverage(self) -> None:
         """With no secret patterns, the built-in pattern set is applied.
 
-        Bearer tokens, AWS access key IDs, and standalone JWTs are redacted;
-        other opaque strings pass through (redaction is pattern-based).
+        ``Authorization: Bearer`` values and standalone signed JWTs are redacted; an
+        AWS access key ID and other opaque strings pass through (redaction is
+        pattern-based).
         """
         filt = SecretRedactionFilter([])
-        msg = "key=sk-live-123 and Bearer eyJhbGciOiJSUzI1NiJ9.test"
+        msg = f"key=sk-live-123 and Authorization: Bearer {_JWT}"
         result = filt.redact(msg)
         # sk-live-123 passes through (not in patterns)
         assert "sk-live-123" in result
         # Bearer token is always redacted
-        assert "eyJhbGciOiJSUzI1NiJ9" not in result
+        assert _JWT not in result
 
-    def test_aws_key_id_redacted(self) -> None:
-        """An AWS access key ID is redacted anywhere in the text."""
+    def test_aws_key_id_stays_visible(self) -> None:
+        """An AWS access key ID is an identifier: it names a key and cannot authenticate."""
         filt = SecretRedactionFilter([])
-        result = filt.redact("creds: AKIAIOSFODNN7EXAMPLE for deploy")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert "[REDACTED]" in result
+        line = "creds: AKIAIOSFODNN7EXAMPLE for deploy"
+        assert filt.redact(line) == line
 
-    def test_aws_key_id_redacted_when_word_adjacent(self) -> None:
-        """A key abutting word characters (``aws_AKIA…``) is still redacted.
-
-        ``\\b`` never fires between ``_`` and ``A``, so boundary-anchored
-        patterns miss keys embedded in identifiers or rendered templates.
-        """
+    def test_aws_key_id_stays_visible_when_word_adjacent(self) -> None:
+        """A key ID abutting word characters (``aws_AKIA…``) is an identifier too."""
         filt = SecretRedactionFilter([])
-        result = filt.redact("aws_AKIAIOSFODNN7EXAMPLE and key=AKIAIOSFODNN7EXAMPLEsuffix")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        line = "aws_AKIAIOSFODNN7EXAMPLE and key=AKIAIOSFODNN7EXAMPLEsuffix"
+        assert filt.redact(line) == line
 
     def test_bare_jwt_redacted_outside_bearer_scheme(self) -> None:
         """A standalone JWT (no ``Bearer `` prefix) is redacted."""
@@ -101,9 +109,8 @@ class TestSecretRedactionFilter:
     def test_five_segment_jwe_redacted(self) -> None:
         """A 5-segment JWE is covered, matching ``security.py``'s scrubber."""
         filt = SecretRedactionFilter([])
-        jwe = "eyJhbGciOiJkaXIifQ..iv-value.ciphertext-value.tag-value"
-        result = filt.redact(f"token: {jwe}")
-        assert "eyJhbGciOiJkaXIifQ" not in result
+        result = filt.redact(f"token: {_JWE}")
+        assert _JWE not in result
 
     def test_hostname_holding_eyj_is_not_a_jwt(self) -> None:
         """A host label holding ``eyJ`` stays intact; a real JWS, even glued to one, does not."""
@@ -111,15 +118,55 @@ class TestSecretRedactionFilter:
         jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig"
         url = "https://honeyJar.atlassian.net/wiki/spaces/ABC"
         assert filt.redact(f"GET {url}") == f"GET {url}"
-        assert filt.redact(f"GET https://honeyJar.{jws}/x") == "GET https://honeyJar.[REDACTED]/x"
+        out = filt.redact(f"GET https://honeyJar.{jws}/x")
+        assert out.replace("[REDACTED: credential]", "[REDACTED]") == (
+            "GET https://honeyJar.[REDACTED]/x"
+        )
 
     def test_token_url_parameter_value_redacted(self) -> None:
-        """A ``?token=`` / ``&token=`` value is masked and the parameter name kept."""
+        """A URL's ``?token=`` / ``&token=`` value is masked and the parameter name kept.
+
+        Once the credential plan is loaded, a path's, with no URL around it, stays visible
+        (a known gap of the rule table); the floor before the plan loads masks it.
+        """
         filt = SecretRedactionFilter([])
         result = filt.redact(
-            "fetching https://h/x?token=abcdef123 then /y?a=1&token=zzzopaque987&b=2"
+            "fetching https://h/x?token=abcdef123 then https://h/y?a=1&token=zzzopaque987&b=2"
         )
-        assert result == "fetching https://h/x?token=[REDACTED] then /y?a=1&token=[REDACTED]&b=2"
+        assert result.replace("[REDACTED: credential]", "[REDACTED]") == (
+            "fetching https://h/x?token=[REDACTED] then https://h/y?a=1&token=[REDACTED]&b=2"
+        )
+        from kiro_crew.security.redaction_structured import compat
+
+        assert compat.credential_plan
+        path = "then /y?a=1&token=zzzopaque987&b=2"
+        assert filt.redact(path) == path
+
+
+class TestBearerFloor:
+    """The floor masks a token-shaped Bearer value and leaves prose after ``bearer`` alone.
+
+    A process that never publishes the owner's setting (an MCP server, the CLI, cron)
+    runs the floor on every line logged before the credential plan loads.
+    """
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "the relay uses bearer authentication for its API",
+            "Bearer Credentials are scoped to one crew",
+            "send the bearer AUTHORIZATION header",
+        ],
+    )
+    def test_prose_after_bearer_is_left_as_written(self, prose: str) -> None:
+        assert _redact_floor(prose) == prose
+        assert SecretRedactionFilter([]).redact(prose) == prose
+
+    @pytest.mark.parametrize("value", ["q8z3klm0vx7rt2yp", "AbCdEfGhIjKlMnOp", _JWT])
+    def test_a_token_shaped_value_is_masked(self, value: str) -> None:
+        for line in (f"Bearer {value}", f"retry with bearer {value} now"):
+            assert value not in _redact_floor(line)
+            assert "Bearer [REDACTED]" in _redact_floor(line)
 
 
 def _make_record(msg: str, exc_info: object = None) -> logging.LogRecord:
@@ -150,7 +197,7 @@ class TestInstallLogRedaction:
         install_log_redaction([])
         assert logging.getLogRecordFactory() is not before
         # The wrapper is live, not merely constructed.
-        assert "Bearer [REDACTED]" in _make_record("h: Bearer eyJhbGciOiJSUzI1NiJ9.a.b").msg
+        assert "Bearer [REDACTED" in _make_record(f"Authorization: Bearer {_JWT}").msg
 
     def test_returns_filter_instance(self) -> None:
         assert isinstance(install_log_redaction(["test-secret"]), SecretRedactionFilter)
@@ -293,13 +340,13 @@ class TestInstallLogRedaction:
         """
         install_log_redaction([])
         try:
-            raise ValueError("Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig")
+            raise ValueError(f"Authorization: Bearer {_JWT}")
         except ValueError:
             record = _make_record("boom", exc_info=sys.exc_info())
 
         assert record.exc_info is None
         assert record.exc_text is not None
-        assert "eyJhbGciOiJSUzI1NiJ9" not in record.exc_text
+        assert _JWT not in record.exc_text
 
     def test_render_failure_destroys_args_unconditionally(self) -> None:
         """When ``getMessage()`` raises, args are dropped even without a secret.
@@ -339,7 +386,7 @@ class TestInstallLogRedaction:
             "",
             0,
             "payload: %.100s",
-            (long_prefix + " Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig",),
+            (long_prefix + f" Authorization: Bearer {_JWT}",),
             None,
         )
         # The rendered prefix contains no Bearer token, but the arg does:
@@ -347,12 +394,16 @@ class TestInstallLogRedaction:
         assert record.args is None
 
     def test_lossy_format_aws_credential_in_args_is_destroyed(self) -> None:
-        """An AWS key ID past a ``%.100s`` truncation point cannot survive in args.
+        """An AWS secret past a ``%.100s`` truncation point cannot survive in args.
 
-        The full-arg scan covers every built-in pattern — the rendered prefix
-        scans clean, but the arg's own string form carries the key ID, so the
-        record is materialized and cleared.
+        The full-arg scan covers every pattern — the rendered prefix scans clean,
+        but the arg's own string form carries the secret after its label, so the
+        record is materialized and cleared. (A key ID alone is an identifier.) Only
+        the credential plan reads a labelled secret, so it is loaded first.
         """
+        import kiro_crew.security.redaction  # noqa: F401
+        import kiro_crew.security.redaction_structured.compat  # noqa: F401
+
         install_log_redaction([])
         long_prefix = "x" * 120
         record = logging.getLogRecordFactory()(
@@ -361,7 +412,7 @@ class TestInstallLogRedaction:
             "",
             0,
             "acp output: %.100s",
-            (long_prefix + " AKIAIOSFODNN7EXAMPLE",),
+            (long_prefix + f" aws_secret_access_key={SAMPLE_AWS_SECRET}",),
             None,
         )
         assert record.args is None
@@ -541,25 +592,25 @@ class TestInstallLogRedaction:
             "",
             0,
             "auth header %s",
-            ("Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig",),
+            (f"Authorization: Bearer {_JWT}",),
             None,
         )
-        assert "eyJhbGciOiJSUzI1NiJ9" not in record.msg
-        assert "Bearer [REDACTED]" in record.msg
+        assert _JWT not in record.msg
+        assert "Bearer [REDACTED" in record.msg
         assert record.args is None
 
     def test_bearer_exc_info_is_rendered_and_cleared(self) -> None:
         """A Bearer-bearing traceback is rendered, redacted, and ``exc_info`` cleared."""
         install_log_redaction([])
         try:
-            raise ValueError("token Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig leaked")
+            raise ValueError(f"token Authorization: Bearer {_JWT} leaked")
         except ValueError:
             record = _make_record("boom", exc_info=sys.exc_info())
 
         assert record.exc_info is None
         assert record.exc_text is not None
-        assert "eyJhbGciOiJSUzI1NiJ9" not in record.exc_text
-        assert "Bearer [REDACTED]" in record.exc_text
+        assert _JWT not in record.exc_text
+        assert "Bearer [REDACTED" in record.exc_text
 
     def test_zero_vault_imports(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """log_redaction module does NOT import kiro_crew.secrets."""

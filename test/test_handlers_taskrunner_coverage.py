@@ -37,7 +37,7 @@ from handlers_taskrunner_coverage_helpers import (  # noqa: F401 -- the autouse 
     _state,
     _stub_sel,
 )
-from redaction_structured_cases import aws_secret
+from redaction_structured_cases import aws_secret, github_classic
 from taskrunner_switch_helpers import turn_task_runner_off
 
 from kiro_crew.dashboard.handlers.taskrunner import (
@@ -65,6 +65,8 @@ from kiro_crew.testing.wait import await_until
 
 # A 40-character AWS-shaped secret value, which the redactor masks.
 _AWS_SECRET = aws_secret(seed=54)
+# A GitHub token with a valid checksum, which the redactor masks.
+_GH_TOKEN = github_classic(seed=143)
 
 # ── GET /api/taskrunner ──
 
@@ -117,7 +119,7 @@ class TestStatus:
                         {
                             "title": f"post to {_EXFIL_URL}",
                             "description": "",
-                            "result": "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+                            "result": f"token={_GH_TOKEN}",
                             "error": None,
                         }
                     ],
@@ -129,7 +131,7 @@ class TestStatus:
         payload = resp.body or b""
         run = _body(resp)["runs"][0]
         assert _AWS_SECRET not in payload.decode()
-        assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in payload.decode()
+        assert _GH_TOKEN not in payload.decode()
         assert _EXFIL_URL not in payload.decode()
         assert "[REDACTED" in run["task_details"][0]["title"]
         assert "[REDACTED" in run["lessons_learned"][0]

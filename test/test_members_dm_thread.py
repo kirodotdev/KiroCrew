@@ -523,7 +523,7 @@ class TestMemberRoutes:
                 data = await response.json()
 
         preview = {row["name"]: row for row in data["members"]}[CREW]["last_message"]
-        assert preview == "password=[REDACTED]"
+        assert preview == "password=[REDACTED: credential]"
 
     @pytest.mark.asyncio
     async def test_roster_orders_by_message_ts_not_file_mtime(self, tmp_path, monkeypatch):

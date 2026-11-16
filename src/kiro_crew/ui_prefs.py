@@ -256,10 +256,10 @@ def _read_prefs(path: Path, *, strict: bool) -> dict[str, str]:
 
 
 def _is_clean(value: str) -> bool:
-    """True when neither redactor would change *value*."""
-    cleaned, _ = redact_exfiltration_urls(value)
-    cleaned, _ = redact_credentials(cleaned)
-    return cleaned == value
+    """True when neither redactor would change *value* and no URL in it is flagged."""
+    from kiro_crew.security.exfil import refuses
+
+    return not refuses(value, lambda v: redact_credentials(redact_exfiltration_urls(v)[0])[0])
 
 
 def load_ui_prefs() -> dict[str, str]:

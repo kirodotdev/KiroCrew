@@ -24,9 +24,9 @@ from body_stream_helpers import BodyStreamPayload
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.taskrunner import Step, TaskRun
 
-# A URL whose oversized query payload trips the (domain-agnostic) exfiltration
-# scanner — see test_security_exfil_urls.py::test_long_query_redacted_domain_agnostic.
-_EXFIL_URL = "https://collector.example.com/ingest?data=" + "A" * 250
+# A URL carrying a credential parameter: the URL stays and its value is masked. A
+# long query value that is no credential (``?data=``) is left as written.
+_EXFIL_URL = "https://collector.example.com/ingest?access_token=" + "A" * 250
 
 # ── Fixtures / helpers ──
 

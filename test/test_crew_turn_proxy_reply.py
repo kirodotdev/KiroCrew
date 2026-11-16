@@ -375,7 +375,7 @@ class TestTheCrewsRefusalIsRedactedBeforeItIsCut:
         _capture_stream(monkeypatch)
         # The key starts at 390 and the frame keeps 400 characters, so a cut
         # taken BEFORE the redaction leaves its first ten characters behind.
-        body = "refused: " + "x" * 381 + self._KEY + " trailing"
+        body = "refused: " + "x" * 380 + " " + self._KEY + " trailing"
         assert (
             body.index(self._KEY)
             < mod._REFUSAL_DETAIL_CHARS
@@ -562,7 +562,7 @@ class TestANonStreamedCrewErrorIsARefusalNotAContentTypeComplaint:
         Cut first and a credential straddling the cut is two fragments the
         redactor does not recognise, and the leading one is forwarded.
         """
-        body = "refused: " + "x" * 381 + self._KEY + " trailing"
+        body = "refused: " + "x" * 380 + " " + self._KEY + " trailing"
         assert (
             body.index(self._KEY)
             < mod._REFUSAL_DETAIL_CHARS

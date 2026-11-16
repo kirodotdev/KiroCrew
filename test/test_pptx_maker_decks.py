@@ -28,7 +28,7 @@ from unittest import mock
 import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import decks, paths
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, SAMPLE_SLACK_BOT_TOKEN
+from kiro_crew.testing.synthetic_credentials import ALNUM, github_classic, synth
 
 
 class _DeckTree(unittest.TestCase):
@@ -393,14 +393,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
-_FAKE_AWS_SECRET = SAMPLE_AWS_SECRET
+_FAKE_AWS_SECRET = github_classic(seed=322)  # a bare 40-character run stays visible
 
-# A Slack bot token. Used for the deck-ID test specifically, because the SECRET
-# above contains "/" and so is already refused by `SEGMENT_RE` as a directory
-# name — a deck-ID test built on it passes without the redaction check and proves
-# nothing. This token is all `[A-Za-z0-9-]`, so it IS a legal directory name. (An
-# AWS key ID would stay visible: the structured detectors treat it as an identifier.)
-_FAKE_TOKEN = SAMPLE_SLACK_BOT_TOKEN
+# An OpenAI project key. Used for the deck-ID test specifically, because a secret
+# with "/" in it is already refused by `SEGMENT_RE` as a directory name, and a
+# deck-ID test built on one passes without the redaction check and proves
+# nothing. This key is all `[A-Za-z0-9-]`, so it IS a legal directory name, and
+# its rule still reads it after the `20260101-` date prefix. (A Slack token's rule
+# refuses a match glued to a `-`, and an AWS key ID stays visible as an identifier.)
+_FAKE_TOKEN = "sk-proj-" + synth(40, ALNUM, seed=5)
 
 
 class TestAgentMetadataIsRedacted:
@@ -607,10 +608,9 @@ class TestAgentMetadataIsRedacted:
         surfaced its directory name to the Deck list. Redacting the metadata path and
         not this one left the identical leak on the other branch.
         """
-        # An ACCESS KEY ID, not `_FAKE_AWS_SECRET`: the secret-key fixture contains
-        # `/`, so it cannot appear in a single path segment. A key id is the shape a
-        # directory name can actually carry, which is what makes this reachable.
-        key_id = SAMPLE_SLACK_BOT_TOKEN
+        # `_FAKE_TOKEN`: a key that is all `[A-Za-z0-9-]` is the shape a directory
+        # name can actually carry, which is what makes this reachable.
+        key_id = _FAKE_TOKEN
         deck = tmp_path / f"deck-{key_id}"
         deck.mkdir()
         # No deck.json at all: the directory name is what gets returned.

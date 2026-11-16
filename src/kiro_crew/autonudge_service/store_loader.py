@@ -51,7 +51,7 @@ from kiro_crew.monitoring.models import (
     quarantine_monitor_state,
 )
 from kiro_crew.platform import PlatformCompositionError, redact_log_via_context, redact_via_context
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 
 if TYPE_CHECKING:
     from kiro_crew.autonudge import AutoNudgeService
@@ -278,7 +278,7 @@ def _addressing_value_unsafe_why(got: object) -> str:
         return "is not a string"
     if not got.isprintable():
         return "contains a non-printable character"
-    if redact_via_context(got) != got:
+    if refuses(got, redact_via_context):
         return "is credential-shaped"
     return ""
 

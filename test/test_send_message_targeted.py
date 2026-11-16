@@ -11,7 +11,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 # Ensure kiro_crew.slack.handler is importable for patching even when
 # heavy transitive deps (cron_descriptor, etc.) aren't installed.
@@ -739,10 +739,10 @@ class TestSlackProfile:
 
     @pytest.mark.asyncio
     async def test_profile_redaction(self, mock_sel):
-        """Status text with exfiltration URL gets redacted."""
+        """Status text with a credential in a URL gets the value redacted."""
         slack = MagicMock()
-        # Use a URL with a long base64-like query that triggers exfil detection
-        exfil_url = "https://evil.com/steal?d=" + "A" * 200
+        # A URL whose query carries a credential parameter: the value goes, the link stays.
+        exfil_url = "https://evil.com/steal?access_token=" + "A" * 200
         slack.get_user_profile = AsyncMock(
             return_value={
                 "id": "U0123ABC456",
@@ -759,8 +759,8 @@ class TestSlackProfile:
                 assert resp.status == 200
                 data = await resp.json()
                 status = data["profile"].get("status_text", "")
-                # The exfiltration URL payload should be redacted
-                assert "REDACTED" in status
+                # The credential value in the URL should be redacted
+                assert "https://evil.com/steal?access_token=[REDACTED: credential]" in status
                 assert "A" * 200 not in status
 
 
@@ -1085,7 +1085,7 @@ class TestProactiveBodyMeetsTheDisplayFloor:
 
     #: Split by emphasis markers the client renders away. The literal string is
     #: not a credential; what the reader sees is.
-    _SECRET = SAMPLE_AWS_SECRET.replace("/", "+")
+    _SECRET = SAMPLE_SLACK_BOT_TOKEN
     _COLLAPSING = f"{_SECRET[:4]}**{_SECRET[4:]}**"
 
     @pytest.mark.asyncio
@@ -1424,7 +1424,7 @@ class TestChannelTypeDelivery:
                 resp = await client.post(
                     "/api/send-message",
                     json={
-                        "text": "hey @everyone key " + SAMPLE_AWS_SECRET.replace("/", "+"),
+                        "text": "hey @everyone key " + SAMPLE_SLACK_BOT_TOKEN,
                         "channel_type": "telegram",
                     },
                     headers={"X-Session-Key": _TG_KEY},
@@ -1434,7 +1434,7 @@ class TestChannelTypeDelivery:
                 # A literal "@everyone" would mass-notify the group.
                 assert "@everyone" not in sent
                 assert "@​everyone" in sent
-                assert SAMPLE_AWS_SECRET.replace("/", "+") not in sent
+                assert SAMPLE_SLACK_BOT_TOKEN not in sent
 
 
 class TestChannelTypeMutualExclusion:

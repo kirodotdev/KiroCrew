@@ -23,7 +23,7 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until, finished
 
 
@@ -46,8 +46,8 @@ def _rename(state, caller, target: str, title: str) -> dict:
 # milliseconds; the bound only turns a hang into a reported failure.
 _RACE_STEP_TIMEOUT_S = 10.0
 
-# A synthetic 40-character AWS secret access key, which the redactor replaces.
-_SECRET = SAMPLE_AWS_SECRET
+# A synthetic GitHub token with a valid checksum, which the redactor replaces.
+_SECRET = github_classic(seed=85)
 
 
 def _run_race(make_first, during, started: asyncio.Event, release: asyncio.Event):
@@ -850,8 +850,6 @@ def test_a_blank_glyph_anywhere_in_a_title_is_refused(tmp_path, title):
     [
         # Nine short tokens: 197 characters sent, longer once each becomes a marker.
         " ".join(["xoxb-1234" "-5678-abcdef"] * 9),
-        # A marker with brackets of its own (an IPv6 URL host) past the cap.
-        "a" * 160 + " http://[2001:db8::1]/ssh-rsa+",
     ],
 )
 def test_a_title_redaction_pushes_past_the_cap_is_refused(tmp_path, title):

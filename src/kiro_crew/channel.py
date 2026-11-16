@@ -1642,14 +1642,13 @@ async def _stream_task(
                 # authority. ``tool_input_redacted`` is transport provenance:
                 # re-running the scanners cannot reveal bytes an ACP transport
                 # already removed. Either signal makes the command display-only.
-                from kiro_crew.security import redact_with_findings
+                from kiro_crew.security import redact, redact_with_findings, refuses
 
                 _safe_cmd, _cmd_credential_redacted, _cmd_url_redacted = redact_with_findings(_cmd)
                 _command_grantable = bool(_cmd) and not (
                     bool(getattr(event, "tool_input_redacted", False))
                     or _cmd_credential_redacted
-                    or _cmd_url_redacted
-                    or _safe_cmd != _cmd
+                    or refuses(_cmd, redact)
                     or "[REDACTED" in _cmd
                 )
                 if _cmd:

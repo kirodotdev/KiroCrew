@@ -95,6 +95,10 @@ export interface SideMessage {
   is_error?: boolean
   /** Injected into a turn that was already running, not asked from idle. */
   steer?: boolean
+  /** A finished answer's blocked-link records, raw from its final frame or the
+   *  restore read (`link_blocks`): the links its bubble draws as a Blocked link
+   *  card. Validated where they are drawn. */
+  link_blocks?: unknown
   /** Shown before the server confirmed it, so it can be found again by identity.
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */

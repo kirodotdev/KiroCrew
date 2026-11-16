@@ -76,7 +76,7 @@ STT extras.
 
 ## Keep the generic security controls
 
-The scrub removes internal *identity*, never protection. AKIA/ASIA credential
+The scrub removes internal *identity*, never protection. Credential
 redaction, the destructive-command deny rules, `~/.aws` and `~/.ssh` path blocking, and
 the SEL audit log are all generic and all stay. The legacy `~/.kirocrew` spelling stays
 in the sensitive-path deny lists for the reason given in

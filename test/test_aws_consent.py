@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from kiro_crew import aws_consent
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture()
@@ -1451,7 +1451,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
     emits the bare ``service`` with no ``": "``.
     """
 
-    SECRET = SAMPLE_AWS_SECRET  # synthetic 40-char AWS secret
+    SECRET = github_classic(seed=114)  # synthetic 40-char GitHub token
 
     @staticmethod
     def _capture(monkeypatch):

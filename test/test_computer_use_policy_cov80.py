@@ -255,7 +255,7 @@ class TestRedactResult:
 
     def test_a_credential_shaped_string_does_not_survive_verbatim(self) -> None:
         secret = SAMPLE_AWS_SECRET
-        assert secret not in policy.redact_result(f"key={secret}")
+        assert secret not in policy.redact_result(f"aws_secret_access_key={secret}")
 
 
 class TestArgumentShapeRefusals:

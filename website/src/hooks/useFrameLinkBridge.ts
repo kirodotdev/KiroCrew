@@ -182,6 +182,11 @@ export function focusHostOf(frame: HTMLIFrameElement): void {
   if (document.activeElement === frame) frame.blur()
 }
 
+/** The bridge's default: every web URL may open. */
+function neverRefuse(): boolean {
+  return false
+}
+
 /** A ref that always holds the latest *value*, for use inside stable callbacks. */
 function useLatest<T>(value: T): { current: T } {
   const [ref] = useState(() => ({ current: value }))
@@ -218,14 +223,21 @@ export function useFrameLinkBridge(
   open: (url: string) => void = openExternal,
   gesture: (frame: HTMLIFrameElement) => boolean = hasGesture,
   tied: (frame: HTMLIFrameElement) => boolean = tiedToFrame,
+  refuse: (url: string) => boolean = neverRefuse,
 ): ReactNode {
   const [chip, setChip] = useState<{ url: string; frame: HTMLIFrameElement } | null>(null)
   const openRef = useLatest(open)
   const tiedRef = useLatest(tied)
+  const refuseRef = useLatest(refuse)
   // The frame, URL and gesture checks are useFrameOpenLink's own listener; this
   // hook adds the web-URL rule, the tie and the once-per-click focus move.
   const answer = useCallback((url: string, frame?: HTMLIFrameElement) => {
     if (!frame) return
+    // A link the host's own text would draw as a Blocked link chip opens nothing.
+    if (refuseRef.current(url)) {
+      setChip(null)
+      return
+    }
     if (tiedRef.current(frame)) {
       setChip(null)
       openRef.current(url)
@@ -233,7 +245,7 @@ export function useFrameLinkBridge(
       return
     }
     setChip({ url, frame })
-  }, [openRef, tiedRef])
+  }, [openRef, tiedRef, refuseRef])
   useFrameOpenLink(frames, webUrlOf, answer, gesture)
   if (!chip) return null
   const { url, frame } = chip

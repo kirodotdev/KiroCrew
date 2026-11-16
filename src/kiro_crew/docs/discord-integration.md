@@ -281,7 +281,7 @@ conversation plus this DM's native generations, so with two
 or more allowed users Kiro Crew cannot tell which one owns the workspace and
 refuses the command instead of guessing. Incognito and temporary sessions are
 never listed, and session titles plus replayed messages are scrubbed of
-credentials and suspicious URLs before they reach Discord.
+credentials, inside URLs too, before they reach Discord.
 
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as

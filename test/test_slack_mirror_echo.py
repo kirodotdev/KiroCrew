@@ -202,11 +202,11 @@ class TestEchoNeutralises:
 
     def test_an_exfiltration_url_stays_redacted_and_is_not_a_link(self) -> None:
         payload = "QUtJQUlPU0ZPRE5ON0VYQU1QTEVrZXlzZWNyZXRkYXRhMTIzNDU2Nzg5MA"
-        raw = f"open <https://evil.example.com/c?d={payload}|harmless> please"
+        raw = f"open <https://evil.example.com/c?access_token={payload}|harmless> please"
         out = escape_mrkdwn_keep_links(_prepare_mirror_msg(raw))
         assert payload not in out
-        assert "evil.example.com/c" not in out
-        assert "REDACTED" in out
+        # The link text stays with its credential value masked, and it is no link.
+        assert "evil.example.com/c?access_token=[REDACTED: credential]" in out
         assert "<" not in out
 
 

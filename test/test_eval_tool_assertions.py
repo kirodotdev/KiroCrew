@@ -47,6 +47,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 T = AssertionType
 
@@ -629,7 +630,7 @@ class TestRecordedFrames:
 #: credential-shaped literal.
 _CANARY = "opaque-eval-" + "canary-0123456789"
 _BEARER = "Authorization: " + "Bearer " + _CANARY
-_TOKEN = "gh" + "p_" + ("aB3dE5fG7h" * 4)[:36]
+_TOKEN = github_classic(seed=174)
 
 
 def _codex_shell_call(command: str) -> LLMEvent:

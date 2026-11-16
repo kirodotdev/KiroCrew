@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat import api_chat_slot_autocompact
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.session import SessionManager, _Session
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _load_agents(agents: dict) -> KiroCrewConfig:
@@ -258,7 +259,7 @@ class TestEndpoint:
     @pytest.mark.asyncio
     async def test_a_credential_shaped_crew_name_is_redacted_in_the_label(self) -> None:
         """The name is display text: a token-shaped crew name never reaches the browser."""
-        token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        token = github_classic(seed=137)
         cfg = _crew_cfg(**{token: 45.0})
         slot = _ChatSlot("test")
         slot.agent = token
