@@ -8109,6 +8109,7 @@
       "format_markdown": "复制 Markdown",
       "expand_table": "加宽表格",
       "narrow_table": "收窄表格",
+      "table_region": "表格",
       "expand_table_word": "加宽",
       "collapse_table_word": "收窄",
       "table_width_not_saved": "无法在此浏览器中保存表格宽度",

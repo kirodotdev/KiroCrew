@@ -8527,6 +8527,7 @@
       "format_markdown": "Copiar Markdown",
       "expand_table": "Alargar tabela",
       "narrow_table": "Estreitar tabela",
+      "table_region": "Tabela",
       "expand_table_word": "Alargar",
       "collapse_table_word": "Estreitar",
       "table_width_not_saved": "Não foi possível salvar a largura da tabela neste navegador",

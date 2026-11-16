@@ -8109,6 +8109,7 @@
       "format_markdown": "Markdown をコピー",
       "expand_table": "表を広げる",
       "narrow_table": "表を狭める",
+      "table_region": "テーブル",
       "expand_table_word": "広げる",
       "collapse_table_word": "狭める",
       "table_width_not_saved": "このブラウザーに表の幅を保存できませんでした",

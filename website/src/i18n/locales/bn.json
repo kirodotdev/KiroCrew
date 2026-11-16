@@ -8318,6 +8318,7 @@
       "format_markdown": "Markdown কপি করুন",
       "expand_table": "টেবিলটি চওড়া করো",
       "narrow_table": "টেবিলটি সরু করো",
+      "table_region": "টেবিল",
       "expand_table_word": "চওড়া করো",
       "collapse_table_word": "সরু করো",
       "table_width_not_saved": "এই ব্রাউজারে টেবিলের প্রস্থ সংরক্ষণ করা যায়নি",

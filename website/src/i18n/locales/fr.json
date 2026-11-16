@@ -8527,6 +8527,7 @@
       "format_markdown": "Copier Markdown",
       "expand_table": "Élargir le tableau",
       "narrow_table": "Rétrécir le tableau",
+      "table_region": "Tableau",
       "expand_table_word": "Élargir",
       "collapse_table_word": "Rétrécir",
       "table_width_not_saved": "Impossible d’enregistrer la largeur du tableau dans ce navigateur",
