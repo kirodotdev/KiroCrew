@@ -830,6 +830,18 @@ over budget.
 - **Name the residual.** Two changes that add the same number of sites under the
   same key still make the same edit. When that happens in practice, narrow the key
   (file to function).
+- **A shared corpus is a shared number.** An assertion over text every change may
+  edit, such as the ranking of a search over the whole shipped docs tree or
+  `"at most 6" not in text` over a whole prompt, flips when another change adds a
+  page or a sentence. Build the corpus the test ranks inside the test, and match a
+  whole word or an exact line the test owns, never a substring of shared prose.
+- **The per-file line cap is a shared ceiling too.** Two changes that each add a
+  few lines to a file just under 2,000 both pass, and `main` crosses the cap
+  ([code-style § No file over 2,000 lines](code-style.md#no-file-over-2000-lines)).
+  Split a file at the 1,600-line working target, not at the cap.
+- **A test skipped for a missing optional extra checks nothing on a change that
+  runs without the extra.** A change that makes CI install an extra runs the
+  tests it unskips against current `main` in that same change.
 - **Some cross-file checks must stay exact, and their red after a merge is a real
   defect.** A facade's `TYPE_CHECKING` manifest compared with its owners' imports
   (`test_updates_handlers_facade.py`), or a doc that must be reachable from its

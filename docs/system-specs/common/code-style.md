@@ -216,7 +216,10 @@ shrinks. The tree is scanned whole, but the verdict is scoped to the change
 (`scripts/ratchet_scope.py`, as for the black and subprocess-encoding gates,
 read with `--no-renames` so a renamed file's old path counts): a violation in a
 file the change does not touch is main drift, a warning, because two changes
-that were each green can together push a file over the cap.
+that were each green can together push a file over the cap. That drift keeps the
+main ratchet audit red and fails the next change that touches the file, so it is
+fixed on `main` at once with a split to the working target of
+[Splitting a file](#splitting-a-file), never left for that next change.
 
 | Situation | Verdict |
 |---|---|
