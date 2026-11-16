@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.acp.runtime import AcpRuntimeDead
-from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import AcpEvent, AcpPromptStats
+from kiro_crew.acp.types import (
+    METHOD_SESSION_UPDATE,
+    STOP_REASON_CANCEL_UNACKED,
+    STOP_REASON_CANCELLED,
+    AcpEvent,
+    AcpPromptStats,
+    JsonRpcMessage,
+)
+from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 def _make_handle(
@@ -38,6 +47,7 @@ def _make_handle(
     handle.reject_tool = AsyncMock()
     handle.cancel = AsyncMock()
     handle.wait_turn_done = AsyncMock(return_value=True)
+    handle.cancel_went_unacked = False
     return handle
 
 
@@ -498,6 +508,136 @@ class TestAcpSessionProviderCancel:
 
         result = await provider.cancel()
         assert result == "error"
+
+
+_PROMPT_REQ_ID = 7
+
+
+def _chunk_frame() -> JsonRpcMessage:
+    """One streamed text chunk of the in-flight turn, as the runtime routes it."""
+    return JsonRpcMessage(
+        method=METHOD_SESSION_UPDATE,
+        params={
+            "sessionId": "sA",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "still working "},
+            },
+        },
+    )
+
+
+def _stopper(via: str, session_provider: AcpSessionProvider) -> AcpSessionProvider | AcpProvider:
+    """The provider a Stop calls ``cancel`` on.
+
+    ``session_provider`` is a shared-runtime session reached directly (a
+    sub-agent run); ``acp_provider`` is the chat's ``AcpProvider``, whose client
+    is that session provider once startup has finished.
+    """
+    if via == "session_provider":
+        return session_provider
+    with patch("kiro_crew.providers.acp.AcpClient"):
+        wrapper = AcpProvider()
+    wrapper._client = session_provider  # type: ignore[assignment]
+    return wrapper
+
+
+_STOP_ENTRY_POINTS = pytest.mark.parametrize("via", ["session_provider", "acp_provider"])
+
+
+class TestAcpSessionProviderCancelOverRealHandle:
+    """``cancel`` over a real ``AcpSessionHandle`` whose dispatch loop is running.
+
+    The runtime is a double; the handle, its cancel and its dispatch loop are
+    the shipped code, so the outcome the provider reports is the one a Stop
+    reads, through either provider a Stop reaches the session by.
+    """
+
+    @staticmethod
+    def _turn_in_flight() -> tuple[AcpSessionHandle, MagicMock, asyncio.Queue]:
+        queue: asyncio.Queue = asyncio.Queue()
+        runtime = _make_runtime()
+        runtime.send_notification = AsyncMock()
+        handle = AcpSessionHandle("sA", queue, runtime)
+        handle._turn_done.clear()
+        return handle, runtime, queue
+
+    @staticmethod
+    async def _consume(handle: AcpSessionHandle) -> list[AcpEvent]:
+        return [ev async for ev in handle._dispatch_events(_PROMPT_REQ_ID, 30.0)]
+
+    @_STOP_ENTRY_POINTS
+    @pytest.mark.asyncio
+    async def test_turn_ended_on_the_unacked_cancel_terminal_is_a_timeout(self, via):
+        """The agent streams on and never answers the cancel; the dispatch loop
+        ends the turn on its own unacked terminal before the provider's wait
+        starts. That wait then finds the turn done, and the provider must still
+        answer ``timeout``: nothing ended the turn on the agent."""
+        handle, runtime, queue = self._turn_in_flight()
+
+        async def frames_flow_until_the_loop_gives_up(method, params):
+            # The cancel write takes the whole grace window and the agent keeps
+            # streaming meanwhile: the write returns only once the dispatch loop
+            # has ended the turn itself. Ageing the cancel's own stamp by the
+            # grace is that slow write, without a short window or a clock patch.
+            handle._cancel_ts -= handle._cancel_grace_secs
+
+            async def pump() -> None:
+                while not handle._turn_done.is_set():
+                    queue.put_nowait(_chunk_frame())
+                    await asyncio.sleep(0.005)
+
+            await asyncio.wait_for(pump(), timeout=5.0)
+
+        runtime.send_notification.side_effect = frames_flow_until_the_loop_gives_up
+        consumer = asyncio.create_task(self._consume(handle))
+        provider = _stopper(via, AcpSessionProvider(handle, runtime))
+
+        outcome = await provider.cancel(wait_ack_timeout=FALLBACK_TIMEOUT_SECS)
+        events = await asyncio.wait_for(consumer, timeout=5.0)
+
+        assert events[-1].kind == EVENT_COMPLETE
+        assert events[-1].stop_reason == STOP_REASON_CANCEL_UNACKED
+        assert outcome == "timeout"
+
+    @_STOP_ENTRY_POINTS
+    @pytest.mark.asyncio
+    async def test_agent_answering_the_prompt_cancelled_is_acked(self, via):
+        """The agent answers the cancelled prompt itself: that is the ack."""
+        handle, runtime, queue = self._turn_in_flight()
+
+        async def agent_acks(method, params):
+            queue.put_nowait(
+                JsonRpcMessage(id=_PROMPT_REQ_ID, result={"stopReason": STOP_REASON_CANCELLED})
+            )
+
+        runtime.send_notification.side_effect = agent_acks
+        consumer = asyncio.create_task(self._consume(handle))
+        provider = _stopper(via, AcpSessionProvider(handle, runtime))
+
+        outcome = await provider.cancel(wait_ack_timeout=FALLBACK_TIMEOUT_SECS)
+        events = await asyncio.wait_for(consumer, timeout=5.0)
+
+        assert events[-1].stop_reason == STOP_REASON_CANCELLED
+        assert outcome == "acked"
+
+    @pytest.mark.asyncio
+    async def test_next_turn_does_not_inherit_the_unacked_ending(self):
+        """The unacked mark belongs to the turn it ended: the next prompt's
+        reset clears it, so that turn's acked Stop is not read as unconfirmed."""
+        handle, runtime, queue = self._turn_in_flight()
+        handle._turn_done.set()
+        handle._cancel_unacked = True
+
+        async def answer_prompt(method, params, **_kw):
+            queue.put_nowait(JsonRpcMessage(id=8, result={"stopReason": "end_turn"}))
+            return 8
+
+        runtime.send_request = AsyncMock(side_effect=answer_prompt)
+        events = [ev async for ev in handle.prompt("next turn", timeout=FALLBACK_TIMEOUT_SECS)]
+
+        assert events[-1].kind == EVENT_COMPLETE
+        assert handle.cancel_went_unacked is False
 
 
 class TestAcpSessionProviderErrorPropagation:

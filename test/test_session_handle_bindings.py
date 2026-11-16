@@ -382,6 +382,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "awaiting_permission": ("property", False, "a6632a57e602", "session_handle_class"),
     "bind_session_key": ("function", False, "57eca86d38c3", "session_handle_lifecycle"),
     "cancel": ("function", True, "4b75d9a5e0c7", "session_handle_lifecycle"),
+    "cancel_went_unacked": ("property", False, "a6632a57e602", "session_handle_class"),
     "cancel_pending_elicitations": ("function", True, "fa6cfecd5574", "session_handle_elicitation"),
     "cleanup_transcript_files": ("staticmethod", False, "a9cece317161", "session_handle_lifecycle"),
     "clear_pending_steers": ("function", True, "16180c63d5e6", "session_handle_steering"),
