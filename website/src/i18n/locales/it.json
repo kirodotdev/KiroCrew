@@ -13790,6 +13790,7 @@
         "model_access_fallback": "Il tuo account non può usare il modello {{rejected}} — al suo posto è in uso {{model}}.",
         "model_unavailable": "{{model}} non è disponibile al momento — questa sessione usa auto al suo posto. Scegli un altro modello dal compositore, oppure lascia così: la tua scelta del modello resta salvata e verrà usata automaticamente quando sarà di nuovo disponibile.",
         "compaction_continuing": "Il contesto è stato compattato a metà turno e la risposta si è fermata lì — continuo automaticamente.",
+        "model_server_error_fallback": "{{primary}} continua a restituire errori del server — è in uso {{fallback}} finché {{primary}} non torna disponibile.",
         "model_throttled_fallback": "{{primary}} è limitato — è in uso {{fallback}} finché {{primary}} non torna disponibile.",
         "refusal_fallback_same_model": "Il ritentativo automatico è stato saltato perché il modello di riserva (`agent.refusal_fallback_model`) è lo stesso del tuo modello attuale — ritentare con lo stesso modello incontra lo stesso filtro. Scegli un modello diverso per la riserva così il ritentativo avviene automaticamente.",
         "session_reconnecting": "L’agente ha perso la sessione di questa chat — riconnessione…",

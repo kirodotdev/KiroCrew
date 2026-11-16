@@ -243,6 +243,7 @@ class _ChatSlot:
         "_fallback_candidate_idx",
         "_fallback_walked",
         "_fallback_walk_refused",
+        "_fallback_walk_server_error",
         "_active_fallback_model",
         "_fallback_primary_model",
         "_fallback_slot_model",
@@ -682,6 +683,7 @@ class _ChatSlot:
     _fallback_candidate_idx: int
     _fallback_walked: list[str]
     _fallback_walk_refused: bool
+    _fallback_walk_server_error: bool
     _active_fallback_model: str
     _fallback_primary_model: str
     _fallback_slot_model: str

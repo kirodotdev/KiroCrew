@@ -13469,6 +13469,7 @@
         "model_access_fallback": "Dein Konto kann das Modell {{rejected}} nicht verwenden — stattdessen läuft {{model}}.",
         "model_unavailable": "{{model}} wird gerade nicht angeboten — diese Sitzung läuft stattdessen auf Auto. Wähle im Eingabefeld ein anderes Modell oder lass es so: Deine Modellwahl bleibt erhalten und wird automatisch verwendet, sobald es wieder angeboten wird.",
         "compaction_continuing": "Der Kontext wurde mitten in der Runde komprimiert und die Antwort hat dort aufgehört — es wird automatisch fortgesetzt.",
+        "model_server_error_fallback": "{{primary}} meldet wiederholt Serverfehler — es läuft auf {{fallback}}, bis {{primary}} wieder verfügbar ist.",
         "model_throttled_fallback": "{{primary}} ist gedrosselt — es läuft auf {{fallback}}, bis {{primary}} wieder verfügbar ist.",
         "refusal_fallback_same_model": "Der automatische erneute Versuch wurde übersprungen, weil das Fallback-Modell (`agent.refusal_fallback_model`) dasselbe wie dein aktuelles Modell ist — ein erneuter Versuch mit demselben Modell trifft auf denselben Filter. Wähle ein anderes Modell für den Fallback, damit automatisch erneut versucht wird.",
         "session_reconnecting": "Der Agent hat die Sitzung dieses Chats verloren — verbindet neu…",

@@ -106,7 +106,11 @@ and each error surface must receive the same safe text.
   (`dashboard/chat_turn/model_fallback.py`, which owns the dashboard's four swap and restore
   helpers named below) after its pre-activity transient branch; `_on_acp_transient_exhausted`
   (`chat_turn/acp_recovery.py`) persists a notice and requeues the same message as a synthetic
-  recovery item. The swap's condition excludes nested prompts. On exhaustion `_on_acp_error_card`
+  recovery item. The swap's condition excludes nested prompts and Kiro's per-user rate limit
+  (`AcpError.user_rate_limit`), which every model shares, so that turn ends on its own error
+  row. The notice is `model_server_error_fallback` when the selected model's ladder ended on a
+  provider 5xx (`slot._fallback_walk_server_error`, written at the walk's first swap) and
+  `model_throttled_fallback` otherwise. On exhaustion `_on_acp_error_card`
   (`chat_turn/turn_failures.py`) renders the slot-local walk in the terminal error.
 - `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry` follows the zero-activity branch,
   uses the shared candidate helper, and applies `annotate_model_fallback` to
