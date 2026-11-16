@@ -501,7 +501,8 @@ async def test_pod_up_tool_returns_the_token_verbatim(monkeypatch: pytest.Monkey
     out = _text(await agent_tools.pod_up({"worktree": "kc-wt-1"}))
     assert "tok-abc123" in out
     assert "http://127.0.0.1:7913" in out
-    assert "open: http://127.0.0.1:7913/?token=tok-abc123" in out.splitlines()
+    assert "open: http://127.0.0.1:7913/?token=<token>  (the token above)" in out.splitlines()
+    assert out.count("tok-abc123") == 1, "the open link must not carry the token"
     assert calls == [({"worktree": "kc-wt-1"},)]
 
 
@@ -531,7 +532,7 @@ async def test_a_pod_start_names_its_token_as_the_answers_credential(
     _verb(monkeypatch, "pod_up_response", {"ok": True, "port": 7913, "token": token})
     answer = await agent_tools.pod_up({"worktree": "kc-wt-1"})
     assert answer["credential"] == token
-    assert len(answer["text"]) == 3
+    assert len(answer["text"]) == 2
     assert not any(token in piece for piece in answer["text"])
 
 
@@ -562,7 +563,7 @@ def test_the_core_relays_a_pod_up_reply_byte_for_byte() -> None:
         "checkout: /home/u/clone-a/kc-wt-1\n"
         "limits: memory=4G cpu=200%\n"
         f"token: {token}  (use within 5 min; the session it opens lasts 2h)\n"
-        f"open: http://127.0.0.1:7913/?token={token}\n"
+        "open: http://127.0.0.1:7913/?token=<token>  (the token above)\n"
         "Past its window the pod refuses the token as expired; call pod_up "
         "again (the pod keeps running) for a fresh one.\n"
         "Stop it with pod_down when you are done: kc-wt-1"
@@ -877,6 +878,25 @@ async def test_the_tool_route_knows_only_the_declared_tools(granted: None) -> No
         _ToolReq({"tool": "pod_provision", "arguments": {}})  # type: ignore[arg-type]
     )
     assert resp.status == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["pod_up", "pod_restart", "pod_down", "pod_status"])
+@pytest.mark.parametrize("arguments", [{}, {"worktree": 7}, {"worktree": "  "}])
+async def test_the_tool_route_refuses_a_bad_worktree_as_a_400(
+    monkeypatch: pytest.MonkeyPatch, granted: None, tool: str, arguments: dict[str, Any]
+) -> None:
+    """A missing, non-string or blank name is a 400 and never reaches the verb.
+
+    On main a missing name raised KeyError, and a blank or non-string one got a 200
+    text refusal; both are now this 400.
+    """
+    monkeypatch.setitem(agent_tools.TOOLS, tool, lambda _a: pytest.fail("no pod work"))
+    resp = await agent_tools.handle_agent_tool(
+        _ToolReq({"tool": tool, "arguments": arguments})  # type: ignore[arg-type]
+    )
+    assert resp.status == 400
+    assert _payload(resp)["code"] == "invalid_worktree"
 
 
 def test_the_route_hook_registers_exactly_the_declared_route() -> None:

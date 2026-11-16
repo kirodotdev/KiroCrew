@@ -7114,7 +7114,7 @@ pod, 120s to stop one, 45s to read). `backend.hooks.routes`
 (`agent_tools:register_routes`) registers `POST /api/apps/dev-fleet/agent-tools` in the
 gateway, which re-asserts the pod routes' own caller gate (local origin and
 `internal_auth`) and host-exec grant, runs the same verb `agent_pod_api` serves, and
-answers the text the core tool rendered, refusals included. The core's hand-written `apps` domain no
+answers the text the core tool rendered, refusals included; a missing, non-string or blank `worktree` is the pod routes' `invalid_worktree` 400 instead. The core's hand-written `apps` domain no
 longer declares, handles or maps them (its `TOOL_APPS`), so adoption's E10 no longer refuses
 `dev-fleet` on that table. The name-keyed governance rows stay in the core and still
 apply, because the names did not change: the channel agent's dispatch deny on `pod_up`
