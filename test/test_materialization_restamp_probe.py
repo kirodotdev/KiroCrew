@@ -11,6 +11,7 @@ is held to the same rule once the file has drifted.
 import json
 
 import pytest
+from agent_capabilities_helpers import _accepting_kiro_cli  # noqa: F401 -- autouse, by import
 from test_agent_capabilities import (  # noqa: F401 -- editor is a pytest fixture used by name
     editor,
     save,

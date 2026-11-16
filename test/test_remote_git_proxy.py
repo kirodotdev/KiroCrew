@@ -535,6 +535,11 @@ OFFLINE = {
 }
 
 
+#: The ``PATH`` every git client child gets: this git's own directory and the system
+#: bins, no version-manager or launcher shim (their tool choice follows ``HOME``).
+CLIENT_PATH = os.pathsep.join([os.path.dirname(GIT or "/usr/bin/git"), "/usr/bin", "/bin"])
+
+
 def _client_env(tmp_path: Path, port_file: Path, *, routed: bool = True) -> dict:
     home = tmp_path / "client-home"
     home.mkdir(exist_ok=True)
@@ -544,7 +549,7 @@ def _client_env(tmp_path: Path, port_file: Path, *, routed: bool = True) -> dict
         **OFFLINE,
         # HOME and PATH as a pair: git is resolved absolutely, never via a shim.
         "HOME": str(home),
-        "PATH": os.path.dirname(GIT) + os.pathsep + "/usr/bin:/bin",
+        "PATH": CLIENT_PATH,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@example.invalid",
