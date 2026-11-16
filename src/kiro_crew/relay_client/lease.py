@@ -42,7 +42,8 @@ both calls; with no reader (the default, and every team Crew) the calls are as a
 The credential is the Crew's own sign-in to the lease service. It is read from a
 file or from the Crew's secrets vault for each call, never held in the config,
 and never logged or put in a ``repr``. It goes only to the configured lease
-service: the session reads no netrc and follows no redirects. Logs carry refusal
+service, or with none set to the built-in Kiro control plane URL for the sign-in's
+region: the session reads no netrc and follows no redirects. Logs carry refusal
 codes, HTTP statuses and delays, never a token, the credential or the answer's
 text.
 """
@@ -199,6 +200,29 @@ def lease_url_problem(url: str) -> Optional[str]:
     if parts.scheme == "http" and is_loopback_host(host):
         return None
     return "the lease service URL must be https:// (http:// only for a loopback port-forward)"
+
+
+def built_in_lease_url(profile_arn: Optional[str]) -> str:
+    """The lease service a Crew calls when ``tunnel.relay_lease_url`` is empty.
+
+    It is the Kiro control plane sign-in already calls, for the region of
+    *profile_arn* (the personal Crew's sign-in), from the same built-in https://
+    table. Read at each call, so building the source does no I/O.
+    """
+    # Loaded here: the auth package is not imported until a call needs it.
+    from kiro_crew.auth.login.control_plane import (
+        ControlPlaneError,
+        control_plane_url,
+        profile_region,
+    )
+
+    # shortcut: a Crew with no signed-in profile leases from us-east-1, as sign-in does;
+    # read the region from the crew API key if the lease service ever names one.
+    try:
+        region = profile_region(profile_arn or "")
+    except ControlPlaneError:
+        region = ""
+    return control_plane_url(region)
 
 
 def credential_reference_problem(ref: str) -> Optional[str]:
@@ -608,8 +632,9 @@ class LeaseHostTokenSource:
             raise ValueError("the lease credential's token type is not one this client sends")
         if profile_arn is not None and token_type == TOKEN_TYPE_API_KEY:
             raise ValueError("a team Crew on a crew API key has no profile ARN")
-        # awsJson 1.0: every operation is POST / on the service's base URL.
-        self._renew_url = lease_url.rstrip("/") + "/"
+        # awsJson 1.0: every operation is POST / on the service's base URL. Empty
+        # means the built-in one, picked at each call (built_in_lease_url).
+        self._renew_url = lease_url.rstrip("/") + "/" if lease_url else ""
         # Only a lease service on loopback may name a plaintext loopback test relay.
         self._local_test = lease_url_is_loopback(lease_url)
         # The TokenType header, or None for a sign-in that sends none.
@@ -664,7 +689,7 @@ class LeaseHostTokenSource:
         self._stopped = ""
 
     def __repr__(self) -> str:
-        return f"LeaseHostTokenSource(url={self._renew_url!r})"
+        return f"LeaseHostTokenSource(url={self._renew_url or 'built-in'!r})"
 
     @property
     def stopped_reason(self) -> str:
@@ -1036,13 +1061,15 @@ class LeaseHostTokenSource:
         return headers
 
     async def _post(self, credential: str, body: dict, target: str) -> "_Answered":
+        # After _credential(): a personal Crew's sign-in has named its profile by now.
+        url = self._renew_url or built_in_lease_url(self._personal_profile_arn())
         try:
             async with self._client_session().post(
-                self._renew_url,
+                url,
                 data=json.dumps(body).encode("utf-8"),
                 headers=self._headers(credential, target),
                 allow_redirects=False,
-                proxy=env_proxy_for(self._renew_url),
+                proxy=env_proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=CALL_TIMEOUT_SECONDS),
             ) as response:
                 status = response.status
