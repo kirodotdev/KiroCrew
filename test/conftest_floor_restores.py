@@ -579,7 +579,7 @@ _BOOT_WIRED_GLOBALS: tuple[tuple[str, str], ...] = (
     # state (or its ``sessions``), so the last state a worker built -- usually a
     # ``MagicMock``-backed one, with every call it recorded -- lived until the next
     # test built another: up to ~300 MiB for the 2,000-slot scale tests.
-    ("kiro_crew.acp.chat_runtime_sharing", "_tree_root_reader"),
+    ("kiro_crew.acp.chat_runtime_sharing", "_tree_placement_reader"),
     # The FACADE, not ``subagent_parts.agent_policy``: ``_facade_compose`` rebinds the
     # composed setter and reader onto ``kiro_crew.subagent``'s globals, so that is the
     # dict ``set_parent_project_resolver`` writes. The part module's copy stays ``None``.

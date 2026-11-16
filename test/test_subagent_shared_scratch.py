@@ -576,6 +576,39 @@ class TestSpawnersMountTheTreeWindow:
         assert env["KIROCREW_SCRATCH"] == str(previous)
         assert client.work_scratch_dir == previous
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mark", ["retired", "unreadable"])
+    async def test_a_respawn_never_remounts_a_directory_refused_across_trees(
+        self, scratch_root: Path, tmp_path: Path, monkeypatch, mark: str
+    ) -> None:
+        """A and B share D; once A's resume retires and marks D, B's respawn starts fresh."""
+        import kiro_crew.acp.client as client_mod
+        from kiro_crew.acp.client import AcpClient
+
+        monkeypatch.setattr(trees, "_QUARANTINE_LIVE", {})
+        wrapped, stop = self._install_capture(
+            monkeypatch, client_mod, tmp_path, "create_subprocess_limited"
+        )
+        shared = sc.allocate_scratch("session")
+        (shared / "a-staged.txt").write_text("A's file")
+        a, b = "dashboard:chat-a-1", "dashboard:chat-b-1"
+        for key in (a, b):
+            trees.record_tree(key, shared)
+        assert trees.abandon_tree_all(shared, frozenset({a, b}))
+        if mark == "unreadable":
+            index = scratch_root / trees.TREE_INDEX_FILENAME
+            index.write_text(index.read_text().replace('"dashboard:chat-a-1"', "7"))
+        client = AcpClient(work_dir=tmp_path / "workspace")
+        client._scratch_dir = shared  # B's process ran in D and now respawns
+        with pytest.raises(stop):
+            await client._spawn()
+
+        (own,) = tuple(wrapped["kwargs"]["extra_private_dirs"])  # type: ignore[index]
+        env = wrapped["spawn_kwargs"]["env"]  # type: ignore[index]
+        assert Path(own) != shared and env["KIROCREW_SCRATCH"] == own
+        assert client.work_scratch_dir == Path(own)
+        assert (shared / "a-staged.txt").read_text() == "A's file"  # quarantined, kept
+
 
 @pytest.mark.skipif(
     sys.platform == "win32",

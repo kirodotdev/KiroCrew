@@ -373,12 +373,18 @@ async def _run_inner_impl(
     # the parent has no live provider or spawned without scratch. Also the
     # signal that skips the warm pool, whose mounts were fixed at pre-spawn.
     if info.parent_session_key:
+        from kiro_crew.session_allocation_parts.companions import admit_shared_scratch
+
         resolve_scratch = getattr(self._manager._sessions, "parent_work_scratch_dir", None)
-        shared_scratch = (
+        shared_scratch = await admit_shared_scratch(
             resolve_scratch(info.parent_session_key) if resolve_scratch is not None else None
         )
         if shared_scratch is not None:
             extra_kwargs["shared_scratch"] = shared_scratch
+            # The gateway's own record of who spawned this run, kept beside its
+            # scratch binding so a resume can still place it after the run
+            # record is pruned.
+            extra_kwargs["scratch_parent"] = info.parent_session_key
 
     # ── Session sharing: reuse parent's shared AcpRuntime ──
     # When enabled and eligible, subagents get a session on the parent's

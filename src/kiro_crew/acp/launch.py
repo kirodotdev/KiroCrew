@@ -46,7 +46,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Protocol, Sequence
 
-from kiro_crew import acp_tool_gate, platform_compat
+from kiro_crew import acp_tool_gate, agent_scratch_trees, platform_compat
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, is_windows_spawn_blocked
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
@@ -1129,6 +1129,17 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         host._shared_scratch = await scratch_hop(
             tools.agent_scratch.shared_scratch_window, host._shared_scratch
         )
+    if host._shared_scratch is not None and await scratch_hop(
+        agent_scratch_trees.refused_across_trees, host._shared_scratch
+    ):
+        # A directory refused across session trees is never remounted, a respawn
+        # of a process that already ran in it included: this one starts in the
+        # fresh directory allocated above.
+        tools.logger.warning(
+            "agent-scratch: %r is quarantined; spawning in a fresh directory",
+            host._shared_scratch.name,
+        )
+        host._shared_scratch = None
     if host._shared_scratch is not None:
         scratch_window = (*scratch_window, str(host._shared_scratch))
     scratch_window = (*scratch_window, *request.extra_private_dirs)

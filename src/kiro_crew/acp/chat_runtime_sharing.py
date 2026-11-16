@@ -377,16 +377,34 @@ def eligible_for_chat_sharing(
     )
 
 
-#: Reads a dashboard session key's tree root: the top of its creator chain, by
-#: the rule the slot list nests on (``crew_mode.share_tree_root``). Wired by the
-#: gateway (``DashboardState``); unset in a process with no chat slots.
-_tree_root_reader: Callable[[str], str] | None = None
+#: Reads a dashboard session key's tree root (the top of its creator chain, by
+#: the rule the slot list nests on) and whether that placement is verified
+#: (``crew_mode.share_tree_placement``). Wired by the gateway (``DashboardState``);
+#: unset in a process with no chat slots.
+_tree_placement_reader: Callable[[str], tuple[str, bool]] | None = None
 
 
-def set_share_tree_reader(reader: Callable[[str], str] | None) -> None:
-    """Install the gateway's session-key -> tree-root reader (``None`` removes it)."""
-    global _tree_root_reader
-    _tree_root_reader = reader
+def set_share_tree_placement_reader(reader: Callable[[str], tuple[str, bool]] | None) -> None:
+    """Install the gateway's session-key -> (root, verified) reader (``None`` removes it)."""
+    global _tree_placement_reader
+    _tree_placement_reader = reader
+
+
+def share_tree_placement_of(session_key: str) -> tuple[str, bool]:
+    """``(root, verified)`` for *session_key*; unverified as its own root when unreadable."""
+    reader = _tree_placement_reader
+    if reader is None or not session_key:
+        return session_key, False
+    try:
+        root, verified = reader(session_key)
+    except Exception:  # noqa: BLE001 - an unreadable lineage is unverified
+        logger.debug(
+            "chat-runtime-sharing: tree placement unreadable for %s", session_key, exc_info=True
+        )
+        return session_key, False
+    if not isinstance(root, str) or not root:
+        return session_key, False
+    return root, verified is True
 
 
 def share_tree_root_of(session_key: str) -> str:
@@ -397,17 +415,7 @@ def share_tree_root_of(session_key: str) -> str:
     shares with nobody, which is the safe direction. Two trees never share,
     because the root is a key field.
     """
-    reader = _tree_root_reader
-    if reader is None or not session_key:
-        return session_key
-    try:
-        root = reader(session_key)
-    except Exception:  # noqa: BLE001 - an unreadable lineage is a tree of one
-        logger.debug(
-            "chat-runtime-sharing: tree root unreadable for %s", session_key, exc_info=True
-        )
-        return session_key
-    return root if isinstance(root, str) and root else session_key
+    return share_tree_placement_of(session_key)[0]
 
 
 def member_scope_of(session_key: str) -> tuple[str, str]:
@@ -1087,7 +1095,6 @@ __all__ = [
     "kas_chat_sharing_ready",
     "member_scope_of",
     "relay_engine_shares_chats",
-    "set_share_tree_reader",
     "share_tree_root_of",
     "spec_grants_native_subagents",
 ]
