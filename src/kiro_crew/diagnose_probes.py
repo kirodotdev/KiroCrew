@@ -394,10 +394,10 @@ def probe_deprecated_agent_spec(ctx: ProbeContext) -> dict[str, Any]:
     pid = "deprecated_agent_spec"
     from kiro_crew.agent import DEPRECATED_AGENT_SPECS
     from kiro_crew.cron import job_agent_names_from_disk
-    from kiro_crew.doctor_checks.agents import _open_slot_agent_names
+    from kiro_crew.doctor_checks.agents import _open_slot_agent_names, is_shipped_alias_entry
 
     cfg = ctx.cfg
-    crews = set(cfg.agents)
+    crews = {n for n, c in cfg.agents.items() if not is_shipped_alias_entry(n, c)}
     found: list[dict[str, str]] = []
 
     def _add(holder: str, name: object, *, skip_crews: bool = True) -> None:
@@ -408,6 +408,8 @@ def probe_deprecated_agent_spec(ctx: ProbeContext) -> dict[str, Any]:
             found.append({"holder": holder, "name": name, "replacement": replacement})
 
     for crew_name, crew in cfg.agents.items():
+        if is_shipped_alias_entry(crew_name, crew):
+            continue
         _add(f"crew {crew_name}", crew.kiro_agent, skip_crews=False)
     _add("agent.default_agent", cfg.agent.default_agent)
     _add("session.pool_agent", cfg.session.pool_agent)
