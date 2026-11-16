@@ -105,7 +105,8 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
 - **D8. Every await, join or `communicate` the test itself must unblock is bounded and
   fails by name** (`asyncio.wait_for`; `join(timeout)` followed by an `is_alive()`
-  assertion; `communicate(timeout=...)`).
+  assertion; `communicate(timeout=...)`). A real `node` or interpreter child starts once
+  per module, not once per test, and its deadline is half the test's own timeout.
   [Class 6](#6-a-hang-is-a-lost-run-not-a-failed-test).
 - **D9. A listener binds port 0 and reports the port it got** (aiohttp's `TestServer`
   does; `TCPSite(runner, "127.0.0.1", 0)` then `runner.addresses`, as in
@@ -5649,6 +5650,22 @@ a child that announces and then exits still counts -- and quote the child's outp
 that output to a FILE under `tmp_path`, not to a pipe nobody reads before the wait
 returns: once a pipe buffer fills, the child blocks in its write and the wait times out
 on a child that is merely stuck.
+
+**A real interpreter child is started once per module, not once per test.** MEASURED in
+`test_ssrf_guard_fail_closed.py`: four tests each started their own `node`, and
+`--dist loadgroup` handed them to four workers, so four cold Node starts, each paging in a
+~100 MB binary, began in the same second at 98% of Linux `Backend Tests (3.12, 7)`, in
+runs that peaked at 15.0 of the runner's 15.7 GB. In six of six failed attempts
+(`linux-pytest-progress-7`) the shard ran ~50 tests a second up to that second and almost
+none after it: every test in flight, `node` or not, hit `Timeout >120.0s`, one `node` came
+back killed (`-9`), and some runs lost the runner. Passing attempts finished the ~530 tests
+left in under ten seconds. On a dev host under memory pressure the same four children took
+up to 23 s each, against 0.03 s unloaded. So run every case through ONE
+module-scoped child that prints a verdict per case, put the module in its own
+`xdist_group` so it lands on one worker, and give the child a lost-run ceiling of half the
+test's timeout, `kiro_crew.testing.wait.default_timeout()`. A literal equal to
+`--timeout` (it was `120` against `--timeout=120`) is never reached: pytest-timeout fires
+first, and the child's own deadline names nothing.
 
 **What a lost-run ceiling is.** A bound on a condition wait (`wait_for`, `join`,
 `communicate`, a poll deadline) that only ends a broken run, and fails the test loudly

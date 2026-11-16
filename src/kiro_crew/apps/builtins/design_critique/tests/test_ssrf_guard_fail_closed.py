@@ -9,6 +9,11 @@ capability is absent, the pinned Playwright line provides ``routeWebSocket``
 (>= 1.48), and ``getPlaywright`` refuses to resolve a build the guard must
 reject — a stale pre-1.48 cache falls through to reinstall rather than
 permanently breaking capture.
+
+The four runtime checks share ONE ``node`` child per run of this module, on one
+worker. A cold Node start pages in a ~100 MB binary, and four of them at once on
+four workers, on a Linux shard near its memory ceiling, stall the whole runner
+until every test in flight times out.
 """
 
 from __future__ import annotations
@@ -21,36 +26,123 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.testing import wait
+from kiro_crew.testing.wait import default_timeout
+
+# One worker, so the module starts one node, not one per worker its tests land on.
+pytestmark = pytest.mark.xdist_group(name="node_probe_ssrf_guard_fail_closed")
+
 # tests/<this file> -> parents[1] is the app's own directory.
 APP_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = APP_ROOT / "skills/design-critique/scripts"
 SSRF_GUARD = SCRIPTS / "ssrf-guard.mjs"
 ENSURE_PW = SCRIPTS / "ensure-playwright.mjs"
 
-# Budget for one Node subprocess in _run_node. It covers a cold Node ESM
-# start on a hosted Windows runner that falls back to full file copies,
-# which can exceed a minute.
-NODE_TIMEOUT_SECS = 120
 
+def _run_node(
+    script: str, cwd: Path, deadline: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run *script* in one node child, bounded at half the running test's timeout.
 
-def _run_node(script: str, tmp_path: Path, env: dict[str, str] | None = None):
+    Half, so a stalled child fails here, by name, instead of as the runner's bare
+    ``Timeout``: 60 s on the Linux lanes, 90 s on Windows, which still covers a
+    cold Node ESM start on a hosted Windows runner (more than a minute measured).
+    """
+    if deadline is None:
+        deadline = default_timeout()
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not on PATH")
-    full_env = None
-    if env is not None:
-        import os
+    try:
+        return subprocess.run(
+            [node, "--input-type=module", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=deadline,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            f"node did not finish the ssrf-guard probe within {deadline:.0f}s; "
+            f"stdout so far: {exc.stdout!r}, stderr so far: {exc.stderr!r}"
+        )
 
-        full_env = {**os.environ, **env}
-    return subprocess.run(
-        [node, "--input-type=module", "-e", script],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=NODE_TIMEOUT_SECS,
-        cwd=tmp_path,
-        env=full_env,
-    )
+
+def _fake_playwright(root: Path, version: str) -> Path:
+    """A ``node_modules/playwright`` of *version* under *root*; returns *root*."""
+    pkg = root / "node_modules" / "playwright"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text(json.dumps({"name": "playwright", "version": version}))
+    (pkg / "index.js").write_text("module.exports = { chromium: {} }\n")
+    return root
+
+
+# Each case prints one word. ensure-playwright.mjs reads DC_PW_DIR when it is
+# evaluated, so each cache case imports its own copy under its own query string,
+# which ESM evaluates as a separate module, after setting the variable.
+_PROBE = """
+const verdicts = {}
+async function probe(name, body) {
+  try { verdicts[name] = await body() } catch (e) { verdicts[name] = 'threw: ' + e }
+}
+const { installSsrfGuard } = await import(%(guard)s)
+await probe('without_route_websocket', async () => {
+  let routed = false
+  try {
+    await installSsrfGuard({ route: async () => { routed = true } }, null)
+    return 'resolved'
+  } catch (e) {
+    if (routed) return 'refused after installing the HTTP route'
+    return String(e).includes('routeWebSocket') ? 'refused' : 'wrong error: ' + e
+  }
+})
+await probe('with_route_websocket', async () => {
+  await installSsrfGuard({ route: async () => {}, routeWebSocket: async () => {} }, null)
+  return 'installed'
+})
+process.env.DC_PW_DIR = %(stale_cache)s
+await probe('stale_cache', async () => {
+  const { getPlaywright } = await import(%(stale_script)s + '?case=stale')
+  return (await getPlaywright({ autoInstall: false })) === null ? 'refused' : 'returned'
+})
+process.env.DC_PW_DIR = %(usable_cache)s
+await probe('usable_cache', async () => {
+  const { getPlaywright } = await import(%(usable_script)s + '?case=usable')
+  const m = await getPlaywright({ autoInstall: false })
+  return m && m.chromium ? 'returned' : 'refused'
+})
+console.log(JSON.stringify(verdicts))
+"""
+
+
+@pytest.fixture(scope="module")
+def node_verdicts(tmp_path_factory: pytest.TempPathFactory):
+    """Every runtime case's verdict, from one node child.
+
+    ``getPlaywright`` resolves ``playwright`` by climbing ``node_modules`` from its
+    own script's directory, so each cache case runs a copy of the script whose
+    climb starts in this fixture's tmp dir: a playwright above the checkout is
+    never reached, and the only build either case can find is the planted one.
+    The script imports only Node built-ins and playwright, so the one file is
+    enough.
+    """
+    root = tmp_path_factory.mktemp("ssrf_node_probe")
+    stale_script = _fake_playwright(root / "stale_script", "1.47.2") / ENSURE_PW.name
+    shutil.copy2(ENSURE_PW, stale_script)
+    usable_script = root / "usable_script" / ENSURE_PW.name
+    usable_script.parent.mkdir()
+    shutil.copy2(ENSURE_PW, usable_script)
+    script = _PROBE % {
+        "guard": json.dumps(SSRF_GUARD.as_uri()),
+        "stale_cache": json.dumps(str(_fake_playwright(root / "stale_cache", "1.47.2"))),
+        "stale_script": json.dumps(stale_script.as_uri()),
+        "usable_cache": json.dumps(str(_fake_playwright(root / "usable_cache", "1.58.2"))),
+        "usable_script": json.dumps(usable_script.as_uri()),
+    }
+    proc = _run_node(script, root)
+    assert proc.returncode == 0, f"node exited {proc.returncode}\n{proc.stderr}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 class TestSsrfGuardSourcePins:
@@ -88,32 +180,11 @@ class TestEnsurePlaywrightPin:
 class TestInstallSsrfGuardRuntime:
     """Drive the real installSsrfGuard through node (skipped when node absent)."""
 
-    def test_rejects_without_route_websocket(self, tmp_path):
-        script = f"""
-            const {{ installSsrfGuard }} = await import({str(SSRF_GUARD.as_uri())!r})
-            const target = {{ route: async () => {{}} }}
-            try {{
-                await installSsrfGuard(target, null)
-                console.error('resolved but must reject')
-                process.exit(1)
-            }} catch (e) {{
-                if (!String(e).includes('routeWebSocket')) {{
-                    console.error('rejected with wrong error: ' + e)
-                    process.exit(2)
-                }}
-            }}
-        """
-        proc = _run_node(script, tmp_path)
-        assert proc.returncode == 0, proc.stderr
+    def test_rejects_without_route_websocket(self, node_verdicts):
+        assert node_verdicts["without_route_websocket"] == "refused"
 
-    def test_resolves_with_route_websocket(self, tmp_path):
-        script = f"""
-            const {{ installSsrfGuard }} = await import({str(SSRF_GUARD.as_uri())!r})
-            const target = {{ route: async () => {{}}, routeWebSocket: async () => {{}} }}
-            await installSsrfGuard(target, null)
-        """
-        proc = _run_node(script, tmp_path)
-        assert proc.returncode == 0, proc.stderr
+    def test_resolves_with_route_websocket(self, node_verdicts):
+        assert node_verdicts["with_route_websocket"] == "installed"
 
 
 class TestGetPlaywrightVersionGate:
@@ -125,61 +196,35 @@ class TestGetPlaywrightVersionGate:
     the install path instead.
     """
 
-    @staticmethod
-    def _fake_cache(root: Path, version: str) -> Path:
-        pkg = root / "node_modules" / "playwright"
-        pkg.mkdir(parents=True)
-        (pkg / "package.json").write_text(json.dumps({"name": "playwright", "version": version}))
-        (pkg / "index.js").write_text("module.exports = { chromium: {} }\n")
-        return root
-
-    def test_stale_cache_is_not_returned(self, tmp_path):
-        cache = self._fake_cache(tmp_path / "cache", "1.47.2")
-        # getPlaywright resolves "playwright" by climbing node_modules from the script's own
-        # directory. A copy whose nearest node_modules holds a stale build is answered there,
-        # so a playwright above the checkout or above tmp_path is never reached. The script
-        # imports only Node built-ins and playwright, so the one file is enough.
-        script_dir = self._fake_cache(tmp_path / "script", "1.47.2")
-        ensure_pw = script_dir / ENSURE_PW.name
-        shutil.copy2(ENSURE_PW, ensure_pw)
-        script = f"""
-            const {{ getPlaywright }} = await import({str(ensure_pw.as_uri())!r})
-            const m = await getPlaywright({{ autoInstall: false }})
-            process.exit(m === null ? 0 : 1)
-        """
-        proc = _run_node(script, tmp_path, env={"DC_PW_DIR": str(cache)})
-        assert proc.returncode == 0, (
+    def test_stale_cache_is_not_returned(self, node_verdicts):
+        assert node_verdicts["stale_cache"] == "refused", (
             "getPlaywright returned a pre-1.48 cached build the SSRF guard must "
-            f"refuse; it should fall through to reinstall\n{proc.stderr}"
+            "refuse; it should fall through to reinstall"
         )
 
-    def test_usable_cache_is_returned(self, tmp_path):
-        cache = self._fake_cache(tmp_path / "cache", "1.58.2")
-        script = f"""
-            const {{ getPlaywright }} = await import({str(ENSURE_PW.as_uri())!r})
-            const m = await getPlaywright({{ autoInstall: false }})
-            process.exit(m && m.chromium ? 0 : 1)
-        """
-        proc = _run_node(script, tmp_path, env={"DC_PW_DIR": str(cache)})
-        assert proc.returncode == 0, proc.stderr
+    def test_usable_cache_is_returned(self, node_verdicts):
+        assert node_verdicts["usable_cache"] == "returned"
 
 
 class TestNodeBudget:
-    def test_cold_start_budget_covers_a_slow_windows_runner(self, tmp_path, monkeypatch):
-        """_run_node passes NODE_TIMEOUT_SECS, sized for a slow Windows runner."""
-        assert NODE_TIMEOUT_SECS >= 120
+    def test_the_child_gets_half_the_running_test_timeout(self, tmp_path, monkeypatch):
         captured: dict = {}
 
-        class _Proc:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        def fake_run(*args, **kwargs):
+        def fake_run(argv, **kwargs):
             captured.update(kwargs)
-            return _Proc()
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
 
+        monkeypatch.setattr(wait, "runner_timeout_secs", 180.0)
         monkeypatch.setattr(shutil, "which", lambda _cmd: "/usr/bin/node")
         monkeypatch.setattr(subprocess, "run", fake_run)
         _run_node("process.exit(0)", tmp_path)
-        assert captured["timeout"] == NODE_TIMEOUT_SECS
+        assert captured["timeout"] == 90.0
+
+    def test_a_child_past_its_deadline_fails_by_name(self, tmp_path, monkeypatch):
+        def fake_run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        monkeypatch.setattr(shutil, "which", lambda _cmd: "/usr/bin/node")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(pytest.fail.Exception, match="within 60s"):
+            _run_node("process.exit(0)", tmp_path, 60.0)

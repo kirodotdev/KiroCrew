@@ -439,7 +439,15 @@ custom-rules:
          deadline) is NOT flagged when its expiry fails the test loudly. Flag a
          timeout only when the diff RAISES a literal, raises a named ceiling
          without a cited measurement, or makes the pass depend on time elapsing
-         (a sleep standing in for a sync).
+         (a sleep standing in for a sync). Also FLAG a subprocess deadline at or
+         above the test's own timeout (the suite's 120 s unless the module sets
+         a larger `pytest.mark.timeout`): pytest-timeout fires first, so the
+         child's own deadline never fails by name; size it at half that
+         timeout. And FLAG a new test that starts its own real `node`
+         or interpreter child when its module's other tests do the same: four
+         such children on four workers cold-started in one second and stalled a
+         whole Linux shard; one module-scoped child in its own `xdist_group`
+         serves every case.
       7. (D4) Sequence equality over a `set`, a dict built from one, `listdir` /
          `iterdir` / `glob`, `as_completed` iteration, or side effects appended
          in completion order, without `sorted()` or a `set` / `Counter`
