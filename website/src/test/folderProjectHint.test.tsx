@@ -9,6 +9,7 @@ vi.mock('../components/VoicePlaybackBar', () => ({ default: () => null }))
 
 import { useComposerAboveBand } from '../pages/chat/page/composerDock'
 import { setMovedSlot } from '../hooks/useMoveSlotToFolder'
+import { COMPOSER_RADIUS } from '../components/composerRadius'
 
 const folder = (id: string, opts: Partial<ChatFolder> = {}): ChatFolder => ({
   id, name: id, order: 0, collapsed: false, parent_id: '', ...opts,
@@ -87,6 +88,12 @@ describe('composer band folder-project hint', () => {
     expect(screen.getByTestId('folder-project-hint-dismiss').textContent).toBe('Keep other')
     expect(screen.getByTestId('folder-project-hint-note').textContent).toBe(
       'Switching starts a fresh agent session in /projects/repo on your next message. The messages here stay, and the project picker can switch back.')
+  })
+
+  it('is as round as the composer it sits on', () => {
+    act(() => setMovedSlot('slot-1'))
+    renderBand(moved)
+    expect(screen.getByTestId('folder-project-hint').style.borderRadius).toBe(`${COMPOSER_RADIUS}px`)
   })
 
   it('shows no hint for a session that was not moved, such as a follow-up worktree', () => {

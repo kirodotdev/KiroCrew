@@ -59,6 +59,7 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtDateFields } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
+import { COMPOSER_RADIUS } from './composerRadius'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
 import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/lazyChips'
@@ -1089,7 +1090,7 @@ function ChatInput({
         // (44px of text line inside a 1px border), and 16px otherwise. The rim
         // is sized from the TWO-row height in both shapes, or the lit edge
         // would thin to half its width every time the draft is cleared.
-        radius={inlineToolbar ? COMPOSER_ONE_ROW_RADIUS : 16}
+        radius={inlineToolbar ? COMPOSER_ONE_ROW_RADIUS : COMPOSER_RADIUS}
         rimSize={inlineToolbarWhileFits ? COMPOSER_RIM_FROM_PX : undefined}
         data-testid="composer-dock"
         {...GUIDE_KEEP_CLEAR}

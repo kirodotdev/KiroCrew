@@ -10,6 +10,7 @@ import MarkdownRenderer from './MarkdownRenderer'
 
 import { i18nT } from '../i18n/t'
 import { Glass } from './Glass'
+import { COMPOSER_RADIUS } from './composerRadius'
 import { Btn, IconButton } from './ui'
 
 // The resolver lives in `utils/docsLink`: a pure function must not live behind a
@@ -235,7 +236,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
     ) : (
       <Glass
         variant="chip"
-        radius={12}
+        radius={COMPOSER_RADIUS}
         data-testid="tip-card"
         className="glass-shadow w-full flex"
         role="complementary"
