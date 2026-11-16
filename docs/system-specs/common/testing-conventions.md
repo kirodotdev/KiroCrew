@@ -4491,6 +4491,13 @@ The whole suite with the configured defaults is a human's run, not a gate:
 python -m pytest
 ```
 
+The same suite as many small processes, in about a quarter of the memory (see "Running on
+a machine with little RAM"):
+
+```bash
+python3 scripts/run_sharded_suite.py -- -m "not ipv6_required and not real_venv"
+```
+
 `setup.cfg`'s `[tool:pytest] addopts` supplies `--verbose`,
 `--ignore=build/private`, `-p no:platformdirs` (refuses platformdirs' auto-loaded
 `pytest11` plugin), `-n auto`, `--dist loadgroup`, `--max-worker-restart=2`,
@@ -4690,12 +4697,29 @@ parallelism the aggregate is what changes, and summing the peaks of every proces
 says so: eight xdist workers each collecting all 1,540 files come to 5,945 MiB, while
 eight single-worker processes given 193 files each — the same 56,946 items collected
 once between them, and the same eight-way execution — come to 1,896 MiB, a 68% cut on
-the machine as a whole. Two things make that a real runner rather than a one-liner,
-and both fail silently if skipped: naming files on the command line bypasses
-`collect_ignore`, so the runner must apply `test/windows-collect-ignore.txt` itself
-the way `scripts/ci-surface-tests.py` does, and files sharing an `xdist_group`
-(`subprocess_spawn`, `mcp_gateway`, `serial`) must land in the same process or they
-lose the serialization the mark exists to provide.
+the machine as a whole.
+
+`scripts/run_sharded_suite.py` is that runner for the whole suite. It starts `--shards`
+single-process pytest runs, at most `--jobs` at a time, each loading
+`scripts.ci_file_shards` so it imports only its own files. Two things make it a runner
+rather than a one-liner. Sharding at the collect report, not by naming files, keeps
+pytest's own `collect_ignore` rules. And every file that names the same literal
+`xdist_group` (`subprocess_spawn`, `mcp_gateway`, `serial`) is pinned to one part, so those
+tests still run one at a time. A group name built at runtime (the `tree_scan_*` names in
+`test_facade_shared_checks.py` and `test_bindings_shared_checks.py`) is not seen; those
+groups only share a memoised scan, so a split costs memory, not correctness. Measured on one r7i.8xlarge (32 cores, 247 GiB), same tree, the
+baseline `-m "not ipv6_required and not real_venv" --timeout=120 -p no:cacheprovider`
+selection:
+
+| command | peak used | wall time | failures |
+|---|---|---|---|
+| `pytest -n 32` | 120.1 GiB | 50 min | 1 (red on main) |
+| `scripts/run_sharded_suite.py` (32 parts, 32 at a time) | 33.6 GiB | 18 min | the same 1 |
+| `scripts/run_sharded_suite.py --jobs 8 --shards 32`, on 8 cores, before group pinning | 11.6 GiB | 36 min | the same 1, and 2 timing tests that passed when their parts ran again |
+
+In the first two rows the same 284,758 tests ran with the same outcomes. Each part writes
+`junit-<i>.xml` and `shard-<i>.log` under `--out`, and the exit status is 0 only when
+every part passed.
 
 ### Writing a test that is cheap on memory
 
