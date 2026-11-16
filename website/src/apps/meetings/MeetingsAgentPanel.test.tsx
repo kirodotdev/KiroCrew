@@ -168,9 +168,7 @@ describe('AgentPanel — html output', () => {
     expect(srcdoc).toContain(`${window.location.origin}${MERMAID_RUNTIME_PATH}`)
     // script-src is pinned to that one FILE, never to the bare origin (a script
     // URL is an egress channel too).
-    expect(srcdoc).toContain(
-      `script-src 'unsafe-inline' ${window.location.origin}${MERMAID_RUNTIME_PATH};`,
-    )
+    expect(srcdoc).toMatch(new RegExp(`script-src 'sha256-[^']+' ${window.location.origin}${MERMAID_RUNTIME_PATH};`))
   })
 })
 
