@@ -41,11 +41,16 @@ class _Session:
     async def _prepare_session_mcp(self) -> None:
         self.steps.append(("mcp", self._seen()))
 
+    async def _prepare_claude_held_asks(self) -> None:
+        self.steps.append(("held", self._seen()))
+
     def _refuse_claude_session_below_floor_before_spawn(self, installed_version: str) -> None:
         self.steps.append((f"floor:{installed_version}", self._seen()))
 
 
-def test_the_version_is_read_then_the_seed_then_side_denies_then_the_array(monkeypatch) -> None:
+def test_the_version_is_read_then_the_seed_then_side_denies_then_the_array_then_held_asks(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(claude_mod, "_claude_adapter_installed_version", lambda _argv: "0.94.0")
     session = _Session()
     asyncio.run(claude_mod.prepare_claude_session(session, ["/opt/bin/claude-agent-acp"]))
@@ -54,6 +59,8 @@ def test_the_version_is_read_then_the_seed_then_side_denies_then_the_array(monke
         ("seed", seen),
         ("side", seen),
         ("mcp", seen),
+        # The held asks name the array's servers, so they are read after it.
+        ("held", seen),
         ("floor:0.94.0", seen),
     ]
 

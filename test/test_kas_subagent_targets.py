@@ -1069,3 +1069,42 @@ async def test_the_session_and_its_targets_answer_from_one_scope_reading(agents_
         declared = agent.get("mcpServers") or {}
         assert "kept" in declared and "muted" not in declared, agent["id"]
     assert len(reads) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_held_bot_limit_reaches_its_named_child_and_the_targets_it_registers(
+    agents_dir, monkeypatch, held
+):
+    """A child session under a Bot with a held read limit (``mate_held_rules``), and each
+    agent it registers, ask before a read and keep no read pre-approval."""
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    ledger = agents_dir.parent / "mates" / "migrated.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(paths_mod, "kiro_home", lambda: agents_dir.parent)
+    rules = [{"text": "deny reading", "capability": "fs_read"}]
+    member = "m1" if held else "other"
+    ledger.write_text(json.dumps({"held_rules": {"zxc": {"member_id": "m1", "rules": rules}}}))
+    monkeypatch.setattr(
+        execution_context, "read_session_execution", lambda key: SimpleNamespace(member_id=member)
+    )
+    _write(agents_dir, _delegator("slack-agent"))
+    _write(agents_dir, _SLACK)
+
+    extras = await KasHarness().session_extras("delegator", work_dir=None, session_key="k")
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    for entry in extras.custom_agents:
+        reads = [
+            r
+            for r in entry.get("permissions", {}).get("rules", [])
+            if r.get("capability") == "fs_read"
+        ]
+        asks = {"capability": "fs_read", "effect": "ask"} in reads
+        allows = [r for r in reads if r.get("effect") == "allow"]
+        assert asks is held, entry["id"]
+        if held:
+            assert not allows, entry["id"]

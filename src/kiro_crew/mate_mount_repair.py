@@ -37,6 +37,7 @@ from kiro_crew.agent_sdk import agent_specs
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mate_config import MateConfigError, source_agents_dir, write_mate_spec
+from kiro_crew.mate_ledger_lock import ledger_lock
 from kiro_crew.mate_worker import server_selectors
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
 
@@ -203,9 +204,10 @@ def restore_withheld_mounts(cfg: KiroCrewConfig | None = None) -> list[str]:
     if not done - set(_strings(data.get(CHECKED_KEY))):
         return repaired
     try:
-        data = _read_ledger()
-        data[CHECKED_KEY] = sorted(done | set(_strings(data.get(CHECKED_KEY))))
-        _write_ledger(data)
+        with ledger_lock():
+            data = _read_ledger()
+            data[CHECKED_KEY] = sorted(done | set(_strings(data.get(CHECKED_KEY))))
+            _write_ledger(data)
     except Exception:  # noqa: BLE001 - a repaired file now mounts; a re-check is a no-op
         logger.warning("crewmate mount repair: not recorded in the ledger", exc_info=True)
     return repaired
@@ -215,22 +217,26 @@ def _repair_one(base: dict[str, Any], name: str, source: str) -> bool | None:
     """Repair Bot *name*'s file from its old agent *source*: whether it was rewritten.
 
     ``None`` when its file or its old agent cannot be read now, so a later start
-    checks it again.
+    checks it again. The file is read and written under the lock an owner's edit
+    of it takes, so neither undoes the other.
     """
+    from kiro_crew.agent import agents_spec_lock
+
     path = paths_mod.mate_agents_dir() / f"{name}.json"
     try:
-        mate_file = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    old = _old_agent(source)
-    if not isinstance(mate_file, dict) or old is None:
-        return None
-    fixed = restored_mounts(base, old, mate_file)
-    if fixed is None:
-        return False
-    try:
-        write_mate_spec(name, fixed)
-    except MateConfigError:
+        with agents_spec_lock(paths_mod.mate_agents_dir()):
+            try:
+                mate_file = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            old = _old_agent(source)
+            if not isinstance(mate_file, dict) or old is None:
+                return None
+            fixed = restored_mounts(base, old, mate_file)
+            if fixed is None:
+                return False
+            write_mate_spec(name, fixed)
+    except (OSError, MateConfigError):
         logger.warning("crewmate mount repair: %s's file was not written", name)
         return None
     return True

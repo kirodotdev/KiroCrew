@@ -120,6 +120,29 @@ async def test_matching_shell_command_is_auto_approved(monkeypatch):
     assert "auto_approved_trusted_pattern" in outcomes
 
 
+@pytest.mark.asyncio
+async def test_a_trusted_command_does_not_approve_a_held_bot_limit(monkeypatch):
+    """``mate_held_rules``: a granted command a held Bot limit covers reaches the card."""
+    from kiro_crew import mate_held_rules
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
+    _stub_name_grant_verdict(monkeypatch, None)
+    monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: ["deny shell"])
+    agent = _make_agent(bases={"ls"})
+    ch = _make_channel(agent)
+    event = _perm_event(
+        title="Running: ls /tmp",
+        tool_input=json.dumps({"command": "ls /tmp"}),
+        is_shell=True,
+    )
+    client = _make_client([event, _done()])
+
+    await _stream_task(agent, ch, client, "hi")
+
+    client.approve_tool.assert_not_awaited()
+    assert len(_approval_posts(ch)) == 1
+
+
 def _stub_name_grant_verdict(monkeypatch, refusal):
     """Pin the off-loop name-grant verdict (the seam test_name_grant_surfaces
     stubs): the real check resolves names against the host PATH and declines

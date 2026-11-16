@@ -365,6 +365,10 @@ def _project_target(
         return _UNUSABLE
     if _spec_pre_tool_matchers(name, spec):
         return _GATE_ONLY
+    from kiro_crew.mate_held_rules import held_child_spec
+
+    # A target of a Bot's session runs under the Bot's identity: its held limits ask.
+    spec = held_child_spec(spec, session_key)
     # Decided before the projection, so a refused target writes no launch files.
     muted = session_mcp_disabled_servers(spec, None)
     elsewhere = _pooled_elsewhere(spec, parent_declared, stub_server_names, muted)

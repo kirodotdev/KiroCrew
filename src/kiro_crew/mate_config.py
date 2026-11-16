@@ -267,6 +267,17 @@ def _read_owners() -> dict[str, str]:
     return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 
 
+def refuse_foreign_file(mate_id: str) -> None:
+    """Raise :class:`MateConfigError` when another instance keeps *mate_id*'s file.
+
+    :func:`_refuse_foreign_file` under the owner lock, for a caller that records
+    something about the Bot before it writes the file. Raises ``OSError`` past
+    the lock's ceiling.
+    """
+    with _owners_lock():
+        _refuse_foreign_file(mate_id, _read_owners())
+
+
 def _refuse_foreign_file(mate_id: str, owners: dict[str, str]) -> None:
     """Refuse to replace *mate_id*'s file when another instance wrote it.
 

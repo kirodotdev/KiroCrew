@@ -964,7 +964,9 @@ async def execute_task(
                     run.tokens_used += max(1, len(event.text) // 4)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
                     settled = await tool_permission.settle(
-                        tool_permission.Ask(event, tool_permission.AcpWire(client), session_key),
+                        tool_permission.Ask(
+                            event, tool_permission.AcpWire(client), session_key, agent
+                        ),
                         _policy,
                     )
                     if settled.outcome == "bailed":

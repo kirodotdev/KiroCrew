@@ -9,8 +9,8 @@ Each function here whose first parameter is ``self`` is a ``ClaudeAcpClient`` me
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_claude_inline_settings``, ``_claude_local_settings_excluded``,
-``_claude_side_read_denies``, ``_claude_worker_builtin_tools``,
+Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``, ``_claude_inline_settings``,
+``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_worker_builtin_tools``,
 ``_last_substitution_model``, ``_model``, ``_resolved_model_id``, ``_session_mcp_cache``,
 ``claude_mode_pinned_notice``.
 
@@ -532,6 +532,31 @@ async def _prepare_claude_side_read_denies(self: ClaudeAcpClient) -> None:
     self._claude_side_read_denies = rules
 
 
+async def _prepare_claude_held_asks(self: ClaudeAcpClient) -> None:
+    """Read the held-limit asks of the Bot behind this session off the loop, before its envelope.
+
+    ``mate_held_rules.claude_ask_rules`` reads the migration ledger and the
+    session's execution record from disk. Any session attributed to a Bot with
+    held limits gets them, its worker's and a helper it spawned alike; empty on
+    every other session.
+    """
+    from kiro_crew import mate_held_rules
+
+    key = getattr(self, "_session_key", None) or ""
+    if not key:
+        self._claude_held_asks = ()
+        self._claude_held_mcp = False
+        return
+    servers: list[str] = [
+        str(e["name"])
+        for e in getattr(self, "_session_mcp_cache", None) or []
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    ]
+    asks = await asyncio.to_thread(mate_held_rules.claude_ask_rules, key, servers)
+    self._claude_held_asks = tuple(asks)
+    self._claude_held_mcp = await asyncio.to_thread(mate_held_rules.claude_holds_mcp, key)
+
+
 def _bridged_server_asks(client: ClaudeAcpClient) -> list[str]:
     """One ``permissions.ask`` rule per Crew-owned Connection this session's array bridges."""
     session_key = getattr(client, "_session_key", None) or ""
@@ -654,6 +679,25 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         # server in the user's own config, the project's ``.mcp.json`` and
         # plugins, once per worker.
         options["strictMcpConfig"] = True
+    if getattr(self, "_claude_held_mcp", False):
+        # The held ``mcp__<server>`` asks name only the servers Crew sends: a
+        # server from the user's own config, the project's or a plugin's, which
+        # an allow rule there may pre-approve, would run unasked beside them.
+        options["strictMcpConfig"] = True
+    # Read off the loop before the envelope is built (_prepare_claude_held_asks).
+    held_asks = getattr(self, "_claude_held_asks", ())
+    if held_asks:
+        # The limits a Bot's file could not carry, on any session attributed to
+        # that Bot: each call they cover must reach the gate, which asks a person,
+        # instead of running unasked.
+        carried_settings = dict(options.get("settings") or {})
+        carried_permissions = dict(carried_settings.get("permissions") or {})
+        ask = list(carried_permissions.get("ask") or [])
+        ask.extend(rule for rule in held_asks if rule not in ask)
+        carried_permissions["ask"] = ask
+        carried_settings["permissions"] = carried_permissions
+        options["settings"] = carried_settings
+        options["allowDangerouslySkipPermissions"] = False
     worker_tools = getattr(self, "_claude_worker_builtin_tools", None)
     if worker_tools is not None:
         # A worker whose crewmate file excludes a native tool keeps only the
@@ -1023,6 +1067,7 @@ async def _retry_after_model_substitution(
     ]
     if self.backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
         new_params["mcpServers"] = await self._prune_unstartable_mcp(new_params["mcpServers"])
+    await self._prepare_claude_held_asks()
     # Rebuilt AFTER the array, from the same re-seed: the envelope carries the
     # setting sources the array was authorized under and the inline settings naming
     # the substitute model.

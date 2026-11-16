@@ -119,6 +119,21 @@ class TestSubagentApprovalHonoursScope:
         assert "subagent.scoped_trust_blocked_low_fidelity_child" in ops
 
     @pytest.mark.asyncio
+    async def test_a_held_bot_limit_blocks_a_trusted_slot_under_its_own_audit_name(
+        self, monkeypatch
+    ) -> None:
+        """A call under a Bot limit its move could not apply is refused auto-approval
+        on a trusted slot, and the audit row names that cause, not a low-fidelity child."""
+        from kiro_crew import mate_held_rules
+
+        monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: ["deny shell"])
+        approved, ops, _log, prompt, _renew = await _decide(_slot(trust=True), scope_live=False)
+        assert approved is False
+        prompt.assert_awaited_once()
+        assert "subagent.bot_limit_held" in ops
+        assert "subagent.scoped_trust_blocked_low_fidelity_child" not in ops
+
+    @pytest.mark.asyncio
     async def test_session_flag_keeps_its_audit_name(self) -> None:
         approved, ops, _log, prompt, _renew = await _decide(_slot(trust=True), scope_live=False)
         assert approved is True
