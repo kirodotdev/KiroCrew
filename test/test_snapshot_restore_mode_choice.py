@@ -188,8 +188,16 @@ class TestHelpNoLongerStatesTheOldDefault:
 
     @pytest.mark.parametrize(
         "relpath",
-        ["docs/system-specs/modules/cli.md", "src/kiro_crew/docs/snapshot-and-restore.md"],
+        [
+            "docs/system-specs/modules/cli.md",
+            "src/kiro_crew/docs/snapshot-and-restore.md",
+        ],
     )
     def test_docs_do_not_state_an_auto_detected_mode(self, relpath):
         text = (Path(__file__).resolve().parents[1] / relpath).read_text(encoding="utf-8")
         assert "auto-detect" not in text.lower().replace("auto-detects the project", "")
+
+    def test_bundled_skill_does_not_state_a_memory_db_based_mode(self):
+        skill = "src/kiro_crew/builtin_skills/kirocrew-commands/SKILL.md"
+        text = (Path(__file__).resolve().parents[1] / skill).read_text(encoding="utf-8")
+        assert "merge when `memory.db` exists" not in text
