@@ -1346,3 +1346,35 @@ async def test_a_kas_resume_that_fails_after_the_load_keeps_the_stored_record(mo
     assert "sid-kept" not in rt._session_queues
     # The scope ends with the load: a later teardown of the id deletes as before.
     assert "sid-kept" not in rt._record_keeping_sessions
+
+
+@pytest.mark.asyncio
+async def test_the_kas_keep_record_reentry_forwards_every_keyword(monkeypatch):
+    """The keep-record scope re-runs ``load_session`` with every keyword it was given.
+
+    The re-entry spells its keywords out by hand, so a keyword added to
+    ``load_session`` is dropped there unless it is added twice. A dropped
+    ``kas_memory_mode`` means a KAS resume states no memory policy and checks
+    none. This compares the call against the signature, so a new keyword the
+    re-entry misses fails here.
+    """
+    import inspect
+
+    from kiro_crew.acp import runtime_session_load as _load
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    # Every parameter after the two positionals; ``harness_state`` stays None so
+    # the call takes the KAS arm rather than the per-session-state one.
+    keywords = list(inspect.signature(_load.load_session).parameters)[3:]
+    keywords.remove("harness_state")
+    assert "kas_memory_mode" in keywords
+    given = {name: object() for name in keywords}
+    reentry = AsyncMock(return_value="handle")
+    monkeypatch.setattr(_load, "load_session", reentry)
+
+    assert await rt.load_session("", "sid-kept", **given) == "handle"
+
+    reentry.assert_awaited_once()
+    forwarded = reentry.await_args.kwargs
+    assert {name: forwarded.get(name) for name in keywords} == given
