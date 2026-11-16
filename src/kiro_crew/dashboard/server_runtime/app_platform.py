@@ -8,7 +8,6 @@ wave, with the App SDK gateway hooks system.
 from __future__ import annotations
 
 import asyncio
-import functools
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -33,44 +32,17 @@ if TYPE_CHECKING:
 
 
 async def _warm_builtin_app_names() -> None:
-    """Warm the PreToolUse gate's first-party (builtin) app-name set from the
-    shipped manifests, ONCE, on the executor (the discovery walk touches the
-    filesystem and must not run on the event loop). The gate's app-own-server
-    auto-approve then does a pure in-memory membership test with zero I/O; an
-    empty set (should this fail) simply fails closed (owns-server calls prompt).
+    """Warm the PreToolUse gate's first-party (builtin) app sets on the executor.
 
-    A former built-in adopted from its pin joins all three sets for the servers
-    ``adopted_app_own_mcp_servers`` keeps, so adoption leaves the grant as it was.
+    The discovery walk touches the filesystem and must not run on the event loop.
+    The gate's app-own-server auto-approve then does a pure in-memory membership
+    test with zero I/O; an empty set (should this fail) fails closed (owns-server
+    calls prompt). ``publish_gate_app_trust`` does the work, and the gateway runs it
+    again after every app lifecycle or trust change, so this is only the first fill.
     """
-    try:
-        from kiro_crew.apps.builtin_adoption_gate import adopted_app_own_mcp_servers
-        from kiro_crew.apps.execution import (
-            builtin_app_agents,
-            builtin_app_mcp_servers,
-            builtin_app_names,
-        )
-        from kiro_crew.hooks import (
-            set_builtin_app_agents,
-            set_builtin_app_mcp_servers,
-            set_builtin_app_names,
-        )
+    from kiro_crew.apps.builtin_adoption_gate import publish_gate_app_trust
 
-        loop = asyncio.get_running_loop()
-        adopted = await loop.run_in_executor(subprocess_executor(), adopted_app_own_mcp_servers)
-        # An app name holds no ":", so the key's first segment is its app.
-        adopted_apps = frozenset(key.partition(":")[0] for key in adopted)
-        names = await loop.run_in_executor(subprocess_executor(), builtin_app_names)
-        set_builtin_app_names(names | adopted_apps)
-        servers = await loop.run_in_executor(subprocess_executor(), builtin_app_mcp_servers)
-        set_builtin_app_mcp_servers(servers | adopted)
-        # Agent → owning app, so a builtin whose UI is not an app iframe
-        # (empty Slot._app) can still auto-approve calls to its OWN server.
-        agents = await loop.run_in_executor(
-            subprocess_executor(), functools.partial(builtin_app_agents, adopted_apps)
-        )
-        set_builtin_app_agents(agents)
-    except Exception:  # noqa: BLE001 — a warm failure only costs an extra prompt
-        logger.warning("Failed to warm builtin app-name set for the gate", exc_info=True)
+    await asyncio.get_running_loop().run_in_executor(subprocess_executor(), publish_gate_app_trust)
 
 
 async def _warm_materialized_agents() -> None:

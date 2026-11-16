@@ -1109,6 +1109,11 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     # Refresh declarations and orphan state after removing installed metadata.
     refresh_app_config_keys()
     invalidate_orphan_cache()
+    # The record moved aside without ``_write_installed``: ask for the same refresh
+    # (hidden chats, the tool gate's own-server sets) an uninstall asks for.
+    from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+    request_hiding_refresh()
 
     logger.info("Cleaned up migrated builtin %s (data and a record backup preserved)", name)
     return AppResult(

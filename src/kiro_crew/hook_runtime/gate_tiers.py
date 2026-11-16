@@ -1084,7 +1084,8 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     that prefix from the MUTABLE global MCP config, so a ``<app>:evil`` entry that
     landed there (not declared by the app) would otherwise be trusted. The server
     must be DECLARED in the app's SHIPPED manifest
-    (``_is_declared_builtin_mcp_server``, an in-memory set warmed at boot from
+    (``_is_declared_builtin_mcp_server``, an in-memory set warmed at boot and after
+    every app lifecycle or trust change from
     immutable manifests, adopted servers re-checked against them, like
     ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
 

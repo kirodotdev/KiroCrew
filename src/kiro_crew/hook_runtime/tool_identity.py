@@ -727,7 +727,8 @@ def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:
 def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
     """Install the set of shipped-manifest-declared ``<app>:<server>`` names.
 
-    Called once at gateway boot with the names from
+    Called at gateway boot, and after every app lifecycle or trust change, with
+    the names from
     ``apps.execution.builtin_app_mcp_servers`` (which enumerates the same
     immutable manifest sources as ``builtin_app_names``) and the adopted servers
     ``apps.builtin_adoption_gate`` keeps (each one a shipped manifest declares,
@@ -744,7 +745,7 @@ def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
     """True when *mcp_server_name* is a server a shipped builtin manifest declares.
 
     Pure in-memory, case-insensitive membership test against
-    ``_BUILTIN_APP_MCP_SERVERS`` (warmed at boot from immutable manifests). The
+    ``_BUILTIN_APP_MCP_SERVERS`` (warmed off the loop from immutable manifests). The
     app-own-server auto-approve requires this in addition to prefix ownership so
     a ``<app>:``-prefixed entry the app never declared (e.g. one injected into
     the mutable global MCP config) cannot win an auto-approval. Fail-closed
@@ -756,7 +757,8 @@ def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
 def set_builtin_app_names(names: Iterable[str]) -> None:
     """Install the set of first-party (builtin) app names for the gate.
 
-    Called once at gateway boot with the names discovered from the shipped
+    Called at gateway boot, and after every app lifecycle or trust change, with the
+    names discovered from the shipped
     manifests (``apps.execution.builtin_app_names``, which enumerates the same
     sources as ``shipped_builtin_app_root`` — core + the active edition) plus each
     former builtin whose adopted record keeps a server
@@ -795,7 +797,8 @@ def _is_first_party_app(app: str) -> bool:
 def set_builtin_app_agents(mapping: "Mapping[str, str]") -> None:
     """Install the agent → owning-builtin-app map for the gate.
 
-    Called once at gateway boot with ``apps.execution.builtin_app_agents()`` —
+    Called beside the two sets (``builtin_adoption_gate.publish_gate_app_trust``)
+    with ``apps.execution.builtin_app_agents()`` —
     derived only from shipped manifests whose install is builtin-owned (or adopted
     with a kept server, ``apps.builtin_adoption_gate``), with
     ambiguous names already dropped. Dependency-inverted like

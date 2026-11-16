@@ -434,6 +434,12 @@ def register_external_app(
             if rollback_errors:
                 detail += f" ({'; '.join(rollback_errors)})"
             return AppResult(ok=False, name=name, error=detail)
+        finally:
+            # A refresh asked for by the first write may read the record before the
+            # manifest (or its rollback) lands; ask once more now both are final.
+            from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+            request_hiding_refresh()
     else:
         # New registration. Ticked Bots that an earlier install under this name left
         # behind go first; if they cannot be removed, nothing is registered.

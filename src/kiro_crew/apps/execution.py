@@ -163,7 +163,7 @@ def builtin_app_names() -> frozenset[str]:
     not a user app that merely shadows a builtin name.
 
     Does filesystem I/O (dir scan + manifest reads + one installed-record read
-    per candidate); callers warm it ONCE off the event loop. A source that fails
+    per candidate); callers run it off the event loop. A source that fails
     to read is skipped, and an unreadable installed record drops just that name
     (fail-closed) — neither ever widens provenance.
     """
@@ -214,10 +214,10 @@ def builtin_app_mcp_servers() -> frozenset[str]:
 
     The keys of :func:`_builtin_app_mcp_server_configs`, the one enumeration
     :func:`builtin_app_host_cli_mcp_launches` also reads, so the two can never
-    disagree on which servers are shipped. Filesystem I/O; callers warm it ONCE
-    off the event loop. A source or manifest that fails to read is skipped
+    disagree on which servers are shipped. Filesystem I/O; callers run it off
+    the event loop. A source or manifest that fails to read is skipped
     (fail-closed), never widening the trusted set. An adopted former builtin's
-    servers are never here: the boot warm adds the ones that keep the gate grant
+    servers are never here: the gate's refresh adds the ones that keep the gate grant
     from ``builtin_adoption_gate``, so the host-CLI launches stay builtin-only.
     """
     return frozenset(_builtin_app_mcp_server_configs())
@@ -328,7 +328,7 @@ def builtin_app_agents(adopted: frozenset[str] = frozenset()) -> dict[str, str]:
     An agent name declared by MORE than one app is dropped entirely rather than
     resolved arbitrarily — ambiguous provenance must not grant either app's
     identity (fail-closed). Filesystem I/O (manifest + one read per declared
-    agent file); callers warm it ONCE off the event loop. A source, manifest, or
+    agent file); callers run it off the event loop. A source, manifest, or
     agent file that fails to read is skipped, never widening the mapping.
     """
     # Deferred import: manager imports this module at load time (see

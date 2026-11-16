@@ -7936,12 +7936,19 @@ and after an adoption.
 
 **The gate's own-server grant through adoption** (`apps/builtin_adoption_gate.py`,
 `adopted_app_own_mcp_servers`). The PreToolUse gate's `app-own-server` grant reads three
-sets the boot warm (`_warm_builtin_app_names`) fills: first-party app names, declared
-`<app>:<server>` names and the agent-to-app map. `execution.builtin_app_names`,
+sets `publish_gate_app_trust` fills: first-party app names, declared `<app>:<server>` names
+and the agent-to-app map. It runs at boot (`_warm_builtin_app_names`), again off the loop
+after every in-process app lifecycle or trust change (the `request_hiding_refresh` fan-in:
+every `installed.json` write, an uninstall, a trust edit), and on each hook reconciler tick
+for a change another process (the CLI) made, so an uninstall, replacement or adoption
+without a restart does not keep a grant read at boot. The refreshes after boot
+(`refresh_gate_app_trust`) run only in a process whose boot warm filled the sets: the
+`--slack-only` gateway runs no reconciler, so its sets stay empty and own-server calls ask
+there. A failed refresh publishes empty sets (calls ask). `execution.builtin_app_names`,
 `builtin_app_mcp_servers` and `builtin_app_agents` keep only builtin-owned records, so on
 their own they would drop an adopted record and its server calls would start asking on a
 governed host (where the `autoApprove` strip removes the local list) and on a harness
-that relies on the gate. The warm therefore adds, for every server
+that relies on the gate. The refresh therefore adds, for every server
 `adopted_app_own_mcp_servers` names, its `<app>:<server>`, its app, and the agents the
 WHEEL manifest declares for that app (`builtin_app_agents(adopted)`). A server is named
 only when all of these hold: the wheel pins the app; the active record is adopted from

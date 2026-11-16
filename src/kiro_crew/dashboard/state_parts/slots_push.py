@@ -336,6 +336,21 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return None
 
 
+def refresh_app_state() -> None:
+    """The refresh an app's lifecycle or trust change asks for, run off the loop.
+
+    The hidden-chat listing first: it clears the queued flag, so a change landing
+    after that point asks again and the gate's sets below never miss it. Then the
+    tool gate's own-server sets, so a removed or replaced app stops being granted
+    without a restart.
+    """
+    from kiro_crew.apps import hidden_sessions
+    from kiro_crew.apps.builtin_adoption_gate import refresh_gate_app_trust
+
+    hidden_sessions.refresh_hiding_apps()
+    refresh_gate_app_trust()
+
+
 def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> None:
     """Record the loop this dashboard is served on, before any request runs.
 
@@ -358,7 +373,7 @@ def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> 
     # Both run from other threads and may outlive the loop: a closed loop takes nothing.
     def _refresh_off_loop() -> None:
         if not loop.is_closed():
-            loop.run_in_executor(None, hidden_sessions.refresh_hiding_apps)
+            loop.run_in_executor(None, refresh_app_state)
 
     def _schedule_refresh() -> None:
         if not loop.is_closed():
