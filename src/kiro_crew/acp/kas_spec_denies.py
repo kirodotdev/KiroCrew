@@ -64,6 +64,23 @@ def _web_fetch_entries(settings: dict[str, Any], field: str, read: Any) -> tuple
     return readable, complete
 
 
+def trusted_past_bound(tools_settings: Any) -> list[tuple[int, str]]:
+    """``(position as written, entry)`` of each distinct ``web_fetch.trusted`` entry
+    past the :data:`_MAX_DENIES` the gate reads, in order, when the bound is all that
+    keeps the list from being read whole: every entry is one :func:`url_literal`
+    reads. ``[]`` otherwise. An entry written twice keeps its first place."""
+    settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
+    entries = settings.get("trusted") if isinstance(settings, dict) else None
+    if not isinstance(entries, list):
+        return []
+    if not all(isinstance(r, str) and url_literal(r) is not None for r in entries):
+        return []
+    placed: dict[str, int] = {}
+    for at, raw in enumerate(entries, 1):
+        placed.setdefault(raw, at)
+    return [(at, raw) for raw, at in list(placed.items())[_MAX_DENIES:]]
+
+
 def _web_fetch_lists(tools_settings: Any) -> tuple[list[str], bool, list[str], bool]:
     """``(blocked, blocked_complete, trusted, trusted_complete)`` of the canonical
     ``web_fetch`` key. ``trusted`` is empty unless ``blocked`` is complete: a grant
@@ -133,11 +150,14 @@ def web_fetch_carried(tools_settings: Any, authored_permissions: Any) -> frozens
     """The ``web_fetch.<key>`` paths Crew's gate applies for *tools_settings*, for the
     session-start notice: ``web_fetch.trusted`` when every blocked and trusted entry
     is readable, the spec's own block does not restrict ``web_fetch`` and the
-    ceiling lets the gate grant it. ``web_fetch.blocked`` is never dropped: a fetch
+    ceiling lets the gate grant it. A trusted list past the bound still counts: the
+    gate grants its first entries, and the notice names the rest
+    (:func:`trusted_past_bound`). ``web_fetch.blocked`` is never dropped: a fetch
     KAS's policy allows skips the gate, so an entry KAS cannot carry still may not
     apply.
     """
     _blocked, complete, trusted, trusted_complete = _web_fetch_lists(tools_settings)
+    trusted_complete = trusted_complete or bool(trusted_past_bound(tools_settings))
     if not (trusted and complete and trusted_complete):
         return frozenset()
     if _authored_web_fetch_restricted(authored_permissions):

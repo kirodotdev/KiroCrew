@@ -276,6 +276,36 @@ def test_the_notice_drops_only_a_trusted_list_the_gate_applies() -> None:
     ]
 
 
+def test_a_trusted_list_past_the_bound_names_only_the_entries_cut() -> None:
+    """The gate grants the first 64 trusted entries, so the notice names each later
+    one by position and text and says the first 64 apply, never the key whole."""
+    from kiro_crew.acp.kas_spec_denies import web_fetch_gate
+    from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
+
+    hosts = [f"https://h{i}\\.example\\.com/x" for i in range(76)]
+
+    def lost(trusted: list[str], key: str = "web_fetch") -> list[str]:
+        return kas_agents.spec_keys_without_carrier(
+            {"toolsSettings": {key: {"trusted": trusted}}}, translates_tools_settings=True
+        )
+
+    assert len(web_fetch_gate({"web_fetch": {"trusted": hosts[:65]}})["webFetchTrusted"]) == 64
+    assert lost(hosts[:65]) == [
+        f"toolsSettings.web_fetch.trusted past the limit: entry 65: {hosts[64]}"
+    ]
+    many = lost([*hosts, hosts[0]], key="webFetch")
+    assert many == [
+        "toolsSettings.webFetch.trusted past the limit: "
+        + "; ".join(f"entry {i + 1}: {hosts[i]}" for i in range(64, 74))
+        + "; and 2 more after entry 74"
+    ]
+    notice = spec_keys_notice("a", lost(hosts[:65]))
+    assert "no effect" not in notice
+    assert f"Its first 64 entries apply. These do not: entry 65: {hosts[64]}." in notice
+    # An entry the gate cannot read still names the key whole.
+    assert lost([*hosts[:65], "https://x\\.com/\\d+"]) == ["toolsSettings.web_fetch.trusted"]
+
+
 _REFUSED = "; every web fetch is refused until this entry is fixed"
 _HOST_ONLY = "(whole-URL rule; KAS checks host only)"
 _REGEX_SYNTAX = "(regex syntax KAS cannot express)"
