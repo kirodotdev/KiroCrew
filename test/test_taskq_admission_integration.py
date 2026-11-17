@@ -95,6 +95,10 @@ _DRAIN_CEILING_SECS = 720.0
 #: assertion report what was left rather than spinning to the ceiling.
 _STALLED_PASSES = 100
 
+#: Submissions in the burst test: four times the 64-row dispatch window, so most
+#: rows wait in the store and enter the window only as earlier ones finish.
+_BURST = 256
+
 
 async def _drain_until_terminal(mgr: SubagentManager, store: TaskStore, *, total: int) -> None:
     """Pump until the STORE says every row is done, waiting on the work itself.
@@ -296,12 +300,12 @@ async def test_window_bounded_and_fifo_across_boundary(quiet) -> None:
 
 @pytest.mark.timeout(900)
 @pytest.mark.asyncio
-async def test_2000_submissions_all_complete_window_never_exceeds_64(quiet) -> None:
-    """2000 rows really are drained to DONE, and the in-memory window never grows.
+async def test_256_submissions_all_complete_window_never_exceeds_64(quiet) -> None:
+    """256 rows, four windows' worth, really are drained to DONE, and the in-memory
+    window never grows past 64.
 
     The only test here that pays the whole burst as real store work, so its wall
-    time is the host's per-row cost: ~18 s of drain on an idle dev Linux box, ~4.4
-    minutes on the same box with its core contended.
+    time is the host's per-row cost times :data:`_BURST`.
 
     Two independent bounds, and which one fires names the failure. A queue that has
     stopped moving returns after :data:`_STALLED_PASSES` idle passes, and the
@@ -332,13 +336,13 @@ async def test_2000_submissions_all_complete_window_never_exceeds_64(quiet) -> N
         await _fake_run(mgr, info)
 
     with patch.object(SubagentManager, "_run", new=run):
-        ids = [mgr.spawn(f"task {i}", parent_session_key="dash:1").id for i in range(2000)]
-        assert len(set(ids)) == 2000
-        assert store.count() == 2000
+        ids = [mgr.spawn(f"task {i}", parent_session_key="dash:1").id for i in range(_BURST)]
+        assert len(set(ids)) == _BURST
+        assert store.count() == _BURST
         assert len(mgr._queue) <= 64
         try:
             await asyncio.wait_for(
-                _drain_until_terminal(mgr, store, total=2000), _DRAIN_CEILING_SECS
+                _drain_until_terminal(mgr, store, total=_BURST), _DRAIN_CEILING_SECS
             )
         except asyncio.TimeoutError as exc:
             # Report the state the ceiling interrupted, in the same terms the
@@ -351,13 +355,13 @@ async def test_2000_submissions_all_complete_window_never_exceeds_64(quiet) -> N
                 f"running={mgr._running_count}"
             ) from exc
     by_state = store.count_by_state()
-    assert by_state == {model.DONE: 2000}, by_state
+    assert by_state == {model.DONE: _BURST}, by_state
     assert peak_window["n"] <= 64
     assert len(mgr._queue) == 0
     assert mgr._running_count == 0
     assert mgr.queued_count_for("dash:1") == 0
     # every id is done exactly once: one terminal transition event each
-    sample = store.events(ids[1234])
+    sample = store.events(ids[200])
     assert [e.kind for e in sample].count("transition") == 2  # starting, done (fake run)
     assert sample[-1].data["to"] == model.DONE
 
