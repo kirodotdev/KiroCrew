@@ -26,6 +26,19 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.browser_harness.budgets import HOLD_TIMEOUT_S, TAKEOVER_IDLE_S
+from kiro_crew.browser_harness.live_hub_wheel import (  # noqa: F401 - live_hub is their import path
+    MOVES_IN_FLIGHT,
+    WHEEL_MIN_GAP_S,
+    WHEEL_SNAP_PX,
+    WHEEL_TAU_S,
+    WHEELS_IN_FLIGHT,
+    _add_turn,
+    _settle,
+    _wheel_curve,
+    _wheel_glide,
+    _wheel_settle,
+    _wheel_target,
+)
 from kiro_crew.browser_harness.screencast import (
     LiveConfig,
     LiveStream,
@@ -78,6 +91,8 @@ MAX_STEPS = 200
 #: waiting for the event in flight plus every release sent. The input lock stays
 #: shut meanwhile, so a slow page delays the agent by this much at most.
 HELD_RELEASE_DEADLINE_S = 2.0
+
+
 #: How many dashboard tabs one session remembers as showing its card.
 VISIBLE_TABS_CAP = 32
 
@@ -204,6 +219,17 @@ class LiveSession:
     #: Held around each forwarded event, so a release waits for the event in
     #: flight before it reads what that event left down.
     input_fence: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: Pointer moves sent to the page and not yet acknowledged (at most
+    #: ``MOVES_IN_FLIGHT``): every other event, and a release, waits for them.
+    moves: list[asyncio.Task[int]] = field(default_factory=list)
+    #: Wheel turns still gliding ``(loop time it came, dx, dy)`` (frame px), how much
+    #: of them is sent ``[dx, dy]``, the latest wheel event the steps go out as, the
+    #: task sending them, and whether the rest goes in one step.
+    wheel_marks: list[tuple[float, int, int]] = field(default_factory=list)
+    wheel_sent: list[int] = field(default_factory=lambda: [0, 0])
+    wheel_at: dict[str, Any] = field(default_factory=dict)
+    wheel_task: asyncio.Task[None] | None = None
+    wheel_now: bool = False
     #: A release of control is sending the held input's releases: the lock is still
     #: shut, but no card event is forwarded and no new release starts.
     releasing: bool = False
@@ -656,6 +682,9 @@ class LiveHub:
         go; past ``HELD_RELEASE_DEADLINE_S`` the remaining releases are dropped.
         """
         async with sess.input_fence:
+            await _settle(sess.moves)
+            sess.moves = []
+            await _wheel_settle(sess, drop=True)
             ups = held.drain()
         if not ups or stream is None or not stream.session_id:
             return
@@ -1213,6 +1242,10 @@ class LiveHub:
         if sess.input_rect is not None and not _inside_scope(parsed, sess.input_rect, scale):
             # A scoped takeover (a human_check): only the widget's box takes input.
             return 0
+        # Before it goes out: a frame the page sends while this event is handled (a
+        # press can take 40 ms) is already one the person is driving (see
+        # ``LiveStream.note_input``).
+        stream.note_input()
         async with sess.input_fence:
             if (
                 sess.releasing
@@ -1222,10 +1255,42 @@ class LiveHub:
             ):
                 # Handed back while this event waited behind the one in flight.
                 raise LookupError("not_in_control")
-            sent = await dispatch_input(
-                stream.relay, stream.session_id, event, scale=scale, held=sess.held
-            )
-        stream.note_input()
+            # This takeover's held input, read once: a hand-back during a wait below
+            # swaps in a fresh one, and a press sent after must land in the one the
+            # hand-back releases.
+            held = sess.held
+            # A move goes out without waiting for the last move's acknowledgement, at
+            # most MOVES_IN_FLIGHT of them (Chrome folds queued moves into one), so a
+            # slow slider handler never holds the newest position back; any other
+            # event waits for them, so a press or key never overtakes a move.
+            if parsed.type == "mouse" and parsed.action == "move":
+                sess.moves = [t for t in sess.moves if not t.done()]
+                if len(sess.moves) >= MOVES_IN_FLIGHT:
+                    await _settle(sess.moves[:1])
+                    sess.moves = sess.moves[1:]
+                task = asyncio.ensure_future(
+                    dispatch_input(stream.relay, stream.session_id, event, scale=scale, held=held)
+                )
+                # A move the page refused is one lost position, read here so it is
+                # never an unretrieved task error.
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
+                sess.moves.append(task)
+                # Its send starts before this returns: the next event's send comes after.
+                await asyncio.sleep(0)
+                sent = 1
+            elif parsed.type == "wheel":
+                # Chrome takes a CDP wheel as one jump, so the turn glides instead: a
+                # share of it each frame (_wheel_glide).
+                await _add_turn(sess, stream, event, parsed.dx, parsed.dy, scale, held)
+                sent = 1
+            else:
+                await _settle(sess.moves)
+                sess.moves = []
+                # A press or key lands where the scroll has finished going.
+                await _wheel_settle(sess)
+                sent = await dispatch_input(
+                    stream.relay, stream.session_id, event, scale=scale, held=held
+                )
         if self.recorder is not None:
             # Validated already (parse_input_event raised otherwise). The recorder keeps
             # no typed text: keystrokes count as characters, never as what was typed.
