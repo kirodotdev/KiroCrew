@@ -8,7 +8,7 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_config_options``, ``_mcp_launches``, ``_mcp_network_servers``,
+Instance fields written: ``_mcp_launches``, ``_mcp_network_servers``,
 ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
@@ -1220,8 +1220,7 @@ def _apply_init_notification(self: AcpSessionHandle, msg: JsonRpcMessage, action
         if isinstance(update, dict) and update.get("sessionUpdate") == "config_option_update":
             cfg = update.get("configOptions")
             if isinstance(cfg, list):
-                self._config_options = cfg
-                self._sync_effort_levels()
+                self.absorb_config_options(cfg)
     elif action == "mcp_oauth_request":
         request = self._accept_oauth_request(msg)
         if request is not None:

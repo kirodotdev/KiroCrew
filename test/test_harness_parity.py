@@ -1537,11 +1537,24 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "own ``model`` select does not list, onto an id that select does list.",
     (
         "src/kiro_crew/acp/session_handle_model_selection.py",
-        "store_session_config",
+        "store_config_options",
     ): "KAS sends no ``models`` object, so its ``model`` select's ``currentValue`` is "
     "the only place it names the model a session runs. It stays out of "
     "``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` because that select is its catalog, "
     "not its advertised list, so only the current value is adopted, and only here.",
+    (
+        "src/kiro_crew/acp/session_handle_model_selection.py",
+        "absorb_config_options",
+    ): "From engine 0.66.117 KAS sends its ``model`` select in a "
+    "``config_option_update`` rather than in ``session/new``, so on KAS that update "
+    "runs the same select reader as the answer. Other backends keep their own "
+    "select in the answer, and the update only replaces their options.",
+    (
+        "src/kiro_crew/acp/session_handle_model_selection.py",
+        "settle_kas_model_select",
+    ): "Only KAS answers ``session/new`` without the ``model`` select it then sends "
+    "separately (engine 0.66.117 and later), so only a KAS start waits for it before "
+    "the served-default check; every other backend's answer already carries its list.",
     (
         "src/kiro_crew/acp/session_handle_compaction.py",
         "_kas_compact_request",
