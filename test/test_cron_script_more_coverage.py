@@ -847,6 +847,11 @@ class TestMcpToolClientStderrTail:
 
 
 class TestMcpToolClientClose:
+    @pytest.fixture(autouse=True)
+    def _posix_stop_path(self, _floor_monkeypatch):
+        # These pin the terminate() shape; the Windows tree stop has its own tests.
+        _floor_monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
+
     def _client(self, mcp_spawn, **proc_kwargs):
         mcp_spawn.proc = _FakeProc(out_lines=[_HANDSHAKE_OK], **proc_kwargs)
         return McpToolClient("kirocrew-core")
