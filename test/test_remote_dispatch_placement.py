@@ -52,6 +52,7 @@ class Crews:
         self.waiting = 0
         self.both_waiting: asyncio.Event | None = None
         self.probe_cancelled = False
+        self.headroom_params: list[Any] = []
 
     def add(self, iid: str, mem: float = 50.0, disk: float = 200.0, **over: Any) -> None:
         room = {"mem_free_gb": mem, "disk_free_gb": disk, "load_per_cpu": 0.2}
@@ -80,6 +81,8 @@ class Crews:
 
     @asynccontextmanager
     async def proxy_request(self, iid, method, path, *, params=None, data=None, content_type=""):
+        if path == "api/chat/headroom":
+            self.headroom_params.append(params)
         if path == "api/chat/headroom" and self.crews[iid].get("stall"):
             try:
                 await asyncio.Event().wait()  # blocks until cancelled by wait_for
@@ -651,6 +654,30 @@ def test_requires_is_never_sent_to_the_peer(recorded, crews, monkeypatch):
 
     _run(crews, 1, body)
     assert sent and all("requires" not in b for b in sent)
+
+
+@pytest.mark.parametrize(
+    "requires, params",
+    [
+        (None, {"logins": "0"}),
+        ({"tags": ["gpu"]}, {"logins": "0"}),
+        ({"logins": ["gh"]}, {"logins": "1"}),
+        ({"tags": ["gpu"], "logins": ["gh"]}, {"logins": "1"}),
+    ],
+)
+def test_the_headroom_read_asks_for_logins_only_when_requires_names_one(
+    recorded, crews, requires, params
+):
+    crews.add("a", headroom=_room(logins={"gh": "valid"}, tags=["gpu"]))
+
+    async def body(state, items):
+        _, name = await _place_with(state, items[0], requires)
+        assert name == "a"
+        if requires:
+            await placement.check_crew_requires(crews, "a", "a", requires)
+
+    _run(crews, 1, body)
+    assert crews.headroom_params and all(p == params for p in crews.headroom_params)
 
 
 def test_an_explicit_crew_is_checked_against_requires(crews):

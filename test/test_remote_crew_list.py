@@ -39,6 +39,7 @@ class Crews:
     def __init__(self) -> None:
         self.crews: dict[str, dict[str, Any]] = {}
         self.paths: list[tuple[str, str]] = []
+        self.params: list[Any] = []
 
     def add(self, iid: str, **over: Any) -> None:
         crew = {
@@ -82,6 +83,7 @@ class Crews:
     @asynccontextmanager
     async def proxy_request(self, iid, method, path, *, params=None, data=None, content_type=""):
         self.paths.append((iid, path))
+        self.params.append(params)
         crew = self.crews[iid]
         if crew.get("stall"):
             raise asyncio.TimeoutError  # the carrier's own read timeout
@@ -133,6 +135,7 @@ def test_a_connected_crew_lists_its_headroom_rosters_and_reservations():
     assert row["agents"] == ["kirocrew-worker", "default"] and row["default_agent"] == "default"
     assert row["models"] == ["claude-opus"]
     assert row["unavailable"] == []
+    assert crews.params == [{"logins": "0"}]  # the roster never waits on login checks
     text = json.dumps(row)
     for leak in ("host.example", "/srv/secret", "/home/secret", '"p"'):
         assert leak not in text
