@@ -349,6 +349,10 @@ export function useChatPageSessionController({
    * they just left. The URL is corrected by the `activeSlot → ?sid` effect below,
    * which replaces (never pushes) on mobile, so the entry ends up naming the
    * session actually on screen at the pre-drawer stack depth.
+   *
+   * Armed before the pop is issued and spent by the POP commit it stands for,
+   * never by a re-run in between: the browser delivers that pop as a later
+   * task, after the pick and its URL replace have both committed.
    */
   const drawerPopRef = useRef(false)
   /** Keys of history entries a session-switch PUSH created or left behind — the
@@ -804,7 +808,16 @@ export function useChatPageSessionController({
     // from createSlot.fulfilled in this same commit. Replacing only this popped
     // entry also preserves the one-entry drawer invariant: the duplicate is gone,
     // and the surviving history entry names the session actually on screen.
-    if (drawerPopRef.current) {
+    //
+    // Spent only by the POP commit itself: a new entry key arriving as 'POP'.
+    // The browser delivers the drawer's `navigate(-1)` as a later task, so this
+    // effect re-runs before the pop lands, on the pick's own `activeSlot` change
+    // and on the REPLACE the sync effect below writes onto the drawer's entry.
+    // Spending the claim on either of those reads the real pop as the user's
+    // Back onto the entry under the drawer's, which still names the outgoing
+    // session, and a wide-layout switch may have pushed that entry, so the
+    // phone layout would honour it.
+    if (drawerPopRef.current && navigationType === 'POP' && locationKey !== lastLocKeyRef.current) {
       drawerPopRef.current = false
       lastLocKeyRef.current = locationKey
       popInFlightRef.current = false
