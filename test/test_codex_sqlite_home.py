@@ -348,10 +348,10 @@ async def test_background_spawn_env_sets_codex_config_with_servers(codex_spawn_s
         encoding="utf-8",
     )
     harness = harness_for(ACP_BACKEND_CODEX)
-    # populates self._bg_codex_config
+    # records the helper spawn apply_spawn_env reads
     await harness.resolve_spawn(_bg_ctx(tmp_path, {"CODEX_HOME": str(codex_home)}))
 
-    env: dict[str, str] = {}
+    env: dict[str, str] = {"CODEX_HOME": str(codex_home)}
     harness.apply_spawn_env(env)
 
     assert "CODEX_CONFIG" in env
@@ -371,7 +371,7 @@ async def test_background_spawn_env_does_not_overwrite_existing_codex_config(
     harness = harness_for(ACP_BACKEND_CODEX)
     await harness.resolve_spawn(_bg_ctx(tmp_path, {"CODEX_HOME": str(codex_home)}))
 
-    env: dict[str, str] = {"CODEX_CONFIG": '{"model":"custom"}'}
+    env: dict[str, str] = {"CODEX_HOME": str(codex_home), "CODEX_CONFIG": '{"model":"custom"}'}
     with caplog.at_level(logging.WARNING, logger=codex_mod.logger.name):
         harness.apply_spawn_env(env)
 
@@ -390,6 +390,110 @@ async def test_foreground_apply_spawn_env_does_not_set_codex_config(codex_spawn_
     harness = harness_for(ACP_BACKEND_CODEX)
     await harness.resolve_spawn(ctx)  # agent="a", not background
 
-    env: dict[str, str] = {}
+    env: dict[str, str] = {"CODEX_HOME": str(codex_home)}
     harness.apply_spawn_env(env)
     assert "CODEX_CONFIG" not in env
+
+
+# ── A tool-less helper gets the same override, over the project layers too ──
+
+_TOOLLESS_SPEC = {
+    "name": "helper",
+    "prompt": "p",
+    "tools": [],
+    "allowedTools": [],
+    "mcpServers": {},
+    "includeMcpJson": False,
+}
+
+
+def _helper_layout(tmp_path: Path, spec: dict) -> tuple[Path, Path]:
+    """A user config.toml and project .codex/config.toml layers, each with one
+    server, and *spec* as the checkout's own agent ``helper`` (a project-only
+    spec, so its ``includeMcpJson`` must survive the read). Returns (codex home,
+    work dir)."""
+    work = tmp_path / "repo" / "sub"
+    (work / ".kiro" / "agents").mkdir(parents=True)
+    (work / ".kiro" / "agents" / "helper.json").write_text(json.dumps(spec), encoding="utf-8")
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.user_srv]\ncommand='npx'\n", encoding="utf-8"
+    )
+    (work / ".codex").mkdir()
+    (tmp_path / "repo" / ".git").mkdir()
+    (tmp_path / "repo" / ".codex").mkdir()
+    (tmp_path / "repo" / ".codex" / "config.toml").write_text(
+        "[mcp_servers.root_srv]\nurl='https://example.invalid/mcp'\n", encoding="utf-8"
+    )
+    (work / ".codex" / "config.toml").write_text(
+        "[mcp_servers.project_srv]\ncommand='python'\n", encoding="utf-8"
+    )
+    return codex_home, work
+
+
+async def _helper_spawn_env(codex_home: Path, work: Path, tmp_path: Path) -> dict[str, str]:
+    harness = harness_for(ACP_BACKEND_CODEX)
+    await harness.resolve_spawn(
+        SpawnContext(
+            agent="helper",
+            work_dir=str(work),
+            model=None,
+            environ={"CODEX_HOME": str(codex_home)},
+            home=tmp_path,
+        )
+    )
+    env: dict[str, str] = {"CODEX_HOME": str(codex_home)}
+    harness.apply_spawn_env(env)
+    return env
+
+
+@pytest.mark.asyncio
+async def test_a_toolless_helper_disables_user_and_project_servers(codex_spawn_stubbed, tmp_path):
+    """A spec that mounts nothing starts none of the user's or the project's servers."""
+    codex_home, work = _helper_layout(tmp_path, _TOOLLESS_SPEC)
+    env = await _helper_spawn_env(codex_home, work, tmp_path)
+
+    servers = json.loads(env["CODEX_CONFIG"])["mcp_servers"]
+    assert list(servers) == ["user_srv", "root_srv", "project_srv"]
+    assert all(entry["enabled"] is False for entry in servers.values())
+    assert "url" in servers["root_srv"] and "command" in servers["project_srv"]
+
+
+@pytest.mark.asyncio
+async def test_a_spec_that_mounts_anything_keeps_the_operators_servers(
+    codex_spawn_stubbed, tmp_path
+):
+    """A normal chat's spec (it grants tools) gets no override, so its servers stay."""
+    codex_home, work = _helper_layout(tmp_path, {**_TOOLLESS_SPEC, "tools": ["*"]})
+    env = await _helper_spawn_env(codex_home, work, tmp_path)
+    assert "CODEX_CONFIG" not in env
+
+
+def test_project_layers_stop_at_the_git_root(tmp_path):
+    """Root first, down to the cwd; with no .git above, the cwd's file alone."""
+    from kiro_crew.acp.harness.codex import _codex_project_config_files
+
+    work = tmp_path / "repo" / "a" / "b"
+    work.mkdir(parents=True)
+    assert _codex_project_config_files(work) == [work / ".codex" / "config.toml"]
+    (tmp_path / "repo" / ".git").mkdir()
+    assert _codex_project_config_files(work) == [
+        tmp_path / "repo" / ".codex" / "config.toml",
+        tmp_path / "repo" / "a" / ".codex" / "config.toml",
+        work / ".codex" / "config.toml",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_helper_reads_the_codex_home_its_child_gets(codex_spawn_stubbed, tmp_path):
+    """A CODEX_HOME that only agent.env or the runtime's extra_env sets (a cron job's
+    env) reaches apply_spawn_env's env, not the spawn context, and is the one read."""
+    codex_home, work = _helper_layout(tmp_path, _TOOLLESS_SPEC)
+    harness = harness_for(ACP_BACKEND_CODEX)
+    await harness.resolve_spawn(
+        SpawnContext(agent="helper", work_dir=str(work), model=None, environ={}, home=tmp_path)
+    )
+    env: dict[str, str] = {"CODEX_HOME": str(codex_home)}
+    harness.apply_spawn_env(env)
+    assert "user_srv" in json.loads(env["CODEX_CONFIG"])["mcp_servers"]
