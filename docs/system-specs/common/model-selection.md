@@ -805,6 +805,19 @@ its own once the cache refreshes with a list that carries it.
   the account later stops serving is withheld at session start like any inherited
   default. It never re-purposes `decisions.model_route`, whose tiers are the Auto
   router's.
+- **Pick a model for one agent template** through `templates.<name>.model`, keyed
+  by the template's name. Empty or `auto` inherits the template's own pin, so a
+  template nobody picked for resolves exactly as it would without the setting. It
+  is the template tier of `config.loader.resolve_effective_model`
+  (`_template_model`): above the template file's pin, below a crew's own pin and
+  the session's own pick, and above `apps.<name>.model` and the global default. It
+  reaches every session that launches the template, a template session and a
+  crew bound to it that pins nothing alike, and the provider factory's fallback
+  (`acp_effective_model`) reads it before the template pin. It is a model setting
+  only: a template session still takes no field, model included, from a crew row
+  that shares the template's name or from the `default` row. A pick the active
+  harness cannot claim defers to the template pin, as every tier does. No
+  dashboard control writes it yet; it is set in `config.json`.
 - **Entitlement checks** always use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` together with
   `advertised_model_ids(...)`. It is one predicate on purpose: two spellings of "can
