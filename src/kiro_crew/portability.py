@@ -107,6 +107,7 @@ from kiro_crew.portability_templates import (
     MAX_TEMPLATE_NAME_CHARS,
     MAX_TEMPLATE_WARNINGS,
     _install_agent_templates,
+    _picked_template_names,
     bundled_agent_templates,
     crew_template_refs,
     is_agent_template_stem,
@@ -117,6 +118,7 @@ from kiro_crew.portability_templates import (
 )
 from kiro_crew.portability_vetting import (
     _disable_imported_script_hooks,
+    _hold_back_foreign_skills,
     _read_manifest_bytes,
     _sanitize_imported_crons,
     _strip_host_local_store_state,
@@ -132,6 +134,7 @@ from kiro_crew.snapshot import (
     _copy_notifications,
     _copy_tree_no_overwrite,
     _core_file_not_installed,
+    _cron_names,
     _do_replace,
     _install_core_file_if_absent,
     _is_host_local,
@@ -766,6 +769,8 @@ def apply_import_zip(
     memory_only: bool = False,
     agent_templates: tuple[str, ...] = (),
     folder_merge: FolderMerge | None = None,
+    include_crons: bool = False,
+    include_skills: bool = False,
 ) -> dict:
     """Extract and apply an import zip.
 
@@ -792,6 +797,12 @@ def apply_import_zip(
         folder_merge: the running gateway's chat-folder store, which adds the
             archive's folders it lacks so its in-memory copy does not write them
             away. ``None`` (no gateway in this process) writes ``folders.json``.
+        include_crons: install the archive's cron jobs as written. Off, the default,
+            every job is restored paused and loses its approval mode, project folder,
+            environment, channel, model and agent order (``paused_crons`` names them).
+        include_skills: a Replace installs the archive's ``skills/`` tree over a live
+            one. Off, the default, a live skills folder with content is kept and
+            ``skills_kept`` is True; a machine with none takes the archive's.
 
     Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
     browser-preference backup was installed, which tells the dashboard to re-read it.
@@ -940,13 +951,27 @@ def apply_import_zip(
         # auth bypass required (CWE-502, CWE-862). Apply the identical guard here
         # and drop any job that fails, so a mostly-benign backup still restores
         # its safe jobs instead of the whole import aborting.
-        dropped_crons, paused_crons = _sanitize_imported_crons(snap / "crons.json")
+        # A merge skips a job whose name this install already has, so those names are
+        # neither restored nor paused and must not be reported as either. An agent
+        # this same import installs from a picked template is an agent that exists.
+        live_cron_names = _cron_names(mc / "crons.json") if mode == "merge" else set()
+        dropped_crons, paused_crons = _sanitize_imported_crons(
+            snap / "crons.json",
+            hold_all=not include_crons,
+            extra_agents=_picked_template_names(zip_path, agent_templates),
+        )
+        paused_crons = [name for name in paused_crons if name not in live_cron_names]
         if dropped_crons:
             summary["rejected_crons"] = dropped_crons
         # Reported separately: these are restored in full and only need switching
         # on, so calling them "rejected" would tell the user their jobs are gone.
         if paused_crons:
             summary["paused_crons"] = paused_crons
+            # Tells the dashboard which sentence is true: with the crons not picked the
+            # record fields were reset; with them picked, only a command or script job
+            # was paused and its record is as the archive wrote it.
+            if not include_crons:
+                summary["paused_crons_reset"] = True
         # Script hooks get the same treatment as command/script crons: they run a
         # shell command on their own when their event fires, so they arrive off.
         disabled_hooks = _disable_imported_script_hooks(snap / "hooks.json")
@@ -999,6 +1024,8 @@ def apply_import_zip(
                 platform_compat.unlink_link_or_junction(auto_dir)
             elif auto_dir.is_dir():
                 shutil.rmtree(str(auto_dir))
+            if not include_skills and _hold_back_foreign_skills(snap, mc, allow_unpinned=True):
+                summary["skills_kept"] = True
             # A platform that cannot pin refuses this staging pass, and the refusal
             # propagates: a returned summary reads as success, so catching it would show
             # "Import complete" over a data home nothing was written to.
@@ -1285,9 +1312,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _vet_bundled_template,
     )
     from kiro_crew.portability_vetting import (  # noqa: F401
+        _FOREIGN_JOB_FIELDS,
         _UNREADABLE_STORE,
+        _has_user_skills,
+        _installed_agent_names,
         _publish_staged_cron_store,
         _read_staged_cron_store,
         _read_staged_store_bytes,
+        _remove_staged_skills,
         _sanitize_cron_text,
     )

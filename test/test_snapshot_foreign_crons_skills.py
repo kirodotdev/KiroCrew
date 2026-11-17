@@ -163,3 +163,14 @@ def test_replace_installs_the_skills_tree_when_picked(tmp_path, monkeypatch, cap
     assert (home / "skills" / "foreign" / "SKILL.md").read_text(encoding="utf-8") == "foreign skill"
     assert not mine.exists()
     assert "Kept your live skills" not in capsys.readouterr().out
+
+
+def test_replace_installs_the_skills_tree_on_a_machine_with_no_live_skills(
+    tmp_path, monkeypatch, capsys
+):
+    home = tmp_path / "home"
+
+    assert _restore(_skills_bundle(tmp_path), home, monkeypatch, "--mode", "replace") == 0
+
+    assert (home / "skills" / "foreign" / "SKILL.md").is_file()
+    assert "Kept your live skills" not in capsys.readouterr().out

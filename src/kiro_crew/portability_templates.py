@@ -301,6 +301,34 @@ def _archive_agent_templates(
     return found, len(past_cap), past_cap & want
 
 
+def _picked_template_names(zip_path: Path, picked: Iterable[str]) -> frozenset[str]:
+    """The names an import's picked templates will be known by: each stem and each
+    declared ``name``.
+
+    A cron may select an agent by either, and a template whose declared name differs
+    from its file stem installs under both. A member that cannot be read or parsed
+    contributes its stem only; this feeds a lookup and never refuses.
+    """
+    want = frozenset(picked)
+    names = set(want)
+    if not want:
+        return frozenset()
+    try:
+        with zipfile.ZipFile(str(zip_path), "r") as zf:
+            found, _more, _beyond = _archive_agent_templates(zf, want)
+            for stem in want & found.keys():
+                info = found[stem]
+                if info.file_size > MAX_AGENT_TEMPLATE_BYTES:
+                    continue
+                with contextlib.suppress(*_UNREADABLE_MEMBER):
+                    data = json.loads(strip_utf8_bom(zf.read(info).decode("utf-8")))
+                    if isinstance(data, dict) and isinstance(data.get("name"), str):
+                        names.add(data["name"])
+    except (OSError, zipfile.BadZipFile):
+        pass
+    return frozenset(names)
+
+
 def _installed_template_names() -> set[str]:
     """Every template name an import must not write over: each file stem in the
     agents directory (parseable or not), each declared ``name``, and the templates

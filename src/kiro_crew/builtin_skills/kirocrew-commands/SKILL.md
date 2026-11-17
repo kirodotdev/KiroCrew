@@ -528,6 +528,8 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew restore --components memory,crons` | Restore specific components only |
 | `kirocrew restore --list-components` | List restorable components |
 | `kirocrew restore --force` | Restore even if gateway is running |
+| `kirocrew restore --include-crons` | Install the bundle's cron jobs as written; a job that runs a command or script is still restored paused. Without it every job is restored paused, with its approval mode, project folder, environment, channel, model and agent order reset |
+| `kirocrew restore --mode replace --include-skills` | Install the bundle's skills over a live skills folder. Without it the live skills are kept |
 
 ## Slack Commands
 
