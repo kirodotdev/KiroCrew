@@ -101,6 +101,27 @@ class TestRecentPipelines(unittest.TestCase):
         self.assertEqual((out[0]["branch"], out[0]["pull_requests"]), (None, [17]))
         self.assertEqual((out[1]["branch"], out[1]["pull_requests"]), ("feature", []))
 
+    def test_only_a_well_formed_mr_ref_names_an_mr(self) -> None:
+        named = {
+            "refs/merge-requests/3/merge": [3],
+            "refs/merge-requests/9999999999/train": [9999999999],
+        }
+        not_named = [
+            "refs/merge-requests/0/head",
+            "refs/merge-requests/07/head",
+            "refs/merge-requests/12345678901/head",
+            "refs/merge-requests/17/other",
+            "refs/merge-requests/17",
+            "refs/merge-requests/17/head/extra",
+            "refs/merge-requests//head",
+            "refs/merge-requests/\u0661\u0662/head",
+            "x/refs/merge-requests/17/head",
+        ]
+        refs = [*named, *not_named]
+        out, _ = _gitlab_rows([_pipeline(id=i + 1, ref=r) for i, r in enumerate(refs)])
+        got = {r: row["pull_requests"] for r, row in zip(refs, out)}
+        self.assertEqual(got, {**named, **{r: [] for r in not_named}})
+
     def test_name_url_and_duration(self) -> None:
         out, _ = _gitlab_rows(
             [_pipeline(id=1), _pipeline(id=2, name="nightly", duration=95), _pipeline(id=3)]

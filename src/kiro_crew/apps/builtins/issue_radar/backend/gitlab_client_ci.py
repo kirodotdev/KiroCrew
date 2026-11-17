@@ -14,8 +14,6 @@ forges with one component.
 
 from __future__ import annotations
 
-import re
-
 from . import gitlab_normalization as _normalization
 from .github_client_ci import (
     _CI_NAME_MAX_CHARS,
@@ -28,7 +26,21 @@ from .github_normalization import parse_gh_timestamp
 
 # A merge-request pipeline runs on GitLab's own MR ref rather than a branch, and the
 # ref names the MR, so its iid comes free with the list row: no per-row call.
-_MR_REF_RE = re.compile(r"^refs/merge-requests/([1-9][0-9]{0,9})/(?:head|merge|train)$")
+_MR_REF_PREFIX = "refs/merge-requests/"
+_MR_REF_SUFFIXES = ("head", "merge", "train")
+
+
+def _mr_iid(ref: str) -> int | None:
+    """The MR iid in ``refs/merge-requests/<iid>/{head,merge,train}``, else None."""
+    if not ref.startswith(_MR_REF_PREFIX):
+        return None
+    iid, sep, tail = ref[len(_MR_REF_PREFIX) :].partition("/")
+    if not sep or tail not in _MR_REF_SUFFIXES:
+        return None
+    if not (iid.isascii() and iid.isdigit()) or len(iid) > 10 or iid[0] == "0":
+        return None
+    return int(iid)
+
 
 # GitLab's in-flight pipeline statuses in GitHub's vocabulary. A running pipeline, and
 # one still stopping its jobs (``canceling``), is GitHub's ``in_progress``; every
@@ -68,7 +80,7 @@ def list_recent_workflow_runs(
         if norm is None:
             continue
         ref = row.get("ref") if isinstance(row.get("ref"), str) else None
-        mr = _MR_REF_RE.match(ref or "")
+        mr = _mr_iid(ref or "")
         status = norm["status"]
         if status != "completed":
             status = _IN_FLIGHT_STATUS.get(status, "queued")
@@ -80,7 +92,7 @@ def list_recent_workflow_runs(
                 "conclusion": _bounded_str(norm["conclusion"], _CI_TOKEN_MAX_CHARS),
                 "url": _bounded_str(norm["url"], _CI_URL_MAX_CHARS),
                 "branch": None if mr else _bounded_str(ref, _CI_NAME_MAX_CHARS),
-                "pull_requests": [int(mr.group(1))] if mr else [],
+                "pull_requests": [mr] if mr else [],
                 "created_at": _bounded_str(row.get("created_at"), _CI_TOKEN_MAX_CHARS),
                 "started_at": _bounded_str(row.get("started_at"), _CI_TOKEN_MAX_CHARS),
                 "updated_at": _bounded_str(row.get("updated_at"), _CI_TOKEN_MAX_CHARS),
