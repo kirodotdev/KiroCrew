@@ -157,6 +157,9 @@ def test_wizard_refuses_a_relative_answer(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.chdir(tmp_path)
     ws_file = tmp_path / "cfg" / "workspace_dir"
     monkeypatch.setattr("kiro_crew.cli_setup._workspace_dir_file", lambda: ws_file)
+    # Off a terminal the refused answer is not asked again (see _setup_workspace_dir).
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     with patch("builtins.input", return_value="relative-ws"):
         _setup_workspace_dir()
 

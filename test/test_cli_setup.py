@@ -7,6 +7,7 @@ for, and which messaging channels ``setup`` configures.
 """
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -56,6 +57,28 @@ class TestSetupWorkspaceDir:
             _setup_workspace_dir()
         output = capsys.readouterr().out
         assert "Default:" in output
+
+    @pytest.mark.parametrize("interactive", [True, False])
+    def test_refused_answer_keeps_the_configured_folder(
+        self, tmp_path, monkeypatch, capsys, interactive
+    ):
+        configured = tmp_path / "kc-quoted"
+        ws_file = tmp_path / "workspace_dir"
+        ws_file.write_text(f"{configured}\n")
+        monkeypatch.setattr("kiro_crew.cli_setup._workspace_dir_file", lambda: ws_file)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: interactive, raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: interactive, raising=False)
+        with patch("builtins.input", side_effect=["work", ""]) as mock_input:
+            from kiro_crew.cli_setup import _setup_workspace_dir
+
+            _setup_workspace_dir()
+        output = capsys.readouterr().out
+        assert "Cannot create work: not an absolute path" in output
+        assert "platform default" not in output
+        assert mock_input.call_count == (2 if interactive else 1)
+        if not interactive:
+            assert f"Keeping the configured folder: {configured}" in output
+        assert ws_file.read_text().strip() == str(configured)
 
 
 class TestSetupTimezone:
