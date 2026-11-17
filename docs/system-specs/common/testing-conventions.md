@@ -921,6 +921,50 @@ over budget.
   `a-ratchet-may-only-tighten`). A deliberate pin, such as a frozen snapshot no later
   change edits, carries `# flake-ok: <reason>`.
 
+### Forwarding calls: a keyword added on one side, a re-call added on the other
+
+The same no-merge-queue gap breaks product code, not only counts. A function that
+re-calls itself or a sibling with its own parameters spelled out by hand has to be
+edited twice when the callee grows a keyword. On 2026-11-16 one change added such a
+re-call of `load_session` (#37955) and another added `kas_memory_mode` to
+`load_session` (#36872). Each was green on its base, git merged them cleanly, and the
+merged re-call dropped the new keyword (fixed in #38108). `create_session` had the
+same drop for `member_context` (#38105).
+
+```python
+# WRONG: every keyword spelled by hand; a keyword added to load_session later is
+# silently dropped on this path unless someone also edits this call.
+async def load_session(self, session_file, resume_sid, *, cwd=None, channel_id="",
+                       kas_memory_mode=None, focus_resume=False, harness_state=None):
+    with self.keep_record_on_teardown(resume_sid):
+        return await load_session(self, session_file, resume_sid, cwd=cwd,
+                                  channel_id=channel_id, focus_resume=focus_resume,
+                                  harness_state=harness_state)
+
+# RIGHT: pass every keyword both sides accept (kas_memory_mode=kas_memory_mode),
+# and pin it with a test that compares the call with the callee's signature
+# (test_the_kas_keep_record_reentry_forwards_every_keyword).
+```
+
+- **Pass every parameter the caller and the callee share.** When the call leaves one
+  out on purpose, say why in a comment at the call.
+- **Pin a re-entry against the signature.** A test that builds the keyword set from
+  `inspect.signature(callee)` and asserts the call forwards each one fails on the
+  change that adds a keyword, whichever change lands second.
+- **Enforced by `test/test_forwarding_calls_forward_every_keyword.py`.** It scans
+  every non-test Python file (`test/forwarding_call_scan.py`). A call counts as
+  forwarding when it passes at least three of the caller's parameters as `x=x` and
+  binds at least half of the callee's parameters; it fails when the callee accepts a
+  parameter the caller also accepts and the call does not pass it. A callee that only
+  takes `**kwargs` and hands them on is followed to the function it calls. A
+  deliberate drop is one row in `_ALLOWED_DROPS`, keyed `(file, caller, callee,
+  parameter)` with its reason, so two changes that each add one edit different lines.
+  A row that matches nothing fails, so the table cannot rot. A known bug whose fix is
+  open goes in `_OPEN_BUGS`, which is not stale-checked, so the fix and the table can
+  land in either order. It resolves callees by name and skips a name whose definitions
+  disagree, so a call through a differently named alias is not seen. It costs 6 to
+  8 s, because it parses single defs, not whole files (see the module docstring).
+
 ### Channel wire fakes: borrow the library's read side, do not model it
 
 `kiro_crew.testing.fake_channel_wire` fakes a channel's `aiohttp` session one layer
