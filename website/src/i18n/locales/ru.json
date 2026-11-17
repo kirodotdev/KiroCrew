@@ -9419,6 +9419,7 @@
       "file_status_removed": "Удалён",
       "file_status_renamed": "Переименован",
       "file_status_unchanged": "Без изменений",
+      "file_symlink": "Символическая ссылка",
       "files_changed_few": "{{count}} изменённых файла",
       "files_changed_many": "{{count}} изменённых файлов",
       "files_changed_one": "{{count}} изменённый файл",

@@ -9198,6 +9198,7 @@
       "file_status_removed": "Eliminado",
       "file_status_renamed": "Renombrado",
       "file_status_unchanged": "Sin cambios",
+      "file_symlink": "Enlace simbólico",
       "files_changed_many": "{{count}} archivos modificados",
       "files_changed_one": "{{count}} archivo modificado",
       "files_changed_other": "{{count}} archivos modificados",

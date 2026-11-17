@@ -8756,6 +8756,7 @@
       "file_status_removed": "已删除",
       "file_status_renamed": "已重命名",
       "file_status_unchanged": "未更改",
+      "file_symlink": "符号链接",
       "files_changed_other": "{{count}} 个文件已更改",
       "github_cli_login_required": "需要登录 GitHub CLI",
       "github_merges_this_pull_request_automatically_on": "必需的检查和审查通过后，GitHub 会自动合并此拉取请求",
