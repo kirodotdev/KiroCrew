@@ -55,6 +55,7 @@ from typing import Any
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
 from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
+from kiro_crew.member_folder import open_member_folder
 
 logger = logging.getLogger(__name__)
 
@@ -256,12 +257,18 @@ def claim_greeting_marker(slug: str, slot_key: str) -> bool:
     processes, so exactly one caller ever sees True. Blocking IO; call it off
     the event loop.
     """
-    path = greeting_marker_path(slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
+    with open_member_folder(slug) as folder:
+        try:
+            fd = os.open(
+                folder.leaf(GREETING_MARKER_FILENAME),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=folder.fd,
+            )
+        except FileExistsError:
+            # A link at the marker is refused, not read as "already claimed".
+            folder.refuse_link(GREETING_MARKER_FILENAME)
+            return False
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"slot_key": slot_key, "ts": time.time()}, fh)
     return True
