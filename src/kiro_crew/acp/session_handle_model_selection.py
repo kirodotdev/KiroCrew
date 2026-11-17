@@ -209,6 +209,21 @@ def model_select_envelope(resp: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def select_lists_only_its_current_model(select: dict[str, Any]) -> bool:
+    """Whether a :func:`model_select_envelope` names one model, the one its session runs.
+
+    KAS answers ``session/load`` this way from kiro-cli 3.4 (measured on 3.4.1):
+    ``session/new`` lists every model the account is served, a reload of the same
+    session lists only its current one, and the engine still accepts a
+    ``session/set_config_option`` for a model outside it. Such a select says what
+    the session runs, not what the account is served, so it is neither the list a
+    pin is judged against nor the account's catalog. An ``auto``-only select is not
+    this shape: a ``session/new`` answers it too, and it keeps its own rules.
+    """
+    ids = [m.get("modelId") for m in select.get("availableModels", [])]
+    return len(ids) == 1 and ids[0] != DEFAULT_MODEL and ids[0] == select.get("currentModelId")
+
+
 def session_models_envelope(resp: dict[str, Any], backend: str) -> Any:
     """The ``models`` payload of a session response, with the select folded in.
 
@@ -682,9 +697,14 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         self._kas_auto_fallback = (
             pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
         )
-        # A response without a select (some ``session/load`` answers) keeps the
-        # list an earlier response gave.
-        if self._runtime.acp_backend == ACP_BACKEND_KAS and ids:
+        # A response without a select (some ``session/load`` answers), or with one
+        # naming only the session's current model (a KAS ``session/load``), keeps
+        # the list an earlier response gave.
+        if (
+            self._runtime.acp_backend == ACP_BACKEND_KAS
+            and ids
+            and not select_lists_only_its_current_model(select)
+        ):
             self._kas_served_ids = ids
         # KAS sends no ``models`` object, so the select's ``currentValue`` is
         # the only place it says which model the session runs (``auto`` on a
