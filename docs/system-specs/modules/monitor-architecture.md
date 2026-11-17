@@ -1255,8 +1255,11 @@ The limits a registrant must design for:
   port, query or fragment) do not run for a contributed parser, so it must pin
   its own host or the core will probe whatever address it returns.
 - Owner credentials follow the built-in rule: never from a channel-created
-  monitor, and from a dashboard one only through the recorded grant. The shadow
-  path, which has no such gate, is refused to a contributed kind.
+  monitor, and from a dashboard directive only when the authenticated owner
+  started that turn. Non-owner dashboard users and unattended turns receive no
+  grant. A later owner-started update can rebind only an exact grant the monitor
+  already held. The shadow path, which has no such gate, is refused to a
+  contributed kind.
 - The dashboard prefers the gateway's runtime kind vocabulary over the
   checked-in contract snapshot. `monitor_frontend_contract()` lists the live
   kinds -- built-ins plus every contributed one -- and the gateway serves it at

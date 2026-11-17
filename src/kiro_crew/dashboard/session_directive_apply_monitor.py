@@ -384,6 +384,7 @@ async def _monitor_watch(
     slot: Any = None,
     self_arm_ok: bool = False,
     producer_is_channel: bool,
+    grant_owner_provider_credentials: bool = False,
 ) -> str:
     from kiro_crew.autonudge import get_instance
     from kiro_crew.autonudge_authz import authorize_and_add_nudge
@@ -437,6 +438,7 @@ async def _monitor_watch(
             if producer_is_channel
             else MonitorCreationSurface.DASHBOARD
         ),
+        grant_owner_provider_credentials=grant_owner_provider_credentials,
     )
     if error is not None:
         raise _DirectiveDenied(f"Failed to start structured monitor: {error} [status {status}]")
@@ -465,6 +467,7 @@ async def _monitor_update(
     self_arm_ok: bool = False,
     allow_rearm: bool = True,
     producer_is_channel: bool = False,
+    grant_owner_provider_credentials: bool = False,
 ) -> str:
     from kiro_crew.autonudge import get_instance, is_structured_monitor_loop
     from kiro_crew.autonudge_authz import (
@@ -523,6 +526,7 @@ async def _monitor_update(
             patch,
             initiator=binding if self_arm_ok else "",
             producer_is_channel=producer_is_channel,
+            grant_owner_provider_credentials=grant_owner_provider_credentials,
         )
     structured_only = sorted(
         set(patch)
@@ -806,6 +810,7 @@ async def _structured_monitor_update(
     *,
     initiator: str = "",
     producer_is_channel: bool = False,
+    grant_owner_provider_credentials: bool = False,
 ) -> str:
     from kiro_crew.autonudge_authz import authorize_and_update_monitor
     from kiro_crew.dashboard.handlers.source_providers import ensure_gitlab_hosts_loaded
@@ -882,6 +887,7 @@ async def _structured_monitor_update(
         # loop's key echoed back, which would make the self-arm test trivially
         # true at this site. The authorizer compares it against the loop's slot.
         initiator_slot_key=initiator,
+        grant_owner_provider_credentials=grant_owner_provider_credentials,
     )
     if error is not None:
         raise _DirectiveDenied(f"Failed to update structured monitor: {error}")

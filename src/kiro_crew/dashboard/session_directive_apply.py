@@ -302,6 +302,11 @@ async def apply_session_directive_outcome(
     # ``reset_conversation`` admits a wake only through
     # ``_refuse_unvouched_wake_reset``.
     self_arm_ok = bool(producer_is_user_facing or producer_is_self_wake)
+    grant_owner_provider_credentials = bool(
+        producer_is_user_facing
+        and not producer_is_channel
+        and getattr(slot, "_turn_owner_sent", False) is True
+    )
     try:
         if producer_is_self_wake and kind in _ARMING_DIRECTIVES:
             _refuse_stale_wake_arm(session_key, producer_wake_loop_id)
@@ -331,6 +336,7 @@ async def apply_session_directive_outcome(
                 slot=slot,
                 self_arm_ok=self_arm_ok,
                 producer_is_channel=producer_is_channel,
+                grant_owner_provider_credentials=grant_owner_provider_credentials,
             )
         elif kind == "monitor_update":
             result = await _monitor_update(
@@ -340,6 +346,7 @@ async def apply_session_directive_outcome(
                 self_arm_ok=self_arm_ok,
                 producer_is_channel=producer_is_channel,
                 allow_rearm=not producer_is_self_wake,
+                grant_owner_provider_credentials=grant_owner_provider_credentials,
             )
         elif kind == "monitor_stop":
             result = await _monitor_stop(
