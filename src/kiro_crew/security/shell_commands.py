@@ -16,6 +16,7 @@ that command keeps one :data:`SUBST` step in its place.
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 from . import shell_normalizer as _shell
@@ -442,3 +443,90 @@ def without_substitutions(command: str) -> str:
             return "".join(out) + command[pos:]
         out.append(command[pos:hit] + "_")
         pos = _shell._matching_close_paren(command, hit + 2)[0]
+
+
+def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
+    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+    if "<<" not in text:
+        return []
+    return [
+        (doc.start, doc.end) for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs
+    ]
+
+
+def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
+    """``(start, end, proven)`` of each ``$(...)`` directly inside double quotes in *text*.
+
+    *start* is the ``$``; *end* is just past the matching ``)`` when *proven*, else the end
+    of *text*. A ``)`` in a heredoc body inside the substitution does not end it.
+    """
+    spans: "list[tuple[int, int, bool]]" = []
+    i, state = 0, 0
+    while i < len(text):
+        dollars = 0
+        for step in _shell._iter_shell_chars(text[i:], state):
+            at = i + step.offset
+            dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
+            if dollars % 2 and text.startswith("(", at + 1):
+                rest = text[at + 2 :]
+                for start, end in heredoc_text_spans(rest):
+                    rest = rest[:start] + re.sub("[^\n]", " ", rest[start:end]) + rest[end:]
+                end, proven = _shell._matching_close_paren(rest, 0)
+                spans.append((at, at + 2 + end if proven else len(text), proven))
+                i, state = spans[-1][1], 2
+                break
+        else:
+            break
+    return spans
+
+
+def _proven_body_spans(text: str) -> "dict[int, int]":
+    """Start -> end of each proven double-quoted ``$( )`` body outside heredoc text."""
+    if "$(" not in text:
+        return {}
+    docs = heredoc_text_spans(text)
+    return {
+        at: end
+        for at, end, proven in _double_quoted_substitution_spans(text)
+        if proven and not any(start <= at < stop for start, stop in docs)
+    }
+
+
+def _double_quoted_substitution_bodies(text: str) -> "list[str]":
+    """The body of each ``$(...)`` that sits directly inside double quotes in *text*.
+
+    :func:`_mask_quoted_separators` keeps double-quoted text as data, but bash runs
+    such a body as a command line of its own, in a new quote context. Only an
+    unpaired ``$`` opens one (``$$`` is the PID, ``\\$`` is text); the body ends at
+    its own matching ``)``, or runs to the end of *text* when none is found. A ``)``
+    in a heredoc body that :func:`read_commands` finds there does not end it. The
+    text that a bare ``cat`` prints from a quoted-tag heredoc is cut out of each
+    body (:func:`_without_quoted_heredoc_text`).
+    """
+    spans = _double_quoted_substitution_spans(text)
+    return [_without_quoted_heredoc_text(text[a + 2 : e - (1 if p else 0)]) for a, e, p in spans]
+
+
+def _without_quoted_heredoc_text(body: str) -> str:
+    """*body* with the text of each quoted-tag heredoc that a bare ``cat`` prints cut out.
+
+    Bash expands nothing in such a text, and a ``cat`` that writes to no file and
+    pipes to nothing only prints it. Every other heredoc keeps its text, so a shell
+    fed one (``bash <<'EOF'``, ``cat <<'EOF' | sh``) is read as before.
+    """
+    if "<<" not in body:
+        return body
+    docs = [
+        doc
+        for cmd in read_commands(body, heredocs=True)
+        if [word.raw for word in cmd.argv] == ["cat"]
+        and all(word.raw.startswith("<<") for word, _target in cmd.redirects)
+        and not cmd.separator.startswith("|")
+        for doc in cmd.heredocs
+        if doc.quoted
+    ]
+    cut = len(body)
+    for doc in sorted(docs, key=lambda doc: doc.start, reverse=True):
+        if doc.end <= cut:
+            body, cut = body[: doc.start] + body[doc.end :], doc.start
+    return body

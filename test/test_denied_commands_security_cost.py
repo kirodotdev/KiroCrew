@@ -1425,7 +1425,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
             "_is_credential_mint",
             "_self_kill_span",
             "_matches_self_subcommand",
-            "_is_ssh_to_self",
+            "_judge_ssh_to_self",
         ],
     )
     def test_the_memo_is_declared_inside_the_frame_loop(self, floor):
@@ -1446,7 +1446,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
         import inspect
         import textwrap
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(security, floor))))
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(_argv_floor, floor))))
 
         def memo_targets(node) -> "list[int]":
             found = []

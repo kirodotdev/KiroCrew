@@ -1157,6 +1157,30 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   nothing there and `cat` only prints it. A heredoc that a shell reads
   (`bash <<'EOF'`, `cat <<'EOF' | sh`, a `cat` that writes a file), or one with an
   unquoted tag, keeps its text, so it is read as at the top level.
+  The mask copies each such body whose `)` it proves as quoted data in one step, so a
+  quote inside it (`echo "$(cat 'a"b')" ; ssh ...`) does not close the outer double
+  quote. In the copy the argv walk tokenizes, the body's own quotes become `_`, so two
+  bodies' quotes cannot pair with each other around a later `ssh`; the verb probe and the
+  function-call binder read the copy that keeps them, so a function body's `"$1"` there
+  still binds the call's argument. A body inside heredoc text keeps the reading it had before. A
+  static `echo`/`printf` output is spliced in place of its substitution with each quote,
+  and a trailing backslash, written as `_`, because bash never reads them in an output, and
+  spliced they would open or close a quote or escape the next character. A re-parse of
+  such an output after a quoted body (`echo "$(echo 'a"b')" ; bash -c "$(echo 's"s"h') -p 22 <this host> id"`,
+  and the `sh -c`, `| sh` and `eval` spellings) is still allowed, as on main. The floor
+  then reads the line again exactly as it did before these rewrites (`_MAIN_READING`, which
+  every nested call inherits) and refuses when either reading refuses, so a rewrite can only
+  add refusals: no line the earlier reading refused can pass. A static splice inside heredoc
+  text keeps its quotes, as the mask leaves that text. The span readers
+  (`_double_quoted_substitution_spans`, `_proven_body_spans`, `heredoc_text_spans`) and the
+  body reader `_double_quoted_substitution_bodies` live in `shell_commands`. Within one gate
+  call each verdict is judged once per reading depth (kept in `call_views._CALL_VIEWS`), as a bound function body
+  re-reads the bodies nested in it. Each body re-reads the rest of the line, so before the
+  span readers run, `_cannot_name_ssh_verb` returns early on a line no masking of it lets
+  name an ssh-family verb (no verb, no `${` default, no `[` class beside a quoted
+  separator); the verb gate after the mask then sees the same answer. The floor does not model `#` comments: a quoted `$( )` before a comment
+  whose text names ssh to this host is refused, as main refuses the same line without the
+  quote.
   Within one `is_denied` call (`call_views.sharing_views`, which this module also serves
   to its importers) both walks share one result per frame text, and `_shell_payload_walk`
   and `argv_floor_self._quoted_assignment_scripts` keep theirs in the same memo, so every
