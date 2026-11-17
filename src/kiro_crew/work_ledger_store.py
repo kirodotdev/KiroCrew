@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -120,13 +121,96 @@ def _slot_key_is_shaped(slot_key: str) -> bool:
     return bool(slot_key) and "\0" not in slot_key and "/" not in slot_key and "\\" not in slot_key
 
 
+#: The last answer :func:`resolved_within` gave per ``(base, name)``, with what one
+#: ``lstat`` found: the leaf's ``(st_dev, st_ino)``, or ``None`` for an absent leaf kept
+#: beside its parent's. A board read builds a store path per item (event tail) and an
+#: undelivered-record path per open item, and each full resolve is one ``lstat`` per path
+#: component, every one a GIL hand-off on a busy gateway. A hit costs one ``lstat``, two
+#: for an absent leaf.
+#:
+#: A hit needs the leaf to still be the same object the full resolve proved contained:
+#: not a link, same ``(st_dev, st_ino)``. A link swapped in at the leaf, or a different
+#: object moved there, misses and goes through :func:`resolved_within` again, which
+#: refuses an escape. A directory cannot be hard-linked, so a store found by its id is
+#: that store. An absent leaf hits only while it is still absent AND its parent is still
+#: the same non-link directory, so a later create lands in the directory that was proved.
+#:
+#: Only an answer spelled exactly as ``base / name`` is kept: no link anywhere on the
+#: path when it was proved. The ``lstat`` of that spelling then follows any link put
+#: on the path later, so a root repointed at a replacement, or at nothing, reaches a
+#: different object and misses, as the full resolve would.
+#:
+#: shortcut: POSIX only, and only for a link-free data home. Windows ``lstat`` does not
+#: report a junction in ``st_mode``, and a home reached through a link would need its
+#: link chain re-read on every hit, so both take the full resolve every call, as before.
+_Kept = tuple[Path, tuple[int, int] | None, tuple[int, int] | None]
+_RESOLVED_MEMO: OrderedDict[tuple[str, str], _Kept] = OrderedDict()
+_RESOLVED_MEMO_MAX = 4096
+_RESOLVED_MEMO_LOCK = threading.Lock()
+
+
+def _leaf_identity(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of a non-link at *path*, or ``None``: absent, a link, no file
+    id, or an ``lstat`` error."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode) or not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _is_absent(path: Path) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _still_holds(kept: _Kept) -> bool:
+    path, leaf, parent = kept
+    if leaf is not None:
+        return _leaf_identity(path) == leaf
+    return _is_absent(path) and _leaf_identity(path.parent) == parent
+
+
+def _contained(base: Path, name: str) -> Path | None:
+    """:func:`resolved_within`, served from :data:`_RESOLVED_MEMO` while its answer holds."""
+    if os.name == "nt":
+        return resolved_within(base, name)
+    key = (str(base), name)
+    with _RESOLVED_MEMO_LOCK:
+        hit = _RESOLVED_MEMO.get(key)
+    if hit is not None:
+        if _still_holds(hit):
+            return hit[0]
+        with _RESOLVED_MEMO_LOCK:
+            _RESOLVED_MEMO.pop(key, None)
+    resolved = resolved_within(base, name)
+    if resolved is None or resolved != base / name:
+        return resolved
+    leaf = _leaf_identity(resolved)
+    parent = _leaf_identity(base) if leaf is None and _is_absent(resolved) else None
+    if leaf is not None or parent is not None:
+        with _RESOLVED_MEMO_LOCK:
+            _RESOLVED_MEMO[key] = (resolved, leaf, parent)
+            _RESOLVED_MEMO.move_to_end(key)
+            while len(_RESOLVED_MEMO) > _RESOLVED_MEMO_MAX:
+                _RESOLVED_MEMO.popitem(last=False)
+    return resolved
+
+
 def conductor_dir(slot_key: str) -> Path:
     """The directory holding *slot_key*'s ledger. Does not create it."""
     if not _slot_key_is_shaped(slot_key):
         raise WorkLedgerError(
             f"invalid slot key for work ledger: {slot_key!r}", code=CODE_INVALID_VALUE
         )
-    resolved = resolved_within(_work_ledger_root(), _store_name(slot_key))
+    resolved = _contained(_work_ledger_root(), _store_name(slot_key))
     if resolved is None:
         raise WorkLedgerError(
             f"path traversal blocked for slot key: {slot_key!r}", code=CODE_INVALID_VALUE
@@ -185,7 +269,7 @@ def undelivered_path(worker_slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid worker slot key: {worker_slot_key!r}", code=CODE_INVALID_VALUE
         )
-    resolved = resolved_within(undelivered_dir(), f"{_store_name(worker_slot_key)}.json")
+    resolved = _contained(undelivered_dir(), f"{_store_name(worker_slot_key)}.json")
     if resolved is None:
         raise WorkLedgerError(
             f"path traversal blocked for worker key: {worker_slot_key!r}",
