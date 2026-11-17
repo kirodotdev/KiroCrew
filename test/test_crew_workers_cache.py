@@ -210,12 +210,84 @@ async def test_a_worker_seen_live_reads_its_title_again_once_closed(world: _Worl
 async def test_a_kept_answer_older_than_the_bound_is_read_again(
     world: _World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    wl.ensure_conductor("root")
     await world.read()
     world.reset_counts()
     # A negative bound makes every kept answer already too old: no clock is waited on.
     monkeypatch.setattr(crew_workers, "CACHE_MAX_AGE_SECS", -1.0)  # flake-ok: no clock wait
     await world.read()
-    assert world.walks == 1 and world.log.reads and world.ledger_reads
+    # Only the root owns a store; a member without one costs a stat (next test).
+    assert world.walks == 1 and world.log.reads and world.ledger_reads == ["root"]
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The handler's monotonic clock, moved by hand: no test waits on a real one."""
+    now = [1000.0]
+    monkeypatch.setattr(crew_workers, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    return now
+
+
+def _bind(board: str, item_id: str, title: str, worker: str) -> None:
+    wl.ensure_conductor(board)
+    wl.create_bound_item(
+        board, item_id, title=title, acceptance={}, decision="", worker_session_key=worker
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_aged_member_without_a_store_is_checked_by_one_stat_not_read(
+    world: _World, monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    first = await world.read()
+    stats: list[str] = []
+    present = crew_workers._store_present
+
+    def counted(ledger: str) -> bool:
+        stats.append(ledger)
+        return present(ledger)
+
+    monkeypatch.setattr(crew_workers, "_store_present", counted)
+    world.reset_counts()
+    clock[0] += crew_workers.CACHE_MAX_AGE_SECS + 1
+    assert await world.read() == first
+    assert world.ledger_reads == []
+    assert sorted(stats) == ["c1", "c2", "root", "w1"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_store_another_process_creates_shows_once_the_bound_passes(
+    world: _World, monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    assert (await world.read())["c2"]["summary"] == ""
+    with monkeypatch.context() as elsewhere:
+        # Another process's write moves no change mark here.
+        elsewhere.setattr(wl, "_mark_changed", lambda _key: None)
+        _bind("c1", "it_0000c004", "Check the links", "c2")
+    clock[0] += crew_workers.CACHE_MAX_AGE_SECS - 1
+    assert (await world.read())["c2"]["summary"] == ""
+    clock[0] += 2
+    assert (await world.read())["c2"]["summary"] == "Check the links"
+
+
+@pytest.mark.asyncio
+async def test_a_store_another_process_writes_shows_within_the_bound_of_its_own_read(
+    world: _World, monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    _bind("c1", "it_0000c005", "Check the links", "c2")
+    await world.read()
+    clock[0] += 250
+    wl.apply_worker_report("c1", "it_0000c005", status="progress", summary="Half the links")
+    assert (await world.read())["c2"]["summary"] == "Half the links"
+    with monkeypatch.context() as elsewhere:
+        elsewhere.setattr(wl, "_mark_changed", lambda _key: None)
+        wl.apply_worker_report("c1", "it_0000c005", status="progress", summary="All the links")
+    # The root's entry ages out here, but c1 was read 51 s ago and is kept.
+    clock[0] += 51
+    assert (await world.read())["c2"]["summary"] == "Half the links"
+    # 301 s after c1's own read: shown, though the replacing entry is only 250 s old.
+    clock[0] += 250
+    assert (await world.read())["c2"]["summary"] == "All the links"
 
 
 def test_every_lock_hold_moves_its_stores_change_mark() -> None:

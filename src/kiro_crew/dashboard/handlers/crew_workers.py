@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -280,6 +281,8 @@ def _closed_workers(root: str, live: set[str]) -> list[str]:
 #: How long a kept answer is trusted without being read again: a closed worker's
 #: title, a ledger read under an unmoved change mark. Only this process's writes move
 #: a mark, so this bounds what a store written elsewhere (a CLI sweep) can leave stale.
+#: Each store's read keeps its own age, so an aged root entry hands its stores on and
+#: only a store read longer ago than this is checked again (:func:`_board_reader`).
 CACHE_MAX_AGE_SECS = 300.0
 #: Roots whose answers are kept at once, least recently read dropped first.
 CACHE_ROOTS = 64
@@ -289,6 +292,19 @@ CACHE_ROOTS = 64
 CACHE_ROOT_SESSIONS = 10_000
 #: The longest closed-worker title or agent name kept; a longer one is read each time.
 CACHE_TITLE_CHARS = 512
+
+
+class _Board(NamedTuple):
+    """One crew store's kept read (:func:`_board_reader`)."""
+
+    #: The store's change mark before the read.
+    mark: int
+    facts: dict[str, LedgerFacts]
+    #: ``time.monotonic()`` before the read, or before the last stat that found the
+    #: store still absent.
+    read_at: float
+    #: The store's directory was absent after the read, so an aged check is one stat.
+    absent: bool
 
 
 class _RootCache:
@@ -301,13 +317,14 @@ class _RootCache:
         #: answer, and the closed keys' creators. One tuple, so a concurrent read never
         #: pairs one walk's key with another's.
         self.walk: tuple[int, frozenset[str], list[str], dict[str, str]] | None = None
-        #: ``(members, mark, items)``: the crew's merged ledger facts, the members they
-        #: were read for, and the newest change mark of any store before the read.
-        self.ledger: tuple[tuple[str, ...], int, dict[str, LedgerFacts]] | None = None
-        #: Ledger slot key -> (its change mark before the read, its facts), for the
-        #: crew's own stores only: rebuilt on every merge, so a store that left the
-        #: crew is dropped, and gone with the whole entry.
-        self.boards: dict[str, tuple[int, dict[str, LedgerFacts]]] = {}
+        #: ``(members, mark, items, read_at)``: the crew's merged ledger facts, the
+        #: members they were read for, the newest change mark of any store before the
+        #: read, and the oldest of its stores' read times, so it ages with them.
+        self.ledger: tuple[tuple[str, ...], int, dict[str, LedgerFacts], float] | None = None
+        #: Ledger slot key -> its kept read, for the crew's own stores only: rebuilt on
+        #: every merge, so a store that left the crew is dropped. Handed on to the
+        #: entry that replaces this one (:func:`_root_cache`): each read ages alone.
+        self.boards: dict[str, _Board] = {}
         #: Closed key -> (title, agent), and the conversation log they were read from.
         self.log: Any = None
         self.titles: dict[str, tuple[str, str]] = {}
@@ -329,8 +346,12 @@ def _root_cache(root: str) -> _RootCache:
     with _cache_lock:
         entry = _root_caches.get(root)
         if entry is None or now - entry.born > CACHE_MAX_AGE_SECS:
-            entry = _RootCache(now)
-            _root_caches[root] = entry
+            fresh = _RootCache(now)
+            if entry is not None:
+                # Each store's read keeps its own age (:func:`_board_reader`), so the
+                # stores are checked one by one rather than all read again.
+                fresh.boards = entry.boards
+            entry = _root_caches[root] = fresh
         _root_caches.move_to_end(root)
         while len(_root_caches) > CACHE_ROOTS:
             _root_caches.popitem(last=False)
@@ -380,25 +401,52 @@ def _closed_and_parents(
 
 
 def _board_reader(
-    kept: dict[str, tuple[int, dict[str, LedgerFacts]]],
-    out: dict[str, tuple[int, dict[str, LedgerFacts]]],
+    kept: dict[str, _Board], out: dict[str, _Board]
 ) -> Callable[[str], dict[str, LedgerFacts]]:
     """A one-store reader for :func:`_crew_ledger_items`: *kept*'s facts while the
-    store's change mark has not moved, else a fresh read; every answer lands in *out*.
+    store's change mark has not moved and its read is younger than
+    :data:`CACHE_MAX_AGE_SECS`, else a fresh read; every answer lands in *out*. An
+    aged read of a store whose directory was absent costs one stat while it still is.
     BLOCKING on a miss."""
     from kiro_crew import session_ledger
     from kiro_crew.work_ledger import change_mark
 
     def read(key: str) -> dict[str, LedgerFacts]:
         ledger = session_ledger.ledger_key(key)
-        # Read BEFORE the store: a write landing during the read moves the mark past it.
-        mark = change_mark(ledger)
+        # Read BEFORE the store: a write landing during the read moves the mark past
+        # it, and one from another process lands after the read time.
+        mark, now = change_mark(ledger), time.monotonic()
         hit = kept.get(ledger)
-        facts = hit[1] if hit is not None and hit[0] == mark else _ledger_items(key)
-        out[ledger] = (mark, facts)
+        if hit is not None and hit.mark == mark:
+            if now - hit.read_at <= CACHE_MAX_AGE_SECS:
+                out[ledger] = hit
+                return hit.facts
+            if hit.absent and not _store_present(ledger):
+                out[ledger] = hit._replace(read_at=now)
+                return hit.facts
+        facts = _ledger_items(key)
+        out[ledger] = _Board(mark, facts, now, not facts and not _store_present(ledger))
         return facts
 
     return read
+
+
+def _store_present(ledger: str) -> bool:
+    """Whether *ledger*'s work-ledger directory may exist: one unresolved stat.
+
+    Only ``False`` is trusted: :func:`_board_reader` keeps an empty read on it. Any
+    other answer, a live symlink included, reads the store through the board's seam,
+    which keeps its own containment check. BLOCKING.
+    """
+    from kiro_crew import work_ledger
+
+    try:
+        os.stat(work_ledger._work_ledger_root() / work_ledger._store_name(ledger))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        pass
+    return True
 
 
 def _cached_crew_ledger_items(
@@ -406,8 +454,9 @@ def _cached_crew_ledger_items(
 ) -> dict[str, LedgerFacts]:
     """:func:`_crew_ledger_items` with each store's read kept. BLOCKING on a miss.
 
-    The merged answer is served again while no store was written here since and the
-    members are the same; otherwise each store is read again only if its own mark moved.
+    The merged answer is served again while no store was written here since, the
+    members are the same and none of its reads aged; otherwise each store is read
+    again only if its own mark moved or its own read aged.
     """
     from kiro_crew.work_ledger import last_change_mark
 
@@ -417,15 +466,21 @@ def _cached_crew_ledger_items(
     mark = last_change_mark()
     key = tuple(members)
     kept = entry.ledger
-    if kept is not None and kept[0] == key and kept[1] == mark:
+    if (
+        kept is not None
+        and kept[0] == key
+        and kept[1] == mark
+        and time.monotonic() - kept[3] <= CACHE_MAX_AGE_SECS
+    ):
         return kept[2]
-    boards: dict[str, tuple[int, dict[str, LedgerFacts]]] = {}
+    boards: dict[str, _Board] = {}
     items = _crew_ledger_items(root, members, read=_board_reader(entry.boards, boards))
-    if sum(len(facts) for _mark, facts in boards.values()) > CACHE_ROOT_SESSIONS:
+    if sum(len(board.facts) for board in boards.values()) > CACHE_ROOT_SESSIONS:
         # Stores whose items outnumber the budget (a long history of closed items).
         entry.boards, entry.ledger = {}, None
     else:
-        entry.boards, entry.ledger = boards, (key, mark, items)
+        oldest = min(board.read_at for board in boards.values())
+        entry.boards, entry.ledger = boards, (key, mark, items, oldest)
     return items
 
 
