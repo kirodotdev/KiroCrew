@@ -4511,7 +4511,8 @@ aliases and `own_scopes` off-scope pairs refuse on an allow-mode miss less often
 binds in all of them) — and, as `gate verdict`, `gate_decision` over the item read as a display
 title with no arguments, which ignores the scope. `--json` prints that answer as one object (the
 inputs plus `verdict`, `profile`, `rule`, `layer`, `reason`, `explicit_deny`, `gate_verdict`,
-`gate_reason`); `--batch FILE` (`-` = stdin; a path is read through `safe_read_file`) answers one
+`gate_reason`); `--batch FILE` (`-` = stdin, read as bytes and decoded as UTF-8 like a file, not in the console code
+page; a path is read through `safe_read_file`) answers one
 JSON Lines request per line (`scope`, `item`, optional `session_key`/`agent`/`app` defaulting to the
 flags; other keys ignored) in one boot, each record carrying its `line`, writes an error record
 `{"line", "error"}` for an unreadable line or unknown scope, and exits 1 at the end if any line
