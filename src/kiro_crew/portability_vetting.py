@@ -213,6 +213,8 @@ def _hold_back_foreign_skills(snap: Path, mc: Path, *, allow_unpinned: bool = Fa
     snap_fd = None
     if pinned_fs.supports_pinned_tree_walk():
         snap_fd = pinned_fs.open_dir_pinned(snap, what="staging root", refusal=OSError)
+    # Resolved before the pin decision: a root swapped after it must not move this.
+    root_real = os.path.realpath(snap) if snap_fd is None else None
     try:
         try:
             # Raises when the platform cannot pin and an unpinned delete was not accepted.
@@ -220,6 +222,21 @@ def _hold_back_foreign_skills(snap: Path, mc: Path, *, allow_unpinned: bool = Fa
         except pinned_fs.PinnedPathRefusal as exc:
             raise OSError(str(exc)) from exc
         if snap_fd is None:
+            # shortcut: a by-name check right before a by-name delete still leaves a gap
+            # between the two; the platforms that land here cannot pin, so upgrade when
+            # one can. The root resolved above is the one the target must still sit in.
+            target = os.path.realpath(staged)
+            try:
+                outside = (
+                    target == root_real or os.path.commonpath([root_real, target]) != root_real
+                )
+            except ValueError:
+                # commonpath raises when the paths sit on different Windows drives.
+                outside = True
+            if outside:
+                raise OSError(
+                    f"the staged skills folder resolves outside the staging root: {target}"
+                )
             shutil.rmtree(staged)
             return True
         return _remove_staged_skills(staged, live, snap_fd)
