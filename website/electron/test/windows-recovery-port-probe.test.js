@@ -71,12 +71,29 @@ test("Windows recovery retries a netstat that timed out once, then sees the port
   assert.ok(!result.probeFailed, "a probe that succeeded on retry is not a failed probe");
 });
 
-test("Windows recovery still fails closed when netstat never answers", async () => {
+test("Windows recovery still fails closed when netstat never answers and a bind is refused", async () => {
   const { calls, execFileFn } = scriptedNetstat([timedOut()]);
-  const result = await windowsHolders(execFileFn).forceStopGatewayPort(5476);
+  const result = await windowsHolders(execFileFn, {
+    isPortBindable: async () => false,
+  }).forceStopGatewayPort(5476);
   assert.strictEqual(calls.length, 3, "bounded: three attempts, then give up");
   assert.strictEqual(result.freed, false);
   assert.strictEqual(result.probeFailed, true);
+});
+
+// A Windows user's gateway never started: netstat timed out three times on a
+// free port and recovery stopped at "can't verify what's using port 5476".
+test("Windows recovery starts the gateway when netstat never answers but the port binds", async () => {
+  const { calls, execFileFn } = scriptedNetstat([timedOut()]);
+  const checks = [];
+  const result = await windowsHolders(execFileFn, {
+    isPortBindable: async (port) => { checks.push(port); return true; },
+  }).forceStopGatewayPort(5476);
+  assert.strictEqual(calls.length, 3);
+  assert.deepStrictEqual(checks, [5476]);
+  assert.strictEqual(result.freed, true);
+  assert.strictEqual(result.killed, 0);
+  assert.ok(!result.probeFailed);
 });
 
 test("windowsListenPidsRetrying bounds each attempt and says how the last one failed", async () => {
