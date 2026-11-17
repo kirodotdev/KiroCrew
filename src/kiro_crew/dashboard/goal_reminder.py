@@ -10,7 +10,8 @@ have two schedules and none touches another's:
   at the shared time of day: daily ``M H * * *``, weekly ``M H * * <weekday>``,
   monthly ``M H <day> * *``, in the user's timezone; the heartbeat runs on its
   interval instead (``*/30 * * * *``, ``0 * * * *``, ``0 */2 * * *``,
-  ``0 */4 * * *``, :func:`cron_expr_for`);
+  ``0 */4 * * *``, :func:`cron_expr_for`), kept inside its hours when the
+  record sets them (``0 8-19 * * *`` for hourly 08:00 to 20:00);
 * off -> that cadence's schedule is removed.
 
 When a schedule fires, the gateway's cron callback hands the job here
@@ -46,7 +47,8 @@ session when the crewmate's member backend mounts the ``session_*`` tools
 (:func:`member_has_session_tools`); otherwise it is done in small steps across
 wakes. Either way the next wake is the patrol. A heartbeat that fires while the gateway is stopping
 starts no turn (:func:`gateway_stopping`), and so does one that fires while a
-monitor loop drives the thread (:func:`_monitor_loop_drives`). While a
+monitor loop drives the thread (:func:`_monitor_loop_drives`) or that runs
+outside the record's hours (:func:`heartbeat_in_hours`). While a
 milestones card of the crewmate's waits on the user, the wake proposes no new
 milestones (:func:`milestones_card_waiting`). Only the owner's route and an
 applied card write the switch, so the crewmate cannot turn its own heartbeat on.
@@ -65,6 +67,7 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts, member_goals
 from kiro_crew import members as members_mod
+from kiro_crew.cron_service.schedule import _job_tz
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 
 logger = logging.getLogger(__name__)
@@ -129,10 +132,33 @@ def heartbeat_interval(schedules: dict[str, Any]) -> int:
     return member_goals.DEFAULT_HEARTBEAT_INTERVAL
 
 
+def _heartbeat_expr(schedules: dict[str, Any]) -> str:
+    """The heartbeat's expression: its interval, inside its hours when they are not the whole day.
+
+    The hour field runs from ``active_from`` to the hour before ``active_until``
+    (``0 8-19 * * *`` for an hourly 08:00 to 20:00), stepping by the interval's
+    hours from ``active_from``. The whole day keeps :data:`_HEARTBEAT_EXPRS`.
+    """
+    interval = heartbeat_interval(schedules)
+    start, end = member_goals.active_hours(schedules)
+    if (start, end) == (member_goals.DAY_START, member_goals.DAY_END):
+        return _HEARTBEAT_EXPRS[interval]
+    last = end - 1
+    minute = "*/30" if interval < 60 else "0"
+    step = interval // 60
+    if start == last:
+        hours = str(start)
+    elif step > 1:
+        hours = f"{start}-{last}/{step}"
+    else:
+        hours = f"{start}-{last}"
+    return f"{minute} {hours} * * *"
+
+
 def cron_expr_for(cadence: str, schedules: dict[str, Any]) -> str:
     """The cron expression for *cadence* at the record's shared time (or interval)."""
     if cadence == member_goals.CADENCE_HEARTBEAT:
-        return _HEARTBEAT_EXPRS[heartbeat_interval(schedules)]
+        return _heartbeat_expr(schedules)
     hour, minute = (int(x) for x in str(schedules["time"]).split(":"))
     if cadence == member_goals.CADENCE_WEEKLY:
         return f"{minute} {hour} * * {int(schedules['weekday'])}"
@@ -829,6 +855,8 @@ async def fire(state: Any, job: Any) -> str:
             return "skipped: the Bot's thread is not open"
         if _monitor_loop_drives(slot_key):
             return LOOP_SKIP
+        if not heartbeat_in_hours(job, rec["schedules"]):
+            return HOURS_SKIP
         prompt = heartbeat_prompt(
             rec,
             has_session_tools=has_tools,
@@ -861,6 +889,27 @@ STOPPING_SKIP = "skipped: the gateway is stopping"
 
 #: The run-log line of a heartbeat that fired while a monitor loop drives the thread.
 LOOP_SKIP = "skipped: a monitor loop is running"
+
+#: The run-log line of a heartbeat that started outside its hours (a late run).
+HOURS_SKIP = "skipped: outside the Heartbeat's hours"
+
+
+def heartbeat_in_hours(job: Any, schedules: dict[str, Any], now: float | None = None) -> bool:
+    """Whether a heartbeat run for *job* starting at *now* falls inside the record's hours.
+
+    Read in the zone the cron timer matched *job*'s expression in
+    (``cron_service.schedule._job_tz``), so a tick that fell due inside the
+    hours but runs after they end starts no turn. The whole day needs no clock.
+    """
+    if member_goals.active_hours(schedules) == (member_goals.DAY_START, member_goals.DAY_END):
+        return True
+    when = _clock() if now is None else now
+    return member_goals.in_active_hours(schedules, when, _job_tz(job))
+
+
+def _clock() -> float:
+    """The clock a heartbeat's hours are checked against at dispatch."""
+    return time.time()
 
 
 def _monitor_loop_drives(slot_key: str) -> bool:

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import type { MemberGoals } from '../../api/client'
+import { fmtDateFields } from '../../i18n/format'
 
 const memberGoals = vi.hoisted(() => ({
   get: vi.fn(),
@@ -285,6 +286,59 @@ describe('CrewGoalsPane', () => {
       ])
       fireEvent.change(picker, { target: { value: '60' } })
       await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { interval: 60 }))
+    } finally {
+      touch.on = false
+    }
+  })
+
+  it('keeps an all-day heartbeat line as it was, with both hour pickers at the whole day', async () => {
+    touch.on = true
+    try {
+      const base = record()
+      memberGoals.get.mockResolvedValue(record({ schedules: { ...base.schedules, heartbeat: true, active_from: 0, active_until: 24 } }))
+      renderWithProviders(<CrewHeartbeatRow slug="scout" member="scout" />)
+      const row = await screen.findByTestId('crew-heartbeat-row')
+      expect(row).toHaveTextContent('Every 1 hr, finds work on its own')
+      expect(row).toHaveTextContent('up to 24 runs a day')
+      const hours = within(row).getByTestId('crew-heartbeat-hours')
+      expect(hours).toHaveTextContent('Only between')
+      const from = within(hours).getByRole('combobox', { name: 'Heartbeat starts at' }) as HTMLSelectElement
+      const until = within(hours).getByRole('combobox', { name: 'Heartbeat stops at' }) as HTMLSelectElement
+      expect(Array.from(from.options).map(o => o.value)).toEqual(Array.from({ length: 24 }, (_, h) => String(h)))
+      expect(Array.from(until.options).map(o => o.value)).toEqual(Array.from({ length: 24 }, (_, h) => String(h + 1)))
+      expect([from.value, until.value]).toEqual(['0', '24'])
+    } finally {
+      touch.on = false
+    }
+  })
+
+  it('names its hours, counts only the wakes inside them and sets each end through its picker', async () => {
+    touch.on = true
+    try {
+      const base = record()
+      const on = record({ schedules: { ...base.schedules, heartbeat: true, interval: 120, active_from: 8, active_until: 20 } })
+      memberGoals.get.mockResolvedValue(on)
+      memberGoals.setSchedules.mockResolvedValue(record({ schedules: { ...on.schedules, active_from: 9 } }))
+      renderWithProviders(<CrewHeartbeatRow slug="scout" member="scout" />)
+      const row = await screen.findByTestId('crew-heartbeat-row')
+      // 08:00, 10:00 ... 18:00: six wakes, not the twelve of a whole day.
+      expect(row).toHaveTextContent('up to 6 runs a day')
+      const at = (h: number) => fmtDateFields(new Date(2000, 0, 1, h), { hour: '2-digit', minute: '2-digit' }).replace(/\s/g, ' ')
+      expect((row.textContent ?? '').replace(/\s/g, ' ')).toContain(`Every 2 hr from ${at(8)} to ${at(20)}, finds work on its own`)
+      const picker = within(row).getByRole('combobox', { name: 'How often' }) as HTMLSelectElement
+      expect(Array.from(picker.options).map(o => (o.textContent ?? '').replace(/\s/g, ' '))).toEqual([
+        'Every 30 min · up to 24 runs a day',
+        'Every 1 hr · up to 12 runs a day',
+        'Every 2 hr · up to 6 runs a day',
+        'Every 4 hr · up to 3 runs a day',
+      ])
+      // A window never crosses midnight: each end offers only the hours on its side of the other.
+      const from = within(row).getByRole('combobox', { name: 'Heartbeat starts at' }) as HTMLSelectElement
+      const until = within(row).getByRole('combobox', { name: 'Heartbeat stops at' }) as HTMLSelectElement
+      expect(Array.from(from.options).map(o => o.value)).toEqual(Array.from({ length: 20 }, (_, h) => String(h)))
+      expect(Array.from(until.options).map(o => o.value)).toEqual(Array.from({ length: 16 }, (_, h) => String(h + 9)))
+      fireEvent.change(from, { target: { value: '9' } })
+      await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { active_from: 9 }))
     } finally {
       touch.on = false
     }

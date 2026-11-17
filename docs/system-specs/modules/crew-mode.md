@@ -2708,7 +2708,18 @@ interval and, while it is on, "Each run uses credits. · up to 12 runs a day"
 (the daily bound, `wakesPerDay`), and its switch at the right (a switch state,
 never "Running", which read as work in progress beside the Bot's Idle);
 while it is on the interval picker (`HEARTBEAT_INTERVALS`, each option naming
-its daily bound) shows under the line. With no goal the switch is disabled and
+its daily bound) shows under the line, and under it **Only between**, two
+whole-hour pickers for the Heartbeat's hours (`active_from` 0-23 and
+`active_until` 1-24 on the record's `schedules`, in the record's timezone; a
+window never crosses midnight). Outside them no wake starts: the cron hour
+field runs from `active_from` to the hour before `active_until`
+(`0 8-19 * * *` for hourly 08:00 to 20:00, `goal_reminder._heartbeat_expr`),
+and a run that starts late, after the hours end, starts no turn
+(`goal_reminder.heartbeat_in_hours`, read in the job's own zone at dispatch).
+The daily bound counts only the wakes inside them. The whole day,
+00:00 to 24:00, is the default and keeps the round-the-clock expression; the
+line names the hours only when they are narrower. `set_check_ins` does not
+set the hours. With no goal the switch is disabled and
 the row says "Set a goal to turn these on.", as the check-ins do. The row reads
 and writes the goal record's `schedules` (`useMemberGoals`,
 `PUT /api/members/{slug}/goals/schedules`, one gateway-owned cron per switch,
