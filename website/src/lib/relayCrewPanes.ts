@@ -4,16 +4,14 @@
  * its own. Only the endpoint ID, the pane's rect and on/off flags cross the
  * bridge; the Crew's own page has no preload and sends nothing.
  *
- * shortcut: off unless the hidden key below reads "1", with no setting to turn
- * it on, until the pane replaces the window and the key goes.
+ * The default wherever the shell has the pane calls. A desktop app older than
+ * them still opens the Crew in a window of its own.
  */
 import { useCallback } from 'react'
 import { useAppDispatch, useAppSelector, type AppDispatch, type RootState } from '../store'
 import { relayPaneOpened, setActiveId, type RelayTab } from '../store/instancesSlice'
-import { safeGetItem } from '../utils/safeStorage'
 import { OVERLAY_SELECTOR } from '../hooks/useNativeBrowser'
 
-export const RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'
 /** shortcut: a placeholder for how many relay panes stay loaded; the least recent hidden one closes past it. */
 export const RELAY_PANE_WARM_CAP = 3
 /** The Preview panel's overlays, plus menus and lists (the switcher's own menu drops over the pane) and the relay-only marker on the notification sheet, banner cards and update overlay. */
@@ -33,9 +31,8 @@ export type RelayPaneBridge = {
   onPaneEvent: (cb: (event: RelayPaneEvent) => void) => () => void
 }
 
-/** The pane half of the desktop bridge, or null while the hidden key is off or the shell has none. */
+/** The pane half of the desktop bridge, or null when the shell has none (a browser tab, or a desktop app older than the pane calls). */
 export function relayPaneBridge(): RelayPaneBridge | null {
-  if (safeGetItem(RELAY_CREW_PANE_KEY) !== '1') return null
   const b = (window as { relayCrewAPI?: Partial<RelayPaneBridge> }).relayCrewAPI
   return typeof b?.openPane === 'function' && typeof b.onPaneEvent === 'function' ? (b as RelayPaneBridge) : null
 }

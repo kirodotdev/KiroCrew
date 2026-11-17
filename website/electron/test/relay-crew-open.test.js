@@ -637,13 +637,13 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
 // --- The window's notices: an offline host, lost access, Check again ---
 
 const UNAVAILABLE_TEXT = {
-  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close window",
+  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close",
 };
 const NO_ACCESS_TEXT = {
   title: "You no longer have access to Team Crew.",
   body: "To get access back, ask your admin.",
   check: "",
-  close: "Close window",
+  close: "Close",
 };
 
 test("a CREW_OFFLINE renewal stop shows the unavailable notice in that window and closes nothing", async () => {

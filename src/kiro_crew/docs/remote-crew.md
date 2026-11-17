@@ -355,11 +355,14 @@ Choosing an online row sends only the Crew's endpoint ID to the desktop app's
 main process. Main asks this machine's gateway for a short-lived access token,
 presenting the gateway's local secret, so a web page can't make that call. The
 gateway lists your Crews again, refuses one that is no longer in your list, and
-only then asks the control plane for the token. If any step refuses, no window
+only then asks the control plane for the token. If any step refuses, nothing
 opens, the switcher stays open, and the row shows the reason in plain words.
 
-The Crew then opens in its own window, with its own session that is kept in
-memory and cleared when the window closes:
+The Crew then opens as a tab in the main window: it joins the Crew switcher after
+the SSH Crews and fills the content area under the local top bar. A desktop app
+older than this opens the Crew in a window of its own instead. Either way the
+Crew has its own session, kept in memory and cleared when its tab or window
+closes:
 
 - Main adds the access token, in the `Kiro-Relay-Authorization` header, to every
   request for that Crew's own address, WebSocket connections included, and to
@@ -368,16 +371,17 @@ memory and cleared when the window closes:
 - Permission prompts (camera, notifications and the like) are refused.
 - A link to another site opens in your browser. A pop-up window on the Crew's own
   address is refused.
-- One window per Crew. Opening a Crew from its row when it is already open brings
-  its window forward.
+- One tab per Crew. Opening a Crew from its row when it is already open brings
+  its tab forward. Up to three relay Crews stay loaded; opening a fourth closes
+  the one you used least recently, and its tab goes.
 
 ### Keeping the token fresh
 
 Main renews the access token before it runs out. When the token's answer names a
 renewal time, main uses it, with a few seconds of random spread so open windows
 don't renew in step.
-While a window is minimized or hidden it renews once and then pauses until you
-show it again.
+While a Crew's tab is not on screen, or its window is minimized or hidden, it
+renews once and then pauses until you show it again.
 
 - If the Crew's page answers 401, main gets a new token once and reloads. A second
   401 soon after stops renewal for that window.
@@ -386,10 +390,10 @@ show it again.
   sends no token from then on. Opening that Crew from its row again tries a fresh
   token and reloads.
 - If your Kiro sign-in has ended, main stops every renewal and closes every relay
-  Crew window when a renewal or opening a Crew from its row gets the signed-out
-  answer. Sign out and Switch account in the desktop dashboard now close every
-  relay Crew window at once; a sign-out made anywhere else is still caught at the
-  next renewal or when a Crew is opened from its row.
+  Crew tab or window when a renewal or opening a Crew from its row gets the
+  signed-out answer. Sign out and Switch account in the desktop dashboard now
+  close every relay Crew at once; a sign-out made anywhere else is still caught
+  at the next renewal or when a Crew is opened from its row.
 - If the control plane can't be reached or answers with an error, main retries
   with a growing wait. When it asks to slow down, main waits as asked once.
 

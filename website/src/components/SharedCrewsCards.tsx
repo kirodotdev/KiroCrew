@@ -8,7 +8,7 @@
  * the two surfaces cannot disagree. Both cards render nothing while that hook
  * is hidden: no desktop bridge, or the route 404s because
  * `tunnel.relay_viewer_enabled` is off. Rows open a Crew the same way the
- * switcher does (`openRelayCrew`, the endpoint ID only).
+ * switcher does (`openRelayCrewTab`, the endpoint ID only).
  *
  * shortcut: no role chip and no member count. The crews answer carries neither
  * (`_entry` in `src/kiro_crew/dashboard/handlers/relay_viewer.py`); add them
@@ -24,6 +24,7 @@ import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
+import { relayPaneBridge } from '../lib/relayCrewPanes'
 import { Btn, Card } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
@@ -70,6 +71,7 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
   const type = kind === 'TEAM'
     ? t('components.relayCrews.type_team')
     : kind === 'PERSONAL' ? t('components.relayCrews.type_personal') : crew.crewType
+  const ownWindow = !relayPaneBridge()
   return (
     <li>
       <button
@@ -79,7 +81,7 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
         // Focusable while offline, so its tooltip still says why it won't open.
         aria-disabled={online ? undefined : true}
         aria-label={t('components.relayCrews.open_crew', { name: crew.name })}
-        title={online ? t('components.relayCrews.opens_own_window') : t('components.relayCrews.refusal_offline')}
+        title={online ? (ownWindow ? t('components.relayCrews.opens_own_window') : undefined) : t('components.relayCrews.refusal_offline')}
         onClick={() => { if (online) onOpen(crew.endpointId) }}
         className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left ${online ? 'hover:bg-bg-hover' : 'opacity-70 cursor-default'}`}
       >
@@ -89,7 +91,8 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
           <span className="truncate text-[12px] text-muted">{relayCrewStatusText(crew)}</span>
         </span>
         <span className="shrink-0 text-[11px] px-1.5 rounded-full bg-bg-hover text-muted">{type}</span>
-        <ExternalLink className="lucide-inline shrink-0 text-muted" aria-hidden />
+        {/* Only a desktop app older than the pane calls opens the Crew in a window of its own. */}
+        {ownWindow && <ExternalLink className="lucide-inline shrink-0 text-muted" aria-hidden />}
       </button>
       {refusal && (
         // askAgent on: this tab's only unsaved inputs (the add-crew and edit-crew

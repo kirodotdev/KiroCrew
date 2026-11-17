@@ -3,7 +3,7 @@
  * active pane covers <main> at its rect and hides under a local menu or dialog,
  * every other open pane stays loaded but hidden, past the warm cap the least
  * recent hidden one closes, and a pane main closes drops its tab, so every tab
- * has an open pane. Mounted only while the hidden pane key is on
+ * has an open pane. Mounted only while the shell has the pane calls
  * (lib/relayCrewPanes.ts).
  */
 import { useEffect } from 'react'

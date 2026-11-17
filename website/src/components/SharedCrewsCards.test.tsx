@@ -77,6 +77,17 @@ describe('SharedCrewsCards', () => {
     expect(open).toHaveBeenCalledWith('ep-1')
   })
 
+  it('titles an online row "Opens in its own window" only in a shell without the pane calls', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    renderWithProviders(<SharedCrewsCards />)
+    expect(await screen.findByTestId('shared-crew-row')).toHaveAttribute('title', 'Opens in its own window')
+    cleanup()
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane: vi.fn(), onPaneEvent: () => () => {} }
+    renderWithProviders(<SharedCrewsCards />)
+    expect(await screen.findByTestId('shared-crew-row')).not.toHaveAttribute('title')
+  })
+
   it('records an opened Crew as seen and clears its New mark from the shared list', async () => {
     withBridge()
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ unseen: true })] })

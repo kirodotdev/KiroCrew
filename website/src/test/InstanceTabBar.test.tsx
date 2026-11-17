@@ -699,7 +699,6 @@ describe('InstanceTabBar — relay Crew tabs', () => {
     },
   })
   const installBridge = () => {
-    localStorage.setItem('mc-relay-crew-pane', '1')
     const api = {
       openPane: vi.fn(async () => ({ ok: true })),
       closePane: vi.fn(async () => undefined),

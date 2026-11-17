@@ -856,7 +856,7 @@ test("pane: close takes its views off the window, clears the partition, runs onc
   assert.strictEqual(again.handle.isClosed(), true);
 });
 
-test("pane: only main's IPC opens it, and from the dashboard only the key-gated pane helper calls it", () => {
+test("pane: only main's IPC opens it, and from the dashboard only the pane helper calls it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const callers = [];
@@ -882,10 +882,10 @@ test("pane: only main's IPC opens it, and from the dashboard only the key-gated 
     && paneCalls.test(fs.readFileSync(path.join(dashboard, f), "utf8")));
   assert.ok(callers.length > 0, "the scan finds the dashboard's relayCrewAPI users");
   assert.deepStrictEqual(users, [path.join("lib", "relayCrewPanes.ts")]);
-  // That helper hands out the bridge only while the hidden key reads "1".
+  // That helper hands out the bridge whenever the shell has the pane calls: no hidden key gates it.
   const helper = fs.readFileSync(path.join(dashboard, "lib", "relayCrewPanes.ts"), "utf8");
-  assert.ok(helper.includes("RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'"));
-  assert.ok(helper.includes("if (safeGetItem(RELAY_CREW_PANE_KEY) !== '1') return null"));
+  assert.ok(!helper.includes("mc-relay-crew-pane"));
+  assert.ok(!helper.includes("safeGetItem"));
 });
 
 test("window and pane: the handle and the attached Crew's log lines name the Crew", () => {

@@ -299,8 +299,7 @@ describe('TeamCrewsGroup', () => {
     await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
   })
 
-  it('with the hidden pane key on, Open puts the Crew in a tab over <main>; a refusal still stays in the menu', async () => {
-    localStorage.setItem('mc-relay-crew-pane', '1')
+  it('with no key set, Open puts the Crew in a tab over <main>; a refusal still stays in the menu', async () => {
     const open = vi.fn(async () => ({ ok: true }))
     const openPane = vi.fn(async () => ({ ok: true }))
     ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
@@ -326,7 +325,7 @@ describe('TeamCrewsGroup', () => {
     main.remove()
   })
 
-  it('with the key absent, Open still opens a window even when the shell has the pane calls', async () => {
+  it('a shell with the pane calls shows no own-window mark on a row', async () => {
     const open = vi.fn(async () => ({ ok: true }))
     const openPane = vi.fn(async () => ({ ok: true }))
     ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
@@ -334,9 +333,8 @@ describe('TeamCrewsGroup', () => {
     mount()
     const u = userEvent.setup()
     await openGroup(u)
-    await u.click(row('Lab'))
-    await waitFor(() => expect(open).toHaveBeenCalledWith('ep-9'))
-    expect(openPane).not.toHaveBeenCalled()
+    expect(row('Lab')).toBeTruthy()
+    expect(within(screen.getByTestId('team-crews-group')).queryByTitle('Opens in its own window')).toBeNull()
   })
 
   it.each([
@@ -690,6 +688,23 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     expect(open).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(seen).toHaveBeenCalledWith([NEW_ID]))
     await waitFor(() => expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull())
+  })
+
+  it("opens the Crew a note's Open action names as a tab when the shell has the pane calls", async () => {
+    const open = vi.fn(async () => ({ ok: true }))
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ x: 0, y: 42, width: 700, height: 500 }) as DOMRect
+    document.body.appendChild(main)
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { store } = mountAt(`/chat?relay_crew=${NEW_ID}`)
+    await waitFor(() => expect(openPane).toHaveBeenCalledTimes(1))
+    expect(open).not.toHaveBeenCalled()
+    await waitFor(() => expect(store.getState().instances.relayTabs).toEqual([{ id: NEW_ID, name: 'Docs box' }]))
+    main.remove()
   })
 
   it('keeps the Open through a failed list read and opens the Crew once a read succeeds', async () => {

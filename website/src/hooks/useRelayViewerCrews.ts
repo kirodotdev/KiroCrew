@@ -36,8 +36,8 @@ export async function openRelayCrew(endpointId: string): Promise<RelayCrewOpenRe
   }
 }
 
-/** Open a relay Crew as a tab in this window while the hidden pane key is on,
- *  else in its own window through `openRelayCrew`, as before. */
+/** Open a relay Crew as a tab in this window, or, in a desktop app older than
+ *  the pane calls, in its own window through `openRelayCrew`. */
 export function openRelayCrewTab(endpointId: string, name: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
   const bridge = relayPaneBridge()
   return bridge ? openRelayPane(bridge, { id: endpointId, name }, dispatch) : openRelayCrew(endpointId)

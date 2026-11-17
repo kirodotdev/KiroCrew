@@ -27,10 +27,10 @@ function noticeText(kind, name) {
       title: `You no longer have access to ${crew}.`,
       body: "To get access back, ask your admin.",
       check: "",
-      close: "Close window",
+      close: "Close",
     };
   }
-  return { title: `${crew} is currently unavailable`, body: "", check: "Check again", close: "Close window" };
+  return { title: `${crew} is currently unavailable`, body: "", check: "Check again", close: "Close" };
 }
 
 module.exports = { NOTICE, NOTICE_FOR_CODE, noticeText };

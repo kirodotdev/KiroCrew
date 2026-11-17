@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders, renderHookWithProviders, createTestStore } from './helpers'
 import RelayCrewPaneHost from '../components/RelayCrewPaneHost'
-import { RELAY_CREW_PANE_KEY, RELAY_PANE_WARM_CAP, relayPaneBridge, useRelayTabs, type RelayPaneEvent } from '../lib/relayCrewPanes'
+import { RELAY_PANE_WARM_CAP, relayPaneBridge, useRelayTabs, type RelayPaneEvent } from '../lib/relayCrewPanes'
 import { openRelayCrewTab } from '../hooks/useRelayViewerCrews'
 import { NavItem } from '../shell/nav/navRow'
 import { localCovered, relayPaneOpened, setActiveId } from '../store/instancesSlice'
@@ -47,34 +47,30 @@ function storeWith(ids: string[], active: string | null) {
 beforeEach(() => {
   class RO { observe() {} disconnect() {} }
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RO
-  localStorage.setItem(RELAY_CREW_PANE_KEY, '1')
 })
 
 afterEach(() => {
   delete (window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI
-  localStorage.removeItem(RELAY_CREW_PANE_KEY)
   document.getElementById('main-content')?.remove()
   document.querySelectorAll('[data-test-overlay]').forEach(el => el.remove())
   vi.restoreAllMocks()
 })
 
-describe('relay Crew panes behind the hidden key', () => {
-  it('with the key absent there is no pane bridge, and Open still opens a window', async () => {
-    const { api } = installBridge()
-    localStorage.removeItem(RELAY_CREW_PANE_KEY)
-    expect(relayPaneBridge()).toBeNull()
-    localStorage.setItem(RELAY_CREW_PANE_KEY, 'true')
+describe('relay Crew panes', () => {
+  it('a shell without the pane calls has no pane bridge, and Open still opens a window', async () => {
+    const open = vi.fn(async () => ({ ok: true }))
+    ;(window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI = { open, closeAll: vi.fn(async () => undefined) }
     expect(relayPaneBridge()).toBeNull()
     const store = createTestStore()
     expect(await openRelayCrewTab('r1', 'One', store.dispatch)).toEqual({ ok: true })
-    expect(api.open).toHaveBeenCalledWith('r1')
-    expect(api.openPane).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledWith('r1')
     expect(store.getState().instances.relayTabs).toBeUndefined()
   })
 
-  it('with the key on, Open puts the pane over <main> and makes its tab active; a refusal adds no tab', async () => {
+  it('with no key set, Open puts the pane over <main> and makes its tab active; a refusal adds no tab', async () => {
     mountMain()
     const { api } = installBridge()
+    expect(localStorage.getItem('mc-relay-crew-pane')).toBeNull()
     const store = createTestStore()
     expect(await openRelayCrewTab('r1', 'One', store.dispatch)).toEqual({ ok: true })
     expect(api.openPane).toHaveBeenCalledWith('r1', RECT, { width: window.innerWidth, height: window.innerHeight })

@@ -5,16 +5,14 @@
  * Renders nothing unless the desktop bridge exists AND the gateway's crews route
  * answers (it 404s while `tunnel.relay_viewer_enabled` is off), so the default
  * switcher is unchanged. Open hands only the endpoint ID to the desktop shell,
- * which opens that Crew in its own window. A Team Crew is not a destination in
+ * which opens that Crew as a tab in this window (in a window of its own on a
+ * desktop app older than the pane calls). A Team Crew is not a destination in
  * this dashboard: its rows are plain menu items, never pinned, never in the
  * stable order and never in the unread count.
  *
  * Loaded lazily from the top bar, so the relay hook stays out of the app core.
  * Only the top-level bar gets the group: an SSH pane's own switcher never
  * receives the Team Crew list.
- *
- * shortcut: each Crew opens in its own window. The row's `onOpen` is the one
- * switch point if Team Crews later open in the main window.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -24,7 +22,7 @@ import { useSearchParams } from 'react-router-dom'
 import { ExternalLink, LogIn } from 'lucide-react'
 import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
 import {
-  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
+  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
   relayRefusalText, relayRetryable, useRelayViewerCrews, type RelayListRefusal,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
@@ -81,7 +79,7 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
           </span>
           <span className="truncate text-[12px] text-muted">{type} · {relayCrewStatusText(crew)}</span>
         </span>
-        {/* With panes on the Crew opens in this window, so no own-window mark. */}
+        {/* Only a desktop app older than the pane calls opens the Crew in a window of its own. */}
         {!relayPaneBridge() && (
           <span className="shrink-0 text-muted" title={t('components.relayCrews.opens_own_window')}>
             <ExternalLink className="lucide-inline" aria-hidden />
@@ -311,6 +309,7 @@ function useOpenFromNote(waiting: boolean, crews: RelayCrewEntry[]): [string | n
   const [params, setParams] = useSearchParams()
   const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
   const queryClient = useQueryClient()
+  const dispatch = useAppDispatch()
   const [refusal, setRefusal] = useState<string | null>(null)
   const wanted = params.get(OPEN_RELAY_CREW_PARAM)
   // The query lingers for a render after it is removed, so one Open opens once.
@@ -331,7 +330,8 @@ function useOpenFromNote(waiting: boolean, crews: RelayCrewEntry[]): [string | n
     // Named when the cached list has it: the switcher beside it still shows the local Crew.
     const name = crews.find(c => c.endpointId === wanted)?.name
     setRefusal(null)
-    void openRelayCrew(wanted).then(res => {
+    // shortcut: a Crew missing from the cached list gets its endpoint ID as the tab's name.
+    void openRelayCrewTab(wanted, name ?? wanted, dispatch).then(res => {
       if (!res.ok) {
         setRefusal(name === undefined
           ? relayRefusalText(res.error)
@@ -347,6 +347,6 @@ function useOpenFromNote(waiting: boolean, crews: RelayCrewEntry[]): [string | n
         if (failed) setRefusal(i18nT('components.relayCrews.seen_not_saved'))
       })
     })
-  }, [wanted, waiting, crews, setParams, queryClient, renderedLocationIsCurrent])
+  }, [wanted, waiting, crews, setParams, queryClient, renderedLocationIsCurrent, dispatch])
   return [refusal, () => setRefusal(null)]
 }
