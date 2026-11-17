@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 import pytest
+import source_corpus
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -73,11 +74,14 @@ def _entries(slot: str, first: int, count: int) -> "list[dict[str, Any]]":
 def _build(slot: str, counts: "tuple[int, ...]") -> "tuple[str, ...]":
     """One unit per count, filled in batches; the newest unit's handle is kept open."""
     units = tuple(f"{slot}-u{index}" for index in range(len(counts)))
-    for unit, count in zip(units, counts):
-        handle = CrewLog.create(lg.KIND_SESSION, unit, owner="owner", agent="lead", slot=slot)
-        for start in range(0, count, 500):
-            handle.append_many(_entries(slot, start, min(500, count - start)), src="gateway")
-        _held[unit] = handle
+    # The bulk fill is setup, not the property: build it with the coverage tracer
+    # paused, as the tree-scan gates do. The folds the tests count stay traced.
+    with source_corpus.untraced():
+        for unit, count in zip(units, counts):
+            handle = CrewLog.create(lg.KIND_SESSION, unit, owner="owner", agent="lead", slot=slot)
+            for start in range(0, count, 500):
+                handle.append_many(_entries(slot, start, min(500, count - start)), src="gateway")
+            _held[unit] = handle
     for unit in units[:-1]:
         _held.pop(unit).release_ownership()
     return units

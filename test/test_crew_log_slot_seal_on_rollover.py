@@ -16,6 +16,7 @@ from collections import Counter
 from typing import Any
 
 import pytest
+import source_corpus
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -112,9 +113,12 @@ def _switch_agents(slot: str, counts: "tuple[int, ...]") -> "tuple[str, ...]":
     Returns the unit list after the switch. The old newest unit is ``units[-2]``.
     """
     units = tuple(f"{slot}-u{index}" for index in range(len(counts)))
-    for unit, count in zip(units, counts):
-        _open(slot, unit, "lead")
-        _append(slot, unit, count)
+    # The bulk fill is setup, not the property: build it with the coverage tracer
+    # paused, as the tree-scan gates do. The folds below stay traced.
+    with source_corpus.untraced():
+        for unit, count in zip(units, counts):
+            _open(slot, unit, "lead")
+            _append(slot, unit, count)
     _read(slot, units)
     _append(slot, units[-1], LATE, first=10**6)
     _read(slot, units)  # a warm pass that earns no write
