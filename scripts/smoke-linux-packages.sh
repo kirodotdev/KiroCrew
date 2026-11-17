@@ -81,7 +81,7 @@ common_asserts() {
     #
     # Exec is deliberately NOT the source: electron-builder quotes that path when
     # it contains a character outside [/0-9A-Za-z._-], which the nightly channel's
-    # `/opt/KiroCrew Nightly/...` does. Parsing it would work on stable and return
+    # \`/opt/KiroCrew Nightly/...\` does. Parsing it would work on stable and return
     # empty on nightly -- the third time this gate assumed stable's shape.
     exe=\$(basename "\$entry" .desktop)
     launcher=/usr/bin/\$exe
