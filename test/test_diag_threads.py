@@ -96,8 +96,21 @@ def test_stop_probe_without_start_is_harmless() -> None:
 # ── layer 1: the probe distribution ──────────────────────────────────────────
 
 
+def _await_probe_ticks(count: int, since: float | None = None) -> None:
+    """Wait until the probe thread has taken *count* readings since *since*.
+
+    *since* defaults to now; pass the probe's window start to count readings the
+    next ``window_stats()`` will see.
+    """
+    mark = time.time() if since is None else since
+    wait_until(
+        lambda: len(dt._probe._since(mark)) >= count,
+        describe=lambda: f"readings={len(dt._probe._since(mark))}",
+    )
+
+
 def test_the_probe_produces_a_distribution_with_the_documented_keys(probe) -> None:
-    time.sleep(0.4)  # ~20 readings at a 20 ms sleep
+    _await_probe_ticks(5, since=dt._probe._window_from)
     stats = dt.window_stats()["gil_wait"]
     for key in ("samples", "p50_ms", "p95_ms", "max_ms", "frac_over_5ms"):
         assert key in stats, key
@@ -113,7 +126,7 @@ def test_consecutive_windows_are_disjoint(probe) -> None:
     rows, so a reader diffing the series would see contention persist after it
     had ended.
     """
-    time.sleep(0.3)
+    _await_probe_ticks(5, since=dt._probe._window_from)
     first = dt.window_stats()["gil_wait"]
     second = dt.window_stats()["gil_wait"]
     assert first["samples"] > 0
@@ -432,10 +445,12 @@ def test_the_main_thread_stack_is_redacted_and_depth_bounded() -> None:
 # ── layer 3: the stall capture ───────────────────────────────────────────────
 
 
-def _beat_steadily(seconds: float, gap: float = 0.02) -> None:
-    """Beat like a healthy loop for *seconds*, never leaving a gap worth a stall."""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
+def _beat_steadily(ticks: int, gap: float = 0.02) -> None:
+    """Beat like a healthy loop until the probe has checked it *ticks* times."""
+    mark = time.time()
+    deadline = time.monotonic() + 10.0
+    while len(dt._probe._since(mark)) < ticks:
+        assert time.monotonic() < deadline, "the probe stopped ticking"
         dt.beat()
         time.sleep(gap)
 
@@ -452,9 +467,13 @@ def test_a_heartbeat_drift_past_the_threshold_emits_one_loop_stall_event() -> No
         emit_event=lambda kind, payload: events.append((kind, payload)), stall_after=0.15
     )
     try:
-        # Backdate the heartbeat so the probe sees a stall on its next tick.
+        # Backdate the heartbeat so the probe sees a stall on its next tick, then
+        # let it tick on inside the same stall: each later tick must stay silent.
         dt._probe._beat_at = time.monotonic() - 5.0
-        time.sleep(0.3)
+        wait_until(
+            lambda: any(kind == "loop_stall" for kind, _p in events), describe=lambda: events
+        )
+        _await_probe_ticks(10)
     finally:
         dt.stop_probe()
 
@@ -483,7 +502,7 @@ def test_a_recovered_heartbeat_allows_a_later_episode_to_be_captured() -> None:
             dt._probe._beat_at = time.monotonic() - 5.0
             # The probe thread captures the stall on its next tick.
             wait_until(lambda n=episode: events.count("loop_stall") >= n, describe=lambda: events)
-            _beat_steadily(0.3)  # a healthy loop again: closes the episode
+            _beat_steadily(10)  # a healthy loop again: closes the episode
     finally:
         dt.stop_probe()
     assert events.count("loop_stall") == 2
@@ -502,7 +521,8 @@ def test_a_probe_restarted_mid_stall_still_reports_its_first_stall() -> None:
     dt.start_probe(emit_event=lambda kind, _p: first.append(kind), stall_after=0.15)
     try:
         dt._probe._beat_at = time.monotonic() - 5.0
-        time.sleep(0.3)  # stall fires; the probe is stopped without recovering
+        # The stall fires; the probe is stopped without recovering.
+        wait_until(lambda: "loop_stall" in first, describe=lambda: first)
     finally:
         dt.stop_probe()
     assert first.count("loop_stall") == 1
@@ -511,7 +531,8 @@ def test_a_probe_restarted_mid_stall_still_reports_its_first_stall() -> None:
     dt.start_probe(emit_event=lambda kind, _p: second.append(kind), stall_after=0.15)
     try:
         dt._probe._beat_at = time.monotonic() - 5.0
-        time.sleep(0.3)
+        wait_until(lambda: "loop_stall" in second, describe=lambda: second)
+        _await_probe_ticks(10)
     finally:
         dt.stop_probe()
     assert second.count("loop_stall") == 1
@@ -621,7 +642,7 @@ def test_a_healthy_heartbeat_emits_nothing() -> None:
     events: list[str] = []
     dt.start_probe(emit_event=lambda kind, _p: events.append(kind), stall_after=0.5)
     try:
-        _beat_steadily(0.3)
+        _beat_steadily(10)
     finally:
         dt.stop_probe()
     assert events == []
@@ -948,7 +969,7 @@ def test_window_stats_summarises_rather_than_listing_every_thread(probe) -> None
     sample would cost roughly 20 MB a day against the recorder's ~1.7 MB/day
     budget. The whole list stays one ``ledger_now()`` call away.
     """
-    time.sleep(0.3)
+    _await_probe_ticks(5, since=dt._probe._window_from)
     stats = dt.window_stats()
     assert "threads" not in stats  # no per-thread list on the periodic path
     assert isinstance(stats["thread_count"], int)
@@ -968,7 +989,7 @@ def test_a_quiet_window_carries_no_per_thread_rows_but_keeps_the_keys(
     consumer reads the same shape on every row.
     """
     monkeypatch.setattr(dt, "_interpret", lambda *_a: "no contention signal")
-    time.sleep(0.2)
+    _await_probe_ticks(5, since=dt._probe._window_from)
     stats = dt.window_stats()
     assert stats["interpretation"] == "no contention signal"
     assert stats["top_cpu"] == []
@@ -1057,5 +1078,5 @@ def test_window_stats_is_json_serialisable(probe) -> None:
     """It becomes one field of a JSON row, so a stray object breaks the series."""
     import json
 
-    time.sleep(0.2)
+    _await_probe_ticks(5, since=dt._probe._window_from)
     json.dumps(dt.window_stats())
