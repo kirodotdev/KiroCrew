@@ -13,6 +13,7 @@ service commands; shared fixtures live in ``cli_server_more_coverage_helpers.py`
 import os
 import subprocess
 import sys
+import time
 import types
 import urllib.error
 from pathlib import Path
@@ -851,6 +852,40 @@ class TestUpdateSubprocessHardening:
             cli_server._update()
         assert exc.value.code == 1
         assert "git fetch timed out" in capsys.readouterr().out
+
+    def test_fetch_timeout_uses_the_shared_deadline_and_reaps_tmp_packs(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The manual fetch runs under the update check's deadline and
+        reaps the stale ``tmp_pack_*`` earlier killed fetches left.
+
+        RED-BEFORE: on main the fetch passes ``timeout=60`` and leaves the pack.
+        """
+        from kiro_crew import git_tmp_packs
+
+        pack_dir = Path(git_checkout) / ".git" / "objects" / "pack"
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        stale = pack_dir / "tmp_pack_abc123"
+        stale.write_bytes(b"partial")
+        old = time.time() - git_tmp_packs.TMP_PACK_MAX_AGE_S - 60
+        os.utime(stale, (old, old))
+        seen: dict = {}
+        inner = self._timeout_on(["git", "fetch"], _GitStub())
+
+        def _run(argv, **kw):
+            if list(argv[:2]) == ["git", "fetch"]:
+                seen.update(kw)
+            return inner(argv, **kw)
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert seen["timeout"] == git_tmp_packs.UPDATE_FETCH_TIMEOUT_S
+        out = capsys.readouterr().out
+        assert "git fetch timed out after 300s" in out
+        assert "kirocrew update" in out
+        assert not stale.exists()
 
     def test_diff_timeout_proceeds_like_a_nonzero_exit(
         self, monkeypatch, git_checkout, capsys

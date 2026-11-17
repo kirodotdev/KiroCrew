@@ -12,10 +12,12 @@ called from the fetches that run PERIODICALLY into long-lived clones, where
 orphans would pile up without bound — the auto-improvement
 clone-setup/commit/driver sites, the dev-fleet status refresher, and
 ``platform/update_fetch.fetch_and_pin_upstream`` (the update check's 12-hourly
-fetch and the unattended apply's, both into the operator's checkout). The PR
+fetch and the unattended apply's, both into the operator's checkout), and
+``cli_server_update._update``'s fetch (``kirocrew update``, whose retries after a
+killed fetch would otherwise pile orphans into the same checkout). The PR
 watcher's base-ref fetch does not call it: its clone is rebuilt right before
 the fetch, so nothing there can be older than the threshold. The tree's remaining fetch sites do NOT call it
-(``cli_server``, ``ops_mission_control``'s ledger sync, ``md_notebook``,
+(``ops_mission_control``'s ledger sync, ``md_notebook``,
 ``registry_pipeline``, the sync/rebase fetches inside ``dev_fleet`` itself,
 and the ``kirocrew-prepare-pr`` builtin scripts): dev-fleet's two land in the
 operator's checkout whose object store the refresher sweeps every cycle
@@ -28,8 +30,8 @@ A live fetch touches its temp pack continuously while receiving, so an
 in-flight pack's mtime is always recent; a killed one's is frozen at the
 kill. Almost every calling fetch runs under a total-duration bound —
 ``clone_setup._run`` defaults to 120s with a 300s ceiling, ``commit._git``
-runs at 60s, the dev-fleet fetches at 90s, the update fetch at 300s (check)
-and 60s (apply) — so any
+runs at 60s, the dev-fleet fetches at 90s, the update fetch at 300s (check and
+``kirocrew update``) and 60s (apply) — so any
 ``tmp_pack_*`` untouched for longer than :data:`TMP_PACK_MAX_AGE_S`, twice
 that largest bound, belongs to a fetch of ours that cannot be making
 progress. The exception is ``spine/driver_git._git``, whose ``subprocess.run``
@@ -72,6 +74,16 @@ TMP_PACK_PREFIX = "tmp_pack_"
 #: check's 300s; the other bounded callers run 60-120s) — see the module docstring for why the number
 #: is the safety argument, not bookkeeping.
 TMP_PACK_MAX_AGE_S = 600.0
+
+#: Total deadline for a fetch into a source checkout on the update paths: the
+#: dashboard's update check and ``kirocrew update``. A killed fetch keeps none of
+#: what it downloaded, so a deadline shorter than the transfer fails the same way
+#: on every retry and a far-behind checkout never catches up. Half of
+#: :data:`TMP_PACK_MAX_AGE_S`, so the reaper cannot take a pack such a fetch is
+#: still writing.
+#: shortcut: a total-time bound; a fetch still slower than this still fails every
+#: time, upgrade to a no-progress bound if that is reported.
+UPDATE_FETCH_TIMEOUT_S = 300.0
 
 
 def _pack_dirs(clone: Path) -> list[Path]:
