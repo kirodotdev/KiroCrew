@@ -18,15 +18,23 @@ from __future__ import annotations
 import collections
 import concurrent.futures
 import json
+import logging
 import queue
 import threading
 import time
-from typing import Any, Callable, Optional, overload
+
+# ``Callable`` from ``typing``, not ``collections.abc``: the ``kiro_crew.mcp_shared``
+# family re-exports one binding per shared name and every other owner binds this
+# one, so a second object here trips the facade mirror's cross-owner guard.
+from typing import Any, Callable, overload
 
 from kiro_crew.mcp_caller import INFLIGHT_CAPABILITY_KEY, CallerContext
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
 from kiro_crew.validation import ValidationError
+
+#: The family logs as ``kiro_crew.mcp_shared``, the name callers and log filters use.
+logger = logging.getLogger("kiro_crew.mcp_shared")
 
 # Max tools/call requests buffered while a tool worker is busy.
 # Overflow gets an immediate JSON-RPC busy error instead of silence.
@@ -46,7 +54,7 @@ CANCELLED_IDS_MAX = 1024
 
 def _evict_oldest_evictable(
     cancelled_ids: set[str],
-    order: "collections.deque[str]",
+    order: collections.deque[str],
     protected: set[str],
 ) -> bool:
     """Discard the oldest cancellation id that is NOT protected.
@@ -74,10 +82,10 @@ def _evict_oldest_evictable(
 
 def _remember_cancelled_id(
     cancelled_ids: set[str],
-    order: "collections.deque[str]",
+    order: collections.deque[str],
     rid: str,
     cap: int = CANCELLED_IDS_MAX,
-    protected: Optional[set[str]] = None,
+    protected: set[str] | None = None,
 ) -> None:
     """Record a cancelled request id, bounding memory growth FIFO.
 
@@ -283,7 +291,7 @@ class _StepPool:
     """
 
     def __init__(self, workers: int, name: str) -> None:
-        self._queue: "queue.SimpleQueue[_StepPool._Item | None]" = queue.SimpleQueue()
+        self._queue: queue.SimpleQueue[_StepPool._Item | None] = queue.SimpleQueue()
         self._threads: list[threading.Thread] = []
         for i in range(workers):
             thread = threading.Thread(target=self._run, name=f"{name}-{i}", daemon=True)
@@ -306,17 +314,17 @@ class _StepPool:
         __slots__ = ("fut", "fn", "args")
 
         def __init__(self, fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
-            self.fut: "concurrent.futures.Future[Any]" = concurrent.futures.Future()
-            self.fn: "Callable[..., Any] | None" = fn
+            self.fut: concurrent.futures.Future[Any] = concurrent.futures.Future()
+            self.fn: Callable[..., Any] | None = fn
             self.args: tuple[Any, ...] = args
             self.fut.add_done_callback(self._release_if_cancelled)
 
-        def _release_if_cancelled(self, fut: "concurrent.futures.Future[Any]") -> None:
+        def _release_if_cancelled(self, fut: concurrent.futures.Future[Any]) -> None:
             if fut.cancelled():
                 self.fn = None
                 self.args = ()
 
-    def submit(self, fn: Callable[..., Any], *args: Any) -> "concurrent.futures.Future[Any]":
+    def submit(self, fn: Callable[..., Any], *args: Any) -> concurrent.futures.Future[Any]:
         """Queue ``fn(*args)``; never starts a thread, so it never raises."""
         item = self._Item(fn, args)
         self._queue.put(item)
@@ -380,7 +388,7 @@ class _DeferredEntry:
         self,
         req_id: Any,
         tool_name: str,
-        caller_ctx: "CallerContext | None",
+        caller_ctx: CallerContext | None,
         tenant_nonce: str,
         deferred: DeferredTool,
         *,
@@ -392,7 +400,7 @@ class _DeferredEntry:
         self.caller_ctx = caller_ctx
         self.tenant_nonce = tenant_nonce
         self.deferred = deferred
-        self.stepping: Optional[concurrent.futures.Future[str | None]] = None
+        self.stepping: concurrent.futures.Future[str | None] | None = None
         self.step_queued = 0.0
         self.step_started = 0.0
         self.cancelled = False
@@ -479,11 +487,26 @@ class ToolCancelled(Exception):
     """Raised by a tool (or a deferred step) that gives up because its call was
     cancelled; the loop answers nothing and audits the call as cancelled."""
 
-    pass
-
 
 # Tracebacks and logs name it by the import path its callers use.
 ToolCancelled.__module__ = "kiro_crew.mcp_shared"
+
+
+def _audit_invocation(**fields: Any) -> None:
+    """Write one invocation row, best effort.
+
+    ``sel()`` can fail before it writes anything: under an enforced harness's
+    credential mask the trust root is withheld, so ``SecurityEventLog`` init raises.
+    This row is written AFTER the tool has already run, so an unguarded write made
+    the audit's own failure the tool's RESULT: the handler's answer was discarded
+    and the model was told ``FileExistsError`` on ``trust/``, which is what an
+    operator then chases. The failure is logged so a missed record stays visible,
+    the same contract ``mcp_shared_dispatch._sel_audit`` keeps.
+    """
+    try:
+        sel().log_tool_invocation(**fields)
+    except Exception:
+        logger.warning("tool invocation audit could not be written", exc_info=True)
 
 
 def _audit_safe_args(value: Any) -> Any:
@@ -515,20 +538,20 @@ def call_tool_with_logging(
     name: str,
     raw_args: dict[str, Any],
     validate_fn: Callable[[str, dict[str, Any]], dict[str, Any]],
-    inner_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    inner_fn: Callable[[str, dict[str, Any]], str | DeferredTool],
     session_key: str,
     downstream_service: str,
-) -> "str | DeferredTool": ...
+) -> str | DeferredTool: ...
 
 
 def call_tool_with_logging(
     name: str,
     raw_args: dict[str, Any],
     validate_fn: Callable[[str, dict[str, Any]], dict[str, Any]],
-    inner_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    inner_fn: Callable[[str, dict[str, Any]], str | DeferredTool],
     session_key: str,
     downstream_service: str,
-) -> "str | DeferredTool":
+) -> str | DeferredTool:
     """Validate args, call inner tool function, and log the invocation.
 
     A :class:`DeferredTool` the handler returns is passed through with its
@@ -549,7 +572,7 @@ def call_tool_with_logging(
         # key where a kind belongs, making the field useless to filter or
         # aggregate on while still looking populated. The parameter
         # defaults to "", and an honestly empty kind beats a false one.
-        sel().log_tool_invocation(
+        _audit_invocation(
             session_key=session_key,
             source="mcp",
             tool_name=name,
@@ -582,7 +605,7 @@ def call_tool_with_logging(
 
     def _audit(text: str) -> None:
         outcome = "failed" if text.startswith("Error:") else "completed"
-        sel().log_tool_invocation(
+        _audit_invocation(
             session_key=session_key,
             source="mcp",
             tool_name=name,

@@ -20,6 +20,7 @@ import logging
 import os
 import time
 import types
+import urllib.error
 import urllib.request
 from collections.abc import Mapping
 from typing import Any, Callable, NamedTuple
@@ -35,6 +36,24 @@ from kiro_crew.session_token_sig import session_key_from_env_token
 
 #: The family logs as ``kiro_crew.mcp_shared``, the name callers and log filters use.
 logger = logging.getLogger("kiro_crew.mcp_shared")
+
+
+def _audit_policy(**fields: Any) -> None:
+    """Write one policy-decision audit row, best effort.
+
+    ``sel()`` can fail before it writes anything: under an enforced harness's
+    credential mask the trust root is withheld, so ``SecurityEventLog`` init raises.
+    An audit is diagnostic only -- it must never decide the answer this resolver
+    returns. Left unguarded, a masked child turns "the policy is unresolved" into a
+    broken ``tools/list`` whose error names the audit's failure (a ``FileExistsError``
+    on ``trust/``) instead of the policy's, which is what an operator then chases.
+    The failure is logged so a missed record stays visible, the same contract
+    ``mcp_shared_dispatch._sel_audit`` keeps.
+    """
+    try:
+        sel().log_api_access(**fields)
+    except Exception:
+        logger.warning("tool policy audit could not be written", exc_info=True)
 
 
 # ── Managed tool policy cache ──────────────────────────────────────────────
@@ -551,7 +570,7 @@ def _resolve_tool_policy(
         # treats them differently. Collapsing them into one reason would repeat
         # the very conflation this resolver exists to undo, one level down.
         _reason = "resolution_failed" if _failure_cached else "no_session_key"
-        sel().log_api_access(
+        _audit_policy(
             caller=session_key or "mcp",
             operation="tool_policy.negative_cache_hit",
             outcome="unresolved",
@@ -603,7 +622,7 @@ def _resolve_tool_policy(
             # appears within a few hundred ms of MCP spawn.
             _last_startup_race_time = now
             _last_startup_race_key = ""
-            sel().log_api_access(
+            _audit_policy(
                 caller="mcp",
                 operation="tool_policy.no_session_key",
                 outcome="unresolved",
@@ -657,7 +676,7 @@ def _resolve_tool_policy(
         # on the dial, not a resolution this client should pre-empt.
         _has_env_key = bool(os.environ.get("KIROCREW_SESSION_KEY", ""))
         if not caller_session and "X-Session-Token" not in token_header and not _has_env_key:
-            sel().log_api_access(
+            _audit_policy(
                 caller=session_key,
                 operation="tool_policy.unattestable_key",
                 outcome="unresolved",
@@ -713,7 +732,7 @@ def _resolve_tool_policy(
                 # every fresh subagent spawn.
                 _last_startup_race_time = now
                 _last_startup_race_key = session_key
-                sel().log_api_access(
+                _audit_policy(
                     caller=session_key,
                     operation="tool_policy.agent_not_resolved",
                     outcome="unresolved",
@@ -743,7 +762,7 @@ def _resolve_tool_policy(
                     # its parent (gatewayd for a pooled backend, the harness
                     # for a server it launched itself) is what tells the
                     # launch paths apart afterwards.
-                    sel().log_api_access(
+                    _audit_policy(
                         caller=session_key,
                         operation="tool_policy.unattested",
                         outcome="unresolved",
@@ -772,7 +791,7 @@ def _resolve_tool_policy(
                 # gateway could not read, and what to do -- rides along as
                 # ``detail`` so the refusal can say it; the decision is the
                 # status and code alone, exactly as before.
-                sel().log_api_access(
+                _audit_policy(
                     caller=session_key,
                     operation="tool_policy.unreadable",
                     outcome="unresolved",
@@ -789,7 +808,7 @@ def _resolve_tool_policy(
                 # refused (``gateway_locked`` is in ``_UNRESOLVED_REFUSES_CALL``)
                 # until the gate reopens. Not cached, so it clears on the first
                 # read after the gate opens.
-                sel().log_api_access(
+                _audit_policy(
                     caller=session_key,
                     operation="tool_policy.gateway_locked",
                     outcome="unresolved",
@@ -812,7 +831,7 @@ def _resolve_tool_policy(
                 # debounce, and it is specific to THIS caller's identity, so
                 # caching it globally would deny sibling sessions over one
                 # caller's missing proof.
-                sel().log_api_access(
+                _audit_policy(
                     caller=session_key,
                     operation="tool_policy.forbidden",
                     outcome="unresolved",
@@ -839,7 +858,7 @@ def _resolve_tool_policy(
                     http_exc.code,
                     session_key,
                 )
-                sel().log_api_access(
+                _audit_policy(
                     caller=session_key,
                     operation="tool_policy.forbidden",
                     outcome="unresolved",
@@ -873,7 +892,7 @@ def _resolve_tool_policy(
                 session_key,
                 _shape,
             )
-            sel().log_api_access(
+            _audit_policy(
                 caller=session_key,
                 operation="tool_policy.unreadable",
                 outcome="unresolved",
@@ -898,7 +917,7 @@ def _resolve_tool_policy(
                 "rather than enforcing the part that parses",
                 session_key,
             )
-            sel().log_api_access(
+            _audit_policy(
                 caller=session_key,
                 operation="tool_policy.unreadable",
                 outcome="unresolved",
@@ -967,7 +986,7 @@ def _resolve_tool_policy(
                 "Tool policy resolution still failing — further warnings suppressed; "
                 "see audit log for tool_policy.resolution_failed events",
             )
-        sel().log_api_access(
+        _audit_policy(
             caller=session_key or "mcp",
             operation="tool_policy.resolution_failed",
             outcome="unresolved",
