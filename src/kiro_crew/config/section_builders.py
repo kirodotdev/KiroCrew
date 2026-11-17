@@ -784,6 +784,8 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         use_tunnel_url=bool(section.get("use_tunnel_url")),
         show_thinking=bool(section.get("show_thinking")),
         dm_single_session=bool(section.get("dm_single_session")),
+        # Default True: a missing or non-boolean value keeps the built-in page.
+        home_tab_builtin=section.read("home_tab_builtin", _safe_bool),
         home_tab_sessions_per_kind=section.read("home_tab_sessions_per_kind", _safe_int),
         sessions_limit=section.read("sessions_limit", _safe_int),
         # Default False: a missing or unparseable value must mean "open no

@@ -490,6 +490,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
 | `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
 | `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message. Applies only on the default messaging transport (`messaging.use_transport`, on by default) and never in a DM set to `review` mode | `false` |
+| `slack.home_tab_builtin` | Publish the Kiro Crew status page to the bot's Slack Home tab each time an allowed user opens it. Set `false` to keep a Home view you publish yourself with the same bot; the change applies at the next open, without a restart. A missing or non-boolean value reads as `true` | `true` |
 
 Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists

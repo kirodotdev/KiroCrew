@@ -363,9 +363,10 @@ async def init_socket_mode(
                         outcome="allowed",
                         source="slack",
                     )
-                    task = asyncio.ensure_future(_publish_home_tab(orch, user))
-                    _background_tasks.add(task)
-                    task.add_done_callback(_background_tasks.discard)
+                    if _home_tab_builtin_enabled(orch):
+                        task = asyncio.ensure_future(_publish_home_tab(orch, user))
+                        _background_tasks.add(task)
+                        task.add_done_callback(_background_tasks.discard)
                 else:
                     sel().log_api_access(
                         caller=user,
@@ -1846,6 +1847,7 @@ from kiro_crew.slack.events_block_text import _extract_trusted_bot_attachment_te
 from kiro_crew.slack.events_block_text import _forwarded_messages  # noqa: E402
 from kiro_crew.slack.events_block_text import _has_share_attachments  # noqa: E402
 from kiro_crew.slack.events_block_text import _string_field  # noqa: E402
+from kiro_crew.slack.events_home_tab import _home_tab_builtin_enabled  # noqa: E402
 from kiro_crew.slack.events_home_tab import _publish_home_tab  # noqa: E402
 from kiro_crew.slack.events_inbound import SeenCache  # noqa: E402
 from kiro_crew.slack.events_inbound import _background_tasks  # noqa: E402
