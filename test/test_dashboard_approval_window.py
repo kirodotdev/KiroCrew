@@ -854,9 +854,11 @@ class TestAnswerReleasesTheApprovalHold:
         slot = SlotSpec(key="chat-1", autonudge=True)
         record = await run_turn(_prompt_turn(answers={"req-1": APPROVED}), slot=slot)
         releases = [
-            (call.args[0], call.kwargs.get("arm"))
+            (call.args[0], call.kwargs.get("arm"), call.kwargs.get("person"))
             for call in record.autonudge_calls
             if call.name == "release_approval_hold"
             and call.kwargs.get("why") == "a new turn started in the session"
         ]
-        assert releases == [("chat-1", False)]
+        # ``person=False``: a turn's start proves no prompt is open, not that a person
+        # is back, so it leaves a declared person-wait held.
+        assert releases == [("chat-1", False, False)]

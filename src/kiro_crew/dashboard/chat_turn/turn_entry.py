@@ -269,10 +269,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # here, whoever sent the turn (a person, a conductor's session_send, a
         # wake), or the loop stays silent until a person happens to come back.
         # A turn that stalls on approval again sets the hold again. Unarmed: this
-        # turn's own end re-arms the loop, as for a person's message.
+        # turn's own end re-arms the loop, as for a person's message. Not proof a
+        # person is back (``person=False``), so a declared person-wait stays held.
         from kiro_crew.autonudge import release_approval_hold_for
 
-        release_approval_hold_for(slot.key, why="a new turn started in the session", arm=False)
+        release_approval_hold_for(
+            slot.key, why="a new turn started in the session", arm=False, person=False
+        )
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message

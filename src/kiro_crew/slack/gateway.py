@@ -98,6 +98,8 @@ from kiro_crew.autonudge import (
     is_channel_key,
     is_structured_monitor_loop,
     nudge_cycle_header,
+    person_wait_ends_on_budget,
+    person_wait_expires_at,
     reason_in,
     runtime_budget_exceeded,
     terminal_notification_delivery_matches,
