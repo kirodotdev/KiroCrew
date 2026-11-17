@@ -626,11 +626,13 @@ all matter more to the operator than a pointer -- and those flags reach the stac
 - **IMDSv2 enforced** on the instance (`HttpTokens: required`, hop limit 1):
   KiroCrew runs a prompt-injectable agent, so an SSRF/injection that reaches the
   metadata endpoint must not read the instance role's STS credentials via IMDSv1.
-- **No unverified remote scripts in bootstrap.** Node.js installs from the AL2023
-  AppStream `dnf` repo (the reliable primary path, validated live). The
-  NodeSource fallback does NOT `curl … | bash` a remote installer; it imports
-  NodeSource's GPG key over pinned TLS and writes a `gpgcheck=1` dnf repo, so RPM
-  signatures are verified before install. kiro-cli is the musl zip of the
+- **No unverified remote scripts in bootstrap.** Node.js comes from the AL2023
+  `dnf` repo when that meets the `NODE_MIN` floor (22.12.0, the build's
+  compatibility floor). Otherwise the bootstrap installs a pinned official
+  nodejs.org tarball (`NODE_V`, currently v22.23.5) over pinned TLS and checks
+  its per-arch SHA-256 before extracting it as root. `NODE_V` tracks the newest
+  security release of the 22.x line, because host vulnerability scanners flag
+  an older patch release (for example v22.12.0) as an outdated Node.js. kiro-cli is the musl zip of the
   `packaging/kiro-cli-version` release, fetched from `prod.download.cli.kiro.dev`
   over `--proto '=https' --tlsv1.2` and checked against its
   `packaging/kiro-cli-sha256` SHA-256 before it is unzipped; the binary presence
