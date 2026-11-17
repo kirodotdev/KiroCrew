@@ -1,31 +1,28 @@
-"""The hub's background puller for remote workers (rfc-conductor-remote-dispatch §2, OQ 1).
+"""Pull a board's remote worker reports on its patrol tick (remote-dispatch RFC OQ 1).
 
 A remote worker's ``work_report`` lands in the peer's ``hub:<conductor>`` mailbox,
-and the hub learns it only by pulling (:func:`remote_ingest.ingest_board`). Pulling
-only inside ``work_ledger_read`` meant a remote ``done`` / ``question`` /
-``blocked`` / ``reply`` woke nobody until the conductor's next patrol turn. This
-task runs that same pull with no model turn, every
-:data:`~kiro_crew.work_ledger_remote.REMOTE_PULL_INTERVAL_SECS`, for each ledger
-here holding an open crew-bound item. A pulled report is filed as an ordinary
-recorded report, so the crew-log push (:mod:`kiro_crew.conductor_wake`) and the
-work-ledger probe wake the conductor exactly as they do for a local one.
+and the hub learns it only by pulling (:func:`remote_ingest.ingest_board`). A local
+worker needs no pull: its report writes the ledger itself. So the work-ledger
+patrol tick (``autonudge_service.firing``) calls :func:`pull_on_patrol` for its
+own board just before the person-wait hold and the probe read it. A pulled
+report is filed as an ordinary recorded report, so the hold and the gate see it
+on that same tick and wake the conductor exactly as for a local one. The pull
+itself spends no model turn.
 
-Nothing new crosses the tunnel: the hub still pulls and the peer never connects
-back, through the same ``peer_call`` (path fence, byte cap,
-``_redact_peer_payload``), and the item stays the dedupe, keyed by the peer's
-``last_report_at``.
+Only a board with an open crew-bound item (or a retired slot still to close) is
+pulled; a board with only local items makes no peer call. Nothing new crosses the
+tunnel: the hub still pulls and the peer never connects back, through the same
+``peer_call`` (path fence, byte cap, ``_redact_peer_payload``).
 
-Bounds. One run at a time (a single task that sleeps between runs, so runs never
-overlap); a board already being pulled by a read is skipped by ``ingest_board``'s
-own guard. Boards are pulled concurrently, at most :data:`PARALLEL_BOARDS` at once,
-each cut off at :data:`BOARD_TIMEOUT_SECS`, well under the interval, and inside it
-each item at ``PULL_TIMEOUT_SECS``, so one unreachable crew never stalls another.
+Bounds. One board per tick, cut off at :data:`BOARD_TIMEOUT_SECS`, and inside it
+each item at ``PULL_TIMEOUT_SECS``, so an unreachable crew delays only its own
+conductor's tick. A board a read is already pulling is skipped by
+``ingest_board``'s own guard. Behind ``work_ledger.remote_dispatch``: off, nothing
+is pulled.
 
-Behind ``work_ledger.remote_dispatch``, read on every run. Off, the task is never
-started (:func:`ensure_running` returns at once) and a running one ends at its next
-run. It is started after the dashboard binds when the switch is on
-(``server_runtime.service_hooks``), and again by a crew bind or a ledger read, so
-turning the switch on needs no restart. The dashboard's cleanup hook stops it.
+Each tick, and once at boot, :func:`sweep_closes` also closes retired peer slots
+on every board here, so a slot retired before its conductor stopped patrolling is
+still closed when its crew comes back.
 """
 
 from __future__ import annotations
@@ -41,165 +38,134 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Seconds between two runs; the store module owns the value the probe reads too.
-PULL_INTERVAL_SECS = work_ledger.REMOTE_PULL_INTERVAL_SECS
-
 #: Seconds one board's pull may take in all, its lock waits included. Above the
 #: read path's own pull budget (``remote_ingest.READ_DEADLINE_SECS``) and well
-#: under :data:`PULL_INTERVAL_SECS`.
+#: under the patrol interval.
 BOARD_TIMEOUT_SECS = 10.0
 
-#: Boards pulled at once in one run.
-PARALLEL_BOARDS = 8
 
-#: Most boards one run pulls; the rest wait for the next run.
-MAX_BOARDS_PER_RUN = 64
-
-
-def _enabled() -> bool:
-    from kiro_crew.remote_dispatch import remote_dispatch_enabled
-
-    return remote_dispatch_enabled()
-
-
-class _Puller:
-    def __init__(self, state: "DashboardState") -> None:
-        self.state = state
-        self.task: asyncio.Task[None] | None = None
-        #: Set by :func:`ensure_running` while the task is alive, so a run that read
-        #: the switch off just before a bind or read turned it on runs once more
-        #: rather than ending with that item unpulled.
-        self.kicked = False
-
-    def alive(self) -> bool:
-        return self.task is not None and not self.task.done()
-
-
-_puller: _Puller | None = None
-
-#: Set by :func:`stop`; :func:`ensure_running` starts nothing after it.
-_stopped = False
-
-
-def _pullable_boards() -> list[str]:
-    """The boards with an open crew-bound item whose cache is not flagged dirty. BLOCKING.
+def _needs_pull(board: str) -> bool:
+    """Switch on, an open crew-bound item, and a clean cache. BLOCKING.
 
     A dirty board waits for a rebuild; pulling it would only refuse, and each refusal
-    writes a ``denied`` audit row no caller caused, every run until the rebuild.
+    writes a ``denied`` audit row no caller caused, every tick until the rebuild.
     """
-    return [b for b in work_ledger.boards_with_open_remote() if work_ledger.cache_dirty(b) is None]
+    from kiro_crew.remote_dispatch import remote_dispatch_enabled
+
+    return (
+        remote_dispatch_enabled()
+        and work_ledger.board_has_open_remote(board)
+        and work_ledger.cache_dirty(board) is None
+    )
 
 
-#: Where the next run's window of boards starts, so a run capped at
-#: :data:`MAX_BOARDS_PER_RUN` never leaves the same tail unpulled every time.
-_cursor = 0
+async def pull_on_patrol(state: DashboardState, board: str) -> bool:
+    """Pull *board*'s remote reports once, for its patrol tick. Never raises.
 
-
-def _next_window(boards: list[str]) -> list[str]:
-    """At most :data:`MAX_BOARDS_PER_RUN` of *boards*, rotating between runs."""
-    global _cursor
-    if len(boards) <= MAX_BOARDS_PER_RUN:
-        _cursor = 0
-        return boards
-    start = _cursor % len(boards)
-    _cursor = start + MAX_BOARDS_PER_RUN
-    return (boards[start:] + boards[:start])[:MAX_BOARDS_PER_RUN]
-
-
-async def run_once(state: "DashboardState") -> list[str]:
-    """Pull every ledger here holding an open crew-bound item, once. Never raises.
-
-    Answers the boards it pulled, for tests and the debug log.
+    True when a pull ran (finished, cut off or failed); False when the board needed
+    none, so no peer call was made.
     """
     from kiro_crew.dashboard.handlers import remote_ingest
 
     try:
-        boards = await asyncio.to_thread(_pullable_boards)
-    except Exception:  # noqa: BLE001 - a scan fault skips this run
-        logger.debug("remote puller: board scan failed", exc_info=True)
+        needed = await asyncio.to_thread(_needs_pull, board)
+    except Exception:
+        logger.debug("remote pull: board check failed", exc_info=True)
+        return False
+    if not needed:
+        return False
+    try:
+        await asyncio.wait_for(remote_ingest.ingest_board(state, board), BOARD_TIMEOUT_SECS)
+    except TimeoutError:
+        logger.info("remote pull: pull for one board passed %ss", BOARD_TIMEOUT_SECS)
+    except Exception:
+        logger.warning("remote pull: pull failed for one board", exc_info=True)
+    return True
+
+
+#: Most boards one close sweep visits; the rest wait for the next tick or boot.
+MAX_CLOSE_BOARDS_PER_SWEEP = 64
+
+#: Where the next sweep's window of boards starts, so a capped sweep never leaves
+#: the same tail unvisited every time.
+_close_cursor = 0
+
+
+def _close_window(boards: list[str]) -> list[str]:
+    """At most :data:`MAX_CLOSE_BOARDS_PER_SWEEP` of *boards*, rotating between sweeps."""
+    global _close_cursor
+    if len(boards) <= MAX_CLOSE_BOARDS_PER_SWEEP:
+        _close_cursor = 0
+        return boards
+    start = _close_cursor % len(boards)
+    _close_cursor = start + MAX_CLOSE_BOARDS_PER_SWEEP
+    return (boards[start:] + boards[:start])[:MAX_CLOSE_BOARDS_PER_SWEEP]
+
+
+def _boards_to_close() -> list[str]:
+    """Boards with a retired slot not yet closed, clean cache, switch on. BLOCKING."""
+    from kiro_crew.remote_dispatch import remote_dispatch_enabled
+
+    if not remote_dispatch_enabled():
         return []
-    boards = _next_window(boards)
-    gate = asyncio.Semaphore(PARALLEL_BOARDS)
-
-    async def _one(board: str) -> None:
-        async with gate:
-            try:
-                await asyncio.wait_for(remote_ingest.ingest_board(state, board), BOARD_TIMEOUT_SECS)
-            except asyncio.TimeoutError:
-                logger.info("remote puller: pull for one board passed %ss", BOARD_TIMEOUT_SECS)
-            except Exception:  # noqa: BLE001 - one board must never stop the rest
-                logger.warning("remote puller: pull failed for one board", exc_info=True)
-
-    await asyncio.gather(*(_one(board) for board in boards))
-    return boards
+    boards = _close_window(work_ledger.boards_with_pending_close())
+    return [b for b in boards if work_ledger.cache_dirty(b) is None]
 
 
-async def _run(puller: _Puller) -> None:
-    while True:
-        puller.kicked = False
-        try:
-            on = await asyncio.to_thread(_enabled)
-        except Exception:  # noqa: BLE001 - fails closed, as the switch does
-            on = False
-        if not on:
-            if puller.kicked:
-                continue
-            return
-        await run_once(puller.state)
-        await asyncio.sleep(PULL_INTERVAL_SECS)
+async def sweep_closes(state: "DashboardState") -> list[str]:
+    """Start the close of every retired peer slot whose crew reads connected. Never raises.
 
+    The pull closes a retired slot only on a board someone still patrols or reads.
+    Once its items close, that conductor's patrol stops, so a crew that comes back
+    later would keep the old worker running unwatched. This sweep finds those
+    slots from local files alone and hands each board to
+    ``remote_ingest._schedule_closes``, which sends a DELETE only to a crew whose
+    tunnel already reads connected and tries each slot once per process. It runs
+    once at boot, after the startup tunnel revive, and on every work-ledger patrol
+    tick, with no timer of its own. Each board's items are read SETTLED, under its
+    board lock as ``ingest_board`` reads them, so a retire still being recorded
+    (and possibly rolled back) never closes its worker. The whole sweep is cut off
+    at :data:`BOARD_TIMEOUT_SECS`.
 
-def ensure_running(state: "DashboardState") -> None:
-    """Start the puller if it is not running. Call on the event loop, switch on only.
+    shortcut: with no conductor patrolling anywhere, a crew that reconnects after
+    boot is closed only at the next boot or patrol tick; add a tunnel-connect hook
+    if that wait matters.
 
-    Cheap and idempotent: a live task is only kicked. Starts nothing once
-    :func:`stop` ran.
+    Answers the boards it handed on, for tests and the debug log.
     """
-    global _puller
-    if _stopped:
-        return
-    if _puller is not None and _puller.alive() and _puller.state is state:
-        _puller.kicked = True
-        return
-    if _puller is not None and _puller.alive():
-        _puller.task.cancel()  # type: ignore[union-attr]
-    _puller = _Puller(state)
-    _puller.task = asyncio.get_running_loop().create_task(
-        _run(_puller), name="remote-report-puller"
-    )
-
-
-async def start_if_enabled(state: "DashboardState") -> None:
-    """Boot: start the puller only when the switch is on. A new dashboard in the
-    same process starts again after an earlier one's :func:`stop`."""
-    global _stopped
-    _stopped = False
+    swept: list[str] = []
     try:
-        on = await asyncio.to_thread(_enabled)
-    except Exception:  # noqa: BLE001
-        on = False
-    if on:
-        ensure_running(state)
+        await asyncio.wait_for(_sweep(state, swept), BOARD_TIMEOUT_SECS)
+    except Exception:  # noqa: BLE001 - a timeout or scan fault ends this sweep
+        logger.debug("remote close sweep stopped early", exc_info=True)
+    return swept
 
 
-async def stop() -> None:
-    """Cancel the puller and wait for it to end. Safe when it never started."""
-    global _puller, _stopped
-    _stopped = True
-    puller, _puller = _puller, None
-    if puller is None or puller.task is None:
-        return
-    puller.task.cancel()
-    try:
-        await puller.task
-    except asyncio.CancelledError:
-        pass
-    except Exception:  # noqa: BLE001 - shutdown must not raise
-        logger.debug("remote puller ended with an error", exc_info=True)
+async def _sweep(state: "DashboardState", swept: list[str]) -> None:
+    from kiro_crew.dashboard.handlers import remote_ingest
+    from kiro_crew.dashboard.handlers.work_ledger import _board_lock
+
+    for board in await asyncio.to_thread(_boards_to_close):
+        try:
+            async with _board_lock(board):
+                if await asyncio.to_thread(work_ledger.cache_dirty, board) is not None:
+                    continue
+                items = await asyncio.to_thread(work_ledger.list_work_items, board)
+            remote_ingest._schedule_closes(state, board, items)
+            swept.append(board)
+        except Exception:  # noqa: BLE001 - one board must never stop the rest
+            logger.warning("remote close sweep failed for one board", exc_info=True)
 
 
-def reset_for_tests() -> None:
-    global _puller, _stopped, _cursor
-    _puller = None
-    _stopped = False
-    _cursor = 0
+async def on_patrol_tick(state: "DashboardState", board: str) -> None:
+    """The patrol tick's remote step: pull *board*, then sweep closes. Never raises."""
+    await pull_on_patrol(state, board)
+    await sweep_closes(state)
+
+
+def ensure_running(_state: DashboardState) -> None:
+    """No-op: nothing runs in the background any more.
+
+    shortcut: kept only for the bind route's call (``remote_dispatch_routes``,
+    owned by another change); delete with that call.
+    """

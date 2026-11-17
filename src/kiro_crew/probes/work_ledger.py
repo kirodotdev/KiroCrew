@@ -601,13 +601,13 @@ def person_wait_fingerprint(
             work_preview.remote_dispatch()
             and all(work_ledger.remote_pull_fresh(conductor_key, item) for item in remote)
         ):
-            # A remote worker's reports reach this board through the hub's
-            # background puller (``remote_puller``), every
-            # ``REMOTE_PULL_INTERVAL_SECS``. While its last pull is fresh the fields
-            # here stand for the peer's and a new report moves the fingerprint like
-            # a local one. A stale, failed or missing pull, or the switch off (no
-            # puller), could hold the patrol past the report that moves the item,
-            # so the patrol runs instead: the liveness fallback.
+            # A remote worker's reports reach this board through the pull the
+            # patrol tick runs before this read (``remote_puller.pull_on_patrol``).
+            # While its last pull is fresh the fields here stand for the peer's and
+            # a new report moves the fingerprint like a local one. A stale, failed
+            # or missing pull, or the switch off (no pull), could hold the patrol
+            # past the report that moves the item, so the patrol runs instead: the
+            # liveness fallback.
             return None
         closed = worker_closed or _always_open
         if any(_worker_gone(conductor_key, item, closed) for item in open_items):

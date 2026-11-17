@@ -38,6 +38,11 @@ moved from `SKILL.md` to `references/remote-dispatch.md`; only the `crew` and
 `work_item` argument descriptions name it, so it is reachable only while
 `work_ledger.remote_dispatch` is on.
 
+**Revision 2026-11-15.** Owner decision: the 30 s background puller is removed.
+The pull runs on the conductor's work-ledger patrol tick instead (§2 "Pull on
+the patrol tick", open question 1): the 30 s had no measured basis, and it cost
+one peer call per board every 30 s whether or not anyone was patrolling.
+
 ## Summary
 
 A conductor on this gateway can only dispatch workers onto this gateway. This
@@ -217,7 +222,7 @@ peer. The question is how the hub learns them.
 |---|---|---|
 | Tunnel direction | hub → peer, as today | needs peer → hub: a new transport |
 | Peer reach into hub | none | the peer holds a hub credential and a hub route |
-| Wakes | on the hub's next pull (background puller, 30 s; OQ 1) | immediate |
+| Wakes | on the hub's next pull (the conductor's patrol tick; OQ 1) | immediate |
 | Hub down | nothing lost; the peer copy waits | reports fail or queue on the peer |
 
 **Recommend (a).** (b) breaks both the tunnel shape and §4's "no reach back".
@@ -243,11 +248,12 @@ How (a) works:
   nothing. From there `accept`, wakes from the crew log, and
   `work_ledger_rebuild` work as they do for a local report. A failed fetch keeps
   the last ingested state.
-- **Background pull.** The same pull also runs on the hub with no model turn,
-  every 30 s, for each ledger holding an open crew-bound item, so a remote report
-  wakes the conductor within one interval instead of at its next patrol (open
-  question 1). Runs never overlap; each board is cut off at 10 s and one
-  unreachable crew never stalls another.
+- **Pull on the patrol tick.** The same pull also runs on the hub with no model
+  turn at the start of each work-ledger patrol tick, for that conductor's own
+  board and only when it holds an open crew-bound item, so the tick's hold and
+  gate read a remote report as they read a local one (open question 1). A board
+  with only local items makes no peer call. Each pull is cut off at 10 s and
+  delays only its own conductor's tick.
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.
@@ -480,10 +486,11 @@ ones.
   - it ends when the worker slot closes, and when the hub records a write that
     closes the item (`PATCH .../work-item` with `trust: false`);
   - it ends when the conductor leaves Trust: the peer's `GET .../work-item`
-    reply says `trust_active`, and the next pull (every 30 s from the
-    background puller, or a `work_ledger_read`) that finds the conductor no
-    longer in Trust sends `trust: false`. Until that pull lands, up to one pull
-    interval, the worker keeps the grant. A hub that cannot reach the peer
+    reply says `trust_active`, and the next pull (the conductor's next patrol
+    tick, or a `work_ledger_read`) that finds the conductor no longer in Trust
+    sends `trust: false`. Until that pull lands, up to one patrol interval, the
+    worker keeps the grant; with no patrol running it keeps it until the grant
+    expires (default 6 h). This is a known gap. A hub that cannot reach the peer
     cannot revoke; the grant then ends at its TTL or when the slot closes.
   The PATCH takes only `false`: a grant is armed at create and never later.
   A peer older than this change refuses `trust` as an unknown `work_item` field
@@ -645,6 +652,32 @@ nothing that passes today.
    hold applies to a remote item only while its last pull is fresh (connected,
    slot list read, no error, under 90 s old); otherwise the patrol runs, as
    before.
+
+   **Amended 2026-11-15 (owner decision).** The background puller is removed:
+   nothing pulls every 30 s any more. A local worker needs no pull because its
+   own report writes the ledger; only a remote one does, so the pull moved into
+   the patrol, which already ticks every `conductor_patrol.PATROL_INTERVAL_SECS`
+   (300 s). At the start of each work-ledger tick, before the person-wait hold
+   and the probe read the ledger, the hub runs `remote_ingest.ingest_board` once
+   for that conductor's board, cut off at 10 s, and only when the board holds
+   an open crew-bound item or a retired slot still to close
+   (`work_ledger.board_has_open_remote`). A pulled `done`, `question`,
+   `blocked` or `reply` is then seen by the hold and the gate on that same tick.
+   The pull spends no model turn, and `work_ledger_read` still pulls. A pull is
+   fresh for two patrol intervals (`work_ledger.REMOTE_PULL_FRESH_SECS`), so the
+   person-wait hold survives the 300 s cadence and one skipped pull. The retire
+   clock (`work_ledger.remote_dispatch_retire_minutes`) still works: the first
+   pull that sees the crew down starts it and the first pull past the limit
+   retires, so a retire lands at most two patrol intervals later than under the
+   30 s puller. A held patrol still ticks and pulls; a patrol paused for an
+   approval, or none at all, pulls only on the conductor's own
+   `work_ledger_read`. The 30 s puller also closed a retired peer slot on a
+   board nobody patrolled any more; that close now runs as a close-only sweep
+   once at boot (after the startup tunnel revive) and on every work-ledger patrol
+   tick of any conductor, from
+   local files, sending the DELETE only to a crew already connected. Left open:
+   with no conductor patrolling anywhere, a crew that comes back after boot is
+   closed at the next boot or patrol tick.
 2. **Folder on the peer.** Should `session_create(crew=)` accept `folder` and file
    the worker into a peer folder? Proposed: no in wave 1; the crew group already
    says where it is.

@@ -160,6 +160,86 @@ async def test_a_new_report_releases_the_hold(svc, _nosleep, ledger):
 
 
 @pytest.mark.asyncio
+async def test_a_remote_report_pulled_on_the_tick_releases_the_hold_that_tick(
+    svc, _nosleep, ledger
+):
+    """The tick pulls its board's remote reports BEFORE the hold reads the ledger."""
+    pulls: list[str] = []
+
+    async def pull(key: str) -> None:
+        pulls.append(key)
+        if len(pulls) == 3:
+            ledger["fp"] = "fp-remote"  # the pull filed a remote worker's report
+
+    svc._remote_report_puller = pull
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert svc._loops[loop.id].waiting_on_person is True and len(fired) == 1
+
+    await _tick(svc, loop)
+    assert pulls == [CONDUCTOR] * 3, "one pull per tick, for the loop's own board"
+    assert len(fired) == 2, "the report the pull filed fires on the same tick"
+    assert svc._loops[loop.id].ledger_seen_fp == "fp-remote"
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_push_during_the_pull_does_not_cancel_the_tick(svc, _nosleep, ledger):
+    """A report the pull files pushes a pull-forward; that push must not kill this tick."""
+    pushes: list[tuple] = []
+
+    async def pull(key: str) -> None:
+        # What ``conductor_wake`` does for a report filed mid-pull.
+        pushes.append(await svc.fire_now(loop.id, defer_if_firing=True))
+        ledger["fp"] = "fp-remote"
+
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert svc._loops[loop.id].waiting_on_person is True and len(fired) == 1
+    svc._remote_report_puller = pull
+    await _tick(svc, loop)
+    assert pushes and pushes[0][2] == 409, "the push is refused while the tick pulls"
+    assert loop.id not in svc._pulled_forward, "this tick reads the report itself"
+    assert loop.id not in svc._firing
+    assert len(fired) == 2, "the same tick delivers the pulled report"
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_pull_never_fails_the_tick(svc, _nosleep, ledger):
+    async def pull(_key: str) -> None:
+        raise RuntimeError("tunnel broke")
+
+    svc._remote_report_puller = pull
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert len(fired) == 1 and svc._loops[loop.id].waiting_on_person is True
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_loop_that_watches_no_ledger_pulls_nothing(svc, _nosleep, monkeypatch):
+    monkeypatch.setattr(AutoNudgeService, "_observes_work_ledger", lambda self, loop: False)
+    pulls: list[str] = []
+
+    async def pull(key: str) -> None:
+        pulls.append(key)
+
+    svc._remote_report_puller = pull
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert pulls == [] and len(fired) == 2
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
 async def test_release_after_a_long_hold_fires_instead_of_stopping(svc, _nosleep, ledger):
     """Held time goes back to the runtime clock, so the news is a turn, not a stop."""
     ledger["fp"] = "fp-a"

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.conductor_patrol import PATROL_INTERVAL_SECS
 from kiro_crew.session_ledger import _store_name, resolved_within
 from kiro_crew.work_ledger_records import (
     BLOCKED_REASONS,
@@ -345,18 +346,33 @@ def open_remote_bindings() -> dict[str, int]:
     return counts
 
 
-def boards_with_open_remote() -> list[str]:
-    """The conductor keys of every ledger here the hub's background puller walks. BLOCKING.
+def board_has_open_remote(slot_key: str) -> bool:
+    """Whether *slot_key*'s ledger needs a pull from its crews. BLOCKING.
 
     A ledger qualifies with an open crew-bound item, or with a retired binding
-    whose peer slot is not yet closed (wave 8), so a reconnect closes it with
-    nobody watching. Such an entry reserves nothing (:func:`open_remote_bindings`). The key comes from the board's own
-    header, and a header whose key does not name the directory it sits in is
-    skipped, so a pull never runs against a board it cannot address. Never raises.
+    whose peer slot is not yet closed (wave 8), so a reconnect closes it. Such an
+    entry reserves nothing (:func:`open_remote_bindings`). A ledger with only local
+    items answers ``False``, so its patrol tick makes no peer call. Never raises.
+    """
+    try:
+        board = conductor_dir(slot_key)
+    except WorkLedgerError:
+        return False
+    return bool(_open_remote_items(board)) or _has_pending_close(board)
+
+
+def boards_with_pending_close() -> list[str]:
+    """The conductor keys of every ledger here holding a retired, not yet closed slot. BLOCKING.
+
+    Local file reads only. Walks every board, its closed items included, so a slot
+    retired before its item closed is still found once that conductor's patrol has
+    stopped. The key comes from the board's own header, and a header whose key does
+    not name the directory it sits in is skipped, so a close never runs against a
+    board it cannot address. Never raises.
     """
     keys: list[str] = []
     for board in _board_dirs():
-        if not _open_remote_items(board) and not _has_pending_close(board):
+        if not _has_pending_close(board):
             continue
         try:
             raw = _read_json_record(board / _CONDUCTOR_FILE)
@@ -377,15 +393,12 @@ def boards_with_open_remote() -> list[str]:
     return sorted(keys)
 
 
-#: Seconds between two runs of the hub's background puller
-#: (:mod:`kiro_crew.dashboard.handlers.remote_puller`). Here, not there, because the
-#: work-ledger probe reads it too and must not import the dashboard.
-REMOTE_PULL_INTERVAL_SECS = 30.0
-
 #: How old a remote item's last good pull may be before the probe stops trusting
-#: the hub's copy of its fields: three puller runs, so one slow or missed run never
-#: drops the person-wait hold, and a puller that stopped does within two minutes.
-REMOTE_PULL_FRESH_SECS = 3 * REMOTE_PULL_INTERVAL_SECS
+#: the hub's copy of its fields. The hub pulls a board once per work-ledger patrol
+#: tick (:mod:`kiro_crew.dashboard.handlers.remote_puller`), so two intervals: one
+#: slow or skipped pull never drops the person-wait hold, and a patrol that stopped
+#: pulling does within two ticks.
+REMOTE_PULL_FRESH_SECS = 2 * PATROL_INTERVAL_SECS
 
 
 def remote_pull_fresh(board: str, item: WorkItem, now: datetime | None = None) -> bool:
