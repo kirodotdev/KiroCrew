@@ -497,9 +497,10 @@ def _anchor_targets(
 # request rather than once per leaf (``_child_realpath.realpaths_sharing_folders``:
 # about 250 ``lstat`` calls for the read list in a home with no links, where one
 # ``realpath`` per leaf makes 1,800 to 3,900). A path with a link anywhere on the way
-# goes to ``os.path.realpath`` whole. A build is therefore one view of those folders,
-# and nothing read in it is kept for the next: the expiry below still decides how
-# old a served set can be.
+# goes to ``os.path.realpath`` whole. On Windows each folder's answer is kept for the
+# build, and a missing leaf is its parent's answer joined. A build is therefore one
+# view of those folders, and nothing read in it is kept for the next: the expiry
+# below still decides how old a served set can be.
 #
 # The TTL is therefore sized as small as it can be while still doing its job.
 # The FLOOR is 0.1s, NOT a "few seconds", because a skills walk issues thousands
