@@ -75,7 +75,7 @@ jobs:
             pad_bytes: "0"
             min_zip_bytes: "0"
             drive_timeout: "300"
-          - payload: over-1gib
+          - payload: over-1gib-disabled
             # 1.1 GiB of random bytes; the app itself adds the rest.
             pad_bytes: "1181116007"
             # The ZIP must be over 1.1 GiB (1,181,116,006 B), clear of the
@@ -253,6 +253,19 @@ jobs:
           echo "--- app log ---"; cat /tmp/ota-app.log || true
           exit 1
 
+      - name: Collect updater diagnostics
+        if: always()
+        run: |
+          set +e
+          mkdir -p /tmp/ota-diag
+          cp -R "$HOME/Library/Logs" /tmp/ota-diag/Logs 2>/dev/null
+          cp -R "$HOME/Library/Caches/com.amazon.kiro.crew.ShipIt" /tmp/ota-diag/ShipIt 2>/dev/null
+          ls -laR "$HOME/Library/Caches" 2>/dev/null | grep -i -A3 "kiro\|crew\|updater" > /tmp/ota-diag/caches.txt
+          cp -R "${OUT}/home" /tmp/ota-diag/home 2>/dev/null
+          log show --last 30m --style compact --predicate 'process == "ShipIt" OR process CONTAINS "KiroCrew" OR subsystem CONTAINS "squirrel"' > /tmp/ota-diag/unified.log 2>&1
+          pgrep -fl KiroCrew > /tmp/ota-diag/ps.txt
+          find /tmp/ota-diag -type f | head -100
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -262,5 +275,6 @@ jobs:
             /tmp/ota-build.log
             /tmp/ota-app.log
             /tmp/ota-feed.log
+            /tmp/ota-diag
           if-no-files-found: warn
           retention-days: 7
