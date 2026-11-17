@@ -11181,6 +11181,8 @@
       "kind_crewmate_dashboard_page": "Dashboard-Seite",
       "primary_crewmate_dashboard_page": "Ja, baue meine Seite",
       "primary_crewmate_check_ins": "Diese Check-ins einschalten",
+      "primary_crewmate_check_ins_off": "Diese Check-ins ausschalten",
+      "primary_crewmate_check_ins_save": "Diese Check-ins speichern",
       "field_key_results": "Meilensteine",
       "decline_crewmate_import": "Nicht importieren",
       "note_crewmate_import": "Beim Import läuft nichts: Er schlägt Dinge selbst nach und fragt, bevor er irgendetwas anderes tut, geplante Aufgaben kommen ausgeschaltet an, und Skills warten, bis du dem Workspace-Ordner des Bot vertraust. Nach dem Klick entfernt ihn Rückgängig auf dieser Karte.",

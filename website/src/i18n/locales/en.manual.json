@@ -4899,6 +4899,8 @@
       "kind_crewmate_dashboard_page": "Dashboard page",
       "primary_crewmate_dashboard_page": "Yes, build my page",
       "primary_crewmate_check_ins": "Turn on these check-ins",
+      "primary_crewmate_check_ins_off": "Turn off these check-ins",
+      "primary_crewmate_check_ins_save": "Save these check-ins",
       "field_key_results": "Milestones",
       "decline_crewmate_import": "Don't import",
       "note_crewmate_import": "Nothing runs when you import: it looks things up on its own and asks before anything else, schedules arrive switched off, and skills wait until you trust the bot's workspace folder. After the press, Undo on this card removes it.",

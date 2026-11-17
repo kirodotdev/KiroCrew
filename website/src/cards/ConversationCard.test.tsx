@@ -147,7 +147,7 @@ describe('card registry', () => {
     pending = CARD_KINDS.map((kind, i) => card({ id: `k${i}`, kind, created_at: 1_700_000_000 + i }))
     renderCards()
     await waitFor(() => expect(screen.getAllByTestId('change-card')).toHaveLength(CARD_KINDS.length))
-    for (const kind of CARD_KINDS) expect(screen.getAllByText(CARD_REGISTRY[kind].primary()).length).toBeGreaterThan(0)
+    for (const kind of CARD_KINDS) expect(screen.getAllByText(CARD_REGISTRY[kind].primary(pending.find(c => c.kind === kind))).length).toBeGreaterThan(0)
   })
 
   it('fills only the declared fields, from the user or an earlier step response', () => {

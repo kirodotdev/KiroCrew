@@ -11439,6 +11439,8 @@
       "kind_crewmate_dashboard_page": "Página del panel",
       "primary_crewmate_dashboard_page": "Sí, crea mi página",
       "primary_crewmate_check_ins": "Activar estas revisiones",
+      "primary_crewmate_check_ins_off": "Desactivar estas revisiones",
+      "primary_crewmate_check_ins_save": "Guardar estas revisiones",
       "field_key_results": "Hitos",
       "decline_crewmate_import": "No importar",
       "note_crewmate_import": "Al importar no se ejecuta nada: busca información por su cuenta y pregunta antes de hacer cualquier otra cosa, las tareas programadas llegan desactivadas y las habilidades esperan a que confíes en la carpeta de trabajo del Bot. Después, Deshacer en esta tarjeta lo elimina.",
