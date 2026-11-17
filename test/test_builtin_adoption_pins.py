@@ -484,7 +484,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"app.json permissions.agentTurns": 2, "app.json permissions.workerAutoApprove": 2},
         ),
         ({"permissions": {"agentTurns": "true"}}, {}, {}),
-        ({"credentialMasks": ["data/token.json"]}, {}, {"app.json credentialMasks": 3}),
+        (
+            {"credentialMasks": ["data/token.json"]},
+            {},
+            {"app.json credentialMasks": 3, "app.json credentialMasks tool gate": 10},
+        ),
         ({"agentReadOnlyDirs": ["notes"]}, {}, {"app.json agentReadOnlyDirs": 7}),
         (
             {"permissions": {"api": ["/api/apps/demo", " =/api/apps"]}},
@@ -507,7 +511,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         (
             {"credentialMasks": ["state/", "token.json"]},
             {},
-            {"app.json credentialMasks": 3, "app.json credentialMasks directory": 8},
+            {
+                "app.json credentialMasks": 3,
+                "app.json credentialMasks directory": 8,
+                "app.json credentialMasks tool gate": 10,
+            },
         ),
         (
             {

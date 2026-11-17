@@ -458,6 +458,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_APPLIED"): "counter",
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
+    # Bumped per recorded app declaration so the tool gate retires a listing; no home state.
+    ("kiro_crew.apps.credential_masks", "_generation"): "counter",
     ("kiro_crew.dashboard.handlers.updates_check", "_last_update_check"): "clock",
     # When the shared-crew admission service last read its config: a monotonic
     # stamp the harness zeroes and each boot sets again when it builds its service.

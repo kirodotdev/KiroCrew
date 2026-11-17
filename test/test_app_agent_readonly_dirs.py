@@ -204,10 +204,10 @@ class TestTheDeclarationsAreListedWithinADeadline:
 
     @pytest.fixture(autouse=True)
     def _fresh_listing(self, _floor_monkeypatch):
-        _floor_monkeypatch.setattr(paths_targets, "_app_readonly_rows_cache", None)
-        _floor_monkeypatch.setattr(paths_targets, "_app_readonly_rows_pending", None)
+        _floor_monkeypatch.setattr(paths_targets._APP_READONLY_ROWS, "cache", None)
+        _floor_monkeypatch.setattr(paths_targets._APP_READONLY_ROWS, "pending", None)
         self.now = 1000.0
-        _floor_monkeypatch.setattr(paths_targets, "_app_readonly_rows_clock", lambda: self.now)
+        _floor_monkeypatch.setattr(paths_targets, "_app_rows_clock", lambda: self.now)
 
     def _counting_listing(self, monkeypatch, *, gate: threading.Event | None = None):
         listed = paths_targets._list_app_readonly_dir_rows
@@ -226,9 +226,9 @@ class TestTheDeclarationsAreListedWithinADeadline:
     def _let_the_listing_finish():
         # The pool may start a held listing only after every check has refused, so count
         # its starts once it has run.
-        pending = paths_targets._app_readonly_rows_pending
+        pending = paths_targets._APP_READONLY_ROWS.pending
         if pending is not None:
-            pending[1].result(FALLBACK_TIMEOUT_SECS)
+            pending[2].result(FALLBACK_TIMEOUT_SECS)
 
     def test_the_listing_runs_off_the_loop_and_is_reused_until_it_expires(self, home, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -243,7 +243,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
         assert all(r and not security.is_unverifiable_path_refusal(r) for r in refusals)
         assert len(threads) == 1 and threads[0] != loop_thread
 
-        self.now += paths_targets._APP_READONLY_ROWS_TTL_SECS
+        self.now += paths_targets._APP_ROWS_TTL_SECS
         _, refusals = asyncio.run(gate_twice())
         assert refusals[0] and len(threads) == 2, "an expired listing is taken again"
 
@@ -254,7 +254,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
         sibling = str(home / "apps" / "demo" / "data" / "other.md")
         monkeypatch.setattr(
             paths_targets,
-            "_APP_READONLY_ROWS_BUDGET_SECS",
+            "_APP_ROWS_BUDGET_SECS",
             0.05,  # flake-ok: the listing is held until the test ends, so it always runs out
         )
         gate = threading.Event()
@@ -279,7 +279,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
         inside = str(_install(home, "demo", ["notes"]) / "notes" / "n.md")
         monkeypatch.setattr(
             paths_targets,
-            "_APP_READONLY_ROWS_BUDGET_SECS",
+            "_APP_ROWS_BUDGET_SECS",
             0.05,  # flake-ok: the listing is held until the test ends, so it always runs out
         )
         gate = threading.Event()
@@ -295,7 +295,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
             # A second full wait would outlast the join below: only a refusal at once returns.
             monkeypatch.setattr(
                 paths_targets,
-                "_APP_READONLY_ROWS_BUDGET_SECS",
+                "_APP_ROWS_BUDGET_SECS",
                 3600.0,  # flake-ok: never waited on; it only has to outlast the bounded join
             )
             caller.start()
