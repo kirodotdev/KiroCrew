@@ -56,6 +56,15 @@ _EXCHANGE_FAILED_PAGE = (
     "Sign-in could not finish: the sign-in service did not complete it. Go back to "
     "the dashboard and finish signing in with the code shown there."
 )
+# A hit after the first outcome, and a tab of a sign-in a newer one replaced.
+_FINISHED_PAGE = "This sign-in has already finished. Go back to the dashboard to see the result."
+_REPLACED_PAGE = (
+    "This sign-in was replaced by a newer one. You can close this window and finish "
+    "signing in from the dashboard."
+)
+
+# Close tasks of signed-in listeners still answering late tabs (held against GC).
+_CLOSING: set[asyncio.Task[None]] = set()
 
 # The failed page's reason for each RFC 6749 section 4.1.2.1 error code, in fixed
 # words: the callback request is untrusted and error_description is developer text,
@@ -207,13 +216,17 @@ async def wait_for_callback(
     it says "Login complete" only once the exchange has succeeded, and names a
     failure when it raises. ``finish`` runs as its own task, so a tab closed early
     does not stop it. Any other GET path carrying this sign-in's state fails the
-    sign-in at once. Raises PortalAuthError on a portal-reported error, a state
-    mismatch (the CSRF check — someone other than our browser tab hit the
-    listener), or timeout, and whatever ``finish`` raises. ``timeout_secs`` bounds
-    the wait for the callback; ``finish`` brings its own bound. The socket is taken
-    over by aiohttp for the duration and closed with the listener.
+    sign-in at once. Raises PortalAuthError on a portal-reported error, a callback
+    with no state or no code, or timeout, and whatever ``finish`` raises. A
+    callback carrying another sign-in's state (the CSRF check) is answered and
+    changes nothing. ``timeout_secs`` bounds the wait for the callback; ``finish``
+    brings its own bound. The socket is taken over by aiohttp and closed with the
+    listener: at once on a failure, timeout or cancel; after a sign-in at the
+    deadline, or sooner by :func:`close_finished_listeners`, so a second tab of
+    this sign-in still gets a page.
     """
     loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_secs
     # Resolves to the running exchange once a valid callback arrives.
     result: asyncio.Future[asyncio.Future[_T]] = loop.create_future()
     reason = ""
@@ -233,26 +246,32 @@ async def wait_for_callback(
 
     async def _handle(request: web.Request) -> web.Response:
         nonlocal reason
-        # First terminal outcome wins; later hits (refresh, favicon retry) are inert.
-        if not result.done():
-            query = request.query
-            error = query.get("error")
-            if error:
-                reason = _PORTAL_ERROR_REASONS.get(error, "")
-                result.set_exception(PortalAuthError(f"portal returned error: {error}"))
-            elif query.get("state") != expected_state:
-                result.set_exception(PortalAuthError("state mismatch on portal callback"))
-            elif not query.get("code"):
-                result.set_exception(PortalAuthError("portal callback carried no code"))
-            else:
-                callback = {
-                    "login_option": query.get("login_option", ""),
-                    "code": query["code"],
-                    "state": query["state"],
-                    "path": request.path,
-                }
-                result.set_result(asyncio.ensure_future(finish(callback)))
-        if result.done() and not result.cancelled() and result.exception() is None:
+        # First terminal outcome wins; a later hit (a refresh, a second tab) is told so.
+        if result.done():
+            return web.Response(text=_FINISHED_PAGE, content_type="text/html")
+        query = request.query
+        state = query.get("state", "")
+        if state and not hmac.compare_digest(state.encode(), expected_state.encode()):
+            # An older sign-in's tab, back on this reused port: its code is never
+            # exchanged, and this sign-in keeps waiting for its own tab.
+            return web.Response(text=_REPLACED_PAGE, content_type="text/html")
+        error = query.get("error")
+        if error:
+            reason = _PORTAL_ERROR_REASONS.get(error, "")
+            result.set_exception(PortalAuthError(f"portal returned error: {error}"))
+        elif not state:
+            result.set_exception(PortalAuthError("portal callback carried no state"))
+        elif not query.get("code"):
+            result.set_exception(PortalAuthError("portal callback carried no code"))
+        else:
+            callback = {
+                "login_option": query.get("login_option", ""),
+                "code": query["code"],
+                "state": state,
+                "path": request.path,
+            }
+            result.set_result(asyncio.ensure_future(finish(callback)))
+        if result.exception() is None:
             return await _exchange_page(result.result())
         failed = f"Login failed: {reason}." if reason else "Login failed."
         text = f"{failed} You can close this window and retry from the dashboard."
@@ -294,6 +313,7 @@ async def wait_for_callback(
     await site.start()
     logger.debug("waiting for portal callback on loopback port %d", port)
     exchange: asyncio.Future[_T] | None = None
+    signed_in = False
     try:
         try:
             exchange = await asyncio.wait_for(asyncio.shield(result), timeout=timeout_secs)
@@ -301,7 +321,9 @@ async def wait_for_callback(
             raise PortalTimeoutError(
                 f"timed out after {timeout_secs:.0f}s waiting for the portal callback"
             ) from None
-        return await exchange
+        finished = await exchange
+        signed_in = True
+        return finished
     finally:
         if not result.done():
             # A callback landing during shutdown then starts no exchange.
@@ -311,5 +333,34 @@ async def wait_for_callback(
         if exchange is not None:
             # A sign-in abandoned mid-exchange stops it; a no-op once it finished.
             exchange.cancel()
-        # Waits for the in-flight tab reply, so the page the exchange chose goes out.
-        await runner.cleanup()
+        if signed_in:
+            _close_later(runner, deadline - loop.time())
+        else:
+            # Waits for the in-flight tab reply, so the page the exchange chose goes out.
+            await runner.cleanup()
+
+
+def _close_later(runner: web.AppRunner, delay: float) -> None:
+    """Close a signed-in listener ``delay`` seconds from now, off the caller's path."""
+
+    async def _close() -> None:
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            await runner.cleanup()
+
+    # Eager: it is inside its ``try`` before anyone can cancel it, so the close runs.
+    task = asyncio.eager_task_factory(asyncio.get_running_loop(), _close())
+    _CLOSING.add(task)
+    task.add_done_callback(_CLOSING.discard)
+
+
+async def close_finished_listeners() -> None:
+    """Close every signed-in listener still answering late tabs, and wait until closed."""
+    tasks = list(_CLOSING)
+    for task in tasks:
+        # A second cancel would interrupt the cleanup a first one started.
+        if not task.cancelling():
+            task.cancel()
+    if tasks:
+        await asyncio.wait(tasks)

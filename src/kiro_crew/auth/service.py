@@ -261,9 +261,10 @@ LOOPBACK_TIMEOUT_SECS = 300.0
 class _PendingLoopbackLogin:
     """A loopback (PKCE) social login whose listener task is running in-process.
 
-    ``task`` owns the bound callback port for its whole life: it serves the redirect,
-    exchanges the code and persists the token, then resolves. Polling only inspects
-    the task; cancelling it is what releases the port early.
+    ``task`` owns the bound callback port until it resolves: it serves the redirect
+    and exchanges the code. Polling only inspects the task; cancelling it is what
+    releases the port early. After a sign-in the listener alone stays, answering a
+    later tab until the attempt's deadline or the next sign-in.
     """
 
     task: asyncio.Task[KasToken]
@@ -387,6 +388,7 @@ class KasLoginService:
             entries = list(self._pending.values())
             self._pending.clear()
         await _release_and_wait(entries)
+        await portal.close_finished_listeners()
         if self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
@@ -937,6 +939,9 @@ class KasLoginService:
         provider = _parse_provider(provider_str)
         if select_transport() is not Transport.LOOPBACK:
             raise LoopbackUnavailableError("loopback transport not available on this install")
+        # A signed-in listener still answering late tabs is retired like an older
+        # sign-in, so this one can take its port (a container maps only a few).
+        await portal.close_finished_listeners()
         try:
             # bind() is a syscall on the serving loop; tiny for loopback, but the
             # gateway's no-blocking-call rule holds regardless of expected cost.
@@ -950,11 +955,14 @@ class KasLoginService:
             self._run_loopback(sock, port, provider, state, verifier),
             name=f"kas-loopback-{port}",
         )
-        # Closed however the task ends, including a cancel before its first step,
-        # which never enters _run_loopback. The listener normally closes it with
-        # its runner first; a second close is a no-op, and closing a listening
-        # socket does not block the loop.
-        task.add_done_callback(lambda _task: sock.close())
+
+        def _close_socket(done: asyncio.Task[KasToken]) -> None:
+            # Also after a cancel before the first step; a second close is a no-op.
+            # A signed-in listener keeps it until that listener closes.
+            if done.cancelled() or done.exception() is not None:
+                sock.close()
+
+        task.add_done_callback(_close_socket)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=LOOPBACK_TIMEOUT_SECS)
         result = await self._register_pending(
             _PendingLoopbackLogin(task=task, provider=provider, expires_at=expires_at),
@@ -980,8 +988,9 @@ class KasLoginService:
     ) -> KasToken:
         """Serve the callback and exchange the code.
 
-        The socket is closed by the task's done callback (see ``begin_loopback``),
-        not here: a task cancelled before its first step never runs this body.
+        The socket is closed by the task's done callback when the task fails (see
+        ``begin_loopback``), not here: a task cancelled before its first step never
+        runs this body. After a sign-in the listener closes it.
 
         Returns the token WITHOUT persisting it: the poll persists through
         ``_save_token`` under the pending lock, only while the login is still
