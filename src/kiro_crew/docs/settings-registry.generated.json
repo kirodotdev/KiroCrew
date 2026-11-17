@@ -1369,6 +1369,14 @@
       "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
     },
     {
+      "id": "developer.connected-computers",
+      "label": "Connected computers",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.connected-computers",
+      "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+      "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device."
+    },
+    {
       "id": "developer.decisions",
       "label": "Decisions",
       "tab": "developer",

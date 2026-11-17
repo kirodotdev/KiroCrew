@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -140,6 +140,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
+    case PREVIEW_CONNECTED_COMPUTERS: return i18nT('connectedComputers.preview.label')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
 }
@@ -198,6 +199,7 @@ export function FeaturePreviewsSection() {
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
+  const connectedComputers = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const writeError = usePreviewFlagWriteError()
@@ -488,6 +490,18 @@ export function FeaturePreviewsSection() {
             />
             {chatRuntimeSharing && <ChatRuntimeSharingHarnessRows />}
           </div>
+        )}
+        {/* Connected computers (`connected_computers`): read by this gateway's
+            backend too (`kiro_crew.connected_computers.flag`): off refuses sharing,
+            connects and starts, and ends live connections. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('connectedComputers.preview.label')}
+            description={i18nT('connectedComputers.preview.description')}
+            hint={i18nT('connectedComputers.preview.hint')}
+            checked={connectedComputers}
+            onChange={value => setPreviewFlag(PREVIEW_CONNECTED_COMPUTERS, value)}
+          />
         )}
         {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
             and the Install button for the pinned engine. It lives here, not on the

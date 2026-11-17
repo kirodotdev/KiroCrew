@@ -287,6 +287,11 @@ LOCAL_ONLY_SERVERS: frozenset[str] = frozenset({"kirocrew-computer", "kirocrew-c
 #: The ``mcpServers`` name the local engine sees for the remote workspace, for
 #: every provider; governance keys the workspace tools' policy on it.
 WORKSPACE_SERVER_NAME = "workspace"
+#: Prefix of the ``mcpServers`` name of each local MCP server a connected computer
+#: exposes (``connected-computer-<its name>``). Governance never auto-approves
+#: these (``platform.governance.may_skip_gate``): each call acts on the user's
+#: computer. Distinctive so a person's own ``computer-use`` keeps its answer.
+CONNECTED_MCP_SERVER_PREFIX = "connected-computer-"
 #: The ACP kind of the built-in each workspace tool stands in for.
 WORKSPACE_TOOL_KINDS: dict[str, str] = {
     "read_file": "read",
