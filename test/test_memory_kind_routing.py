@@ -844,7 +844,7 @@ async def test_the_enforce_prompt_is_off_plus_the_tag_the_key_rule_and_the_kind_
 
 
 def test_shadow_labels_with_the_rules_enforce_drops_by() -> None:
-    assert mkr.SHADOW_KIND_RULES == mkr.ENFORCE_KIND_RULES
+    assert mkr.ENFORCE_KIND_RULES in mkr.label_prompt([])
 
 
 @pytest.mark.parametrize("vendor_word", ["GitHub", "PR", "pull request", "Gerrit", "Jira"])
@@ -953,7 +953,7 @@ async def test_the_pass_asks_off_and_shadow_the_same_prompt_and_writes_the_same(
     assert runs["off"][3] == {}
     # The label call reads the routed keys and values only.
     assert "CHAT-ONLY-TEXT" not in label_prompt
-    assert mkr.SHADOW_KIND_RULES in label_prompt
+    assert mkr.ENFORCE_KIND_RULES in label_prompt
     assert "project.app.ci_status" in label_prompt and "pref.editor" not in label_prompt
     assert runs["shadow"][3][mkr.COUNTS_PREFIX + "2026-10-01"] == {
         "shadow": {"event": 1, "fact": 2, "state": 1}
