@@ -18,8 +18,9 @@ the stdio server itself and relays each message to that url with the recorded
 headers added (:mod:`kiro_crew.kas_http_bridge`).
 
 Standard library only and at the top of the package: the engine starts this once
-per server, so it must not import the ACP stack. The bridge path adds only the
-package's trust bootstrap (:mod:`kiro_crew._ssl_compat`). It prints no env value.
+per server, so it must not import the ACP stack. The bridge path adds the
+package's trust bootstrap (:mod:`kiro_crew._ssl_compat`) and, once a request
+fails, :mod:`kiro_crew.asset_downloader`. It prints no env value.
 """
 
 from __future__ import annotations
