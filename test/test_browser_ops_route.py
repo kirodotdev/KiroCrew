@@ -531,6 +531,185 @@ async def test_a_chat_keeps_browsing_after_the_daemons_tab_was_closed(
     assert sup.current == "T-new1"
 
 
+class _PopupSupervisor(_TabbedSupervisor):
+    """A daemon whose pages can open popups: the relay ledgers each with its opener."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.openers: dict[str, str] = {}
+        self.relay.opener_of.side_effect = lambda t: self.openers.get(t, "")
+        #: The next op's page script opens a popup from the daemon's current tab.
+        self.popup_on_next_op = ""
+
+    def open_popup(self, popup: str, opener: str) -> None:
+        self.ledger.append(popup)
+        self.openers[popup] = opener
+
+    async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper == "list_tabs":
+            self.calls.append((helper, kwargs))
+            return [{"targetId": t, "url": f"https://{t}", "title": "t"} for t in self.ledger]
+        if helper in ("js", "js_isolated") and self.popup_on_next_op:
+            self.open_popup(self.popup_on_next_op, self.current)
+            self.popup_on_next_op = ""
+        return await super().call(helper, **kwargs)
+
+
+class _ClosedTabPopupSupervisor(_PopupSupervisor, _ClosedTabSupervisor):
+    """Popups, and ``current_tab`` fails once the daemon's tab is gone."""
+
+
+class _ClosingPopupSupervisor(_PopupSupervisor):
+    """The real daemon: a click that closes its own popup loses the CDP session."""
+
+    async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper in ("js", "js_isolated") and getattr(self, "close_on_next_op", False):
+            self.close_on_next_op = False
+            self.ledger.remove(self.current)
+            self.calls.append((helper, kwargs))
+            raise mod.HelperError("RuntimeError: cdp_disconnected")
+        return await super().call(helper, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_click_that_closes_its_popup_answers_ok_and_returns_to_the_opener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The "Log in" button calls window.close(): the daemon's session dies mid-op."""
+    sup = _ClosingPopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a")
+    assert hub.target_of("chat-a") == "P1"
+    sup.close_on_next_op = True
+    answer = await _op("chat-a", "click", ref="e1")
+    assert answer["ok"] is True
+    closed = answer["result"]["popup_closed"]
+    assert closed["target_id"] == "P1" and closed["returned_to"] == "T1"
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert sup.created == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failure_on_a_tab_that_is_not_a_closed_popup_stays_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _ClosingPopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    monkeypatch.setattr(mod, "POPUP_CLOSE_GRACE_S", 0.0)
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a")
+
+    async def _raise(helper: str, **kwargs: Any) -> Any:
+        if helper in ("js", "js_isolated"):
+            raise mod.HelperError("RuntimeError: boom")
+        return await _PopupSupervisor.call(sup, helper, **kwargs)
+
+    monkeypatch.setattr(sup, "call", _raise)
+    answer = await _op("chat-a", "click", ref="e1")
+    assert answer["ok"] is False and answer["code"] == "browser_error"
+
+
+@pytest.mark.asyncio
+async def test_a_popup_the_op_opens_becomes_the_chats_tab_and_the_answer_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A "Sign in" button that opens its own window: the agent lands in it."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    streams = _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.popup_on_next_op = "P1"
+    answer = (await _op("chat-a"))["result"]
+    assert answer["ok"] is True
+    assert answer["popup"]["target_id"] == "P1"
+    assert answer["popup"]["url"] == "https://P1"
+    assert "popup window opened" in answer["popup"]["hint"]
+    assert sup.current == "P1" and hub.target_of("chat-a") == "P1"
+    assert hub.targets_of("chat-a") == {"T1", "P1"}
+    assert ("switch_tab", {"target": "P1", "activate": False}) in sup.calls
+    assert streams[-1] == ("chat-a", "P1"), "the card follows the popup"
+    # The next op stays on the popup and says nothing more about it.
+    again = (await _op("chat-a"))["result"]
+    assert "popup" not in again and sup.current == "P1"
+
+
+@pytest.mark.asyncio
+async def test_a_popup_that_opened_after_the_answer_is_followed_by_the_next_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")  # the window.open landed after the click answered
+    answer = (await _op("chat-a"))["result"]
+    assert answer["popup"]["target_id"] == "P1"
+    assert hub.target_of("chat-a") == "P1" and sup.current == "P1"
+
+
+@pytest.mark.asyncio
+async def test_when_the_popup_closes_the_chat_returns_to_the_tab_that_opened_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sign-in window closes itself after login: no fresh blank tab is opened."""
+    sup = _ClosedTabPopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    sup.open_popup("P2", "P1")  # a popup of the popup
+    await _op("chat-a")
+    assert hub.target_of("chat-a") == "P2"
+    sup.ledger.remove("P2")
+    sup.ledger.remove("P1")  # both windows closed
+    assert (await _op("chat-a"))["ok"] is True
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert sup.created == 0
+
+
+@pytest.mark.asyncio
+async def test_a_popup_is_claimed_only_by_the_chat_whose_tab_opened_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    await _op("chat-b")  # B is on T-new1
+    sup.open_popup("P-a", "T1")
+    sup.open_popup("P-user", "T-user")  # the person's own tab opened this one
+    answer = (await _op("chat-b"))["result"]
+    assert "popup" not in answer
+    assert hub.targets_of("chat-b") == {"T-new1"} and sup.current == "T-new1"
+    listed = (await _op("chat-a", "tabs", action="list"))["result"]
+    assert {t["target_id"] for t in listed["tabs"]} == {"T1", "P-a"}
+    assert listed["popup"]["target_id"] == "P-a", "A's own popup is followed"
+    assert hub.owner_of_target("P-user") is None
+
+
+def test_claim_popups_walks_popups_of_popups_in_ledger_order() -> None:
+    hub = hub_mod.get_live_hub()
+    hub.bind_target("k", "T1")
+    relay = MagicMock()
+    relay.agent_targets.return_value = ["T1", "P1", "P2", "Q"]
+    relay.opener_of.side_effect = {"P1": "T1", "P2": "P1", "Q": "X"}.get
+    assert mod.claim_popups(hub, "k", relay) == ["P1", "P2"]
+    assert hub.targets_of("k") == {"T1", "P1", "P2"}
+    assert hub.target_of("k") == "T1", "claiming never moves the current tab"
+    assert mod.claim_popups(hub, "k", relay) == []
+    assert mod.claim_popups(hub, "k", None) == []
+
+
 @pytest.mark.asyncio
 async def test_ops_from_different_chats_run_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bind-then-op pair of one chat never interleaves with another's."""

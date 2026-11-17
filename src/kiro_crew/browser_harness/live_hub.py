@@ -913,6 +913,10 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         return sess.bound_relay if sess is not None else None
 
+    def add_target(self, session_key: str, target_id: str) -> None:
+        """Make *target_id* one of this session's tabs without moving its current tab."""
+        self._session(session_key).targets.add(str(target_id))
+
     def owner_of_target(self, target_id: str) -> str | None:
         """The session key that owns *target_id*, if any session does."""
         for key, sess in self._sessions.items():

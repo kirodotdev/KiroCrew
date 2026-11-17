@@ -119,6 +119,16 @@ async def relay(browser: FakeBrowser) -> AsyncIterator[CdpRelay]:
         await r.close()
 
 
+async def _until(check: Any) -> None:
+    """Await *check* turning true: the relay applies an event on its reader task."""
+
+    async def _poll() -> None:
+        while not check():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(_poll(), _WAIT)
+
+
 class Client:
     """A daemon stand-in: one websocket to the relay, with a mailbox."""
 
@@ -260,7 +270,11 @@ async def test_a_pipe_upstream_carries_nul_terminated_cdp_both_ways() -> None:
             await pump
         except asyncio.CancelledError:
             pass
-    assert [m["method"] for m in seen] == ["Browser.getVersion", "Page.enable"]
+    assert [m["method"] for m in seen] == [
+        "Target.setDiscoverTargets",
+        "Browser.getVersion",
+        "Page.enable",
+    ]
 
 
 @pytest.mark.asyncio
@@ -274,9 +288,8 @@ async def test_two_clients_get_disjoint_upstream_ids_and_their_own_replies(
         reply_b = await b.recv()
     assert reply_a["id"] == 1 and reply_a["result"]["echo"] == "A.first"
     assert reply_b["id"] == 1 and reply_b["result"]["echo"] == "B.first"
-    upstream_ids = sorted(m["id"] for m in browser.seen)
+    upstream_ids = sorted(m["id"] for m in browser.seen if m["id"] < RELAY_ID_BASE)
     assert upstream_ids == [1, 2]
-    assert all(i < RELAY_ID_BASE for i in upstream_ids)
     assert {reply_a["result"]["seen_id"], reply_b["result"]["seen_id"]} == {1, 2}
 
 
@@ -309,9 +322,9 @@ async def test_relay_owned_session_events_never_reach_a_client(
         assert frame["params"] == {"n": 1}
         # A browser-level event still reaches the client, so ordering proves the
         # frame above was withheld rather than merely late.
-        await browser.emit({"method": "Target.targetInfoChanged", "params": {"x": 1}})
+        await browser.emit({"method": "Browser.downloadWillBegin", "params": {"x": 1}})
         seen = await client.recv()
-        assert seen["method"] == "Target.targetInfoChanged"
+        assert seen["method"] == "Browser.downloadWillBegin"
         assert client.inbox.empty()
         await relay.detach(sid)
         assert not relay.owns_session(sid)
@@ -339,8 +352,7 @@ async def test_the_tab_ledger_records_at_the_create_reply_and_turns_focus_emulat
         await asyncio.wait_for(browser.focus_seen.wait(), _WAIT)
         assert browser.focus_calls == ["S1"]
         await browser.emit({"method": "Target.targetDestroyed", "params": {"targetId": "T-agent"}})
-        await client.recv()
-    assert relay.agent_targets() == []
+        await _until(lambda: relay.agent_targets() == [])
 
 
 @pytest.mark.asyncio
@@ -364,8 +376,13 @@ async def test_a_create_context_opens_the_daemon_s_tab_in_that_context_only(
         relay.create_context = ""
         await client.send({"id": 5, "method": "Target.createTarget", "params": {"url": "x"}})
         await client.recv()
-    adoption = ("Target.attachToTarget", "Emulation.setFocusEmulationEnabled")
-    sent = [m.get("params") for m in browser.seen if m["method"] not in adoption]
+    # The relay's own discovery request at start is not one of the daemon's sends.
+    skip = (
+        "Target.attachToTarget",
+        "Emulation.setFocusEmulationEnabled",
+        "Target.setDiscoverTargets",
+    )
+    sent = [m.get("params") for m in browser.seen if m["method"] not in skip]
     assert sent == [
         {"url": "x", "browserContextId": "CTX-a"},
         {"browserContextId": "CTX-a"},
@@ -393,7 +410,11 @@ async def test_a_session_context_is_made_once_disposed_on_detach_and_disposed_on
     await relay.dispose_session_context("chat-a")
     await relay.dispose_session_context("chat-a")  # already gone: no second CDP call
     assert relay.session_context_ids() == ["CTX-2"]
-    calls = [(m["method"], m["params"]) for m in browser.seen if m["method"].startswith("Target.")]
+    calls = [
+        (m["method"], m["params"])
+        for m in browser.seen
+        if m["method"].startswith("Target.") and m["method"] != "Target.setDiscoverTargets"
+    ]
     assert calls == [
         ("Target.createBrowserContext", {"disposeOnDetach": True}),
         ("Target.createBrowserContext", {"disposeOnDetach": True}),
@@ -469,6 +490,118 @@ async def test_close_is_idempotent_and_frees_the_port(browser: FakeBrowser) -> N
     async with aiohttp.ClientSession() as session:
         with pytest.raises(aiohttp.ClientConnectionError):
             await session.get(f"{r.url}/json/version")
+
+
+@pytest.mark.asyncio
+async def test_start_turns_target_discovery_on_for_the_relay(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    discover = [m for m in browser.seen if m["method"] == "Target.setDiscoverTargets"]
+    assert len(discover) == 1
+    assert discover[0]["params"] == {"discover": True} and discover[0]["id"] >= RELAY_ID_BASE
+
+
+async def _create_agent_tab(client: Client) -> None:
+    await client.send({"id": 1, "method": "Target.createTarget", "params": {}})
+    await client.recv()
+
+
+def _created(target_id: str, opener: str | None, kind: str = "page") -> dict[str, Any]:
+    info: dict[str, Any] = {"targetId": target_id, "type": kind, "url": "https://idp/login"}
+    if opener is not None:
+        info["openerId"] = opener
+    return {"method": "Target.targetCreated", "params": {"targetInfo": info}}
+
+
+@pytest.mark.asyncio
+async def test_a_popup_an_agent_tab_opens_joins_the_ledger_with_its_opener(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    created: list[str] = []
+
+    async def on_created(target_id: str) -> None:
+        created.append(target_id)
+
+    relay.on_target_created = on_created
+    async with Client(relay) as client:
+        await _create_agent_tab(client)
+        await browser.emit(_created("T-popup", "T-agent"))
+        await _until(lambda: "T-popup" in relay.agent_targets())
+        assert relay.agent_targets() == ["T-agent", "T-popup"]
+        assert relay.opener_of("T-popup") == "T-agent"
+        assert created == ["T-agent", "T-popup"]
+        # Focus emulation reaches the popup too, so a headless popup keeps painting.
+        await _until(lambda: len(browser.focus_calls) == 2)
+        await browser.emit({"method": "Target.targetDestroyed", "params": {"targetId": "T-popup"}})
+        await _until(lambda: relay.agent_targets() == ["T-agent"])
+        # The link outlives the popup: the route walks it back to the opener.
+        assert relay.opener_of("T-popup") == "T-agent"
+        assert client.inbox.empty()
+
+
+@pytest.mark.asyncio
+async def test_the_persons_own_pages_and_non_pages_stay_out_of_the_ledger(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    async with Client(relay) as client:
+        await _create_agent_tab(client)
+        await browser.emit(_created("T-user-popup", "T-user"))
+        await browser.emit(_created("T-user-tab", None))
+        await browser.emit(_created("T-worker", "T-agent", kind="service_worker"))
+        # A marker the relay forwards, so the three events above are known applied.
+        await browser.emit({"method": "Browser.downloadWillBegin", "params": {}})
+        assert (await client.recv())["method"] == "Browser.downloadWillBegin"
+    assert relay.agent_targets() == ["T-agent"]
+    assert relay.opener_of("T-user-popup") == ""
+
+
+@pytest.mark.asyncio
+async def test_discovery_events_reach_a_client_only_once_it_asks_for_them(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    async with Client(relay) as client:
+        await browser.emit(_created("T-x", None))
+        await browser.emit({"method": "Browser.downloadWillBegin", "params": {}})
+        assert (await client.recv())["method"] == "Browser.downloadWillBegin"
+        await client.send(
+            {"id": 9, "method": "Target.setDiscoverTargets", "params": {"discover": True}}
+        )
+        assert (await client.recv())["id"] == 9
+        await browser.emit(_created("T-y", None))
+        assert (await client.recv())["method"] == "Target.targetCreated"
+
+
+@pytest.mark.asyncio
+async def test_the_opener_map_is_bounded_and_drops_the_oldest_link() -> None:
+    r = CdpRelay()
+    r._agent_targets.append("T-agent")
+
+    async def _no_record(_tid: str, _context: str = "") -> None:
+        return None
+
+    r._record_agent_target = _no_record  # type: ignore[method-assign]
+    for i in range(relay_mod._OPENER_CAP + 1):
+        await r._observe_popup({"targetId": f"P{i}", "type": "page", "openerId": "T-agent"})
+    assert len(r._openers) == relay_mod._OPENER_CAP
+    assert r.opener_of("P0") == ""
+    assert r.opener_of(f"P{relay_mod._OPENER_CAP}") == "T-agent"
+
+
+@pytest.mark.asyncio
+async def test_a_popup_is_ledgered_in_its_openers_browser_context() -> None:
+    """Under per-chat isolation a window.open stays in the chat's context, so the
+    chat's ``tabs`` (filtered by context) still shows it."""
+    r = CdpRelay()
+    r._agent_targets.append("T-agent")
+    r._target_contexts["T-agent"] = "CTX-a"
+    recorded: list[tuple[str, str]] = []
+
+    async def _record(tid: str, context: str = "") -> None:
+        recorded.append((tid, context))
+
+    r._record_agent_target = _record  # type: ignore[method-assign]
+    await r._observe_popup({"targetId": "P1", "type": "page", "openerId": "T-agent"})
+    assert recorded == [("P1", "CTX-a")]
 
 
 def test_every_relay_start_mints_its_own_secret() -> None:
