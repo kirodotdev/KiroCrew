@@ -132,6 +132,205 @@ class TestRmtreeForce:
         assert [p.name for p in directory.iterdir()] == ["held"]
 
 
+_POSIX_NON_ROOT = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="POSIX directory modes; root ignores them",
+)
+
+
+def _read_only_tree(root, names=("a", "b")):
+    """*root*/locked holding files and a subdirectory, with locked left read-only."""
+    locked = root / "locked"
+    (locked / "sub").mkdir(parents=True)
+    (locked / "sub" / "deep").write_text("x")
+    for name in names:
+        (locked / name).write_text("x")
+    locked.chmod(0o500)
+    return locked
+
+
+class TestRmtreeForceOnPosixReadOnlyDirectories:
+    """A sweep removes a directory left without its owner write bit."""
+
+    @_POSIX_NON_ROOT
+    @pytest.mark.parametrize("relative", [False, True])
+    def test_a_tree_holding_a_read_only_directory_is_removed(self, tmp_path, monkeypatch, relative):
+        tree = tmp_path / "tree"
+        locked = _read_only_tree(tree)
+        monkeypatch.chdir(tmp_path)
+
+        try:
+            assert pc.rmtree_force("./tree/" if relative else tree) is True
+            assert not tree.exists()
+        finally:
+            if locked.exists():
+                locked.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    @pytest.mark.parametrize("root_name", [None, "tree", "./tree/", "tree/."])
+    def test_read_only_parent_of_root_is_unchanged(self, tmp_path, monkeypatch, root_name):
+        parent = tmp_path / "parent"
+        tree = parent / "tree"
+        tree.mkdir(parents=True)
+        (tree / "entry").write_text("x", encoding="utf-8")
+        monkeypatch.chdir(parent)
+        parent.chmod(0o500)
+        try:
+            assert pc.rmtree_force(tree if root_name is None else root_name) is False
+            assert stat.S_IMODE(parent.stat().st_mode) == 0o500
+            assert tree.is_dir()
+            assert list(tree.iterdir()) == []
+        finally:
+            parent.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    def test_hook_without_root_does_not_grant_parent_write(self, tmp_path, caplog):
+        parent = tmp_path / "parent"
+        tree = parent / "tree"
+        tree.mkdir(parents=True)
+        parent.chmod(0o500)
+        try:
+            with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+                pc._clear_readonly_and_retry(os.rmdir, str(tree), PermissionError("denied"))
+            assert stat.S_IMODE(parent.stat().st_mode) == 0o500
+            assert tree.is_dir()
+            assert any("Cannot remove" in r.getMessage() for r in caplog.records)
+        finally:
+            parent.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    def test_entries_that_stay_are_reported_in_one_warning(self, tmp_path, monkeypatch, caplog):
+        import kiro_crew.platform_compat_files as pcf
+
+        tree = tmp_path / "tree"
+        locked = _read_only_tree(tree, names=tuple(f"f{i}" for i in range(5)))
+        monkeypatch.setattr(pcf, "_grant_owner_write_to_parent", lambda _path, _root: False)
+        try:
+            with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+                assert pc.rmtree_force(tree) is False
+        finally:
+            locked.chmod(0o700)
+
+        warnings = [r.getMessage() for r in caplog.records if "Cannot remove" in r.getMessage()]
+        assert len(warnings) == 1
+        # five files and the subdirectory refused in the read-only directory, then
+        # locked and tree themselves, which are left non-empty
+        assert warnings[0].startswith(f"Cannot remove 8 entries under {tree} (first: ")
+
+    @_POSIX_NON_ROOT
+    def test_the_parent_is_never_changed_through_a_link(self, tmp_path):
+        import kiro_crew.platform_compat_files as pcf
+
+        target = tmp_path / "target"
+        target.mkdir(mode=0o500)
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        try:
+            assert pcf._grant_owner_write_to_parent(str(link / "entry"), tmp_path) is False
+            assert stat.S_IMODE(target.stat().st_mode) == 0o500
+        finally:
+            target.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    @pytest.mark.parametrize("linked_root", [False, True])
+    def test_intermediate_and_root_links_do_not_redirect_chmod(self, tmp_path, linked_root):
+        import kiro_crew.platform_compat_files as pcf
+
+        target = tmp_path / "target"
+        locked = target / "locked"
+        locked.mkdir(parents=True)
+        root = tmp_path / "tree"
+        if linked_root:
+            root.symlink_to(target, target_is_directory=True)
+            entry = root / "locked" / "entry"
+        else:
+            root.mkdir()
+            (root / "link").symlink_to(target, target_is_directory=True)
+            entry = root / "link" / "locked" / "entry"
+        locked.chmod(0o500)
+        try:
+            assert pcf._grant_owner_write_to_parent(str(entry), root) is False
+            assert stat.S_IMODE(locked.stat().st_mode) == 0o500
+        finally:
+            locked.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    @pytest.mark.parametrize("entry_name", ["tree", "tree-other/entry", "tree/../entry"])
+    def test_grant_rejects_parents_outside_root(self, tmp_path, entry_name):
+        import kiro_crew.platform_compat_files as pcf
+
+        root = tmp_path / "tree"
+        root.mkdir()
+        sibling = tmp_path / "tree-other"
+        sibling.mkdir()
+        sibling.chmod(0o500)
+        tmp_path.chmod(0o500)
+        try:
+            assert pcf._grant_owner_write_to_parent(str(tmp_path / entry_name), root) is False
+            assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o500
+            assert stat.S_IMODE(sibling.stat().st_mode) == 0o500
+        finally:
+            tmp_path.chmod(0o700)
+            sibling.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    def test_parent_swap_after_open_does_not_redirect_chmod(self, tmp_path, monkeypatch):
+        import kiro_crew.platform_compat_files as pcf
+
+        root = tmp_path / "tree"
+        locked = root / "locked"
+        locked.mkdir(parents=True)
+        moved = root / "moved"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside.chmod(0o500)
+        locked.chmod(0o500)
+        original_open = pcf.os.open
+
+        def swap_after_open(path, flags, *args, **kwargs):
+            fd = original_open(path, flags, *args, **kwargs)
+            if path == "locked" and "dir_fd" in kwargs:
+                locked.rename(moved)
+                locked.symlink_to(outside, target_is_directory=True)
+            return fd
+
+        monkeypatch.setattr(pcf.os, "open", swap_after_open)
+        try:
+            assert pcf._grant_owner_write_to_parent(str(locked / "entry"), root) is True
+            assert moved.is_dir()
+            assert stat.S_IMODE(moved.stat().st_mode) == 0o700
+            assert stat.S_IMODE(outside.stat().st_mode) == 0o500
+        finally:
+            (moved if moved.exists() else locked).chmod(0o700)
+            outside.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    def test_a_parent_owned_by_another_user_is_left_alone(self, tmp_path, monkeypatch):
+        import kiro_crew.platform_compat_files as pcf
+
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o500)
+        monkeypatch.setattr(pcf.os, "geteuid", lambda: os.getuid() + 1)
+        try:
+            assert pcf._grant_owner_write_to_parent(str(locked / "entry"), tmp_path) is False
+            assert stat.S_IMODE(locked.stat().st_mode) == 0o500
+        finally:
+            locked.chmod(0o700)
+
+    @_POSIX_NON_ROOT
+    def test_only_owner_write_and_search_are_added(self, tmp_path):
+        import kiro_crew.platform_compat_files as pcf
+
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o750)
+        locked.chmod(0o450)
+        try:
+            assert pcf._grant_owner_write_to_parent(str(locked / "entry"), locked) is True
+            assert stat.S_IMODE(locked.stat().st_mode) == 0o750
+        finally:
+            locked.chmod(0o700)
+
+
 class TestLinkHelpers:
     def test_posix_symlink_round_trips(self, tmp_path):
         target = tmp_path / "target"
