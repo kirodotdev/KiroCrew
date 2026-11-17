@@ -29,6 +29,7 @@ import { type MembersPageTeamsRead } from './useMembersPageTeams'
 import type { MembersPageProfileState } from './MembersPageProfile'
 import type { MembersPageSidePanelState } from './MembersPageSidePanel'
 import { shownWithin, useTrackpadSwipe } from '../../hooks/useTrackpadSwipe'
+import { useSidePanelSwipe } from '../../hooks/useSidePanelSwipe'
 import { beginPanelSlide, retirePanelSlide } from '../../utils/panelSlide'
 
 /** How long a drawer pick waits for the router to report the pop of the
@@ -527,7 +528,9 @@ export function useMembersPageTrackpadSwipe({
     syncDeskSpacer,
   } = drawers
   const onDashboard = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
-  const enabled = !isMobile && !!active && !createOpen
+  // Settings → Chat → Side panel turns the swipe off on this page too.
+  const [swipeOn] = useSidePanelSwipe()
+  const enabled = swipeOn && !isMobile && !!active && !createOpen
   /** Everything the gesture's callbacks read, current at call time. */
   const now = useRef({ panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab })
   now.current = { panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }

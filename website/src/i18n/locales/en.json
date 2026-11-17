@@ -10664,6 +10664,8 @@
         "side_panel_pin_summary": "Pin Summary in Side Panel",
         "side_panel_pin_summary_hint": "Shows Summary as the first side panel tab. Whenever the panel opens, it shows Summary. Opening a file or another item still shows that item. Needs Session summaries on.",
         "side_panel_pin_summary_needs_session_summaries": "Session summaries are off. Turn them on in Settings → Chat → Sessions to pin Summary.",
+        "side_panel_trackpad_swipe": "Swipe to Open and Close Side Panel",
+        "side_panel_trackpad_swipe_hint": "A two-finger sideways trackpad swipe opens and closes the side panel docked on the right. Turn it off to stop accidental swipes. The panel button and shortcut still work. This setting does not apply on a phone.",
         "project_tags": "Project tags",
         "project_tags_desc": "Tags each new session in the sidebar with the name of its project folder, like \"my-app\".",
         "topic_tags": "Topic tags",

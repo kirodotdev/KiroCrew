@@ -712,7 +712,10 @@ the same element throughout (its terminals and frames live on). The settle runs
 on the main thread so the column reads every frame. The swipe is bound on the
 shell grid, which holds both the chat and the column, so a run keeps going when
 the panel arrives under the pointer. It is off for a bottom-docked panel, while
-the find pane holds the dock, and in embed frames. The exact lift-off from the desktop app reaches it
+the find pane holds the dock, and in embed frames. **Swipe to Open and Close Side
+Panel** (Settings → Chat → Side panel; `hooks/useSidePanelSwipe`, on by default,
+stored on this device only) turns it off here and on the Bots page: the swipe
+then never binds, and the panel button and shortcut still work. The exact lift-off from the desktop app reaches it
 through the same reader, and so does the start distance: a closed panel moves only once a
 leftward run has travelled 80px. An artifact frame in the panel (`ArtifactBodyIframe`
 with `relayWheel`, set only for the side panel) relays the runs its own content

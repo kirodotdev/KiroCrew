@@ -286,6 +286,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 
 import { resetDashboardOnLoad } from './dashboardOnLoad'
 import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX } from '../../hooks/useTrackpadSwipe'
+import { SIDE_PANEL_SWIPE_KEY } from '../../hooks/useSidePanelSwipe'
 import { MotionGlobalConfig, frame, frameData } from 'framer-motion'
 /** The event time `swipe()` stamps on every event (see there). */
 const SWIPE_AT = 1
@@ -1119,6 +1120,15 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       const chat = await openOncall()
       expect(swipe(chat, 6, 12, {}, 30)).toBe(0)
       expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    })
+
+    it('leaves every run alone while Settings turns the swipe off', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      localStorage.setItem(SIDE_PANEL_SWIPE_KEY, '0')
+      const chat = await openOncall()
+      expect(swipe(chat, 20, 12)).toBe(0)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).not.toBe('1')
     })
 
     it('leaves a pinch zoom (ctrlKey wheel) alone', async () => {

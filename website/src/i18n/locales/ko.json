@@ -18812,6 +18812,8 @@
         "side_panel_pin_summary": "요약을 사이드 패널에 고정",
         "side_panel_pin_summary_hint": "요약을 사이드 패널의 첫 번째 탭으로 표시하고, 패널을 열면 요약을 보여 줍니다. 파일 등 특정 항목을 열면 그 항목을 계속 표시합니다. 세션 요약이 켜져 있어야 합니다.",
         "side_panel_pin_summary_needs_session_summaries": "세션 요약이 꺼져 있습니다. 요약을 고정하려면 설정 → 채팅 → 세션에서 세션 요약을 켜세요.",
+        "side_panel_trackpad_swipe": "스와이프로 사이드 패널 열고 닫기",
+        "side_panel_trackpad_swipe_hint": "트랙패드에서 두 손가락으로 옆으로 스와이프하면 오른쪽에 고정된 사이드 패널이 열리고 닫힙니다. 실수로 스와이프되지 않게 하려면 끄세요. 패널 버튼과 단축키는 계속 작동합니다. 휴대폰에서는 이 설정이 적용되지 않습니다.",
         "project_tags": "프로젝트 태그",
         "project_tags_desc": "사이드바의 새 세션마다 \"my-app\" 같은 프로젝트 폴더 이름 태그를 붙입니다.",
         "topic_tags": "주제 태그",

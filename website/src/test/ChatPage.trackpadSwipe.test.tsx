@@ -17,6 +17,7 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
+import { SIDE_PANEL_SWIPE_KEY } from '../hooks/useSidePanelSwipe'
 import { switchSlot, openActivityPanel } from '../store/chatSlice'
 import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX } from '../hooks/useTrackpadSwipe'
 import { MotionGlobalConfig, frame, frameData } from 'framer-motion'
@@ -753,6 +754,20 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     expect(swipe(chat(container), 20, 12)).toBe(0)
     expect(sliding()).toBe(false)
     expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('is not bound while Settings turns the swipe off; the panel still opens and closes by other means', async () => {
+    localStorage.setItem(SIDE_PANEL_SWIPE_KEY, '0')
+    const { store, container } = renderChat()
+    expect(swipe(chat(container), 20, 12)).toBe(0)
+    expect(sliding()).toBe(false)
+    expect(store.getState().chat.activityOpen).toBe(false)
+    // The toggle and the shortcut go through the store, which the setting leaves alone.
+    await openPanel(store)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(swipe(chat(container), -20, 12)).toBe(0)
+    expect(sliding()).toBe(false)
+    expect(store.getState().chat.activityOpen).toBe(true)
   })
 
   /** A relaying frame (an artifact built with `relayWheel`) with its own

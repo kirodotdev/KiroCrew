@@ -6,6 +6,7 @@ import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav
 import { Btn } from '../../components/ui'
 import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { useSidePanelSwipe } from '../../hooks/useSidePanelSwipe'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { FOLLOWUP_START_SENDS_KEY } from '../chat/followupStartSends'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
@@ -296,6 +297,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const [copyOnSelect, setCopyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
   // Browser-local and outside the uiPrefs host backup on purpose: see followupStartSends.ts.
   const [followupStartSends, setFollowupStartSends] = usePersistedBool(FOLLOWUP_START_SENDS_KEY, false)
+  const [sidePanelSwipe, setSidePanelSwipe] = useSidePanelSwipe()
 
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
@@ -1034,6 +1036,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
+          {/* This device only (its own key, see useSidePanelSwipe), hence no
+              `configKey`: the trackpad is this device's. */}
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_trackpad_swipe')} hint={i18nT('pages.settings.chatPanel.side_panel_trackpad_swipe_hint')} checked={sidePanelSwipe} onChange={setSidePanelSwipe} />
         </SettingsCard>
           )
 

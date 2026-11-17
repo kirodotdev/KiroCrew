@@ -19834,6 +19834,8 @@
         "side_panel_pin_summary": "Épingler le résumé dans le panneau latéral",
         "side_panel_pin_summary_hint": "Affiche le résumé comme premier onglet du panneau latéral. Quand le panneau s'ouvre, il affiche le résumé. Si tu ouvres un fichier ou un autre élément, c'est lui qui reste affiché. Nécessite les résumés de session activés.",
         "side_panel_pin_summary_needs_session_summaries": "Les résumés de session sont désactivés. Active-les dans Paramètres → Chat → Sessions pour épingler le résumé.",
+        "side_panel_trackpad_swipe": "Balayer pour ouvrir et fermer le panneau latéral",
+        "side_panel_trackpad_swipe_hint": "Un balayage latéral à deux doigts sur le trackpad ouvre et ferme le panneau latéral ancré à droite. Désactive-le pour éviter les balayages accidentels. Le bouton du panneau et le raccourci fonctionnent toujours. Sur un téléphone, ce réglage ne s'applique pas.",
         "project_tags": "Étiquettes de projet",
         "project_tags_desc": "Étiquette chaque nouvelle session dans la barre latérale avec le nom de son dossier de projet, comme « my-app ».",
         "topic_tags": "Étiquettes de sujet",

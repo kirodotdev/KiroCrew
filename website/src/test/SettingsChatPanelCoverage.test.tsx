@@ -541,6 +541,19 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('stores the side panel swipe under its own device-only key, on by default and never backed up', async () => {
+    wrap('sidepanel')
+    const sw = await screen.findByRole('switch', { name: 'Swipe to Open and Close Side Panel' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-side-panel-trackpad-swipe')).toBe('0'))
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}')).not.toHaveProperty('sidePanelSwipe')
+    expect(DURABLE_PREF_KEYS).not.toContain('mc-side-panel-trackpad-swipe')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-side-panel-trackpad-swipe')).toBe('1'))
+  })
+
   it.each([
     ['Keep Side Panel Open', 'side_panel_always_open'],
     ['Pin Summary in Side Panel', 'side_panel_pin_summary'],

@@ -19834,6 +19834,8 @@
         "side_panel_pin_summary": "Fissa il riepilogo nel pannello laterale",
         "side_panel_pin_summary_hint": "Mostra il riepilogo come prima scheda del pannello laterale. Quando il pannello si apre, mostra il riepilogo. Se apri un file o un altro elemento, viene mostrato quello. Richiede i riepiloghi delle sessioni attivi.",
         "side_panel_pin_summary_needs_session_summaries": "I riepiloghi delle sessioni sono disattivati. Attivali in Impostazioni → Chat → Sessioni per fissare il riepilogo.",
+        "side_panel_trackpad_swipe": "Scorri per aprire e chiudere il pannello laterale",
+        "side_panel_trackpad_swipe_hint": "Uno scorrimento laterale con due dita sul trackpad apre e chiude il pannello laterale agganciato a destra. Disattivalo per evitare scorrimenti accidentali. Il pulsante del pannello e la scorciatoia funzionano comunque. Sul telefono questa impostazione non si applica.",
         "project_tags": "Tag di progetto",
         "project_tags_desc": "Tagga ogni nuova sessione nella barra laterale con il nome della sua cartella di progetto, come \"my-app\".",
         "topic_tags": "Tag di argomento",

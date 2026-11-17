@@ -1148,6 +1148,13 @@
       "hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
     },
     {
+      "id": "chat.swipe-to-open-and-close-side-panel",
+      "label": "Swipe to Open and Close Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=chat.swipe-to-open-and-close-side-panel",
+      "hint": "A two-finger sideways trackpad swipe opens and closes the side panel docked on the right. Turn it off to stop accidental swipes. The panel button and shortcut still work. This setting does not apply on a phone."
+    },
+    {
       "id": "chat.tail-only-fork",
       "label": "Tail-only Fork",
       "tab": "chat",
