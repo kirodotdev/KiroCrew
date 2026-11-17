@@ -10,7 +10,7 @@ import functools
 import json
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_OPEN_EXTERNAL_URL
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, ACP_BACKENDS_OPEN_EXTERNAL_URL
 from kiro_crew.config.loader import oauth_endpoints_path
 from kiro_crew.dashboard.chat_utils import (
     _expire_dead_child_oauth_meta,
@@ -23,6 +23,7 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
 )
 from kiro_crew.dashboard.mcp_oauth_expiry_watch import watch_open_oauth_banners
 from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
+from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
@@ -191,6 +192,7 @@ def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", prov
             forget_mcp_banner(slot, name)
             forget_mcp_banner(slot, _redact_acp_string(name))
     _notice_mcp_sign_in_needed(state, slot, payload, provider)
+    _notice_mcp_may_need_sign_in(state, slot, payload, provider)
     # Stamp the payload with the session it describes. This copy outlives its
     # owner — the report itself lives on the transport and is inherently that
     # session's — so without the id a reader cannot tell a current answer from a
@@ -381,6 +383,57 @@ def _notice_mcp_sign_in_needed(
 
 #: ``meta.kind`` of the row that tells a chat a changed server waits for a new session.
 MCP_RESTART_TO_LOAD_KIND = "mcp_restart_to_load"
+
+#: The session notice mark of the row that tells an opencode chat a server may need a
+#: sign-in, so the chat shows it once however the list of servers grows.
+MCP_MAY_NEED_SIGN_IN_MARK = "mcp_may_need_sign_in"
+
+
+def _mcp_may_need_sign_in_notice(names: list[str], more: int) -> str:
+    """The row's text naming the remote servers *names* that asked Crew's probe to sign in."""
+    one = len(names) == 1 and not more
+    listed = ", ".join(names) + (f" and {more} more" if more else "")
+    return (
+        f"⚠ The MCP {'server' if one else 'servers'} {listed} may need a sign-in: "
+        f"{'it answers' if one else 'each answers'} a request without credentials by "
+        "asking for one. This harness cannot sign in to a remote MCP server through Kiro "
+        "Crew yet. If its tools already work in this chat, nothing is wrong. If they do "
+        "not, use a harness that can sign in, or give the server an Authorization header."
+    )
+
+
+def _notice_mcp_may_need_sign_in(
+    state: "DashboardState", slot: "_ChatSlot", payload: dict[str, Any] | None, provider: Any
+) -> None:
+    """One row per chat on opencode naming the servers its report lists in ``sign_in_suspected``.
+
+    opencode sends no sign-in frame, so that list is what Crew's credential-free
+    probe found (:mod:`kiro_crew.acp.mcp_sign_in_probe`).
+    The server may already be signed in through opencode itself, so the row says
+    "may", never that the server is broken. Best-effort: a row that cannot be
+    built is skipped.
+    """
+    try:
+        on_opencode = capabilities_of(provider).backend == ACP_BACKEND_OPENCODE
+        names = [
+            _redact_acp_string(name)
+            for name in ((payload or {}).get("sign_in_suspected") or () if on_opencode else ())
+            if isinstance(name, str) and name
+        ]
+        names = [name for name in names if name]
+        if not names or not _session_notice_is_new(slot, MCP_MAY_NEED_SIGN_IN_MARK):
+            return
+        shown = names[:_MCP_SIGN_IN_NOTICE_NAMES]
+        more = len(names) - len(shown)
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _mcp_may_need_sign_in_notice(shown, more),
+            "msg msg-warn",
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("Failed to show the MCP may-need-sign-in notice", exc_info=True)
 
 
 def _mcp_restart_to_load_notice(names: list[str]) -> str:
