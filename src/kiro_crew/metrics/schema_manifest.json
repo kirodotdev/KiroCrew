@@ -1,0 +1,1481 @@
+{
+  "_comment": "The exported metric schema: every metric in PRODUCT_METRICS, its kind, unit, instrumentation scope, temporality, attribute keys and closed values. Rows, keys and values are only ever added; see docs/guides/telemetry-otlp-export.md (Metric schema contract). Regenerate with: python test/metrics_schema_helpers.py --write",
+  "metrics": [
+    {
+      "name": "kirocrew.app.task.completed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "app": {},
+        "outcome": {
+          "values": [
+            "error",
+            "ok",
+            "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.approval.decisions",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "decision": {},
+        "security_deny": {
+          "values": [
+            false,
+            true
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.artifact.created",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "kind": {},
+        "kind_auto": {
+          "values": [
+            false,
+            true
+          ]
+        },
+        "source": {}
+      }
+    },
+    {
+      "name": "kirocrew.autonudge.loops.started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "kind": {
+          "values": [
+            "loop",
+            "monitor",
+            "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.autonudge.loops.stopped",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "ended_by": {
+          "values": [
+            "agent_stop",
+            "budget",
+            "error",
+            "other",
+            "stalled",
+            "subject_done",
+            "user_stop"
+          ]
+        },
+        "kind": {
+          "values": [
+            "loop",
+            "monitor",
+            "other"
+          ]
+        },
+        "ran": {
+          "values": [
+            "1h_24h",
+            "gt_24h",
+            "lt_1h",
+            "other"
+          ]
+        },
+        "reason": {
+          "values": [
+            "agent_turn_budget",
+            "approval_stall",
+            "autonudge_stop",
+            "blocked",
+            "budget",
+            "claim_unsaved",
+            "completion_evidence_unavailable",
+            "consecutive_failures",
+            "cycle_cap",
+            "invalid_monitor_record",
+            "manual",
+            "model_refused",
+            "monitor_terminal",
+            "other",
+            "provider_error_budget",
+            "removed",
+            "runtime_budget",
+            "sentinel_dropped",
+            "session_close",
+            "session_start_failures",
+            "session_unavailable",
+            "stop_sentinel",
+            "structural_terminal",
+            "success",
+            "target_unavailable",
+            "token_budget",
+            "unspecified",
+            "unsupported_monitor_version",
+            "user_stop",
+            "verdict_stall"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.autonudge.ticks",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "kind": {
+          "values": [
+            "loop",
+            "monitor"
+          ]
+        },
+        "outcome": {
+          "values": [
+            "delivered",
+            "failed",
+            "other",
+            "quiet",
+            "refused"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.channel.message.received",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "admitted": {
+          "values": [
+            "false",
+            "true"
+          ]
+        },
+        "automation": {
+          "values": [
+            "false",
+            "true"
+          ]
+        },
+        "channel": {
+          "values": [
+            "discord",
+            "feishu",
+            "imessage",
+            "other",
+            "slack",
+            "teams",
+            "telegram",
+            "unified",
+            "webex",
+            "wecom",
+            "weixin",
+            "whatsapp"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.kas_queued",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "tenants": {}
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.placed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "harness": {},
+        "outcome": {
+          "values": [
+            "joined",
+            "refused",
+            "spawned"
+          ]
+        },
+        "reason": {
+          "values": [
+            "auto_permission_mode",
+            "backend_not_chat_shareable",
+            "harness_switched_off",
+            "kas_engine_not_shareable",
+            "member_session",
+            "memory_mode_not_shareable",
+            "native_subagents",
+            "none",
+            "origin_not_dashboard",
+            "other",
+            "session_environment",
+            "sharing_disabled"
+          ]
+        },
+        "tenants": {},
+        "tree": {
+          "values": [
+            "bot",
+            "chat",
+            "none",
+            "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.process_died",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "expected": {
+          "values": [
+            "false",
+            "true"
+          ]
+        },
+        "tenants": {}
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.processes",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.reclaimed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "reason": {
+          "values": [
+            "other",
+            "rss"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.rss_sampled",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "rss": {},
+        "tenants": {}
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.tenants",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.toggled",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "state": {
+          "values": [
+            "off",
+            "on"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.turn_ended",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "harness": {},
+        "outcome": {
+          "values": [
+            "cancelled",
+            "error",
+            "ok",
+            "stale_recover",
+            "stall_exhausted",
+            "timeout",
+            "tool_stall"
+          ]
+        },
+        "tenants": {}
+      }
+    },
+    {
+      "name": "kirocrew.chat_runtime_share.turn_started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "delay": {},
+        "harness": {},
+        "shared": {
+          "values": [
+            "false",
+            "true"
+          ]
+        },
+        "tenants": {}
+      }
+    },
+    {
+      "name": "kirocrew.context.compactions",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "success": {},
+        "trigger": {}
+      }
+    },
+    {
+      "name": "kirocrew.crew.session.started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "agent_kind": {}
+      }
+    },
+    {
+      "name": "kirocrew.crew.session.tree.child",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "nth": {},
+        "parent_kind": {}
+      }
+    },
+    {
+      "name": "kirocrew.crew.session.tree.depth",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "depth": {}
+      }
+    },
+    {
+      "name": "kirocrew.crew.session_control.calls",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "caller": {
+          "values": [
+            "conductor",
+            "crewmate",
+            "dashboard_author",
+            "dashboard_manager",
+            "default",
+            "guest",
+            "heartbeat",
+            "knowledge",
+            "ledger_conductor",
+            "lite",
+            "mate_conductor",
+            "mate_worker",
+            "other",
+            "pipeline_conductor",
+            "research",
+            "security_conductor",
+            "team_lead",
+            "worker"
+          ]
+        },
+        "op": {},
+        "outcome": {
+          "values": [
+            "error",
+            "ok"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.crew.turn.started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "actor": {},
+        "agent_kind": {}
+      }
+    },
+    {
+      "name": "kirocrew.crew_mode.new_chats",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "crew_mode": {
+          "values": [
+            false,
+            true
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.crew_mode.runs_finished",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "state": {
+          "values": [
+            "abandoned",
+            "accepted",
+            "other",
+            "rejected"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.crew_mode.steers_per_run",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "steers": {}
+      }
+    },
+    {
+      "name": "kirocrew.crew_mode.turned_on",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "repeat": {
+          "values": [
+            false,
+            true
+          ]
+        },
+        "via": {
+          "values": [
+            "create",
+            "other",
+            "switch"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.crew_mode.worker_waits",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "reason": {
+          "values": [
+            "approval",
+            "needs_human",
+            "none",
+            "other"
+          ]
+        },
+        "status": {
+          "values": [
+            "blocked",
+            "other",
+            "question"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.cron.fires",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "kind": {
+          "values": [
+            "agent",
+            "command",
+            "script"
+          ]
+        },
+        "trigger": {}
+      }
+    },
+    {
+      "name": "kirocrew.feature_video.status",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "dismissed",
+            "other",
+            "seen"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "feature_video"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.inventory.config.toggle",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {
+        "key": {}
+      }
+    },
+    {
+      "name": "kirocrew.inventory.crons.active",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.knowledge.documents",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.lessons",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.mcp.servers",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {
+        "class": {}
+      }
+    },
+    {
+      "name": "kirocrew.inventory.members",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.memory.migrated",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.monitor_loops.active",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.probe.failures",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {
+        "probe": {}
+      }
+    },
+    {
+      "name": "kirocrew.inventory.skills.installed",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {}
+    },
+    {
+      "name": "kirocrew.inventory.voice.provider",
+      "kind": "observable_gauge",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "cumulative",
+      "status": "active",
+      "attributes": {
+        "kind": {},
+        "provider": {}
+      }
+    },
+    {
+      "name": "kirocrew.kas.engine_install",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "caller": {
+          "values": [
+            "dashboard",
+            "other",
+            "spawn"
+          ]
+        },
+        "outcome": {
+          "values": [
+            "failed",
+            "host_unsupported",
+            "installed",
+            "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.lesson.injected",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "hit": {
+          "values": [
+            "false",
+            "true"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.memory.recalled",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "hit": {
+          "values": [
+            "false",
+            "true"
+          ]
+        },
+        "path": {
+          "values": [
+            "context",
+            "other",
+            "tool"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.features_completed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "features_completed"
+          ]
+        },
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        },
+        "via": {
+          "values": [
+            "arrived",
+            "backfill",
+            "manual",
+            "mixed",
+            "organic",
+            "other",
+            "starter"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.mark_all_done",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "mark_all_done"
+          ]
+        },
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.notice_shown",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "notice_shown"
+          ]
+        },
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        },
+        "group": {
+          "values": [
+            "concurrent",
+            "features",
+            "other",
+            "sessions",
+            "streak",
+            "turns"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.panel_opened",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "panel_opened"
+          ]
+        },
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.reached",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "reached"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        },
+        "group": {
+          "values": [
+            "concurrent",
+            "features",
+            "other",
+            "sessions",
+            "streak",
+            "turns"
+          ]
+        },
+        "recommended_by": {
+          "values": [
+            "explore",
+            "none",
+            "other",
+            "several",
+            "tip",
+            "video"
+          ]
+        },
+        "via": {
+          "values": [
+            "arrived",
+            "backfill",
+            "manual",
+            "mixed",
+            "organic",
+            "other",
+            "starter"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.skipped",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "skipped"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        },
+        "surface": {
+          "values": [
+            "empty_state",
+            "other",
+            "panel"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.milestone.starter_clicked",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "starter_clicked"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "milestone"
+          ]
+        },
+        "send": {
+          "values": [
+            "other",
+            "prefill",
+            "route",
+            "send"
+          ]
+        },
+        "surface": {
+          "values": [
+            "empty_state",
+            "other",
+            "panel"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.monitor.decisions",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "decision": {
+          "values": [
+            "no_change",
+            "other",
+            "record_only",
+            "retry_provider",
+            "stop_blocked",
+            "stop_budget",
+            "stop_success",
+            "wake_actionable"
+          ]
+        },
+        "kind": {}
+      }
+    },
+    {
+      "name": "kirocrew.session.idle_expired",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "orphaned": {
+          "values": [
+            false,
+            true
+          ]
+        },
+        "turn_active": {}
+      }
+    },
+    {
+      "name": "kirocrew.session.started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "harness": {},
+        "session_kind": {
+          "values": [
+            "background",
+            "channel",
+            "chat",
+            "cron",
+            "heartbeat",
+            "other",
+            "subagent",
+            "task_runner",
+            "workflow_step"
+          ]
+        },
+        "session_source": {},
+        "trigger_source": {}
+      }
+    },
+    {
+      "name": "kirocrew.skill.lazy_load.count",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "hit": {},
+        "skill": {}
+      }
+    },
+    {
+      "name": "kirocrew.subagent.completed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "outcome": {},
+        "result": {
+          "values": [
+            "empty",
+            "none",
+            "text"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.subagent.spawned",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "batched": {
+          "values": [
+            false,
+            true
+          ]
+        },
+        "concurrency": {}
+      }
+    },
+    {
+      "name": "kirocrew.tips.feedback",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "ack",
+            "dismiss",
+            "helpful",
+            "optin",
+            "optout",
+            "other",
+            "shown",
+            "snooze"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "tips"
+          ]
+        },
+        "source": {
+          "values": [
+            "catalog",
+            "curated",
+            "generated",
+            "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.turn.completed",
+      "kind": "counter",
+      "unit": "{turn}",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "harness": {
+          "values": [
+            "antigravity",
+            "claude",
+            "claude_code",
+            "codex",
+            "copilot",
+            "deepseek",
+            "goose",
+            "kas",
+            "kiro",
+            "mimocode",
+            "opencode",
+            "other",
+            "pi",
+            "strands",
+            "unknown"
+          ]
+        },
+        "origin": {},
+        "outcome": {
+          "values": [
+            "cancelled",
+            "error",
+            "ok",
+            "stale_recover",
+            "stall_exhausted",
+            "timeout",
+            "tool_stall",
+            "unclassified"
+          ]
+        },
+        "trigger_source": {}
+      }
+    },
+    {
+      "name": "kirocrew.turn.timeout.cause",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "awaiting_permission": {
+          "values": [
+            false,
+            true
+          ]
+        },
+        "children_announced": {},
+        "path": {
+          "values": [
+            "dashboard_ceiling",
+            "provider_timeout"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.ui.control.clicked",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "control": {
+          "values": [
+            "followup_add_session",
+            "followup_skip",
+            "followup_start_chat",
+            "followup_start_worktree",
+            "option_chip",
+            "other",
+            "question_card_answer",
+            "question_card_freetext"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.voice.stt.ended",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "duration": {},
+        "first_partial": {},
+        "outcome": {
+          "values": [
+            "error",
+            "ok",
+            "other",
+            "refused",
+            "timeout"
+          ]
+        },
+        "provider": {},
+        "transcript": {
+          "values": [
+            "empty",
+            "nonempty"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.voice.stt.errors",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "code": {
+          "values": [
+            "decoder_download_disabled",
+            "decoder_install_failed",
+            "decoder_payload_unverified",
+            "decoder_unsupported_platform",
+            "other",
+            "stt_aws_access_denied",
+            "stt_codex_cli_unresolved",
+            "stt_codex_extra_missing",
+            "stt_codex_failed",
+            "stt_codex_login_required",
+            "stt_codex_missing",
+            "stt_codex_sandbox_unavailable",
+            "stt_codex_voice_unavailable",
+            "stt_consent_required",
+            "stt_decode_failed",
+            "stt_extra_missing",
+            "stt_import_failed",
+            "stt_load_crashed",
+            "stt_max_duration_exceeded",
+            "stt_model_missing",
+            "stt_native_probe_crashed",
+            "stt_no_wheel_for_platform",
+            "stt_session_failed",
+            "stt_streaming_disabled",
+            "stt_transcribe_sdk_outdated",
+            "stt_transcribe_vocabulary_rejected",
+            "stt_unsupported_cpu"
+          ]
+        },
+        "provider": {}
+      }
+    },
+    {
+      "name": "kirocrew.voice.stt.started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "provider": {}
+      }
+    },
+    {
+      "name": "kirocrew.voice.tts.replies",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "first_audio": {},
+        "outcome": {
+          "values": [
+            "busy",
+            "cancelled",
+            "error",
+            "invalid",
+            "ok",
+            "sandbox_refused",
+            "unavailable"
+          ]
+        },
+        "provider": {}
+      }
+    },
+    {
+      "name": "kirocrew.voice.unavailable",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "reason": {
+          "values": [
+            "busy",
+            "forbidden_origin",
+            "other",
+            "provider_not_streaming",
+            "provider_off",
+            "streaming_off",
+            "stt_disabled"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.webhook.requests",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "outcome": {}
+      }
+    },
+    {
+      "name": "kirocrew.work.created",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "depth": {},
+        "kind": {
+          "values": [
+            "goal",
+            "item"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.work.dispatches",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "target_kind": {
+          "values": [
+            "crew",
+            "other",
+            "session"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.work.item_closed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "duration": {},
+        "fails": {},
+        "state": {
+          "values": [
+            "abandoned",
+            "accepted",
+            "other",
+            "rejected"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.work.reports",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "reason": {
+          "values": [
+            "approval",
+            "needs_human",
+            "none",
+            "other"
+          ]
+        },
+        "status": {
+          "values": [
+            "blocked",
+            "done",
+            "failed",
+            "other",
+            "progress",
+            "question",
+            "reply"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.workflow.runs",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro_crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "authored": {
+          "values": [
+            false,
+            true
+          ]
+        },
+        "replay": {
+          "values": [
+            false,
+            true
+          ]
+        }
+      }
+    }
+  ]
+}
