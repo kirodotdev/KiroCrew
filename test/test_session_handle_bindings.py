@@ -877,6 +877,7 @@ _FACADE_MODULE_CLASSES = (
     "AcpRuntimeDead",
     "AcpRuntimeError",
     "AcpRuntimeOverloaded",
+    "AcpScopeAdmissionTimeout",
 )
 
 #: Moved classes no reader names by module: they keep the module that defines them.
