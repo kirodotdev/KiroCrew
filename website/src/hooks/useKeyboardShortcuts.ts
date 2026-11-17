@@ -919,10 +919,13 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Settings — ⌘, on macOS, Alt+, on Windows/Linux, Option/Alt+, a macOS
     // alias (see the registry entry for why). Must stay BEFORE the Alt gate
     // below: off macOS the primary chord now CARRIES Alt, so moving this branch
-    // under that gate would take Alt+, away from Settings. Fires even when
-    // shortcuts are globally disabled, so the user can always reach the toggle
-    // that re-enables them.
-    if (hit === 'open-settings') {
+    // under that gate would take Alt+, away from Settings. The primary chord
+    // fires even when shortcuts are globally disabled, so the user can always
+    // reach the toggle that re-enables them; the macOS Option+, alias then obeys
+    // the toggle, so the character it types reaches the field.
+    const settingsPrimary = bindings['open-settings']?.primary
+    if (hit === 'open-settings'
+        && (enabled || (settingsPrimary && chordMatchesEvent(e, settingsPrimary, shortcutPlatform())))) {
       e.preventDefault()
       navigate('/settings')
       return
