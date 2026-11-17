@@ -109,7 +109,7 @@ def test_doctor_routing_config_is_not_a_verified_session(system, monkeypatch, ca
     output = capsys.readouterr().out
     assert "configured" in output
     assert "not verified" in output
-    assert "✅" not in output
+    assert "OK:" not in output
 
 
 def test_doctor_mcp_success_names_its_probe_scope(tmp_path, monkeypatch, capsys):

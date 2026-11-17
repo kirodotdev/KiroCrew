@@ -333,7 +333,7 @@ class TestDoctorRow:
 
         out = _flat(capsys.readouterr().out)
         settings_path, key = sandbox.kiro_internal_sandbox_switch()
-        assert "kiro-cli sandbox: ❌" in out
+        assert "kiro-cli sandbox: Error:" in out
         assert f'{settings_path} sets "{key}": true' in out
         assert f'Set "{key}" to false' in out
         assert len(issues) == 1 and settings_path in issues[0]
@@ -347,7 +347,7 @@ class TestDoctorRow:
         confinement._doctor_kiro_sandbox_blocks_crew_mcp(issues, required=False)
 
         out = _flat(capsys.readouterr().out)
-        assert "kiro-cli sandbox: ⚠️" in out
+        assert "kiro-cli sandbox: Warning:" in out
         assert "not used by the selected backends" in out
         assert issues == []
 

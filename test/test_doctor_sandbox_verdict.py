@@ -88,10 +88,10 @@ class TestUserNamespaceVantage:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "backend:     ⏭  cannot be verified from this shell" in out
+        assert "backend:     Skipped: cannot be verified from this shell" in out
         assert "This shell is already confined" in out
         assert "run `kirocrew doctor` from an unconfined shell" in out
-        assert "❌" not in out
+        assert "Error:" not in out
         assert issues == []
 
     @pytest.mark.parametrize(
@@ -130,7 +130,7 @@ class TestUserNamespaceVantage:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "backend:     ❌ none — unshare(CLONE_NEWUSER)" in out
+        assert "backend:     Error:   none — unshare(CLONE_NEWUSER)" in out
         assert "cannot be verified from this shell" not in out
         assert issues == ["sandbox backend"]
 
@@ -151,7 +151,7 @@ class TestUserNamespaceVantage:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "backend:     ❌ none — unshare(CLONE_NEWUSER)" in out
+        assert "backend:     Error:   none — unshare(CLONE_NEWUSER)" in out
         assert "cannot be verified from this shell" not in out
         assert issues == ["sandbox backend"]
 
@@ -217,7 +217,7 @@ class TestUnverifiableFromShell:
 
         out = capsys.readouterr().out
         assert "cannot be verified from this shell" in out
-        assert "❌" not in out
+        assert "Error:" not in out
         assert issues == []
 
     def test_does_not_claim_the_sandbox_works(
@@ -233,7 +233,7 @@ class TestUnverifiableFromShell:
         cli_doctor._doctor_sandbox([])
 
         out = capsys.readouterr().out
-        assert "✅" not in out
+        assert "OK:" not in out
 
     def test_names_the_attached_launcher_verification_recipe(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
@@ -281,7 +281,7 @@ class TestGenuinelyBroken:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "❌" in out
+        assert "Error:" in out
         assert "cannot be verified" not in out
         assert issues, "a genuine fault must be counted as an issue"
 
@@ -300,7 +300,7 @@ class TestGenuinelyBroken:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "❌" in out
+        assert "Error:" in out
         assert "cannot be verified from this shell" not in out
         assert issues
 
@@ -322,7 +322,7 @@ class TestGenuinelyBroken:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "❌" in out
+        assert "Error:" in out
         assert "cannot be verified from this shell" not in out
         assert issues
 
@@ -341,7 +341,7 @@ class TestProfileAbsent:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "❌" in out
+        assert "Error:" in out
         assert "not installed" in out
         assert "kirocrew service install" in out
         assert "cannot be verified from this shell" not in out
@@ -360,7 +360,7 @@ class TestNonFaultStates:
         cli_doctor._doctor_sandbox(issues)
 
         out = capsys.readouterr().out
-        assert "✅ namespace" in out
+        assert "OK:      namespace" in out
         assert issues == []
 
     def test_transient_failure_is_not_an_issue(
@@ -375,7 +375,7 @@ class TestNonFaultStates:
 
         out = capsys.readouterr().out
         assert "transiently" in out
-        assert "❌" not in out
+        assert "Error:" not in out
         assert issues == []
 
 

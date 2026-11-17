@@ -48,7 +48,7 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     mcp._doctor_mcp_share_refused(_cfg(), issues)
 
     out = capsys.readouterr().out
-    assert "mcp sharing: ⚠ not shared, one copy per chat:" in out
+    assert "mcp sharing: Warning: not shared, one copy per chat:" in out
     assert "alpha-mcp (not approved yet)" in out
     assert "beta-mcp (command changed since it was approved)" in out
     assert "/mcp?view=sharing" in out
@@ -196,7 +196,7 @@ def test_refusal_for_a_server_no_longer_shared_is_ignored(refused, capsys):
 
     out = capsys.readouterr().out
     assert "gone-mcp" not in out
-    assert "mcp sharing: ✅ 1 server(s) set to share, none waiting for approval" in out
+    assert "mcp sharing: OK:      1 server(s) set to share, none waiting for approval" in out
     assert issues == []
 
 
@@ -290,7 +290,7 @@ def test_unreadable_or_corrupt_store_never_reports_healthy(store_file, capsys, w
     mcp._doctor_mcp_share_refused(_cfg(), issues)
 
     out = capsys.readouterr().out
-    assert f"mcp sharing: ⚠ cannot read launch approvals: {reason}" in out
+    assert f"mcp sharing: Warning: cannot read launch approvals: {reason}" in out
     assert "none waiting for approval" not in out
     assert issues == ["MCP launch approvals cannot be read: sharing state unknown"]
 

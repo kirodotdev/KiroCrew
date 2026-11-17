@@ -403,7 +403,7 @@ def test_doctor_reports_a_checkpoint_that_is_not_being_saved(
 
     issues: list[str] = []
     workload._doctor_session_tree_checkpoint(issues)
-    assert "✅" in capsys.readouterr().out
+    assert "checkpoint:  OK:" in capsys.readouterr().out
     assert issues == []
 
     monkeypatch.setattr(stp, "MAX_SESSION_TREE_CHECKPOINT_BYTES", 8)

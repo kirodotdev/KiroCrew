@@ -89,16 +89,16 @@ def _gateway_memory_lines() -> list[str]:
     try:
         ceiling = int(cli_doctor.KiroCrewConfig.load().session.watchdog_rss_max_mb)
     except Exception:
-        lines.append("  session ceiling: ⚠️  could not read session.watchdog_rss_max_mb")
+        lines.append("  session ceiling: Warning: could not read session.watchdog_rss_max_mb")
     else:
         if ceiling > 0:
             lines.append(
-                f"  session ceiling: ✅ {ceiling} MiB per session process tree "
+                f"  session ceiling: OK:      {ceiling} MiB per session process tree "
                 "(session.watchdog_rss_max_mb; idle sessions that grow past it are recycled)"
             )
         else:
             lines.append(
-                "  session ceiling: ⏹ disabled (session.watchdog_rss_max_mb = 0) — "
+                "  session ceiling: Note:    disabled (session.watchdog_rss_max_mb = 0) — "
                 "nothing bounds a runaway session tree"
             )
     try:
@@ -108,19 +108,19 @@ def _gateway_memory_lines() -> list[str]:
             # lock, so the pid cannot be read; "not running" would contradict
             # the Connectivity row of the same run.
             lines.append(
-                "  gateway rss:     ⚠️  could not locate the gateway process to measure "
+                "  gateway rss:     Warning: could not locate the gateway process to measure "
                 "it (lock probe indeterminate; this does not mean it is stopped)"
             )
         elif pid is None:
-            lines.append("  gateway rss:     ⏹ not running")
+            lines.append("  gateway rss:     Note:    not running")
         else:
             rss = cli_doctor._gateway_rss_bytes(pid)
             if rss is None:
-                lines.append(f"  gateway rss:     ⚠️  pid {pid} alive but RSS unreadable")
+                lines.append(f"  gateway rss:     Warning: pid {pid} alive but RSS unreadable")
             else:
                 lines.append(f"  gateway rss:     {rss // (1024 * 1024)} MiB (pid {pid})")
     except Exception:
-        lines.append("  gateway rss:     ⚠️  could not determine (probe failed)")
+        lines.append("  gateway rss:     Warning: could not determine (probe failed)")
     return lines
 
 
@@ -141,7 +141,7 @@ def _windows_inert_limit_lines() -> list[str]:
 
         limits = cli_doctor.KiroCrewConfig.load().resource_limits
     except Exception:
-        return ["  inert limits:    ⚠  could not read resource_limits"]
+        return ["  inert limits:    Warning: could not read resource_limits"]
     named = [
         f"resource_limits.{key}"
         for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
@@ -150,9 +150,9 @@ def _windows_inert_limit_lines() -> list[str]:
     if getattr(limits, "max_open_files", 0) is None:
         named.append("resource_limits.max_open_files (default 1024)")
     if not named:
-        return ["  inert limits:    ✅ no resource_limits key set that Windows ignores"]
+        return ["  inert limits:    OK:      no resource_limits key set that Windows ignores"]
     return [
-        "  inert limits:    ⚠  set but not enforced on Windows: " + ", ".join(named),
+        "  inert limits:    Warning: set but not enforced on Windows: " + ", ".join(named),
         "                   The Job object bounds only per-spawn max_processes and "
         "max_memory_mb; these need a systemd user manager or POSIX rlimits.",
     ]
@@ -178,40 +178,42 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
         print(line)
     if not sys.platform.startswith("linux"):
         print(
-            f"  freeze risk: ⏹ not applicable ({sys.platform} — the swap/OOM-killer "
+            f"  freeze risk: Note:    not applicable ({sys.platform} — the swap/OOM-killer "
             "check reads Linux procfs)"
         )
         return
 
     swap_kib = _swap_total_kib()
     if swap_kib is None:
-        print("  swap:        ⚠️  could not read SwapTotal from /proc/meminfo — check skipped")
+        print("  swap:        Warning: could not read SwapTotal from /proc/meminfo — check skipped")
         return
     if swap_kib > 0:
-        print(f"  swap:        ✅ {swap_kib / 1048576:.1f} GiB configured")
+        print(f"  swap:        OK:      {swap_kib / 1048576:.1f} GiB configured")
     else:
-        print("  swap:        ⏹ none (SwapTotal = 0)")
+        print("  swap:        Note:    none (SwapTotal = 0)")
 
     killer = cli_doctor._detect_userspace_oom_killer()
     if isinstance(killer, str):
-        print(f"  oom killer:  ✅ {killer} active")
+        print(f"  oom killer:  OK:      {killer} active")
     elif killer is False:
         print(
-            "  oom killer:  ⏹ none active (checked: "
+            "  oom killer:  Note:    none active (checked: "
             + ", ".join(cli_doctor._OOM_KILLER_UNITS)
             + ")"
         )
     else:
-        print("  oom killer:  ⏹ could not determine (no systemctl, or the probe failed)")
+        print("  oom killer:  Note:    could not determine (no systemctl, or the probe failed)")
 
     if swap_kib > 0 or isinstance(killer, str):
         return
     if killer is None:
         # Uncertain detection must not warn — a container or non-systemd host
         # may run a killer doctor cannot see.
-        print("  freeze risk: ⏹ unknown — no swap, and OOM-killer detection was inconclusive")
+        print(
+            "  freeze risk: Note:    unknown — no swap, and OOM-killer detection was inconclusive"
+        )
         return
-    print("  freeze risk: ⚠️  host can freeze under sustained memory pressure")
+    print("  freeze risk: Warning: host can freeze under sustained memory pressure")
     print("               With no swap and no userspace OOM killer, memory pressure")
     print("               thrashes file-backed pages and the host can livelock before")
     print("               the kernel OOM killer intervenes.")
@@ -535,7 +537,7 @@ def _acp_runtime_lines(census: _AcpCensus, window_secs: float) -> list[str]:
     runtimes = census.runtimes
     caps = _acp_cap_lines(census)
     if not runtimes:
-        return ["  runtimes:    ✅ none running", *caps]
+        return ["  runtimes:    OK:      none running", *caps]
     owned = sum(1 for r in runtimes if r.owner == "gateway")
     other = sum(1 for r in runtimes if r.owner == "other")
     unowned = [r for r in runtimes if r.owner in ("stale", "untracked")]
@@ -553,7 +555,9 @@ def _acp_runtime_lines(census: _AcpCensus, window_secs: float) -> list[str]:
 
     rated = [r for r in runtimes if r.cpu_pct is not None]
     if not rated:
-        lines.append("  cpu:         ⏹ could not take a rate (no clock tick rate on this host)")
+        lines.append(
+            "  cpu:         Note:    could not take a rate (no clock tick rate on this host)"
+        )
     else:
         total = sum(r.cpu_pct or 0.0 for r in rated)
         hot = sorted(
@@ -564,11 +568,11 @@ def _acp_runtime_lines(census: _AcpCensus, window_secs: float) -> list[str]:
         overall = f"all {len(rated)} backends: {total:.0f}% of a core over {window_secs:.1f}s"
         if not hot:
             lines.append(
-                f"  cpu:         ✅ none at or above {_ACP_HOT_CPU_PCT:.0f}% of a core ({overall})"
+                f"  cpu:         OK:      none at or above {_ACP_HOT_CPU_PCT:.0f}% of a core ({overall})"
             )
         else:
             lines.append(
-                f"  cpu:         ⚠️  {len(hot)} at or above {_ACP_HOT_CPU_PCT:.0f}% of a core "
+                f"  cpu:         Warning: {len(hot)} at or above {_ACP_HOT_CPU_PCT:.0f}% of a core "
                 f"({overall})"
             )
             for runtime in hot[:_ACP_LISTED]:
@@ -590,7 +594,7 @@ def _acp_runtime_lines(census: _AcpCensus, window_secs: float) -> list[str]:
         pids = ", ".join(str(r.root) for r in unowned[:_ACP_LISTED])
         more = f" and {len(unowned) - _ACP_LISTED} more" if len(unowned) > _ACP_LISTED else ""
         lines.append(
-            f"  no owner:    ⚠️  {len(unowned)} no running gateway owns, so no turn can be "
+            f"  no owner:    Warning: {len(unowned)} no running gateway owns, so no turn can be "
             "in flight on them"
         )
         # Only untracked runtimes (no registry record) are reclaimed by Services >
@@ -612,12 +616,12 @@ def _acp_cap_lines(census: _AcpCensus) -> list[str]:
     lines = []
     if census.unread:
         lines.append(
-            f"  read cap:    ⚠️  {census.unread} processes past the first {_ACP_TABLE_CAP} were "
+            f"  read cap:    Warning: {census.unread} processes past the first {_ACP_TABLE_CAP} were "
             "not read; a runtime among them is not counted"
         )
     if census.capped_trees:
         lines.append(
-            f"  tree cap:    ⚠️  {census.capped_trees} runtime(s) hold more than {_ACP_TREE_CAP} "
+            f"  tree cap:    Warning: {census.capped_trees} runtime(s) hold more than {_ACP_TREE_CAP} "
             f"processes; {census.capped_procs} past the cap were not walked"
         )
     return lines
@@ -633,12 +637,14 @@ def _doctor_acp_runtimes(issues: list[str]) -> None:
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     print("\nACP Runtimes")
     if not sys.platform.startswith("linux"):
-        print(f"  runtimes:    ⏹ not measured ({sys.platform} — the census reads Linux procfs)")
+        print(
+            f"  runtimes:    Note:    not measured ({sys.platform} — the census reads Linux procfs)"
+        )
         return
     try:
         tracked = cli_doctor.session_pid.tracked_session_roots()
         if tracked is None:
-            print("  runtimes:    ⚠️  could not read the session registry — check skipped")
+            print("  runtimes:    Warning: could not read the session registry — check skipped")
             return
         gateway_pid = cli_doctor._read_gateway_pid()
         census = _acp_runtime_census(
@@ -651,17 +657,17 @@ def _doctor_acp_runtimes(issues: list[str]) -> None:
             window_secs=_ACP_CPU_WINDOW_SECS,
         )
     except Exception:
-        print("  runtimes:    ⚠️  could not take the census (probe failed) — check skipped")
+        print("  runtimes:    Warning: could not take the census (probe failed) — check skipped")
         return
     if census is None:
-        print("  runtimes:    ⚠️  could not read the process table — check skipped")
+        print("  runtimes:    Warning: could not read the process table — check skipped")
         return
     for line in _acp_runtime_lines(census, _ACP_CPU_WINDOW_SECS):
         print(line)
     try:
         kept = _kept_scope_lines()
     except Exception:
-        kept = ["  kept scopes: ⚠️  could not read the agent scopes — check skipped"]
+        kept = ["  kept scopes: Warning: could not read the agent scopes — check skipped"]
     for line in kept:
         print(line)
 
@@ -678,7 +684,7 @@ def _kept_scope_lines() -> list[str]:
         return []
     tracked, complete = cli_doctor.session_pid._read_tracked_agent_pids()
     if not complete:
-        return ["  kept scopes: ⚠️  could not read the session registry — check skipped"]
+        return ["  kept scopes: Warning: could not read the session registry — check skipped"]
     kept = session_scope_reap.kept_scopes(
         slice_dir,
         tracked_pids=tracked,
@@ -686,9 +692,9 @@ def _kept_scope_lines() -> list[str]:
         proc_root=_PROC_ROOT,
     )
     if not kept:
-        return ["  kept scopes: ✅ none"]
+        return ["  kept scopes: OK:      none"]
     lines = [
-        f"  kept scopes: ⚠️  {len(kept)} runtime scope(s) no session tracks; "
+        f"  kept scopes: Warning: {len(kept)} runtime scope(s) no session tracks; "
         "the gateway does not stop them"
     ]
     for unit, category, age in kept:
@@ -787,19 +793,19 @@ def _task_ceiling_lines() -> list[str]:
     )
     live_text = status.slice_tasks_text()
     if not live_text:
-        lines.append("  live:        ⏹ the agents slice is not active; nothing measured")
+        lines.append("  live:        Note:    the agents slice is not active; nothing measured")
     else:
         current, live_max = status.slice_tasks, status.slice_tasks_limit
         lines.append(f"  live:        {live_text}")
         if 0 < live_max < want_slice:
             lines.append(
-                f"               ⚠️  the slice's pids.max {live_max} is below this install's "
+                f"               Warning: the slice's pids.max {live_max} is below this install's "
                 f"{want_slice}: another gateway or pod wrote it after this one. "
                 "Restarting this gateway writes its value again."
             )
         if status.slice_tasks_tight:
             lines.append(
-                "               ⚠️  close to the ceiling: new sessions fail to start "
+                "               Warning: close to the ceiling: new sessions fail to start "
                 "(process exited) once it is reached"
             )
         if scopes is not None and scopes.scopes:
@@ -813,7 +819,7 @@ def _task_ceiling_lines() -> list[str]:
                 room = int((live_max - current) / mean)
                 note = f"  headroom:    about {room} more runtimes at the observed average"
                 if room < scopes.scopes:
-                    note += " ⚠️  fewer than are running now"
+                    note += " Warning: fewer than are running now"
                     if want_slice < recommended_slice:
                         note += (
                             f"; raise resource_limits.max_total_processes toward "
@@ -828,7 +834,7 @@ def _task_ceiling_lines() -> list[str]:
     )
     if scopes is not None and scopes.near_limit:
         lines.append(
-            f"               ⚠️  {scopes.near_limit} scope(s) in the tight band of "
+            f"               Warning: {scopes.near_limit} scope(s) in the tight band of "
             "their own TasksMax"
         )
 
@@ -873,7 +879,7 @@ def _doctor_task_ceilings(issues: list[str]) -> None:
     try:
         lines = _task_ceiling_lines()
     except Exception:
-        print("  ceilings:    ⚠️  could not read the host or the agents slice — check skipped")
+        print("  ceilings:    Warning: could not read the host or the agents slice — check skipped")
         return
     for line in lines:
         print(line)
@@ -987,7 +993,7 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
     for root in _measured_tmp_roots():
         usage = _tmpfs_usage(root)
         if usage is None:
-            print(f"  {root}: ⏭  not present or unreadable")
+            print(f"  {root}: Skipped: not present or unreadable")
             continue
         free_space_pct, free_inode_pct, free_inodes, tmp_entries = usage
         detail = (
@@ -1000,7 +1006,7 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
             what = "inodes" if low_inodes and not low_space else "space"
             if low_space and low_inodes:
                 what = "space and inodes"
-            print(f"  {root}: ⚠️  low on {what} — {detail}")
+            print(f"  {root}: Warning: low on {what} — {detail}")
             print(
                 "               Sandboxed tool spawns fail with rc=1 once this fills, "
                 "and test runs fail with ENOSPC. "
@@ -1018,7 +1024,7 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
             print("               Other entries belong to other applications: leave them alone.")
             issues.append(f"runtime tmpfs {root} low on {what} ({detail})")
         else:
-            print(f"  {root}: ✅ {detail}")
+            print(f"  {root}: OK:      {detail}")
 
 
 # ── Temp directory in use (tmpfs / no swap / age-cleaned) ────────────────────
@@ -1138,13 +1144,13 @@ def _doctor_temp_directories(issues: list[str]) -> None:
         temp_dir = tempfile.gettempdir()
     except OSError:
         # gettempdir() raises when no candidate dir is usable.
-        print("  ⚠️  could not resolve the temp directory (no usable TMPDIR)")
+        print("  Warning: could not resolve the temp directory (no usable TMPDIR)")
         return
     print(f"  path: {temp_dir} (resolved by this doctor run)")
 
     if not sys.platform.startswith("linux"):
         print(
-            f"  ⏹ not applicable ({sys.platform} — filesystem type, swap and "
+            f"  Note:    not applicable ({sys.platform} — filesystem type, swap and "
             "tmpfiles ageing are read from Linux procfs/systemd)"
         )
         return
@@ -1157,7 +1163,7 @@ def _doctor_temp_directories(issues: list[str]) -> None:
     if fs_type is not None:
         print(f"  filesystem: {fs_type}")
     else:
-        print("  filesystem: ⚠️  could not read the mount table")
+        print("  filesystem: Warning: could not read the mount table")
 
     # Read only for the tmpfs-with-no-swap warning; Memory Pressure prints it.
     swap_kib = _swap_total_kib()
@@ -1165,18 +1171,18 @@ def _doctor_temp_directories(issues: list[str]) -> None:
 
     aged = _tmpfiles_ages(temp_dir)
     if aged is True:
-        print("  ageing: ⚠️  a tmpfiles.d rule deletes files here by age")
+        print("  ageing: Warning: a tmpfiles.d rule deletes files here by age")
     elif aged is False:
-        print("  ageing: ✅ no tmpfiles.d age rule covers this directory")
+        print("  ageing: OK:      no tmpfiles.d age rule covers this directory")
     else:
         print(
-            "  ageing: ⏹ could not determine (systemd-tmpfiles unavailable or the "
+            "  ageing: Note:    could not determine (systemd-tmpfiles unavailable or the "
             "probe failed, or a rule this reader cannot resolve — a glob, a "
             "specifier, or an exclusion — covers this directory)"
         )
 
     if is_tmpfs and swap_kib == 0:
-        print(f"  ⚠️  {temp_dir} is tmpfs (RAM-backed) with no swap.")
+        print(f"  Warning: {temp_dir} is tmpfs (RAM-backed) with no swap.")
         print(
             "       Its contents count against RAM, so a large write throttles "
             "the host under memory pressure. Point TMPDIR at a disk-backed path "
@@ -1259,7 +1265,7 @@ def _doctor_cli_installer_residue(issues: list[str]) -> None:
         size_label = f"≥ {size_label}"
 
     print("\nkiro-cli installer residue")
-    print(f"  files:       ⚠️  {count_label} in {temp_dir}")
+    print(f"  files:       Warning: {count_label} in {temp_dir}")
     print(f"  reclaimable: {size_label}")
     print("               Auto-update downloads that could not be applied while")
     print("               kiro-cli was running, and are not cleaned up. Crew starts")
@@ -1288,7 +1294,7 @@ def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
     if result.removed:
         mib = result.freed_bytes / 1048576
         print(
-            f"  janitor:     🧹 {result.removed} stale temp/backup file(s) "
+            f"  janitor:     Note:    {result.removed} stale temp/backup file(s) "
             f"reclaimable ({mib:.1f} MiB) — the gateway sweeps these on boot"
         )
         for name in result.removed_names:
@@ -1297,7 +1303,7 @@ def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
             # (ANSI/OSC) escape sequence straight to the operator's terminal.
             print(f"{render._INDENT}- {name!r}")
     else:
-        print("  janitor:     ✅ no stale temp/backup files to reclaim")
+        print("  janitor:     OK:      no stale temp/backup files to reclaim")
     _doctor_skill_view_census(agents_dir)
     _doctor_skill_view_residue(agents_dir)
     _doctor_run_dirs()
@@ -1332,7 +1338,7 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
     backlog = orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN
     warn = backlog or rewritten
     print(
-        f"  skill-view residue: {'⚠️ ' if warn else '✅'} {orphans}{floor} ownership sidecar(s) in"
+        f"  skill-view residue: {'Warning:' if warn else 'OK:':<9}{orphans}{floor} ownership sidecar(s) in"
         f" {metadata_dir}/ with no alias, {locks}{floor} leftover alias .lock file(s),"
         f" {rewritten}{floor} alias(es) rewritten by another program"
     )
@@ -1345,7 +1351,7 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
     churning = acp_driver.skill_view_churning_env_keys(agents_dir)
     if churning:
         print(
-            f"{render._INDENT}⚠️ env value(s) differing across one agent's skill views:"
+            f"{render._INDENT}Warning: env value(s) differing across one agent's skill views:"
             f" {', '.join(render._safe_display(label) for label in churning)}. If a launcher"
             f" re-stamps one on every launch, add its"
             f" key to KIROCREW_SKILL_VIEW_VOLATILE_ENV so it stops naming a new view per launch."
@@ -1387,21 +1393,23 @@ def _doctor_run_dirs() -> None:
     except OSError:
         return
     if not root.is_dir():
-        print("  run dirs:    ✅ no workspace root yet, so no run directories")
+        print("  run dirs:    OK:      no workspace root yet, so no run directories")
         return
     try:
         retained = retained_gateway_pids()
     except OSError:
-        print("  run dirs:    ⚠️  the session pid ledger cannot be read; census skipped")
+        print("  run dirs:    Warning: the session pid ledger cannot be read; census skipped")
         return
     census = count_run_dirs(root, retained_gateway_pids=retained)
     if not census.unmarked and not census.refused and not census.kept:
-        print("  run dirs:    ✅ no run directories left behind that the sweep cannot reclaim")
+        print(
+            "  run dirs:    OK:      no run directories left behind that the sweep cannot reclaim"
+        )
         return
     suffix = "+" if census.floor else ""
     warn = census.unmarked > _RUN_DIR_BACKLOG_WARN or census.refused > 0 or census.kept > 0
     print(
-        f"  run dirs:    {'⚠️ ' if warn else '✅'} under {root}: {census.unmarked}{suffix} run"
+        f"  run dirs:    {'Warning:' if warn else 'OK:':<9}under {root}: {census.unmarked}{suffix} run"
         f" director(ies) carry no {RUN_DIR_MARKER} marker (left by a build that did not mark that"
         f" kind); {census.refused}{suffix} marked director(ies)"
         f" this data home cannot reclaim (another data home's, an unreadable marker, or a"
@@ -1466,7 +1474,7 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
         cli_doctor.count_authored_agent_files(agents_dir), _SKILL_VIEW_BACKLOG_WARN
     )
     warn = bool(unreadable) or total > warn_at
-    print(f"  skill views: {'⚠️ ' if warn else '✅'} {detail}")
+    print(f"  skill views: {'Warning:' if warn else 'OK:':<9}{detail}")
     if truncated:
         print(f"{render._INDENT}(floors: the census stopped at its retention bound)")
     if unreadable:

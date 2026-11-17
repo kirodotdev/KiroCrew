@@ -35,7 +35,7 @@ def test_a_denied_read_inside_the_sandbox_is_a_skip_not_an_issue(capsys) -> None
 
     out = capsys.readouterr().out
     assert out.startswith(
-        "  task store: ⏭  skipped — '/data/op/.kiro/crew/tasks/tasks.db' is not "
+        "  task store: Skipped: '/data/op/.kiro/crew/tasks/tasks.db' is not "
         "readable from this shell\n"
     )
     assert "Run `kirocrew doctor` from your own" in out
@@ -50,7 +50,7 @@ def test_a_denied_read_outside_the_sandbox_is_an_issue(capsys) -> None:
 
     out = capsys.readouterr().out
     assert out.startswith(
-        "  task store: ❌ '/data/op/.kiro/crew/tasks/tasks.db' is not readable "
+        "  task store: Error:   '/data/op/.kiro/crew/tasks/tasks.db' is not readable "
         "(Operation not permitted)\n"
     )
     assert "check the ownership and permissions" in out
@@ -66,7 +66,7 @@ def test_a_confinement_probe_that_raises_keeps_the_stricter_verdict(capsys) -> N
     with render._unreadable_skips_section(issues, "task store", confined=boom):
         raise _denied()
 
-    assert "❌" in capsys.readouterr().out
+    assert "Error:" in capsys.readouterr().out
     assert len(issues) == 1
 
 
@@ -76,7 +76,7 @@ def test_a_denial_with_no_filename_still_reports(capsys) -> None:
     with render._unreadable_skips_section(issues, "task store", confined=lambda: True):
         raise PermissionError(errno.EACCES, "Permission denied")
 
-    assert "skipped — a file it reads is not readable" in capsys.readouterr().out
+    assert "Skipped: a file it reads is not readable" in capsys.readouterr().out
     assert issues == []
 
 
@@ -132,7 +132,7 @@ def test_a_masked_task_store_no_longer_ends_the_report(tmp_path, monkeypatch, ca
     print("  next section ran")
 
     out = capsys.readouterr().out
-    assert f"task store: ⏭  skipped — {str(db)!r} is not readable" in out
+    assert f"task store: Skipped: {str(db)!r} is not readable" in out
     assert out.endswith("  next section ran\n")
     assert issues == []
 

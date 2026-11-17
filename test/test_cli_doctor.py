@@ -76,7 +76,7 @@ class TestManagedServicePolicyDoctor:
         monkeypatch.setattr(cli_doctor.service_controller, "stale_unit_notes", lambda: [note])
         issues: list[str] = []
         cli_doctor._doctor_managed_service_policy(issues)
-        assert f"unit:        ⚠️  {note}" in capsys.readouterr().out
+        assert f"unit:        Warning: {note}" in capsys.readouterr().out
         assert issues == ["managed service unit lags this build"]
 
     def test_a_restart_policy_other_than_always_warns_without_an_issue(self, monkeypatch, capsys):
@@ -90,7 +90,7 @@ class TestManagedServicePolicyDoctor:
         monkeypatch.setattr(cli_doctor.service_controller, "restart_policy_notes", lambda: [note])
         issues: list[str] = []
         cli_doctor._doctor_managed_service_policy(issues)
-        assert f"restart:     ⚠️  {note}" in capsys.readouterr().out
+        assert f"restart:     Warning: {note}" in capsys.readouterr().out
         assert issues == []
 
 
@@ -274,7 +274,7 @@ class TestDataHome:
         cli_doctor._doctor_data_home()
 
         out = capsys.readouterr().out
-        assert f"location:    ✅ {os.path.realpath(versioned)}" in out
+        assert f"location:    OK:      {os.path.realpath(versioned)}" in out
         assert str(current) not in out
 
 
@@ -382,7 +382,7 @@ class TestPodSessionBus:
         cli_doctor._doctor_pod_session_bus(issues)
 
         out = capsys.readouterr().out
-        assert f"✅ {sock}" in out
+        assert f"OK:      {sock}" in out
         assert "linger" not in out
         assert issues == []
 
@@ -397,7 +397,7 @@ class TestPodSessionBus:
         cli_doctor._doctor_pod_session_bus(issues)
 
         out = capsys.readouterr().out
-        assert "linger:" in out and "⚠️" in out
+        assert "linger:" in out and "Warning:" in out
         assert "loginctl enable-linger tester" in out
         assert issues == []
 
@@ -461,7 +461,7 @@ class TestPodSessionBus:
 
         On Amazon Linux 2 a stray `dbus-daemon` can create `/run/user/<uid>/bus` with no
         per-user manager. Stricter than `require_systemd()` on purpose: the doctor only
-        prints, so a false ⏹ costs a sentence, while the runtime gate must not refuse.
+        prints, so a false Note: costs a sentence, while the runtime gate must not refuse.
         """
         self._linux(monkeypatch, tmp_path, bus=True, template=False)
 
@@ -470,7 +470,7 @@ class TestPodSessionBus:
         out = capsys.readouterr().out
         assert "not applicable" in out
         assert "dev-backend.sh" in out
-        assert "✅" not in out
+        assert "OK:" not in out
         assert "Fix: loginctl enable-linger" not in out
 
 
@@ -528,7 +528,7 @@ class TestTrustRoot:
         monkeypatch.setattr(cli_doctor, "signing_health", lambda: (True, key))
         cli_doctor._doctor_trust_root()
         out = capsys.readouterr().out
-        assert "trust root:  ✅" in out
+        assert "trust root:  OK:" in out
         assert str(key) in out
 
     def test_broken_trust_root_names_what_stops_working(
@@ -539,7 +539,7 @@ class TestTrustRoot:
         monkeypatch.setattr(cli_doctor, "signing_health", lambda: (False, key))
         cli_doctor._doctor_trust_root()
         out = capsys.readouterr().out
-        assert "⚠ trust root" in out
+        assert "Warning: trust root" in out
         assert "sub-agent" in out and "memory" in out
 
     def test_fresh_home_is_informational_not_a_warning(
@@ -552,7 +552,7 @@ class TestTrustRoot:
         cli_doctor._doctor_trust_root()
         out = capsys.readouterr().out
         assert "not created yet" in out
-        assert "⚠" not in out
+        assert "Warning:" not in out
 
 
 class TestUnresolvedMcpRefs:
@@ -609,7 +609,7 @@ class TestUnresolvedMcpRefs:
         self._arrange(monkeypatch, [("claude", [], True)])
         cli_doctor._doctor_unresolved_mcp_refs()
         out = capsys.readouterr().out
-        assert out.strip() == "mcp tool refs: \u2705 claude \u2014 every @server ref resolves"
+        assert out.strip() == "mcp tool refs: OK:      claude \u2014 every @server ref resolves"
         # The whole row, so a clean backend cannot also print a remedy paragraph.
         assert "no mirror" not in out and "still misses" not in out
 
@@ -621,7 +621,7 @@ class TestUnresolvedMcpRefs:
         """
         self._arrange(monkeypatch, [("", [], True)])
         cli_doctor._doctor_unresolved_mcp_refs()
-        assert "\u2705 kiro" in capsys.readouterr().out
+        assert "OK:      kiro" in capsys.readouterr().out
 
     def test_a_mirrored_backend_that_still_drops_a_ref_is_the_louder_row(self, monkeypatch, capsys):
         # A mirror exists and its projection lost the server anyway, which is a
@@ -629,7 +629,7 @@ class TestUnresolvedMcpRefs:
         self._arrange(monkeypatch, [("claude", ["@marked"], True)])
         cli_doctor._doctor_unresolved_mcp_refs()
         out = capsys.readouterr().out
-        assert "\u26a0 claude" in out
+        assert "Warning: claude" in out
         assert "@marked" in out
         assert "has no mirror" not in out
 
@@ -638,7 +638,7 @@ class TestUnresolvedMcpRefs:
     ):
         """A mirror leaves Crew's own guide and mate servers out by design (it cannot
         hand them the session's identity), so the stock spec's refs to them are a
-        ⏹ note, explained once, and only a ref the mirror really dropped stays ⚠."""
+        Note: note, explained once, and only a ref the mirror really dropped stays Warning:."""
         bound = ["@kirocrew-guide", "@kirocrew-mate"]
         self._arrange(
             monkeypatch,
@@ -651,18 +651,18 @@ class TestUnresolvedMcpRefs:
         )
         cli_doctor._doctor_unresolved_mcp_refs()
         out = capsys.readouterr().out
-        assert "⏹ codex withholds by design: '@kirocrew-guide', '@kirocrew-mate'" in out
-        assert "⏹ goose withholds by design:" in out
+        assert "Note:    codex withholds by design: '@kirocrew-guide', '@kirocrew-mate'" in out
+        assert "Note:    goose withholds by design:" in out
         # ``_print_wrapped`` folds the paragraph, so count on collapsed whitespace.
         assert " ".join(out.split()).count("nothing needs fixing") == 1
-        assert "⚠ codex" not in out and "⚠ goose" not in out
-        assert "⚠ strands projects a spec that still misses: '@marked'" in out
+        assert "Warning: codex" not in out and "Warning: goose" not in out
+        assert "Warning: strands projects a spec that still misses: '@marked'" in out
 
     def test_the_by_design_set_is_what_the_translation_mounts_unnarrowed(self, monkeypatch):
         """Crew's identity-bound servers the shared translation mounts, less a narrowed
         one, never the control plane or a third-party server. A guide ref dropped
         before a mirror sees it (registry mode, an undefined server) is not in the set,
-        so claude, which mounts what it is handed, keeps that ref's ⚠."""
+        so claude, which mounts what it is handed, keeps that ref's Warning:."""
         from types import SimpleNamespace
 
         from kiro_crew.acp import session_mcp
@@ -1188,6 +1188,12 @@ class TestMemoryPressure:
         monkeypatch.setattr(cli_doctor, "_detect_userspace_oom_killer", lambda: killer)
         return ["pre-existing"]
 
+    @staticmethod
+    def _freeze_warnings(out: str) -> list[str]:
+        # The inert-limits row warns on a Windows runner whatever the swap and
+        # killer verdict, so only the freeze-preparedness rows are counted.
+        return [ln for ln in out.splitlines() if "Warning:" in ln and "inert limits:" not in ln]
+
     def test_no_swap_no_killer_warns_but_never_blocks(self, monkeypatch, capsys) -> None:
         # The dangerous quadrant: warn with the remediation, but stay advisory —
         # swap sizing and killer policy are host configuration the user owns.
@@ -1196,7 +1202,7 @@ class TestMemoryPressure:
         cli_doctor._doctor_memory_pressure(issues)
 
         out = capsys.readouterr().out
-        assert "freeze" in out and "⚠️" in out
+        assert "freeze" in out and "Warning:" in out
         assert "add swap" in out and "systemd-oomd" in out and "earlyoom" in out
         assert issues == ["pre-existing"], "the warning must not add an issue"
 
@@ -1206,8 +1212,8 @@ class TestMemoryPressure:
         cli_doctor._doctor_memory_pressure(issues)
 
         out = capsys.readouterr().out
-        assert "swap:        ✅" in out
-        assert "⚠️" not in out
+        assert "swap:        OK:" in out
+        assert self._freeze_warnings(out) == []
         assert issues == ["pre-existing"]
 
     def test_no_swap_killer_active_passes(self, monkeypatch, capsys) -> None:
@@ -1216,8 +1222,8 @@ class TestMemoryPressure:
         cli_doctor._doctor_memory_pressure(issues)
 
         out = capsys.readouterr().out
-        assert "oom killer:  ✅ earlyoom" in out
-        assert "⚠️" not in out
+        assert "oom killer:  OK:      earlyoom" in out
+        assert self._freeze_warnings(out) == []
         assert issues == ["pre-existing"]
 
     def test_both_protections_pass(self, monkeypatch, capsys) -> None:
@@ -1226,8 +1232,8 @@ class TestMemoryPressure:
         cli_doctor._doctor_memory_pressure(issues)
 
         out = capsys.readouterr().out
-        assert "swap:        ✅" in out and "oom killer:  ✅ systemd-oomd" in out
-        assert "⚠️" not in out
+        assert "swap:        OK:" in out and "oom killer:  OK:      systemd-oomd" in out
+        assert self._freeze_warnings(out) == []
         assert issues == ["pre-existing"]
 
     def test_no_swap_unknown_killer_is_informational_not_warning(self, monkeypatch, capsys) -> None:
@@ -1239,7 +1245,7 @@ class TestMemoryPressure:
 
         out = capsys.readouterr().out
         assert "unknown" in out and "inconclusive" in out
-        assert "⚠️" not in out
+        assert self._freeze_warnings(out) == []
         assert issues == ["pre-existing"]
 
     def test_unreadable_meminfo_skips_quietly(self, monkeypatch, capsys) -> None:
@@ -1249,7 +1255,7 @@ class TestMemoryPressure:
 
         out = capsys.readouterr().out
         assert "check skipped" in out
-        assert "freeze risk: ⚠️" not in out
+        assert "freeze risk: Warning:" not in out
         assert issues == ["pre-existing"]
 
     def test_non_linux_is_not_applicable(self, monkeypatch, capsys) -> None:
@@ -1269,7 +1275,10 @@ class TestMemoryPressure:
         monkeypatch.setattr(
             cli_doctor,
             "_gateway_memory_lines",
-            lambda: ["  session ceiling: ✅ 1536 MiB", "  gateway rss:     412 MiB (pid 4242)"],
+            lambda: [
+                "  session ceiling: OK:      1536 MiB",
+                "  gateway rss:     412 MiB (pid 4242)",
+            ],
         )
         issues: list[str] = []
 
@@ -1303,8 +1312,8 @@ class TestRuntimeTmpfs:
         cli_doctor._doctor_runtime_tmpfs(issues)
         out = capsys.readouterr().out
         assert "Runtime tmpfs" in out
-        assert "/run/user/1000: ✅" in out and "3 kirocrew_sb_* entries" in out
-        assert "⚠️" not in out
+        assert "/run/user/1000: OK:" in out and "3 kirocrew_sb_* entries" in out
+        assert "Warning:" not in out
         assert issues == ["pre-existing"]
 
     def test_low_inodes_warns_with_entry_count_and_fails_doctor(self, monkeypatch, capsys) -> None:
@@ -1312,7 +1321,7 @@ class TestRuntimeTmpfs:
         issues = self._arrange(monkeypatch, {"/run/user/1000": (97.0, 2.0, 400, 18231)})
         cli_doctor._doctor_runtime_tmpfs(issues)
         out = capsys.readouterr().out
-        assert "/run/user/1000: ⚠️  low on inodes" in out
+        assert "/run/user/1000: Warning: low on inodes" in out
         assert "18231 kirocrew_sb_* entries" in out and "rc=1" in out
         assert len(issues) == 2 and "low on inodes" in issues[1]
 
@@ -1390,7 +1399,7 @@ class TestRuntimeTmpfs:
         monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (47, False))
         cli_doctor._doctor_runtime_tmpfs(issues)
         out = capsys.readouterr().out
-        assert "/tmp: ⚠" in out and "low on inodes" in out
+        assert "/tmp: Warning:" in out and "low on inodes" in out
         assert "47 top-level dirs here look like leftover test homes" in out
         assert "ENOSPC" in out
         assert len(issues) == 2
@@ -1515,7 +1524,7 @@ class TestTempDirectories:
         assert "path: /tmp (resolved by this doctor run)" in out
         assert "filesystem: ext4" in out
         assert "swap" not in out  # swap is not re-printed; Memory Pressure shows it
-        assert "⚠️" not in out
+        assert "Warning:" not in out
         assert issues == ["pre-existing"], "the row is advisory and never adds an issue"
 
     def test_does_not_measure_space_or_inodes(self, monkeypatch, capsys) -> None:
@@ -1532,7 +1541,7 @@ class TestTempDirectories:
         issues = self._arrange(monkeypatch, fs_type="tmpfs", swap_kib=0)
         cli_doctor._doctor_temp_directories(issues)
         out = capsys.readouterr().out
-        assert "⚠️" in out and "tmpfs (RAM-backed) with no swap" in out
+        assert "Warning:" in out and "tmpfs (RAM-backed) with no swap" in out
         assert "Point TMPDIR at a disk-backed path" in out
         assert issues == ["pre-existing"]
 
@@ -1540,7 +1549,7 @@ class TestTempDirectories:
         issues = self._arrange(monkeypatch, fs_type="tmpfs", swap_kib=8388604)
         cli_doctor._doctor_temp_directories(issues)
         out = capsys.readouterr().out
-        assert "⚠️" not in out
+        assert "Warning:" not in out
         assert issues == ["pre-existing"]
 
     def test_disk_backed_dir_never_warns_regardless_of_swap(self, monkeypatch, capsys) -> None:
@@ -1548,7 +1557,7 @@ class TestTempDirectories:
         issues = self._arrange(monkeypatch, fs_type="ext4", swap_kib=0)
         cli_doctor._doctor_temp_directories(issues)
         out = capsys.readouterr().out
-        assert "⚠️" not in out
+        assert "Warning:" not in out
         assert issues == ["pre-existing"]
 
     def test_ageing_rule_is_warned_informationally(self, monkeypatch, capsys) -> None:
@@ -1556,7 +1565,7 @@ class TestTempDirectories:
         issues = self._arrange(monkeypatch, fs_type="ext4", aged=True)
         cli_doctor._doctor_temp_directories(issues)
         out = capsys.readouterr().out
-        assert "ageing: ⚠️  a tmpfiles.d rule deletes files here by age" in out
+        assert "ageing: Warning: a tmpfiles.d rule deletes files here by age" in out
         assert "RAM-backed" not in out
         assert issues == ["pre-existing"]
 
@@ -1582,7 +1591,7 @@ class TestTempDirectories:
         issues = self._arrange(monkeypatch, fs_type="ext4", aged=None)
         cli_doctor._doctor_temp_directories(issues)
         out = capsys.readouterr().out
-        assert "ageing: ⏹ could not determine" in out
+        assert "ageing: Note:    could not determine" in out
         assert issues == ["pre-existing"]
 
     def test_non_linux_reports_the_path_and_not_applicable(self, monkeypatch, capsys) -> None:
@@ -1820,7 +1829,7 @@ class TestGatewayMemoryLines:
             lambda home: gateway_lock.LockHolder(pid=None, alive=False, source="none"),
         )
         _ceiling, rss = cli_doctor._gateway_memory_lines()
-        assert "⏹ not running" in rss
+        assert "Note:    not running" in rss
 
     def test_unreadable_rss_and_config_never_raise(self, monkeypatch) -> None:
         monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", MagicMock(side_effect=OSError))

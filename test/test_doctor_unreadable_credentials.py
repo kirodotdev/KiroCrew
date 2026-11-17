@@ -51,7 +51,7 @@ def test_unreadable_credentials_outside_a_sandbox_are_an_issue(monkeypatch, caps
     binding = services._doctor_configuration(_cfg("http://localhost:8080"), issues)
 
     out = capsys.readouterr().out
-    assert "credentials: ❌ a file it reads is not readable (Operation not permitted)" in out
+    assert "credentials: Error:   a file it reads is not readable (Operation not permitted)" in out
     assert issues == ["credentials: a file it reads is not readable"]
     assert binding.creds == {}
     assert binding.has_slack is False
@@ -63,7 +63,7 @@ def test_unreadable_credentials_inside_a_sandbox_are_a_skip(monkeypatch, capsys)
 
     services._doctor_configuration(_cfg("http://localhost:8080"), issues)
 
-    assert "credentials: ⏭  skipped" in capsys.readouterr().out
+    assert "credentials: Skipped: " in capsys.readouterr().out
     assert issues == []
 
 
@@ -111,7 +111,7 @@ def test_unreadable_credentials_without_strerror_still_report(monkeypatch, capsy
 
     services._doctor_configuration(_cfg("http://localhost:8080", PermissionError()), [])
 
-    assert "credentials: ❌ a file it reads is not readable" in capsys.readouterr().out
+    assert "credentials: Error:   a file it reads is not readable" in capsys.readouterr().out
 
 
 # ── Checks that read the credentials report "unknown", never "missing" ──
@@ -207,7 +207,7 @@ def test_discord_token_unknown_when_credentials_unreadable(
 
     out = capsys.readouterr().out
     assert ("discord: enabled without a bot token" in issues) is want_issue
-    assert ("token:       ⏭  unknown" in out) is unreadable
+    assert ("token:       Skipped: unknown" in out) is unreadable
 
 
 @pytest.mark.parametrize("unreadable", [True, False], ids=["unreadable", "readable"])
@@ -217,7 +217,7 @@ def test_slack_unknown_when_credentials_unreadable(capsys, unreadable):
     channels._doctor_slack(SimpleNamespace(), {}, False, [], creds_unreadable=unreadable)
 
     out = capsys.readouterr().out
-    assert ("status:      ⏭  unknown" in out) is unreadable
+    assert ("status:      Skipped: unknown" in out) is unreadable
     assert ("not configured (optional)" in out) is not unreadable
 
 
@@ -245,7 +245,7 @@ def test_other_channel_credentials_unknown_when_unreadable(
     channels._doctor_other_channels(SimpleNamespace(), {}, issues, creds_unreadable=True)
 
     out = capsys.readouterr().out
-    assert "telegram:    credentials ⏭  unknown" in out
+    assert "telegram:    credentials Skipped: unknown" in out
     assert issues == want_issues
 
 

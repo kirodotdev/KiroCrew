@@ -105,7 +105,7 @@ def _doctor_task_store(issues: list[str]) -> None:
     for copy in quarantined:
         if copy.name.endswith(("-journal", "-wal", "-shm")):
             continue
-        print(f"  task store: ⚠️  a corrupt store was quarantined as {copy.name}")
+        print(f"  task store: Warning: a corrupt store was quarantined as {copy.name}")
         issues.append(
             f"task store {path} was found corrupt at a gateway boot and quarantined as "
             f"{copy}; work accepted into the old file was not recovered -- inspect or "
@@ -127,7 +127,7 @@ def _doctor_task_store(issues: list[str]) -> None:
             # the counts above still stand, so only this check is reported unread.
             stranded_unread = str(exc)
     except TaskStoreUnavailable as exc:
-        print(f"  task store: ⚠️  {path} cannot be opened ({exc})")
+        print(f"  task store: Warning: {path} cannot be opened ({exc})")
         issues.append(
             f"task store {path} cannot be opened: accepted subagent work cannot be "
             "persisted or recovered until this is fixed"
@@ -143,7 +143,7 @@ def _doctor_task_store(issues: list[str]) -> None:
     if stranded_unread:
         from kiro_crew.terminal_safe import safe_terminal_line
 
-        print(f"  stranded rows: ⚠️  not checked ({safe_terminal_line(stranded_unread)})")
+        print(f"  stranded rows: Warning: not checked ({safe_terminal_line(stranded_unread)})")
     elif stranded:
         _report_stranded_rows(stranded, store.now(), issues)
     for warning in store.warnings:
@@ -177,9 +177,9 @@ def _report_stranded_rows(rows: list[Any], now: float, issues: list[str]) -> Non
         # The probe failed, which does not say the gateway is stopped: the
         # warning stands, as the Memory Pressure section's own "probe failed" does.
         gateway_down = False
-    icon = "ℹ️ " if gateway_down else "⚠️ "
+    icon = "Note:    " if gateway_down else "Warning: "
     print(
-        f"  stranded rows: {icon} {len(rows)} task row(s) not terminal, with no lease, "
+        f"  stranded rows: {icon}{len(rows)} task row(s) not terminal, with no lease, "
         f"due more than {hours:g}h ago"
     )
     for rec in rows[:_STRANDED_REPORT_CAP]:
@@ -221,14 +221,14 @@ def _doctor_ledger_backlog() -> None:
     try:
         report = ledger_sweep.scan()
     except OSError as exc:
-        print(f"  ledgers:     ⚠️  could not check: {safe_terminal_line(str(exc))}")
+        print(f"  ledgers:     Warning: could not check: {safe_terminal_line(str(exc))}")
         return
     count = len(report.candidates)
     if not count:
-        print(f"  ledgers:     ✅ kirocrew ledger-sweep lists nothing ({window})")
+        print(f"  ledgers:     OK:      kirocrew ledger-sweep lists nothing ({window})")
         return
     print(
-        f"  ledgers:     🧹 kirocrew ledger-sweep lists {count} ledger(s) ({window})"
+        f"  ledgers:     Note:    kirocrew ledger-sweep lists {count} ledger(s) ({window})"
         " -- run it to review them"
     )
 
@@ -439,7 +439,7 @@ def _doctor_cron_quarantine(issues: list[str]) -> bool:
     if not copies:
         return False
     print("\nCron Jobs")
-    print(f"  quarantine:  ⚠️  {len(copies)} unreadable schedule file(s) moved aside")
+    print(f"  quarantine:  Warning: {len(copies)} unreadable schedule file(s) moved aside")
     for copy in copies:
         print(f"               {render._safe_display(str(copy))}")
     print("               `crons.json` was not a readable schedule (invalid JSON,")
@@ -478,7 +478,7 @@ def _doctor_cron_health(issues: list[str]) -> None:
         if not loadable:
             if not header_printed:
                 print("\nCron Jobs")
-            print("  store:       ⚠️  `crons.json` exists but could not be read")
+            print("  store:       Warning: `crons.json` exists but could not be read")
             print("               No jobs can be loaded from it, so every scheduled")
             print("               job has stopped. The scheduler logs the parse error")
             print("               on startup.")
@@ -490,7 +490,7 @@ def _doctor_cron_health(issues: list[str]) -> None:
     if not header_printed:
         print("\nCron Jobs")
     if auto_paused:
-        print(f"  auto-paused: ⚠️  {len(auto_paused)} job(s) paused after repeated failures")
+        print(f"  auto-paused: Warning: {len(auto_paused)} job(s) paused after repeated failures")
         print(f"               {_format_job_labels(auto_paused)}")
         print("               A job auto-pauses after consecutive failures and stays")
         print("               paused across restarts. Check why it failed before")
@@ -498,7 +498,7 @@ def _doctor_cron_health(issues: list[str]) -> None:
         print("               Fix: `kirocrew cron resume <id>` once the cause is fixed.")
         issues.append(f"{len(auto_paused)} cron job(s) auto-paused")
     if errored:
-        print(f"  errored:     ⚠️  {len(errored)} job(s) last ran with an error")
+        print(f"  errored:     Warning: {len(errored)} job(s) last ran with an error")
         print(f"               {_format_job_labels(errored)}")
         print("               If it has a repeating schedule, the next run may recover")
         print("               on its own; a one-shot job has no next run.")
@@ -545,9 +545,9 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                 # A host-wide pause is a fault of the host, not of the gateway:
                 # shown, never counted as an issue to fix here.
                 _host_pause = _attribution.host_pause_secs is not None
-                _icon = "ℹ️ " if _superseded or _host_pause else "⚠️ "
+                _icon = "Note:    " if _superseded or _host_pause else "Warning: "
                 print(
-                    f"  last dump:   {_icon} {_latest.name} "
+                    f"  last dump:   {_icon}{_latest.name} "
                     f"(fired {cli_doctor.dump_fired_at(_latest)}, {_age_h:.1f}h ago)"
                 )
                 if _superseded:
@@ -586,10 +586,10 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                     issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
             else:
                 print(
-                    f"  last dump:   ✅ oldest only ({_age_s / 86400:.0f}d ago, no recent stalls)"
+                    f"  last dump:   OK:      oldest only ({_age_s / 86400:.0f}d ago, no recent stalls)"
                 )
         else:
-            print("  dumps:       ✅ no crash dumps found (healthy)")
+            print("  dumps:       OK:      no crash dumps found (healthy)")
         # Gateways that ended with neither a stall dump nor an orderly shutdown.
         # A hard kill is an ordinary way to end one, so the row informs and never
         # adds an issue.
@@ -597,7 +597,7 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
         if _unclean:
             _newest_h = cli_doctor.dump_age_seconds(_unclean[-1]) / 3600
             print(
-                f"  unclean:     ℹ️  {len(_unclean)} earlier gateway session(s) ended "
+                f"  unclean:     Note:    {len(_unclean)} earlier gateway session(s) ended "
                 "without a clean shutdown and left no stacks"
             )
             print(
@@ -606,7 +606,7 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
             )
         print(f"  dump dir:    {dumps_dir}")
     except Exception as exc:
-        print(f"  crash dumps: ⚠️  check failed ({exc})")
+        print(f"  crash dumps: Warning: check failed ({exc})")
 
 
 def _doctor_session_tree_checkpoint(issues: list[str]) -> None:
@@ -620,7 +620,7 @@ def _doctor_session_tree_checkpoint(issues: list[str]) -> None:
     try:
         refusal = checkpoint_refusal()
         if refusal is None:
-            print("  checkpoint:  ✅ the last save landed, or none has been refused")
+            print("  checkpoint:  OK:      the last save landed, or none has been refused")
             return
         reason = refusal.get("reason")
         if reason == "over_ceiling":
@@ -630,9 +630,9 @@ def _doctor_session_tree_checkpoint(issues: list[str]) -> None:
             )
         else:
             what = "the write failed; the gateway log has the error"
-        print(f"  checkpoint:  ⚠  not being saved: {render._safe_display(what)}")
+        print(f"  checkpoint:  Warning: not being saved: {render._safe_display(what)}")
         print("               The next start replays the crew log from the last checkpoint that")
         print("               was written, or rebuilds the session tree from scratch.")
         issues.append("session tree checkpoint is not being saved")
     except Exception as exc:
-        print(f"  checkpoint:  ⚠  check failed ({exc})")
+        print(f"  checkpoint:  Warning: check failed ({exc})")

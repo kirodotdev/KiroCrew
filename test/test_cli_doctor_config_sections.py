@@ -278,7 +278,7 @@ class TestEffectiveModelSection:
         cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
 
         out = capsys.readouterr().out
-        assert "shadowed:    \u26a0  2 markdown agent file(s) ignored beside a .json twin:" in out
+        assert "shadowed:    Warning: 2 markdown agent file(s) ignored beside a .json twin:" in out
         assert f"{str(agents_dir / 'alpha.md')!r} ('alpha.json' wins)" in out
         assert f"{str(agents_dir / 'beta.md')!r} ('beta.json' wins)" in out
         assert out.index("alpha.md") < out.index("beta.md")
@@ -301,7 +301,7 @@ class TestEffectiveModelSection:
         cli_doctor._doctor_effective_model(cfg, "", issues)
 
         out = capsys.readouterr().out
-        assert "bound spec:  \u26a0\ufe0f  no spec for 'custom-agent' under" in out
+        assert "bound spec:  Warning: no spec for 'custom-agent' under" in out
         assert "custom-agent.json" not in out
 
     def test_the_builtin_agent_shows_no_bound_tier(self, capsys) -> None:
@@ -643,8 +643,8 @@ class TestWhatsAppSection:
         cli_doctor._doctor_whatsapp(self._cfg(), issues)
 
         out = capsys.readouterr().out
-        assert "extra:       ✅" in out
-        assert f"session:     ✅ paired session store at {store}" in out
+        assert "extra:       OK:" in out
+        assert f"session:     OK:      paired session store at {store}" in out
         assert issues == []
 
     def test_an_unpaired_store_warns_but_never_fails_doctor(
@@ -715,7 +715,7 @@ class TestWhatsAppSection:
 
         cli_doctor._doctor_whatsapp(self._cfg(groups=groups), issues)
 
-        assert "groups:      ✅ 2 configured" in capsys.readouterr().out
+        assert "groups:      OK:      2 configured" in capsys.readouterr().out
 
     def test_no_configured_groups_says_group_messages_are_ignored(
         self, home: Path, monkeypatch, capsys
@@ -804,11 +804,11 @@ class TestProjectSectionAndAuthRow:
         (tmp_path / "skills").mkdir()
         (tmp_path / "src" / "kiro_crew").mkdir(parents=True)
         out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir=str(tmp_path))
-        assert f"source dir:  ✅ {tmp_path} (Kiro Crew source checkout)" in out
+        assert f"source dir:  OK:      {tmp_path} (Kiro Crew source checkout)" in out
         assert "project dir:" not in out
         # tmp_path holds no .git — the warning names the checkout, so the
         # adjacent row is not read as a finding about the user's workspace.
-        assert "git repo:    ⚠️  source checkout is not a git repo" in out
+        assert "git repo:    Warning: source checkout is not a git repo" in out
 
     def test_partially_marked_dir_is_not_called_a_checkout(
         self, monkeypatch, tmp_path: Path, capsys
@@ -816,16 +816,16 @@ class TestProjectSectionAndAuthRow:
         # A single marker must not qualify as a Kiro Crew source checkout.
         (tmp_path / "skills").mkdir()
         out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir=str(tmp_path))
-        assert f"source dir:  ✅ {tmp_path}" in out
+        assert f"source dir:  OK:      {tmp_path}" in out
         assert "(Kiro Crew source checkout)" not in out
-        assert "git repo:    ⚠️  not a git repo" in out
+        assert "git repo:    Warning: not a git repo" in out
         assert "source checkout is not a git repo" not in out
 
     def test_not_set_hint_names_checkout_and_wheel_installs(
         self, monkeypatch, tmp_path: Path, capsys
     ) -> None:
         out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir="")
-        assert "source dir:  ⚠️  not set" in out
+        assert "source dir:  Warning: not set" in out
         assert "not needed for wheel installs" in out
         assert "run kirocrew setup from project root" not in out
 
@@ -891,7 +891,7 @@ class TestNameGrantPlatformScopeRow:
         assert name_grant.AMBIGUOUS_ENV in out
         assert str(profile) in out
         assert "approval card" in out
-        assert "✅" not in out
+        assert "OK:" not in out
 
     def test_windows_without_a_profile_reports_that_grants_can_be_satisfied(
         self, monkeypatch, capsys, tmp_path
@@ -907,7 +907,7 @@ class TestNameGrantPlatformScopeRow:
         )
         cli_doctor._doctor_name_grant_platform_scope()
         out = capsys.readouterr().out
-        assert "hook auto-approve:  ✅" in out
+        assert "hook auto-approve:  OK:" in out
         assert name_grant.WINDOWS_UNMODELLED not in out
 
     def test_posix_reports_that_grants_can_be_satisfied(self, monkeypatch, capsys):
@@ -918,7 +918,7 @@ class TestNameGrantPlatformScopeRow:
         monkeypatch.setattr(name_grant, "_inherited_preload", lambda: None)
         cli_doctor._doctor_name_grant_platform_scope()
         out = capsys.readouterr().out
-        assert "hook auto-approve:  ✅" in out
+        assert "hook auto-approve:  OK:" in out
         assert name_grant.WINDOWS_UNMODELLED not in out
 
     def test_an_inherited_preload_is_reported_rather_than_claimed_satisfiable(
@@ -926,7 +926,7 @@ class TestNameGrantPlatformScopeRow:
     ):
         # The row must describe the answer the module actually gives. `BASH_ENV`,
         # exported shell functions and a relative `PATH` entry each refuse every
-        # grant, so a ✅ beside them would send a user hunting a fault that is
+        # grant, so a OK: beside them would send a user hunting a fault that is
         # their own environment.
         from kiro_crew import name_grant
 
@@ -935,7 +935,7 @@ class TestNameGrantPlatformScopeRow:
         monkeypatch.setattr(name_grant, "_inherited_preload", lambda: "BASH_ENV")
         cli_doctor._doctor_name_grant_platform_scope()
         out = capsys.readouterr().out
-        assert "hook auto-approve:  ✅" not in out
+        assert "hook auto-approve:  OK:" not in out
         assert name_grant.AMBIGUOUS_ENV in out
         assert "BASH_ENV" in out
         assert "approval card" in out
@@ -951,7 +951,7 @@ class TestNameGrantPlatformScopeRow:
         monkeypatch.setattr(name_grant, "_path_is_ambiguous", lambda: True)
         cli_doctor._doctor_name_grant_platform_scope()
         out = capsys.readouterr().out
-        assert "hook auto-approve:  ✅" not in out
+        assert "hook auto-approve:  OK:" not in out
         assert name_grant.AMBIGUOUS_PATH in out
 
     def test_the_row_cannot_contribute_an_issue(self):
@@ -1004,10 +1004,10 @@ class TestChannelSdkRows:
         doctor_channels._doctor_other_channels(MagicMock(), {}, issues)
 
         out = capsys.readouterr().out
-        assert f"{'teams:':12} ❌ enabled, but PyJWT is not installed" in out
-        assert f"{'feishu:':12} ❌ enabled, but lark-oapi is not installed" in out
+        assert f"{'teams:':12} Error:   enabled, but PyJWT is not installed" in out
+        assert f"{'feishu:':12} Error:   enabled, but lark-oapi is not installed" in out
         # Telegram needs no optional SDK, so its config-only answer stands.
-        assert f"{'telegram:':12} ✅ enabled, credentials present" in out
+        assert f"{'telegram:':12} OK:      enabled, credentials present" in out
         assert issues == ["teams: PyJWT not installed", "feishu: lark-oapi not installed"]
         assert ("-m pip install" in out) is pip_ok
         if not pip_ok:
@@ -1024,8 +1024,8 @@ class TestChannelSdkRows:
         doctor_channels._doctor_other_channels(MagicMock(), {}, issues)
 
         out = capsys.readouterr().out
-        assert f"{'teams:':12} ✅ enabled, credentials present" in out
-        assert f"{'feishu:':12} ✅ enabled, credentials present" in out
+        assert f"{'teams:':12} OK:      enabled, credentials present" in out
+        assert f"{'feishu:':12} OK:      enabled, credentials present" in out
         assert issues == []
 
     def test_whatsapp_prints_no_pip_where_pip_cannot_install(self, tmp_path, monkeypatch, capsys):

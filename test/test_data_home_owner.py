@@ -209,7 +209,7 @@ def test_doctor_is_quiet_when_this_account_owns_the_home(monkeypatch, capsys, tm
     issues: list[str] = []
     install._doctor_data_home_owner(issues)
     assert issues == []
-    assert "✅" in capsys.readouterr().out
+    assert "OK:" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

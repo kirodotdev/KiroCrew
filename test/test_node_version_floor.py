@@ -255,10 +255,10 @@ def test_doctor_fails_below_the_full_floor(monkeypatch, stdout: str, ok: bool) -
         cli_doctor._report_node(issues)
     out = buf.getvalue()
     if ok:
-        assert "✅" in out and "too old" not in out
+        assert "OK:" in out and "too old" not in out
         assert issues == []
     else:
-        assert "❌" in out
+        assert "Error:" in out
         assert f"needs {FLOOR_TEXT} or newer" in out
         assert issues == ["node"]
 
@@ -280,7 +280,7 @@ def test_bundle_route_without_node_on_path_names_the_bundles_node(monkeypatch) -
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
     assert out == (
-        "  node:        ⏭  not on PATH; not needed "
+        "  node:        Skipped: not on PATH; not needed "
         "(KAS runs its engine bundle's own Node 22.23.3)\n"
     )
     assert issues == []
@@ -303,7 +303,7 @@ def test_bundle_route_passes_a_node_on_path_at_the_floor(monkeypatch) -> None:
     with redirect_stdout(buf):
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
-    assert "✅" in out and "engine bundle" not in out
+    assert "OK:" in out and "engine bundle" not in out
     assert issues == []
 
 
@@ -311,7 +311,7 @@ def test_bundle_route_passes_a_node_on_path_at_the_floor(monkeypatch) -> None:
 def test_bundle_route_warns_on_an_old_node_on_path_without_failing(
     monkeypatch, stdout: str
 ) -> None:
-    """The KAS engine runs its bundle's own Node, so an old one on PATH is a ⚠ that
+    """The KAS engine runs its bundle's own Node, so an old one on PATH is a Warning: that
     names the bundle's Node, never the ``node`` issue that fails the run."""
     _fake_node(monkeypatch, cli_doctor, stdout)
     issues: list[str] = []
@@ -319,10 +319,10 @@ def test_bundle_route_warns_on_an_old_node_on_path_without_failing(
     with redirect_stdout(buf):
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
-    assert f"⚠  {stdout.strip()} on PATH < {FLOOR_TEXT}" in out
+    assert f"Warning: {stdout.strip()} on PATH < {FLOOR_TEXT}" in out
     assert "engine bundle's own Node 22.23.3" in out
     assert "npx" in out
-    assert "❌" not in out and "Fix:" not in out
+    assert "Error:" not in out and "Fix:" not in out
     assert issues == []
 
 

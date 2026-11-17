@@ -529,7 +529,7 @@ def test_doctor_counts_what_the_dry_run_lists_and_deletes_nothing(capsys):
     out = capsys.readouterr().out
     assert out == (
         "\nLedgers\n"
-        "  ledgers:     🧹 kirocrew ledger-sweep lists 2 ledger(s) (30-day window)"
+        "  ledgers:     Note:    kirocrew ledger-sweep lists 2 ledger(s) (30-day window)"
         " -- run it to review them\n"
     )
     assert session.name not in out, "a count only; the detail lives in the dry run"
@@ -553,7 +553,7 @@ def test_doctor_counts_a_linked_store_without_calling_it_finished(tmp_path, caps
     out = capsys.readouterr().out
     assert out == (
         "\nLedgers\n"
-        "  ledgers:     🧹 kirocrew ledger-sweep lists 1 ledger(s) (30-day window)"
+        "  ledgers:     Note:    kirocrew ledger-sweep lists 1 ledger(s) (30-day window)"
         " -- run it to review them\n"
     )
     assert "finished" not in out and "idle" not in out
@@ -566,7 +566,7 @@ def test_doctor_says_so_when_the_dry_run_lists_nothing(capsys):
     workload._doctor_ledger_backlog()
 
     assert capsys.readouterr().out == (
-        "\nLedgers\n  ledgers:     ✅ kirocrew ledger-sweep lists nothing (30-day window)\n"
+        "\nLedgers\n  ledgers:     OK:      kirocrew ledger-sweep lists nothing (30-day window)\n"
     )
 
 
@@ -586,7 +586,7 @@ def test_doctor_reports_an_unreadable_root_and_keeps_going(monkeypatch, capsys):
     workload._doctor_ledger_backlog()
 
     out = capsys.readouterr().out
-    assert out.startswith("\nLedgers\n  ledgers:     ⚠️  could not check: ")
+    assert out.startswith("\nLedgers\n  ledgers:     Warning: could not check: ")
     assert "Permission denied" in out and "\x1b" not in out
     assert not inspect.signature(workload._doctor_ledger_backlog).parameters
 

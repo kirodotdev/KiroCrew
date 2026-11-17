@@ -153,7 +153,7 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
       issue.
     """
     if not cli_doctor.apparmor.PROFILE_PATH.is_file():
-        print(f"  backend:     ❌ none — {reason}")
+        print(f"  backend:     Error:   none — {reason}")
         render._print_wrapped(
             f"This host restricts unprivileged user namespaces and the "
             f"{cli_doctor.apparmor.PROFILE_NAME} AppArmor profile is not installed, so no context "
@@ -167,7 +167,7 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     if confinement and confinement.split(" ")[0] == cli_doctor.apparmor.PROFILE_NAME:
         # The one context that SHOULD be able to build the sandbox refused to:
         # this is a genuine fault, not a vantage-point artifact.
-        print(f"  backend:     ❌ broken — {reason}")
+        print(f"  backend:     Error:   broken — {reason}")
         render._print_wrapped(
             f"This process already runs confined by {cli_doctor.apparmor.PROFILE_NAME}, which "
             f"should grant user namespaces, yet the probe still failed. Re-run "
@@ -179,7 +179,7 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     if not _service_profile_applies(
         cli_doctor.apparmor.PROFILE_PATH, cli_doctor.apparmor.PROFILE_NAME
     ):
-        print(f"  backend:     ❌ none — {reason}")
+        print(f"  backend:     Error:   none — {reason}")
         render._print_wrapped(
             f"The {cli_doctor.apparmor.PROFILE_NAME} AppArmor profile is installed, but it is not "
             f"attached to the kirocrew launcher script this host currently resolves — "
@@ -193,7 +193,7 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
 
     # Unverifiable from here — deliberately NOT an issue, and deliberately NOT a
     # success claim either.
-    print("  backend:     ⏭  cannot be verified from this shell")
+    print("  backend:     Skipped: cannot be verified from this shell")
     render._print_wrapped(
         f"The {cli_doctor.apparmor.PROFILE_NAME} AppArmor profile is installed and attached to "
         f"the kirocrew launcher script this host resolves, but this process was not "
@@ -230,7 +230,7 @@ def _doctor_kiro_internal_sandbox() -> None:
     The backend verdict answers for Kiro Crew's wrapper. On macOS with kiro-cli's
     internal sandbox enabled that wrapper is deliberately skipped for kiro-cli
     spawns (mutual exclusion: exactly one layer can be active per spawn), so a
-    lone ``backend: ✅ seatbelt`` describes a profile the session's tool backend
+    lone ``backend: OK: seatbelt`` describes a profile the session's tool backend
     never runs under. Without this line the operator's only signal is a denied
     read of a path outside the workspace, which presents as a macOS privacy (TCC)
     problem — sending them to Full Disk Access, which cannot affect a Seatbelt
@@ -252,7 +252,7 @@ def _doctor_kiro_internal_sandbox() -> None:
         return
     settings_path, key = cli_doctor.sandbox.kiro_internal_sandbox_switch()
     remedy = conflict.self_sandbox_remedy()
-    print("  kiro-cli:    ⚠️  confined by kiro-cli's own sandbox, not the backend above")
+    print("  kiro-cli:    Warning: confined by kiro-cli's own sandbox, not the backend above")
     render._print_wrapped(
         f'{settings_path} sets "{key}": true, so kiro-cli confines itself and Kiro Crew '
         "skips its seatbelt wrap for these spawns — only one sandbox layer can be active "
@@ -285,12 +285,12 @@ def _doctor_kiro_sandbox_blocks_crew_mcp(issues: list[str], *, required: bool) -
     explanation = cli_doctor.kiro_sandbox_conflict.conflict_explanation()
     if not required:
         print(
-            "  kiro-cli sandbox: ⚠️  blocks Kiro Crew's MCP servers "
+            "  kiro-cli sandbox: Warning: blocks Kiro Crew's MCP servers "
             "(not used by the selected backends)"
         )
         render._print_wrapped(explanation)
         return
-    print("  kiro-cli sandbox: ❌ blocks Kiro Crew's MCP servers, so sessions fail to start")
+    print("  kiro-cli sandbox: Error:   blocks Kiro Crew's MCP servers, so sessions fail to start")
     render._print_wrapped(explanation)
     settings_path, key = cli_doctor.sandbox.kiro_internal_sandbox_switch()
     issues.append(
@@ -343,12 +343,12 @@ def _doctor_ssh_agent_forward() -> None:
             if notice:
                 withheld.append((backend, notice))
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
-        print(f"  ssh-agent:   ⚠️  could not check ({render._safe_display(exc)})")
+        print(f"  ssh-agent:   Warning: could not check ({render._safe_display(exc)})")
         return
     if not withheld:
         return
     names = ", ".join(backend for backend, _ in withheld)
-    print(f"  ssh-agent:   ⚠️  not forwarded to {names}")
+    print(f"  ssh-agent:   Warning: not forwarded to {names}")
     # One harness's full line carries the remedy; it is the same for each.
     render._print_wrapped(withheld[0][1])
 
@@ -373,21 +373,23 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         # broken.
         kind = cli_doctor.sandbox.unavailable_kind()
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
-        print(f"  backend:     ⚠️  could not probe ({exc})")
+        print(f"  backend:     Warning: could not probe ({exc})")
         return
     if not kind:
         # The probe just succeeded, so this read serves the cached positive
         # result rather than probing again.
-        print(f"  backend:     ✅ {cli_doctor.sandbox.detect_backend()}")
+        print(f"  backend:     OK:      {cli_doctor.sandbox.detect_backend()}")
         return
 
     reason = cli_doctor.sandbox.unavailable_reason() or "no probe detail recorded"
     if kind == "transient":
-        print("  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes")
+        print(
+            "  backend:     Warning: probe failed transiently — not cached; the next spawn re-probes"
+        )
         print(f"{render._INDENT}({reason})")
         return
     if kind == "foreign_sandbox":
-        print("  backend:     ⚠️  an outer sandbox already confines this process")
+        print("  backend:     Warning: an outer sandbox already confines this process")
         render._print_wrapped(
             "Kiro Crew cannot nest its own sandbox inside it. Launch the gateway "
             "outside that sandbox to hand isolation back to Kiro Crew's own profile."
@@ -411,7 +413,7 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         remedy == cli_doctor.sandbox.REMEDY_USERNS_DENIED
         and _process_userns_vantage_confined() is True
     ):
-        print("  backend:     ⏭  cannot be verified from this shell")
+        print("  backend:     Skipped: cannot be verified from this shell")
         render._print_wrapped(
             "This shell is already confined inside a child user namespace with "
             "seccomp filtering, so its nested CLONE_NEWUSER refusal cannot establish "
@@ -422,7 +424,7 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         # A permanent, named kernel refusal (user.max_user_namespaces=0, a kernel
         # without CONFIG_USER_NS, ...) — genuinely broken, with the mechanism's
         # own guidance when the probe identified one.
-        print(f"  backend:     ❌ none — {reason}")
+        print(f"  backend:     Error:   none — {reason}")
         guidance = cli_doctor.sandbox.remedy_guidance(remedy)
         if guidance:
             render._print_wrapped(guidance)
@@ -441,10 +443,10 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
     # governed host it makes wrap_argv refuse the very spawns a bare "they run
     # unconfined" would promise. Each permitting branch therefore names the floor
     # as the thing that overrides it.
-    print("  backend:     ⏭  no OS-level sandbox backend on this platform")
+    print("  backend:     Skipped: no OS-level sandbox backend on this platform")
     permitted_by = cli_doctor.sandbox.unsandboxed_exec_permitted_by()
     if permitted_by == cli_doctor.sandbox.UNSANDBOXED_BY_PLATFORM:
-        print("  exec:        ⚠️  configured to run agent subprocesses UNCONFINED")
+        print("  exec:        Warning: configured to run agent subprocesses UNCONFINED")
         render._print_wrapped(
             "This is the default for a platform with no backend to install: "
             "~/.aws, ~/.ssh and the rest of your home directory are readable by "
@@ -455,7 +457,9 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
             "closed, so a managed host refuses them despite this line."
         )
     elif permitted_by == cli_doctor.sandbox.UNSANDBOXED_BY_OPERATOR:
-        print("  exec:        ⚠️  unconfined by declaration — sandbox_allow_unsandboxed_exec=true")
+        print(
+            "  exec:        Warning: unconfined by declaration — sandbox_allow_unsandboxed_exec=true"
+        )
         render._print_wrapped(
             "The operator declared this opt-in, so agent subprocesses run "
             "without OS-level isolation and every such spawn is audited. Remove "
@@ -464,7 +468,7 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
             "spawns fail closed."
         )
     else:
-        print("  exec:        ⛔ agent subprocesses are REFUSED on this host")
+        print("  exec:        Blocked: agent subprocesses are REFUSED on this host")
         if cli_doctor.unsandboxed_exec_declared():
             render._print_wrapped(
                 "agent.sandbox_allow_unsandboxed_exec is set to false, so MCP "
@@ -519,7 +523,7 @@ def _doctor_live_target_pointer(issues: list[str]) -> None:
         unfit = cli_doctor.sandbox.live_target_pointer_unfitness()
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
         print("\nLive Target Pointer")
-        print(f"  pointer:     ⚠️  could not check ({render._safe_display(exc)})")
+        print(f"  pointer:     Warning: could not check ({render._safe_display(exc)})")
         return
     if unfit is None:
         return
@@ -546,9 +550,9 @@ def _doctor_live_target_pointer(issues: list[str]) -> None:
         confined = True
     print("\nLive Target Pointer")
     if confined:
-        print(f"  pointer:     ❌ agent spawns will be REFUSED — {unfit.path}")
+        print(f"  pointer:     Error:   agent spawns will be REFUSED — {unfit.path}")
     else:
-        print(f"  pointer:     ⚠️  unfit, and will refuse spawns once confined — {unfit.path}")
+        print(f"  pointer:     Warning: unfit, and will refuse spawns once confined — {unfit.path}")
     # Whole tokens: the remedy names a path and a ``find`` invocation the operator copies,
     # and the default wrap splits both.
     render._print_wrapped(unfit.detail)
@@ -594,7 +598,7 @@ def _doctor_masked_credential_aliases(issues: list[str]) -> None:
         aliased = cli_doctor.sandbox.masked_credential_leaf_aliases()
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
         print("\nMasked Credential Leaves")
-        print(f"  aliases:     ⚠️  could not check ({render._safe_display(exc)})")
+        print(f"  aliases:     Warning: could not check ({render._safe_display(exc)})")
         return
     if not aliased:
         return
@@ -626,15 +630,17 @@ def _doctor_masked_credential_aliases(issues: list[str]) -> None:
         in_live = bool(live_home) and root == live_home
         if accounted:
             masked_any = True
-            print(f"  alias:       ⚠️  masked for each spawn — {path} ({links} links)")
+            print(f"  alias:       Warning: masked for each spawn — {path} ({links} links)")
         elif confined and in_live:
             refusing = True
-            print(f"  alias:       ❌ agent spawns will be REFUSED — {path} ({links} links)")
+            print(f"  alias:       Error:   agent spawns will be REFUSED — {path} ({links} links)")
         elif in_live:
-            print(f"  alias:       ⚠️  will refuse spawns once confined — {path} ({links} links)")
+            print(
+                f"  alias:       Warning: will refuse spawns once confined — {path} ({links} links)"
+            )
         else:
             outside_live_any = True
-            print(f"  alias:       ⚠️  reported, spawns proceed — {path} ({links} links)")
+            print(f"  alias:       Warning: reported, spawns proceed — {path} ({links} links)")
         # Whole tokens: the remedy names a path and a ``find`` invocation the operator
         # copies, and the default wrap splits both.
         # An accounted leaf gets the search command WITHOUT the refusal sentence. The full

@@ -20,7 +20,7 @@ EXPECTED: dict[str, str] = {
     "aliases:accounted-confined": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ⚠️  masked for each spawn — /data/op/.kiro/crew/.env (2 links)\n"
+        "  alias:       Warning: masked for each spawn — /data/op/.kiro/crew/.env (2 links)\n"
         "               find -samefile /data/op/.kiro/crew/.env\n"
         "               No spawn is refused for these. Where every other name was located, those names\n"
         "               are masked for each spawn too, so the bytes are unreachable from inside one.\n"
@@ -30,7 +30,7 @@ EXPECTED: dict[str, str] = {
     "aliases:in-live-unconfined": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ⚠️  will refuse spawns once confined — /data/op/.kiro/crew/.env (3 links)\n"
+        "  alias:       Warning: will refuse spawns once confined — /data/op/.kiro/crew/.env (3 links)\n"
         "               cannot mask /data/op/.kiro/crew/.env: 3\n"
         "               This is not what stops a spawn on this host yet: the launcher reaches the mask\n"
         "               only when it WRAPS a child, and this host hands the command over unwrapped or\n"
@@ -40,9 +40,9 @@ EXPECTED: dict[str, str] = {
     "aliases:mixed-confined": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ⚠️  masked for each spawn — /data/op/.kiro/crew/.env (2 links)\n"
+        "  alias:       Warning: masked for each spawn — /data/op/.kiro/crew/.env (2 links)\n"
         "               find -samefile /data/op/.kiro/crew/.env\n"
-        "  alias:       ⚠️  reported, spawns proceed — /srv/old/.env (2 links)\n"
+        "  alias:       Warning: reported, spawns proceed — /srv/old/.env (2 links)\n"
         "               cannot mask /srv/old/.env: 2\n"
         "               No spawn is refused for these. Where every other name was located, those names\n"
         "               are masked for each spawn too, so the bytes are unreachable from inside one.\n"
@@ -55,9 +55,9 @@ EXPECTED: dict[str, str] = {
     "aliases:mixed-unconfined": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ⚠️  masked for each spawn — /data/op/.kiro/crew/.env (2 links)\n"
+        "  alias:       Warning: masked for each spawn — /data/op/.kiro/crew/.env (2 links)\n"
         "               find -samefile /data/op/.kiro/crew/.env\n"
-        "  alias:       ⚠️  reported, spawns proceed — /srv/old/.env (2 links)\n"
+        "  alias:       Warning: reported, spawns proceed — /srv/old/.env (2 links)\n"
         "               cannot mask /srv/old/.env: 2\n"
         "               This is not what stops a spawn on this host yet: the launcher reaches the mask\n"
         "               only when it WRAPS a child, and this host hands the command over unwrapped or\n"
@@ -67,7 +67,7 @@ EXPECTED: dict[str, str] = {
     "aliases:outside-confined": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ⚠️  reported, spawns proceed — /srv/old/.env (2 links)\n"
+        "  alias:       Warning: reported, spawns proceed — /srv/old/.env (2 links)\n"
         "               cannot mask /srv/old/.env: 2\n"
         "               No spawn is refused for these. Where a name could not be located, the leaf is\n"
         "               outside the live data home, which the launcher reports rather than refusing on,\n"
@@ -78,12 +78,12 @@ EXPECTED: dict[str, str] = {
     "aliases:probe-raises": (
         "\n"
         "Masked Credential Leaves\n"
-        "  aliases:     ⚠️  could not check (OSError('stat refused'))\n"
+        "  aliases:     Warning: could not check (OSError('stat refused'))\n"
     ),
     "aliases:refusing": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ❌ agent spawns will be REFUSED — /data/op/.kiro/crew/.env (3 links)\n"
+        "  alias:       Error:   agent spawns will be REFUSED — /data/op/.kiro/crew/.env (3 links)\n"
         "               cannot mask /data/op/.kiro/crew/.env: 3\n"
         "               Until this is fixed every agent spawn on this host fails closed, and the only\n"
         "               other notice is a warning in the gateway log.\n"
@@ -91,7 +91,7 @@ EXPECTED: dict[str, str] = {
     "aliases:unreadable": (
         "\n"
         "Masked Credential Leaves\n"
-        "  alias:       ⚠️  reported, spawns proceed — /data/op/.kiro/crew/.env (3 links)\n"
+        "  alias:       Warning: reported, spawns proceed — /data/op/.kiro/crew/.env (3 links)\n"
         "               cannot mask /data/op/.kiro/crew/.env: 3\n"
         "               No spawn is refused for these. Where a name could not be located, the leaf is\n"
         "               outside the live data home, which the launcher reports rather than refusing on,\n"
@@ -100,45 +100,45 @@ EXPECTED: dict[str, str] = {
         "               and this report is the only notice.\n"
     ),
     "backend:foreign": (
-        "  backend:     ⚠️  an outer sandbox already confines this process\n"
+        "  backend:     Warning: an outer sandbox already confines this process\n"
         "               Kiro Crew cannot nest its own sandbox inside it. Launch the gateway outside that\n"
         "               sandbox to hand isolation back to Kiro Crew's own profile.\n"
         "               If you ran this from an agent's shell, that outer sandbox is the agent sandbox\n"
         "               itself and nothing needs changing: run `kirocrew doctor` from your own terminal\n"
         "               to check the gateway.\n"
     ),
-    "backend:linux-refusal:False": ("  backend:     ❌ none — denied by policy\n"),
+    "backend:linux-refusal:False": ("  backend:     Error:   none — denied by policy\n"),
     "backend:linux-refusal:True": (
-        "  backend:     ❌ none — denied by policy\n"
+        "  backend:     Error:   none — denied by policy\n"
         "               Set user.max_user_namespaces above zero.\n"
     ),
-    "backend:probe-raises": ("  backend:     ⚠️  could not probe (probe exploded)\n"),
+    "backend:probe-raises": ("  backend:     Warning: could not probe (probe exploded)\n"),
     "backend:transient": (
-        "  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes\n"
+        "  backend:     Warning: probe failed transiently — not cached; the next spawn re-probes\n"
         "               (EAGAIN)\n"
     ),
     "backend:transient-no-reason": (
-        "  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes\n"
+        "  backend:     Warning: probe failed transiently — not cached; the next spawn re-probes\n"
         "               (no probe detail recorded)\n"
     ),
     "backend:userns-vantage": (
-        "  backend:     ⏭  cannot be verified from this shell\n"
+        "  backend:     Skipped: cannot be verified from this shell\n"
         "               This shell is already confined inside a child user namespace with seccomp\n"
         "               filtering, so its nested CLONE_NEWUSER refusal cannot establish the host's\n"
         "               support; run `kirocrew doctor` from an unconfined shell instead.\n"
     ),
-    "backend:working": ("  backend:     ✅ namespace\n"),
+    "backend:working": ("  backend:     OK:      namespace\n"),
     "posture:operator": (
-        "  backend:     ⏭  no OS-level sandbox backend on this platform\n"
-        "  exec:        ⚠️  unconfined by declaration — sandbox_allow_unsandboxed_exec=true\n"
+        "  backend:     Skipped: no OS-level sandbox backend on this platform\n"
+        "  exec:        Warning: unconfined by declaration — sandbox_allow_unsandboxed_exec=true\n"
         "               The operator declared this opt-in, so agent subprocesses run without OS-level\n"
         "               isolation and every such spawn is audited. Remove the key to fall back to this\n"
         "               platform's default. A governance sandbox.min_level floor overrides the\n"
         "               declaration and makes such spawns fail closed.\n"
     ),
     "posture:platform": (
-        "  backend:     ⏭  no OS-level sandbox backend on this platform\n"
-        "  exec:        ⚠️  configured to run agent subprocesses UNCONFINED\n"
+        "  backend:     Skipped: no OS-level sandbox backend on this platform\n"
+        "  exec:        Warning: configured to run agent subprocesses UNCONFINED\n"
         "               This is the default for a platform with no backend to install: ~/.aws, ~/.ssh\n"
         "               and the rest of your home directory are readable by an agent subprocess, and\n"
         "               only the bypassable app-level checks remain. Every such spawn is audited. To\n"
@@ -147,15 +147,15 @@ EXPECTED: dict[str, str] = {
         "               closed, so a managed host refuses them despite this line.\n"
     ),
     "posture:refused-declared": (
-        "  backend:     ⏭  no OS-level sandbox backend on this platform\n"
-        "  exec:        ⛔ agent subprocesses are REFUSED on this host\n"
+        "  backend:     Skipped: no OS-level sandbox backend on this platform\n"
+        "  exec:        Blocked: agent subprocesses are REFUSED on this host\n"
         "               agent.sandbox_allow_unsandboxed_exec is set to false, so MCP servers, app\n"
         "               backends and the provider CLIs will report a sandbox error. Remove the key to\n"
         "               accept this platform's default, or set it to true to allow unconfined execution.\n"
     ),
     "posture:refused-undeclared": (
-        "  backend:     ⏭  no OS-level sandbox backend on this platform\n"
-        "  exec:        ⛔ agent subprocesses are REFUSED on this host\n"
+        "  backend:     Skipped: no OS-level sandbox backend on this platform\n"
+        "  exec:        Blocked: agent subprocesses are REFUSED on this host\n"
         "               No backend is available and no opt-in is declared, so MCP servers, app backends\n"
         "               and the provider CLIs will report a sandbox error. Set\n"
         "               agent.sandbox_allow_unsandboxed_exec=true to allow unconfined execution, or run\n"
@@ -499,8 +499,8 @@ def test_a_quarantined_task_store_is_named_once_per_copy(task_home, capsys) -> N
     cli_doctor._doctor_task_store(issues)
 
     assert capsys.readouterr().out == (
-        "  task store: ⚠️  a corrupt store was quarantined as tasks.db.corrupt-1\n"
-        "  task store: ⚠️  a corrupt store was quarantined as tasks.db.corrupt-2\n"
+        "  task store: Warning: a corrupt store was quarantined as tasks.db.corrupt-1\n"
+        "  task store: Warning: a corrupt store was quarantined as tasks.db.corrupt-2\n"
     )
     assert [issue.split(" was found corrupt")[0] for issue in issues] == [
         f"task store {tasks / 'tasks.db'}",
@@ -527,7 +527,7 @@ def test_an_unopenable_task_store_is_an_issue(task_home, capsys, monkeypatch) ->
     cli_doctor._doctor_task_store(issues)
 
     assert capsys.readouterr().out == (
-        f"  task store: ⚠️  {db} cannot be opened (locked by another writer)\n"
+        f"  task store: Warning: {db} cannot be opened (locked by another writer)\n"
     )
     assert issues == [
         f"task store {db} cannot be opened: accepted subagent work cannot be "

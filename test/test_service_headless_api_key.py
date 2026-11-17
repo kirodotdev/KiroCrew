@@ -55,7 +55,7 @@ class TestHeadlessApiKeyDoctorReport:
     def test_the_report_cannot_make_doctor_exit_nonzero(self, monkeypatch, tmp_path):
         """`issues` is the exit-code channel, and this gate cannot prove failure.
 
-        `_doctor` ends in `if issues: print("❌ Fix these issues: ..."); sys.exit(1)`,
+        `_doctor` ends in `if issues: print("Fix these issues: ..."); sys.exit(1)`,
         so an entry here turns a host where sign-in works into a failed verdict:
         `service_environment()` bakes `HOME`, so a service that has a
         `kiro-cli login` credential store is healthy while this fires, and a unit
