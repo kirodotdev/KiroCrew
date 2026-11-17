@@ -1,11 +1,12 @@
 """A run's record off the event loop: ``state.json``, ``result.txt`` and the cleanup identity.
 
-``_write_state_off_loop_impl``, ``_write_finished_result_off_loop_impl`` and
-``_start_result_file_impl`` run a run's off-loop ``state.json`` merges, the start of each
-attempt's ``result.txt`` and its ending's rewrite in a worker thread (later streamed chunks
-are appended on the loop) and drain each through ``_drain_state_writer_impl``, which holds
-the run's conversation through ``_hold_for_detached_writer_impl`` for a worker it stops
-awaiting. ``_cap_unclaimed_result_impl`` caps ``result.txt`` for every ending but a claim.
+``_write_state_off_loop_impl``, ``_write_finished_result_off_loop_impl``,
+``_start_result_file_impl`` and ``_append_result_chunk_impl`` run a run's off-loop
+``state.json`` merges, the start of each attempt's ``result.txt``, the appends after it while
+the run streams and the ending's rewrite in a worker thread and drain each through
+``_drain_state_writer_impl``, which holds the run's conversation through
+``_hold_for_detached_writer_impl`` for a worker it stops awaiting.
+``_cap_unclaimed_result_impl`` caps ``result.txt`` for every ending but a claim.
 ``_remember_identity_off_loop`` and ``_await_identity_write`` persist the protected cleanup
 identity, and ``_forget_finished_live_state`` drops a settled run's transient payload. New
 work on how a run's record reaches the disk goes here.
@@ -170,6 +171,20 @@ async def _start_result_file_impl(self: RunEventCoordinator, info: SubagentInfo,
     return await self._drain_state_writer_impl(info, "result start", writer)
 
 
+async def _append_result_chunk_impl(
+    self: RunEventCoordinator, info: SubagentInfo, text: str
+) -> bool:
+    """Append *text* to this attempt's started ``result.txt``, off the event loop.
+
+    Each append resolves the run folder and opens the file, so with many runs
+    streaming it would stall the loop once per chunk. Drained like the start
+    write, and each caller awaits it, so the writes land in call order. False
+    when the disk refused it: the next chunk then starts the file over.
+    """
+    writer = asyncio.ensure_future(asyncio.to_thread(write_result_chunk, info.id, text))
+    return await self._drain_state_writer_impl(info, "result chunk", writer)
+
+
 async def _drain_state_writer_impl(
     self: RunEventCoordinator,
     info: SubagentInfo,
@@ -181,7 +196,8 @@ async def _drain_state_writer_impl(
     """Await a state-writing worker, drained and bounded on cancellation.
 
     Called by :meth:`_write_state_off_loop_impl`, whose docstring carries
-    the rationale, :meth:`_start_result_file_impl`, and
+    the rationale, :meth:`_start_result_file_impl`,
+    :meth:`_append_result_chunk_impl`, and
     :meth:`_write_finished_result_off_loop_impl`, the one caller that
     passes *bound*: a limit on the UNCANCELLED wait too, past which the
     worker is left to finish detached and False is returned. The

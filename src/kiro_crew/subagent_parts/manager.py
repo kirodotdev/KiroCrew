@@ -985,6 +985,7 @@ class SubagentManager:
     _write_state_off_loop = _run_surface._write_state_off_loop
     _write_finished_result_off_loop = _run_surface._write_finished_result_off_loop
     _start_result_file = _run_surface._start_result_file
+    _append_result_chunk = _run_surface._append_result_chunk
     _drain_state_writer = _run_surface._drain_state_writer
     _hold_for_detached_writer = _run_surface._hold_for_detached_writer
     _cap_unclaimed_result = _run_surface._cap_unclaimed_result
