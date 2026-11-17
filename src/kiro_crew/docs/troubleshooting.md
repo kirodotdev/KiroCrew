@@ -635,12 +635,17 @@ directory loses its `node_modules`, `__pycache__`, `.pytest_cache`,
 `.mypy_cache`, `.ruff_cache`, `.tox` and `.nox` directories, its Python
 virtual environments (any directory holding a `pyvenv.cfg` file and no git
 repository) and its pytest temp directories (`pytest-of-*` at its top), on
-every hourly sweep, so edits under `node_modules` are not kept and a
+every hourly sweep. It also loses native build output: SwiftPM `.build`
+beside a `Package.swift`, Gradle `.gradle` and `build` beside a
+`build.gradle(.kts)` or `settings.gradle(.kts)`, Cargo `target` beside a
+`Cargo.toml`, and Xcode DerivedData (a folder named `DerivedData`, or directly inside one,
+holding only `info.plist` and Xcode's own folders, at least one `Build`, `Index.noindex`, `Logs` or `SourcePackages` folder). So edits under
+`node_modules` are not kept and a
 dependency installed inside `.quarantine` is removed again. Nothing inside a
 `.git` directory is touched. A repository that sits only inside one of those, such as
 the throwaway ones a test suite creates, does not count, so a directory whose
-only repositories are there is deleted at once. Run `npm ci` or recreate the
-venv after restoring one. To keep the work, move the
+only repositories are there is deleted at once. Run `npm ci`, recreate the
+venv or rebuild after restoring one. To keep the work, move the
 directory out of `.quarantine` before that date (copying files out of it does
 not delay the delete), or commit and push it from there; to restore it for its
 session, move it back beside the others under its original name.
