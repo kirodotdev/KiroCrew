@@ -3367,6 +3367,9 @@ The `agent.role_models.background` applier raises on a failed or unwritten rebui
 a shared-home refusal (`wrote=False`) included, so the watcher keeps it stale and
 retries it, the same contract as the `agent.model` applier above, without a
 dashboard notification (`_apply_background_model`).
+A failed heartbeat spec install is held like a conductor spec, so the hourly maintenance
+wake (`retry_held_conductor_specs`) re-runs the rebuild until the heartbeat spec carries
+the new model.
 The `wrote=False` refusal is one case of a general ownership guard: every write through
 the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
