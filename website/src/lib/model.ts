@@ -67,9 +67,10 @@ export function normalizeModelKey(name: string): string {
  *  can run.
  *
  *  `degraded` is the authority on whether the list can be trusted, and it must
- *  come from `modelsDegraded(providerId)` — NOT from the list's shape. A cached
- *  multi-row list served while `/api/models` is failing looks perfectly healthy
- *  by length while being arbitrarily stale, so length alone would relabel a pin
+ *  come from `useModelsUnconfirmed(providerId)` (a failed or a cold answer) —
+ *  NOT from the list's shape. A cached multi-row list served while
+ *  `/api/models` is failing looks perfectly healthy by length while being
+ *  arbitrarily stale, so length alone would relabel a pin
  *  the account has (re)gained access to. When `degraded` is true the pin is
  *  returned untouched: entitlement unknown is not entitlement denied. It gates
  *  the heuristic only — a verdict does not come from that list, so a stale list

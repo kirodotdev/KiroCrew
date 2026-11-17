@@ -197,7 +197,9 @@ set, even to a bad value:
   `None` (unknown), so the Remote Crew launch form asks for a target.
 - `GET /api/models` serves the engine's recorded list
   (`models_kas_bundle.api_models_kas_workload`), never kiro-cli's
-  `--list-models`, which needs kiro-cli's own sign-in.
+  `--list-models`, which needs kiro-cli's own sign-in. It starts no probe, so a
+  cold answer is marked `"cold": true` and the page reads again (see
+  common/model-selection.md).
 - The relay lease reads `tunnel.relay_lease_credential` as a JWT-SVID only when
   it names the file `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` names
   (`RelaySettings.uses_workload_identity`); any other file and a `secret://`

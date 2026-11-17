@@ -276,11 +276,24 @@ keeps reading `--list-models` exactly as below, except on a relay that starts on
 Crew's sign-in alone (entered through `kiro-cli-chat`,
 `acp.kas_route.crew_sign_in_starts_spawn`) once kiro-cli's gate refuses:
 there `/api/models` serves the same recording and starts no cold probe, so a
-model-list read spawns nothing, and a cold read answers `auto` until the first
-chat spawns. One cold read there keeps the gate's 503 instead: the one whose
-kiro-cli check only timed out (`kiro_probe_timed_out`). A timeout passes on a
-later read, and on a 503 the dashboard keeps the list it holds and reads again,
-where it would save `auto` over that list and stop reading. The bundle route runs no
+model-list read starts no session, and a cold read answers `auto` until the first
+chat spawns. No probe means no `models_changed` frame, so that cold `auto` row
+carries `"cold": true` (`models_kas_bundle._serve_recording`, for a route that
+never starts a probe): the dashboard shows `auto` alone, as the next account
+must see, but never saves it as its last-good list, and reads again every 8
+seconds with no failure notice. That is `modelListHealth`'s cold flag, kept
+apart from `degraded`: the failure notices read only `degraded`, and the
+composer chip and the split-pane picker read either before they call a pinned
+model unavailable, so a pin keeps its name while the list is cold. A failed read
+while cold still falls back to the held list, as every failed read does, and
+each re-read still goes through kiro-cli's readiness gate, which probes kiro-cli
+again at most every 30 seconds. One cold read there keeps the gate's 503
+instead: the one whose kiro-cli check only timed out (`kiro_probe_timed_out`), a
+failed read the page reports, not a cold list; it passes on a later read. A
+workload-identity host's list (kas-auth.md) never starts a probe either, so its
+cold answer is marked the same way. The bundle route's cold answer, like other
+harnesses', is unmarked: its probe's `models_changed` frame, when one runs,
+refills the picker. The bundle route runs no
 entitlement narrowing on the recording: the select already lists what the
 signed-in account is served, and `_entitled_kiro_models` reads the newest live
 `acp`-namespace provider, which can be a retained kiro-cli session after a

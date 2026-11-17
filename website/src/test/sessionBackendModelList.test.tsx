@@ -22,7 +22,7 @@ vi.mock('../api/client', () => ({
 
 import { api } from '../api/client'
 import { AcpAdapter } from '../providers/adapters/acp'
-import { markModelsDegraded, modelListRefetchInterval, modelsDegraded } from '../providers/modelListHealth'
+import { markModelsCold, markModelsDegraded, modelListRefetchInterval, modelsDegraded } from '../providers/modelListHealth'
 import { useSessionRosters } from '../pages/chat/page/sessionRosters'
 import { useComposerChips } from '../pages/chat/page/composerChips'
 import type { ChatSlot } from '../types'
@@ -39,6 +39,7 @@ beforeEach(() => {
   localStorage.clear()
   markModelsDegraded('acp', false)
   markModelsDegraded('acp:claude', false)
+  markModelsCold('acp', false)
   models.mockImplementation((backend?: string) => Promise.resolve(backend === 'claude' ? CLAUDE_ROWS : KIRO_ROWS))
 })
 
@@ -110,13 +111,12 @@ describe('useSessionRosters', () => {
 })
 
 describe('useComposerChips', () => {
-  it('keeps a claude session\'s pin on the chip while claude\'s own list is degraded', () => {
-    // The adapter served the auto-only fallback for claude's list; the configured list is healthy.
-    markModelsDegraded('acp:claude', true)
+  /** The chip for `slot`, read against an auto-only list under the given capabilities answer. */
+  function chipOf(slot: ChatSlot, capabilities: { models_backend?: string }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-    const { result } = renderHook(() => useComposerChips({
-      currentSlot: { key: 'member-helper', agent: 'helper', model: 'claude-opus-5-5' } as ChatSlot,
+    return renderHook(() => useComposerChips({
+      currentSlot: slot,
       defaultAgent: 'default',
       pendingAgent: '',
       installedAgents: [],
@@ -124,13 +124,27 @@ describe('useComposerChips', () => {
       availableModels: [{ name: 'auto', description: '' }],
       codexPairModels: false,
       selectionCapabilities: undefined,
-      selectionCapabilitiesQ: { isError: false, data: { models_backend: 'claude' } },
+      selectionCapabilitiesQ: { isError: false, data: capabilities },
       remoteCrew: { isRemote: false } as never,
       dispatch: vi.fn() as never,
       queryClient: qc,
       showActionError: vi.fn(),
     }), { wrapper })
+  }
+
+  it('keeps a claude session\'s pin on the chip while claude\'s own list is degraded', () => {
+    // The adapter served the auto-only fallback for claude's list; the configured list is healthy.
+    markModelsDegraded('acp:claude', true)
+    const { result } = chipOf({ key: 'member-helper', agent: 'helper', model: 'claude-opus-5-5' } as ChatSlot, { models_backend: 'claude' })
 
     expect(result.current.shownModel).toBe('claude-opus-5-5')
+  })
+
+  it('keeps a pin on the chip while the configured list is cold', () => {
+    // A cold answer is Auto alone and not a failure: it cannot say the pin is unavailable.
+    markModelsCold('acp', true)
+    const { result } = chipOf({ key: 'chat-1', agent: 'default', model: 'claude-fable-5.1' } as ChatSlot, {})
+
+    expect(result.current.shownModel).toBe('claude-fable-5.1')
   })
 })

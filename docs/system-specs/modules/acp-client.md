@@ -4585,7 +4585,7 @@ message, and shows a failed fetch's own error text under its lead
   (`--no-interactive` does not suppress it; there is no opt-out env var). Every
   dashboard endpoint that shells out to `kiro-cli` on a timer therefore calls
   `reject_if_kiro_unverified()` BEFORE resolving or spawning the binary:
-  `/api/models` (polled every 8s while the model list is degraded) and
+  `/api/models` (polled every 8s while the model list is degraded or cold) and
   `/api/sessions/usage` (polled by the credit pill: fast, ~2.5s, while the
   reading is unsettled — an empty warming cache or a pre-readiness 503 — then a
   30s steady cadence once a reading or a terminal state lands, or once 12 reads
@@ -4601,8 +4601,8 @@ message, and shows a failed fetch's own error text under its lead
   On KAS's relay started on Crew's sign-in alone, `/api/models` answers the
   gate's refusal with the engine's recorded list instead
   (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. With
-  nothing recorded it answers `auto`, except that a `kiro_probe_timed_out`
-  refusal stands. On
+  nothing recorded it answers `auto` marked `"cold": true`, except that a
+  `kiro_probe_timed_out` refusal stands. On
   `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
@@ -4617,7 +4617,7 @@ message, and shows a failed fetch's own error text under its lead
   (`verified_ready`), never the bare latch — a stale `ready=True` would
   green-light exactly the signed-out spawn the gate exists to prevent. The
   freshness bound differs by site: `/api/models` keeps the tight 30s ceiling
-  (`_VERIFY_MAX_AGE_SECS`) because it is polled while degraded and has no cooldown
+  (`_VERIFY_MAX_AGE_SECS`) because it is polled while degraded or cold and has no cooldown
   on its spawn while no catalog is cached, so a wide window would re-open the
   browser-login storm; `/api/sessions/usage` reads on a 5-minute
   `_POLL_GATE_MAX_AGE_SECS` because its spawn is already throttled to one fetch
