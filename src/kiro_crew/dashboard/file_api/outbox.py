@@ -299,13 +299,15 @@ def _caller_is_owner(request: web.Request) -> bool:
 
     The outbox download route needs authentication, not owner identity: a Slack
     allow-listed non-owner running ``!dashboard`` authenticates too. So the owner
-    gets the bytes as-is, and anyone else still meets the content scan.
+    gets the bytes as-is, and anyone else still meets the content scan. The machine
+    owner alone: a Shared Crew teammate clears the owner gate but is scanned, as every
+    redaction seam treats them.
     """
     from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
     )
 
-    return bool(is_owner_dashboard_request(request))
+    return bool(is_host_owner_dashboard_request(request))
 
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:

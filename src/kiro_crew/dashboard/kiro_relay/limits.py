@@ -17,10 +17,6 @@ place:
   local-secret CLI routes and the secrets vault, whose values would otherwise cross
   the relay in plaintext, and the relay viewer's routes under ``/api/relay-viewer``;
 * shutdown;
-* the app surface for a teammate, until an app opts in to remote teammates: an
-  app's UI and backend proxy (``/apps/*``), every route an app or the app
-  platform registers in-process (``/api/apps`` and under it), and the two
-  app-platform routes outside it;
 * a path not in canonical form, which a later hop could read as another path.
 """
 
@@ -61,10 +57,6 @@ SHUTDOWN = RemoteLimit(
     "relay_shutdown_refused",
     "The Crew can't be shut down through the relay.",
 )
-APPS_OFF_FOR_TEAMMATES = RemoteLimit(
-    "relay_apps_teammate",
-    "Apps aren't available to teammates through the relay.",
-)
 NONCANONICAL_PATH = RemoteLimit(
     "relay_path_noncanonical",
     "This address isn't in a form the relay accepts.",
@@ -76,7 +68,6 @@ ALL_LIMITS = (
     INSTANCES_OFF,
     LOCAL_CREDENTIAL,
     SHUTDOWN,
-    APPS_OFF_FOR_TEAMMATES,
     NONCANONICAL_PATH,
 )
 
@@ -121,14 +112,6 @@ _APP_TOKEN_EXCHANGE_RE = re.compile(r"\A/api/apps/[^/]+/token/?\Z")
 
 _INSTANCES = "/api/instances"
 _SHUTDOWN = "/api/shutdown"
-#: An app's UI and the reverse proxy to its backend.
-_APPS_PREFIX = "/apps/"
-#: Every route an app or the app platform registers in-process: the app
-#: management routes and each app's own backend routes under ``/api/apps/<name>/``.
-_APPS_API = "/api/apps"
-#: App-platform routes outside those namespaces: the publish-provider list and the
-#: app store's catalog refresh.
-_APPS_PLATFORM_EXACT = frozenset({"/api/publish-providers", "/api/app-store/refresh"})
 #: A ``%`` left after decoding, an empty segment, or a ``.`` / ``..`` segment. One
 #: trailing slash is canonical.
 _NONCANONICAL_RE = re.compile(r"%|//|/\.\.?(?:/|\Z)")
@@ -152,8 +135,9 @@ def remote_limit_for(
     *path* is the decoded request path, the same form the router and token auth
     match on. *strict_internal_paths* is the gateway's own strict internal set,
     the one its token auth is built with, matched the same way (exact or child).
-    Every limit applies to the owner and teammates alike except the app limit,
-    which is a teammate's only.
+    Every limit applies to the owner and teammates alike: what a teammate may do
+    inside the Crew is the owner gates' question (``shared_crew.teammate_access``),
+    not the transport's, so *caller* decides no limit here.
 
     A path that is not in canonical form is refused before any route is matched:
     one with a ``%`` left after decoding, an empty segment or a dot segment. A
@@ -167,30 +151,43 @@ def remote_limit_for(
         return NONCANONICAL_PATH
     if any(_at_or_under(path, entry) for entry in strict_internal_paths):
         return LOCAL_ONLY
+    return remote_route_limit(path)
+
+
+def remote_route_limit(path: str) -> RemoteLimit | None:
+    """The limit a canonical *path* alone decides: instances, local credentials, shutdown.
+
+    The part of :func:`remote_limit_for` that needs no header and no strict-path set,
+    so ``shared_crew.teammate_access`` holds every Shared Crew teammate, on any path,
+    to the same route boundary the relay holds every remote caller to.
+    """
+    if _is_noncanonical(path):
+        return NONCANONICAL_PATH
     if _at_or_under(path, _INSTANCES):
         return INSTANCES_OFF
-    if (path.rstrip("/") or "/") in _LOCAL_CREDENTIAL_EXACT:
-        return LOCAL_CREDENTIAL
-    if path.startswith(_LOCAL_CREDENTIAL_PREFIXES) or _APP_TOKEN_EXCHANGE_RE.match(path):
-        return LOCAL_CREDENTIAL
-    if _at_or_under(path, _RELAY_VIEWER):
+    if is_local_credential_path(path):
         return LOCAL_CREDENTIAL
     if _at_or_under(path, _SHUTDOWN):
         return SHUTDOWN
-    if not caller.is_owner and _is_app_surface(path):
-        return APPS_OFF_FOR_TEAMMATES
     return None
+
+
+def is_local_credential_path(path: str) -> bool:
+    """Whether *path* mints, rotates, discloses or stores a credential that outlives
+    the session asking: Crew's local tokens and secrets, the vault, an app secret,
+    a webhook bearer, a built-in app's own credential mints and the relay viewer.
+
+    The relay refuses these to every relayed caller; ``shared_crew.teammate_access``
+    keeps them the machine owner's on every path, since a credential a teammate took
+    away would survive their access being revoked.
+    """
+    if (path.rstrip("/") or "/") in _LOCAL_CREDENTIAL_EXACT:
+        return True
+    if path.startswith(_LOCAL_CREDENTIAL_PREFIXES) or _APP_TOKEN_EXCHANGE_RE.match(path):
+        return True
+    return _at_or_under(path, _RELAY_VIEWER)
 
 
 def _is_noncanonical(path: str) -> bool:
     """Whether *path* could read as another path at a later hop."""
     return _NONCANONICAL_RE.search(path) is not None
-
-
-def _is_app_surface(path: str) -> bool:
-    """Whether *path* is an app's UI, an app's API, or an app-platform route."""
-    return (
-        path.startswith(_APPS_PREFIX)
-        or _at_or_under(path, _APPS_API)
-        or (path.rstrip("/") or "/") in _APPS_PLATFORM_EXACT
-    )

@@ -225,7 +225,8 @@ answers it (`dashboard.tailnet_owner`). Two irreversible actions, `DELETE
 `X-Kirocrew-Confirm: irreversible`, which the dashboard sends only after its own
 confirm dialog; without it the answer is 428 `confirm_required`. Anyone else is the
 dashboard user `tailnet:uid:<id>` (a tagged node `tailnet:node:<name>`), which never
-matches the owner subject, so owner-gated routes refuse it. A token or cookie it carries is ignored, except an app token,
+matches the owner subject; that person is a teammate and passes the owner gate on
+every route but the Terminal's (§2 What a teammate may do). A token or cookie it carries is ignored, except an app token,
 which runs the ordinary token flow so the app keeps its scope. Strict internal
 paths and the internal secret are refused on this listener. It cannot mint a
 bearer link (`_caller_bounds` lends no lifetime), and `/api/auth/me` reports
@@ -530,6 +531,80 @@ the invite records, masked from every sandbox mode. A file that cannot be parsed
 leaves the set unreadable: the serve path admits only the owner, and the access card
 says so. A failed write drops the in-memory copy, so the next read is the file again.
 
+### What a teammate may do
+
+Owner: `shared_crew.teammate_access`. A teammate is a person a sharing path admitted
+by its own check: an SSM invite guest (`is_ssm_guest_request`: the gate's `SsmGuest`
+mark and an `ssm_invite` actor for that same invite), a team Crew teammate the Kiro
+relay verified and this Crew's relay client handed over
+(`routes_identity._relay_teammate`), or a collaborator a Tailscale membership
+boundary admitted (`collaborators.is_collaborator_actor` with provenance
+`tailscale_listener` on the direct listener, or `tailscale_serve`). Every admitted
+person has the owner's rights while roles are off
+([2026-11-01](../../decisions/2026-11-01-shared-crews-give-each-person-one-role.md)),
+so the owner gate (`source_providers.is_owner_dashboard_request`) admits a teammate
+on every route but the Terminal's (`/api/terminal…` and `/api/ws/terminal…`,
+`TERMINAL_PATH_PREFIXES`): Bots and their Dashboards, approval modes including Trust
+and YOLO, apps, updates, settings and the rest of the owner's dashboard. A
+teammate's dashboard socket is an owner socket, so it gets every owner frame, the
+agent's question cards included. `GET /api/terminal/sessions` answers a teammate
+`{"enabled": false}`, so their tab hides the Terminal, and every other Terminal
+route refuses them with `owner_only`. A test fails when a Terminal route is
+registered outside those prefixes.
+
+Three things stay the machine owner's (`is_owner_only_for_teammates`). The
+Terminal's own surface; it is a UI boundary, not a sandbox, since YOLO, cron scripts
+and app installs, all open to a teammate, reach the host too. Every route the relay
+refuses a remote caller by its path alone (`kiro_relay.limits.remote_route_limit`):
+remote instances, whose routes mint a peer's owner token; Crew's local tokens and
+sign-in links, the vault, an app secret or its exchange, a webhook bearer, a built-in
+app's own credential mints and the relay viewer; shutdown; and a path not in
+canonical form. Each is a credential that would outlive the teammate's access, or the
+gateway process, so one table holds a teammate on any path to the boundary the relay
+holds every remote caller to. Plus a channel connection's writes
+(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
+connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
+job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
+a channel and sending through it stay open. And managing who may reach the
+Crew: `routes_invites._owner_refusal` admits only the local operator or this
+machine's own tailnet user, so a teammate cannot list, create or revoke invites, read
+the access card or switch the preview; the mobile setup (`tailnet_mobile`, whose QR
+hands back a credential in the owner's own name) asks
+`is_host_owner_dashboard_request`; and `PATCH /api/config/kirocrew` refuses a teammate
+403 `owner_only` on an admission key (`is_admission_config_key`: the
+`dashboard.shared_crew`, `dashboard.tailscale` and `tunnel` subtrees, and any key
+segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered by
+its name).
+
+A teammate is not the owner for redaction. The owner's credential-redaction OFF
+covers only what the owner alone sees
+([2026-11-15](../../decisions/2026-11-15-credential-redaction-off-by-default.md)), so
+`redaction_audience.request_audience`, `owner_view_for_request`, the reveal route,
+the redaction switch itself, a session export's raw model context (Layer B), an
+outbox download's credential scan, the agent list and catalog's masking, the cron
+board's secret-grant names and the signed-in account's email ask
+`is_host_owner_dashboard_request`: every choice between a raw and a scanned or masked
+view is the machine owner's. A teammate's owner socket carries
+`teammate_access.TEAMMATE_WS_FLAG`, which `redaction_audience.socket_reads_as_owner`
+reads: the hub's fan-out, its awaited owner deliveries (`deliver_ws_owners`: question,
+change and guide cards), the connect snapshot, the browser-live snapshot and the
+subagent replay all send it every frame redacted in full while the switch is off.
+The machine owner is never a teammate, whichever path they came in on: the owner on
+a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
+
+A teammate keeps their own identity: `request["user"]` stays their subject
+(`ssm:<invite>`, `relay:<id>`, `tailnet:uid:<id>`) and the published actor stays
+their principal, so every audit row and attribution names them, never the owner.
+`is_host_owner_dashboard_request` is the machine owner alone; it tells the two apart
+where the difference is a fact about who is at the machine, not a right:
+`/api/auth/me`'s `owner_ok` (so the host's first-run chapters open only in the
+owner's tab) and the decide-by-id form of a tool approval, which only the owner's
+browser sends (a teammate's card always names its request). A messaging allowlist
+link, an app token, an internal caller, a widened-bind tailnet peer (attribution
+only) and an Unknown actor are not teammates. The SSM and Tailscale paths exist only
+while the Shared Crew preview is on; a relay teammate is the team Crew's own access
+path, granted by the control plane, and does not wait on the preview.
+
 ### Tailscale invites
 
 The owner invites a teammate in one step: emails, or a link, with an optional alias
@@ -683,8 +758,15 @@ request is the dashboard user `ssm:<invite id>` (never the owner subject), carri
 reads the marker, `origin.is_direct_local_request` answers False for it, the bearer-link
 mints (`_caller_bounds`) lend it no lifetime, so it cannot mint a token that outlives a
 revoke or works on the dashboard port, and `test_ssm_loopback_trust_sites.py` lists every place that trusts a loopback peer
-address and fails when a new one is not classified. The owner gates
-(`is_owner_dashboard_request`, `routes_invites._owner_refusal`) refuse it by subject.
+address and fails when a new one is not classified.
+
+An admitted guest is a teammate (§2 What a teammate may do): the owner gate admits
+them on every route but the Terminal's, and they keep the `ssm:<invite id>` subject
+and the `ssm_invite` actor throughout. An app's own pages still do not run over
+this listener (an app web origin serves only a direct local request), so a guest
+manages apps but does not open their pages; `GET /api/apps` answers an SSM request
+that is not a guest's with an empty list. The managed-venv update's host-approval
+step (`/api/update/approve`) stays host-local.
 
 **Invites** (`shared_crew.ssm_invites`). The credential is `<invite id>.<secret>`. The
 store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
@@ -1378,18 +1460,13 @@ verified human (an app token), `person` otherwise, an owner's dashboard click
 included. A record without the field reads as `person`. Approval decision frames ride `broadcast_ws` like approval frames.
 
 A session's own approval card (`POST /api/chat/slots/{slot}/approve`) is decided by
-the owner or by a Shared Crew teammate (`slot_approval._shared_crew_teammate`): a
-team Crew teammate the Kiro relay verified (`routes_identity._relay_teammate`) or a
-collaborator (`collaborators.is_collaborator_request`). Teammates already open and
-run turns in every session, so they decide its tool approvals too, and nobody is a
-teammate while the Shared Crew preview is off. A teammate may approve or reject the
-live card the decide names (`origin: "native"` with its `request_mid`); a decide by
-request id alone answers them 404 `approval_target_required`. The trust verbs, YOLO and a deny-rule override change the
-session's approval mode or are the owner's alone, so they answer a teammate 403
-`owner_only`, and `POST /api/chat/mode` stays owner-only. Each teammate decision,
-admitted or refused, writes an SEL row (source `shared_crew_teammate`) under the
-teammate's subject, and the decision names them as its responder. Any other
-non-owner dashboard session keeps the owner gate's 403.
+the owner, and so by every Shared Crew teammate, who passes the owner gate (§2 What a
+teammate may do): approve, reject, the trust verbs, YOLO and a deny-rule override,
+and `POST /api/chat/mode`. A teammate's decide names the live card it was clicked on
+(`origin: "native"` with its `request_mid`); a decide by request id alone answers
+them 404 `approval_target_required` (`slot_approval._shared_crew_teammate`). The
+decision names the teammate as its responder. Any other non-owner dashboard session
+keeps the owner gate's 403.
 
 An agent question belongs to every collaborator. `collaborators.is_collaborator_request`
 admits the owner (`is_owner_dashboard_request`) and a dashboard-user session whose
@@ -1423,8 +1500,7 @@ principals with a finite time survive, and their labels go through
 read it, never presence or a permission. The slot projection and the owner's
 `GET /api/members` row carry `participants` (creator first, then most recent) and
 `participants_dropped`; the roster reads the live slot only, never a transcript.
-A relay teammate's narrowed Bots roster carries neither, since it masks the
-owner's DM thread. The session row draws up to three initials chips after the
+The session row draws up to three initials chips after the
 creator byline under the byline's rule, then "+N" counting the rest and the
 dropped; the Bots roster draws the same chips after the Bot's name on a team
 Crew (`ParticipantChips`). A session written before this field draws none until
@@ -1840,16 +1916,10 @@ person is a current member.
 display name and picture, their own included (`routes_people`): equal rights
 among the people a sharing path admitted by its own check
 (`routes_identity._tailnet_person`: the direct listener after checking the access
-set, or the SSM listener on a live invite), and the owner. The People,
-sessions and mode reads also admit a team Crew teammate the Kiro relay verified
-(`routes_identity._relay_teammate`), as do a narrowed Bots roster read
-(`GET /api/members`) and the Bot routes a teammate may use as they use a session
-(chat, greeting, fresh start and the reads; see member-event-log for the list). A
-teammate uses a roster Bot with the same approvals, sub-agents and delegation as
-a session, regardless of the Bot's approval mode or the owner's live grants.
-This follows the Shared Crew trust boundary: every admitted relay teammate has
-the owner's access to run work. Standing setup writes remain owner-only, as they
-do for sessions. The name-and-picture edit does not admit a teammate. A
+set, or the SSM listener on a live invite), and the owner, which every teammate
+passes as (§2 What a teammate may do). The People, sessions and mode reads, the Bots
+roster and every Bot route admit a teammate the same way; a relay teammate's Bot
+routes file their grant under the teammate's relay label (`members_access`). A
 non-owner dashboard link session (a Telegram, Teams or Webex allowlist link) goes through `require_owner_for_dashboard_caller` and is refused,
 as it is for the read. The record is keyed by stable Tailscale user id in the invite store's
 `display` map, so it follows a renamed login and works for a person who was never

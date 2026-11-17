@@ -6502,9 +6502,9 @@ the issue time. The wire format and the verifier's steps are in
    cookie reads as `owner-session` on those routes too, and so does the owner of
    a personal Crew reaching it through the Kiro relay, whom token auth admits as
    the owner ([dashboard-token-auth § Relay-delivered requests](dashboard-token-auth.md#relay-delivered-requests)).
-   A relayed teammate's subject never matches the owner predicate, and the whole
-   app surface (`/apps/*` and `/api/apps` with everything under it) is off for
-   teammates.
+   A Shared Crew teammate (a relayed one included) passes the owner predicate
+   too, so their cookie reads as `owner-session` with their own subject as the
+   owner id ([shared-crew § What a teammate may do](shared-crew.md#what-a-teammate-may-do)).
 4. `none` for every other request.
 
 The proxy strips any caller-sent `X-KiroCrew-Proxy` and `X-KiroCrew-Principal`

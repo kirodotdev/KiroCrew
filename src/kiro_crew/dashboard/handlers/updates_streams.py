@@ -22,10 +22,8 @@ from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import coerce_dict_section, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.updates_verdict import _display_local_version
-from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
-from kiro_crew.dashboard.ws_event_scope import app_origin_frame, audit_teammate_withheld
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 
@@ -381,9 +379,6 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     # publishing it to an unscoped client. Mirrors `api_ws`'s
     # `ws["_is_dashboard_user"]`. Consumed by the chat_message arm below.
     is_dashboard_user: bool = bool(request.get("is_dashboard_user", False))
-    # A relayed teammate has no app surface: an app's push notification is withheld
-    # here as the WebSocket gate withholds it (``ws_event_scope.app_origin_frame``).
-    relay_teammate = is_relay_teammate(request)
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -445,9 +440,6 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         )
                         await send("chat_message", payload)
                     else:
-                        if relay_teammate and app_origin_frame(msg_type or "notification", note):
-                            audit_teammate_withheld(msg_type or "notification")
-                            continue
                         payload = json.dumps(note)
                         await send("notification", payload)
                 except asyncio.QueueEmpty:

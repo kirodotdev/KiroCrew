@@ -105,9 +105,13 @@ def request_audience(request: web.Request) -> str:
     try:
         if request.get("internal_auth") is True and not request.get("app"):
             return redaction_seams.MODEL
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import (
+            is_host_owner_dashboard_request,
+        )
 
-        if is_owner_dashboard_request(request):
+        # The machine owner alone: a Shared Crew teammate passes the owner gate, but
+        # the owner's OFF covers only what the owner sees.
+        if is_host_owner_dashboard_request(request):
             return redaction_seams.OWNER_DASHBOARD
     except Exception:
         logger.debug("redaction audience: owner check failed; read as non-owner", exc_info=True)
@@ -262,6 +266,20 @@ def _on_streamed(ws: Any, text: str) -> Any:
     if kind == _STREAM_END_FRAME:
         _end_streams(ws, data["slot"])
     return _NOT_STREAMED
+
+
+def socket_reads_as_owner(ws: Any, owner_sockets: Any) -> bool:
+    """Whether *ws* reads as the owner for redaction: an owner socket no teammate opened.
+
+    A Shared Crew teammate's socket is an owner socket, so every owner frame reaches it,
+    but it carries ``teammate_access.TEAMMATE_WS_FLAG`` and reads as any non-owner.
+    """
+    from kiro_crew.shared_crew.teammate_access import TEAMMATE_WS_FLAG
+
+    if ws not in owner_sockets:
+        return False
+    getter = getattr(ws, "get", None)
+    return not (callable(getter) and getter(TEAMMATE_WS_FLAG, False) is True)
 
 
 def for_socket(ws: Any, text: str, *, owner: bool) -> str | None:

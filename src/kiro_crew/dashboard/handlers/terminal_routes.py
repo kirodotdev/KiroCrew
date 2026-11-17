@@ -197,6 +197,20 @@ async def api_terminal_list(request: web.Request) -> web.Response:
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    from kiro_crew.shared_crew.teammate_access import is_shared_crew_teammate
+
+    if is_shared_crew_teammate(request):
+        # A Shared Crew teammate has the owner's dashboard except the Terminal.
+        # Answer the shell's probe with the disabled shape, so their tab hides the
+        # Terminal rather than showing one every route below refuses.
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.session.list",
+            outcome="denied",
+            source="dashboard",
+            resources="shared_crew_teammate",
+        )
+        return web.json_response({"enabled": False, "sessions": []})
     owner_denied = await require_owner_dashboard_request(request, "terminal.session.list")
     if owner_denied is not None:
         return owner_denied

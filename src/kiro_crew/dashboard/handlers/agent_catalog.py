@@ -353,7 +353,11 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             status=503,
         )
 
-    redact = not owner
+    # Unmasked values are the machine owner's alone: a Shared Crew teammate clears
+    # the owner gate above but reads masked, as every redaction seam treats them.
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+
+    redact = not (owner and is_host_owner_dashboard_request(request))
     rows = []
     for name, member in config.agents.items():
         row = _agent_roster_row(name, "global", member, redact=redact)

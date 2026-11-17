@@ -34,7 +34,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.security import reveal_store
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ def _refusal(request: web.Request) -> str:
         return "app caller"
     if request.get("is_dashboard_user") is not True:
         return "not a dashboard user"
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         return "not the owner"
     return ""
 

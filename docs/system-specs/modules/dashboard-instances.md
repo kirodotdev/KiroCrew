@@ -530,7 +530,7 @@ the page and the read below both refuse a slug alone (`missing_member`).
 To fill the frame, the tab reads
 `GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
 page through the same renderer, the same masking pass and the same owner gate as the
-live one (a relay teammate admitted to the live page is refused the staged one), with `preview: true` in the body and `instance_version` left at the current
+live one, with `preview: true` in the body and `instance_version` left at the current
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 

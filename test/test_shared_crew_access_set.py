@@ -110,10 +110,12 @@ def _install(seed: tuple[str, ...] = ()) -> None:
 
 
 async def _whoami(request: web.Request) -> web.Response:
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    # The machine owner, not the owner gate: a Shared Crew teammate passes that gate
+    # too (``shared_crew.teammate_access``), and these tests ask who is who.
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
     return web.json_response(
-        {"user": request.get("user"), "owner": is_owner_dashboard_request(request)}
+        {"user": request.get("user"), "owner": is_host_owner_dashboard_request(request)}
     )
 
 
