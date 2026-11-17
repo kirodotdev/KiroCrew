@@ -302,10 +302,10 @@ cutover path must stub **both** `_run_cmd` and `_dropin_path`.
 ## Rule 2 — Determinism: seven classes, one correct fix each
 
 Never "fix" a flake with a rerun, a longer `sleep`, a weakened assertion, or a skip.
-Full detail and examples: testing-conventions § Determinism. Its short form, twelve
+Full detail and examples: testing-conventions § Determinism. Its short form, thirteen
 MUST rules, is the
 [Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first)
-at the top of that document, and the checklist below opens with the same twelve.
+at the top of that document, and the checklist below opens with the same thirteen.
 
 The seven classes, the tell that identifies each, and the ONE correct fix for each are in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
@@ -600,6 +600,8 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       ([class 4](../../../../../docs/system-specs/common/testing-conventions.md#4-order-dependence-and-shared-state))
 - [ ] D12: proven by repeats, a shuffled order and, for a fix, the forced condition
       ([proving a fix](../../../../../docs/system-specs/common/testing-conventions.md#proving-a-determinism-fix))
+- [ ] D13: no dependence on the host's `PATH`; pin the resolver or set `PATH` to `tmp_path` and plant the tool
+      ([what the host lends](../../../../../docs/system-specs/common/testing-conventions.md#what-the-host-lends-the-suite-and-must-not))
 
 ### Specialised traps (search when your test touches X)
 

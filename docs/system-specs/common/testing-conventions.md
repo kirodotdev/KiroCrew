@@ -23,7 +23,7 @@ outside those roots is never collected, so it stays green by omission.
 
 ## Determinism contract (read this first)
 
-Every backend test MUST keep these twelve rules. Each line names the shape to use and
+Every backend test MUST keep these thirteen rules. Each line names the shape to use and
 links the class that explains it; the rest of this document is the evidence behind
 them. The shared shapes live in `kiro_crew.testing` (`clock`, `wait`, `ids`), which
 ships in the wheel, so the in-package app suites use them too; the rootdir
@@ -152,6 +152,19 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   seam) red on the parent commit and green on the fix. A timing result from an
   overloaded host is not evidence; measure under CI-equivalent load.
   [Proving a determinism fix](#proving-a-determinism-fix).
+- **D13. No dependence on what the host has on `PATH`.** When the code under test
+  resolves a command with `shutil.which` (an MCP server's `command`, `gh`, `git`,
+  `node`), the test chooses the answer. A command name that is only fixture DATA counts
+  too: `"command": "http"` in a spec is a lookup on the runner's `PATH`, and a Windows
+  runner's `PATH` holds very different programs from a Linux one. Pin the product's own
+  resolver (`trusted_system_bin`; `_pin_rg_on_path` in `test/test_file_grep.py` pins the
+  grep endpoint's), or set the search path with `monkeypatch.setenv("PATH",
+  str(tmp_path))` and plant the tool there; a test that needs a real interpreter names
+  `sys.executable`. The suite has no autouse `PATH` floor (real `git`, `bash` and `node`
+  tests need the host's), so no shared fixture covers this. Run a host-tool test once
+  with the tool off `PATH`. #35547 fixed a rewriter spec whose verdict turned on an
+  `http` program being on `PATH`.
+  [What the host lends the suite](#what-the-host-lends-the-suite-and-must-not).
 
 ### Production deadlines are not test boundaries
 

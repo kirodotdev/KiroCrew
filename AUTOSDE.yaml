@@ -387,7 +387,7 @@ custom-rules:
       on Linux, macOS and Windows runners under load, so a test that is only
       usually right reds unrelated pull requests. The contract is
       `docs/system-specs/common/testing-conventions.md` § Determinism contract
-      (D1-D12, named on each item below); each shape below has burned this
+      (D1-D13, named on each item below); each shape below has burned this
       repository before.
 
       FLAG, on added or changed test lines:
@@ -498,14 +498,16 @@ custom-rules:
           (testing-conventions § A host probe that asks a different program
           than the one under test).
 
-      14. A test that lets the HOST answer what the code reads: a real tool
+      14. (D13) A test that lets the HOST answer what the code reads: a real tool
           found on the inherited `PATH` or in a fixed install directory (the
-          operator's kiro-cli, a version-manager shim, a launcher), a system
-          tool's own shape (`sleep` can be a shebang script), an inherited
-          signal disposition (`nohup` ignores SIGHUP), host data files
-          (tzdata), or the layout and ownership of the real home. CI's runner
-          has none of these, so the test is green there and red on a
-          developer host. Pin the probe, give the test its own `HOME`, or spawn
+          operator's kiro-cli, a version-manager shim, a launcher), a command
+          name in fixture data that production resolves with `shutil.which`
+          (an MCP spec's `"command": "http"`), a system tool's own shape
+          (`sleep` can be a shebang script), an inherited signal disposition
+          (`nohup` ignores SIGHUP), host data files (tzdata), or the layout
+          and ownership of the real home. Linux CI, Windows CI and a developer
+          host each differ in these, so the test is green on one and red on
+          another. Pin the probe, give the test its own `HOME`, or spawn
           through the helper that fixes the trait (testing-conventions § What
           the host lends the suite, and must not).
       15. A shell stand-in whose TERM/INT trap the test relies on, while the
