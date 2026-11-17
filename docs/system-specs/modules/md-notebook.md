@@ -19,8 +19,9 @@ appears in the Apps library ready to be switched on rather than enabling itself.
 
 **Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
 [app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
-`KiroCrewCaptain/kirocrew-app-md-notebook` with `minAppSdkLevel` 8, the level of the
-`credentialMasks` directory entry `state/`, so a host whose record is builtin-owned swaps
+`KiroCrewCaptain/kirocrew-app-md-notebook` with `minAppSdkLevel` 10, the level at which the
+agent's file tools fence an installed app's `credentialMasks` (its directory entry `state/`
+alone is a level-8 use), so a host whose record is builtin-owned swaps
 it in place onto that tree at a restart, keeping `data/` (`data/state/` with the vault
 registry, the settings and the GitHub token included), `.app_secret`, the approved grants
 and `enabled`; the rail keeps `/md-notebook` and the `NotebookPen` glyph, and the wheel copy's

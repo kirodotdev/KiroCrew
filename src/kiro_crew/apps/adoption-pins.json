@@ -190,7 +190,7 @@
       "version": "1.0.2",
       "treeSha256": "6cfe9309f1a6fb880d48f583358d9463dadf5151d66a2ed946df2af699cca0a6",
       "archiveSha256": "43aa5172339927ceb03c1db7e853528c7ee054231d3d015f8a4d08785aad0bb7",
-      "minAppSdkLevel": 8,
+      "minAppSdkLevel": 10,
       "legacyNav": {
         "route": "/md-notebook",
         "icon": "NotebookPen"
