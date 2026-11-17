@@ -306,13 +306,51 @@ class TestVaultOwnership:
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_not_called()
 
-    def test_kas_without_vault_identity_does_not_own(self):
+    @staticmethod
+    def _route(bundle: bool):
+        return patch(
+            "kiro_crew.agent_sdk.kas_bundle.kas_route",
+            MagicMock(return_value=SimpleNamespace(bundle=bundle)),
+        )
+
+    def test_kas_relay_route_without_vault_identity_does_not_own(self):
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
             self._holds(False) as holds,
+            self._route(False) as route,
         ):
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_called_once_with(warn=False)
+        route.assert_called_once_with()
+
+    def test_automatic_bundle_route_owns_whatever_the_vault_holds(self):
+        # kiro-cli not installed: the route switches to Crew's engine with the
+        # flag off, so the usage poll must not fall to a kiro-cli gate that has
+        # no kiro-cli to verify.
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
+            self._holds(False),
+            self._route(True),
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is True
+
+    def test_vault_identity_answers_before_the_route_is_resolved(self):
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
+            self._holds(True),
+            self._route(False) as route,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is True
+        route.assert_not_called()
+
+    def test_kiro_cli_backend_never_asks_the_kas_route(self):
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kiro")),
+            self._holds(False),
+            self._route(True) as route,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is False
+        route.assert_not_called()
 
     def test_unusable_vault_identity_still_owns_and_does_not_warn(self, caplog):
         # This probe runs on every poll; the spawn-time WARNING must not repeat
@@ -322,6 +360,9 @@ class TestVaultOwnership:
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
             self._store(self._token(False)),
+            # The remedy text names this install's launcher; pinned, so the host's
+            # own ``kirocrew`` (or its absence) cannot answer the lookup.
+            patch("kiro_crew.lts_sign_in._launcher", return_value="kirocrew"),
             caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"),
         ):
             assert sessions_mod._vault_owns_usage_sync() is True

@@ -261,6 +261,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.agent_sdk import kas_bundle
 from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
@@ -699,7 +700,9 @@ def _vault_owns_usage_sync() -> bool:
     must show and whose identity the dashboard names (:func:`fetch_local_identity`).
     Two shapes, both on the KAS harness:
 
-    * the bundle route (``agent.kas_bundle``): the engine runs without kiro-cli
+    * the bundle route (``agent.kas_bundle``, or the automatic switch
+      ``kas_bundle.kas_route`` takes when kiro-cli's relay cannot run on this
+      host, kiro-cli not installed above all): the engine runs without kiro-cli
       and its access-token callback reaches Crew alone, so the vault is the only
       credential there is -- signed in or not. A signed-out vault then reports
       ``signin_required`` from the vault path rather than consulting a kiro-cli
@@ -726,7 +729,12 @@ def _vault_owns_usage_sync() -> bool:
             # The spawn's own predicate, with its diagnostics at DEBUG: an unusable
             # entry is a spawn-time WARNING, and this runs on every 30s poll of
             # every open tab.
-            return vault_holds_identity(warn=False)
+            if vault_holds_identity(warn=False):
+                return True
+            # The automatic bundle route: kiro-cli's relay cannot run here, so the
+            # spawn takes Crew's engine as it does with the flag on. Asked last,
+            # since it resolves kiro-cli.
+            return bool(kas_bundle.kas_route().bundle)
         return False
     except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the gated kiro-cli path
         logger.debug("Kiro usage: vault ownership probe failed (%s)", type(exc).__name__)
