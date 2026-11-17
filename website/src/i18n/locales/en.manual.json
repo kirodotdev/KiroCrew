@@ -3999,6 +3999,7 @@
     "privacyChapter": {
       "changeLater": "You can change this anytime in Settings > Privacy: performance metrics are the Record metrics switch, and the heartbeat is the Send anonymous usage heartbeat switch.",
       "collectedFeatures": "How often features are used, and errors and retries",
+      "collectedApps": "Which built-in apps are installed or used, and which store apps are installed, by their public store name. Apps you add from anywhere else are counted without a name.",
       "collectedInstallId": "A random install ID that is not linked to you",
       "collectedTimings": "How long things take, such as startup, replies and actions",
       "collectedTitle": "What is collected",

@@ -193,7 +193,7 @@ Privacy and in `kirocrew telemetry status`.
 Unlike your own collectors, it exports while recording is on by default: no
 `"enabled": true` has to be written. It waits for one thing first: the privacy
 notice that names it has been shown. That is the dashboard's Privacy chapter at
-notice version 3 showing the line that names it (Keep on, or
+notice version 3 or later showing the line that names it (Keep on, or
 `kirocrew telemetry enable`, records `dashboard.kiro_telemetry_ack_version`), or
 the one-line notice that names it, printed on a terminal by a start with no
 dashboard (`gateway --no-dashboard`, `run`, `chat`). A line that goes to a log or
@@ -206,8 +206,8 @@ do that.
 
 | Host | Sent? |
 |---|---|
-| Recording on (by default or by choice), notice version 3 shown | Yes |
-| Recording on, notice version 3 not shown yet | No |
+| Recording on (by default or by choice), notice version 3 or later shown | Yes |
+| Recording on, notice version 3 or later not shown yet | No |
 | Off only by a written `"enabled": false` (see below) | No, unless Turn on is chosen |
 | A dashboard gateway nobody opens (its stderr line goes to a log and does not count) | No, until someone clicks Keep on |
 | An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |

@@ -8927,6 +8927,7 @@
     "privacyChapter": {
       "changeLater": "Tu peux modifier ce choix à tout moment dans Paramètres > Confidentialité : les métriques de performance correspondent à l'interrupteur « Enregistrer les métriques » et le signal à l'interrupteur « Envoyer le signal d'utilisation anonyme ».",
       "collectedFeatures": "La fréquence d'utilisation des fonctionnalités, ainsi que les erreurs et les nouvelles tentatives",
+      "collectedApps": "Les apps intégrées qui sont installées ou utilisées, et les apps de la boutique qui sont installées, avec leur nom public dans la boutique. Les apps que tu ajoutes depuis une autre source sont comptées sans nom.",
       "collectedInstallId": "Un identifiant d'installation aléatoire qui n'est pas lié à toi",
       "collectedTimings": "La durée des opérations, comme le démarrage, les réponses et les actions",
       "collectedTitle": "Ce qui est collecté",

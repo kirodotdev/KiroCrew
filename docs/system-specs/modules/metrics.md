@@ -2837,7 +2837,7 @@ consent flow:
   recording on (not on `disable`, and not when it leaves recording off because an
   export destination is configured); the dashboard's
   `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
-  `beacon.PRIVACY_NOTICE_VERSION` are both 3 and a backend test pins them
+  `beacon.PRIVACY_NOTICE_VERSION` are both 4 and a backend test pins them
   together. An existing user whose stored version is lower sees the chapter once
   at the next dashboard load, decided once per page load, and only while local
   recording is on; a heartbeat-only or already-off user does not see it. A user

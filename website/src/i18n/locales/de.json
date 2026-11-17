@@ -8710,6 +8710,7 @@
     "privacyChapter": {
       "changeLater": "Du kannst das jederzeit unter Einstellungen > Datenschutz ändern: Die Leistungsmetriken sind der Schalter „Metriken aufzeichnen“, der Heartbeat der Schalter „Anonymes Nutzungssignal senden“.",
       "collectedFeatures": "Wie oft Funktionen genutzt werden, dazu Fehler und Wiederholungen",
+      "collectedApps": "Welche integrierten Apps installiert sind oder genutzt werden und welche Store-Apps installiert sind, mit ihrem öffentlichen Namen im Store. Apps, die du aus anderen Quellen hinzufügst, werden ohne Namen gezählt.",
       "collectedInstallId": "Eine zufällige Installations-ID, die nicht mit dir verknüpft ist",
       "collectedTimings": "Wie lange Dinge dauern, etwa der Start, Antworten und Aktionen",
       "collectedTitle": "Was erfasst wird",
