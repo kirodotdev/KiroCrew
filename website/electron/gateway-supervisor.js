@@ -94,6 +94,7 @@ const { createReconnect } = require("./runtime/gateway/reconnect");
 const { createRemoteSwitch } = require("./runtime/gateway/remote-switch");
 const { createRespawnOwner, RESPAWN_SUPERSEDED } = require("./runtime/gateway/respawn-owner");
 const { createUserRestart } = require("./runtime/gateway/user-restart");
+const { fadeLoadingScreen: fadeBootReveal } = require("./boot-reveal");
 
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -156,6 +157,8 @@ function createGatewaySupervisor({
   // prune that removed the bundled backend can have removed this app's own
   // files, and only the caller decides what to do about that.
   onStaleBundleRespawn = () => {},
+  // Told on every change to the spawned child (the tray quit label).
+  onOwnedGatewayChange = () => {},
   // The active theme pack's splash art as a file: URL, "" for none
   // (themeSplashUrl in theme-splash.js); every loading.html paint carries it.
   currentThemeSplash = () => "",
@@ -227,6 +230,13 @@ function createGatewaySupervisor({
   // attempt has ended this way.
   let localStartUnverifiable = 0;
   let gatewayProcess = null;
+  const notifyOwnedGatewayChange = () => {
+    try { onOwnedGatewayChange(); } catch { /* a label refresh never breaks the supervisor */ }
+  };
+  const setOwnedChild = (child) => {
+    gatewayProcess = child;
+    notifyOwnedGatewayChange();
+  };
   // Exactly one ownership state is authoritative:
   //   none            external/unknown; never kill or respawn
   //   spawned         this app owns the child; recovery may kill and respawn
@@ -466,7 +476,7 @@ function createGatewaySupervisor({
     posixDescendantPids, isTrustedWindowsGatewayCommand, sameHomeGatewayPid, runGatewayStop,
     isCurrentBundleGateway, getRunLocalGateway, getGatewayOwnership,
     getGatewayProcess: () => gatewayProcess,
-    setGatewayProcess: (child) => { gatewayProcess = child; },
+    setGatewayProcess: setOwnedChild,
     setSpawnedExecutablePaths: (paths) => { spawnedExecutablePaths = paths; },
   });
   const { respawnGateway } = createRespawnOwner({
@@ -970,7 +980,7 @@ function createGatewaySupervisor({
         ),
       }, { bundled, platform: processObj.platform, discoverProxyEnv: discoverGatewayProxyEnv }),
     });
-    gatewayProcess = child;
+    setOwnedChild(child);
     gatewayOwnership = "spawned";
     if (IS_WIN) {
       spawnedExecutablePaths = windowsGatewayExecutablePaths(spawnBin, {
@@ -1031,7 +1041,7 @@ function createGatewaySupervisor({
       if (verdict === "reresolve") {
         reresolveAttempts += 1;
         glog(`stale bundle (${cause} on bin=${bin}) — re-resolving the backend and respawning (attempt ${reresolveAttempts})`);
-        gatewayProcess = null;
+        setOwnedChild(null);
         spawnedExecutablePaths = [];
         gatewayStartFailure = null;
         spawnGateway(resolve, { foreignHolders });
@@ -1051,7 +1061,7 @@ function createGatewaySupervisor({
         gatewayStartFailure = { error: error.message, bundled };
         // A spawn that never ran emits no `exit`, so nothing else clears the slot,
         // and a kept dead child makes every Retry read the gateway as running.
-        gatewayProcess = null;
+        setOwnedChild(null);
         sendStatus(`Gateway failed: ${error.message}`);
         resolve(false);
       };
@@ -1059,6 +1069,8 @@ function createGatewaySupervisor({
       giveUp();
     });
     child.on("exit", (code, signal) => {
+      // A signal kill leaves exitCode null; giveUp below clears it and re-announces.
+      notifyOwnedGatewayChange();
       const exitMessage = `gateway child exited code=${code} signal=${signal}`;
       const currentChild = gatewayProcess === child;
       const expectedExit = !currentChild || quitting() || installingUpdate || switchingToRemote
@@ -1081,7 +1093,7 @@ function createGatewaySupervisor({
             ? { port: PORT, localStartBlocked: "foreign-holder", holders: foreignHolders, isWindows: IS_WIN }
             : { code, signal, bundled };
         }
-        gatewayProcess = null;
+        setOwnedChild(null);
       };
       if (recoverStaleBackend({ exitCode: code, giveUp })) return;
       giveUp();
@@ -1130,32 +1142,8 @@ function createGatewaySupervisor({
     return dashboardUrlFor(targetBackendUrl, initialPath);
   }
 
-  /**
-   * Tell the reveal splash the gateway is ready, then wait for its fade before
-   * navigating. The timeout covers reduced motion, renderer errors, and loading
-   * pages which never send the completion IPC.
-   */
-  function fadeLoadingScreen(webContents, timeoutMs = 8000) {
-    return new Promise((resolve) => {
-      if (!webContents || webContents.isDestroyed()) { resolve(); return; }
-      let settled = false;
-      let timer = null;
-      const onComplete = (event) => {
-        if (event.sender === webContents) finish();
-      };
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        ipcMain.removeListener("boot-complete", onComplete);
-        resolve();
-      };
-      ipcMain.on("boot-complete", onComplete);
-      timer = setTimeout(finish, timeoutMs);
-      try { webContents.send("boot-ready"); }
-      catch { finish(); }
-    });
-  }
+  // The boot-reveal handshake (boot-reveal.js).
+  const fadeLoadingScreen = (webContents, timeoutMs) => fadeBootReveal(ipcMain, webContents, timeoutMs);
 
   /** Start or replace the primary own-port post-handoff liveness monitor. */
   function startLivenessMonitor(window) {
@@ -1233,7 +1221,7 @@ function createGatewaySupervisor({
     // sweep before probing the port or descendants escape and retain locks.
     await killGatewayProcessTree(gatewayProcess, "SIGKILL");
     if (stale()) return;
-    gatewayProcess = null;
+    setOwnedChild(null);
     spawnedExecutablePaths = [];
     let freed = true;
     let foreignHolder = false;
@@ -1791,6 +1779,7 @@ function createGatewaySupervisor({
     isCurrentBundleGateway,
     stopForUpdate: stopGatewayForUpdate,
     stopOnQuit: stopGatewayOnQuit,
+    stopsGatewayOnQuit: () => gatewayProcess !== null && gatewayProcess.exitCode === null,
     // After sleep the old forward can look alive while carrying nothing, so a
     // wake rebuilds it at once instead of waiting out ssh's keepalive.
     reopenTunnel: () => tunnelKeeper.restart(),
