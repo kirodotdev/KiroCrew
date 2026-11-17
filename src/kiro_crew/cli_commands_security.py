@@ -97,9 +97,32 @@ def _security(args: argparse.Namespace) -> None:
 
     action = getattr(args, "sec_action", None)
     if action == "deny-list":
-        print("🔒 Built-in deny patterns (always enforced):")
-        for p in BUILTIN_DENY_PATTERNS:
-            print(f"  ✗ {p}")
+        # The built-in half shows what the gate enforces: the same opt-out state
+        # (denied_commands.json disable_all / disabled_ids, with floor rules and
+        # governance pins kept on) that Settings > Security reads. Imported here,
+        # not at module scope, so the name does not join the ``cli_commands`` facade.
+        from kiro_crew.dashboard.handlers.security import build_denied_commands_snapshot
+
+        rows = {
+            r["pattern"]: r
+            for r in build_denied_commands_snapshot()["builtins"]
+            if r["source"] == "builtin"
+        }
+        lock_notes = {"floor": "  (always on: floor rule)", "policy": "  (kept on: governance pin)"}
+        enforced = [p for p in BUILTIN_DENY_PATTERNS if rows.get(p, {}).get("enabled", True)]
+        turned_off = [p for p in BUILTIN_DENY_PATTERNS if p not in enforced]
+        print("🔒 Built-in deny patterns (enforced):")
+        for p in enforced:
+            # A lock note only matters once the operator has opted something out:
+            # it says why a rule they tried to turn off is still on.
+            note = (
+                lock_notes.get(rows.get(p, {}).get("lock_reason") or "", "") if turned_off else ""
+            )
+            print(f"  ✗ {p}{note}")
+        if turned_off:
+            print("\n🔓 Built-in deny patterns turned off in denied_commands.json (not enforced):")
+            for p in turned_off:
+                print(f"  - {p}")
         cfg_path = config_dir() / "config.json"
         local_path = config_dir() / "config.local.json"
         if cfg_path.exists() or local_path.exists():
