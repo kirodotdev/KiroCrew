@@ -61,6 +61,21 @@ class _SignIn:
         return LeaseSignIn(bearer=bearer, token_type=self.token_type, profile_arn=ARN)
 
 
+@pytest.fixture(autouse=True)
+def _no_agent_identity(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the agent identity seam off: the host's edition must not decide these tests."""
+    from kiro_crew.platform.context import current_context
+
+    _floor_monkeypatch.setattr(current_context().agent_identity, "enabled", lambda: False)
+
+
+def _pin_seam(monkeypatch: pytest.MonkeyPatch, current_context: Any) -> None:
+    """Answer the seam from a ``current_context`` this test controls."""
+    from kiro_crew.platform import context as context_module
+
+    monkeypatch.setattr(context_module, "current_context", current_context)
+
+
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(lease_module, "_data_home", lambda: tmp_path)
@@ -112,18 +127,19 @@ async def test_existing_configs_send_todays_bytes_and_never_read_the_sign_in(
     assert renew["token_type"] == release["token_type"] == expected_type
 
 
+@pytest.mark.parametrize("credential", ["kiro-sign-in", ""])
 async def test_nothing_dials_unless_remote_control_is_on(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, credential: str
 ) -> None:
     sign_in = _SignIn()
     monkeypatch.setattr(lease_signin, "read_lease_sign_in", sign_in)
     async with FakeLeaseService() as lease:
-        provider = public_tunnel_provider(_cfg(lease.url, "kiro-sign-in", enabled=False))
+        provider = public_tunnel_provider(_cfg(lease.url, credential, enabled=False))
         await provider.start()
         await provider.stop()
         # Building the lease client with Remote Control on reads nothing either.
         assert isinstance(
-            lease_token_source(RelaySettings.from_config(_cfg(lease.url, "kiro-sign-in"))),
+            lease_token_source(RelaySettings.from_config(_cfg(lease.url, credential))),
             LeaseHostTokenSource,
         )
     assert lease.requests == [] and lease.releases == [] and sign_in.asked == []
@@ -144,17 +160,114 @@ async def test_kiro_sign_in_alone_passes_validation() -> None:
     RelaySettings.from_config(_cfg("https://lease.example.com", "kiro-sign-in")).validate()
 
 
+@pytest.mark.parametrize("url", ["https://lease.example.com", ""])
+async def test_an_empty_credential_with_no_token_type_is_the_sign_in(url: str) -> None:
+    settings = RelaySettings.from_config(_cfg(url, ""))
+    assert settings.uses_sign_in
+    settings.validate()
+
+
+@pytest.mark.parametrize("token_type", ["API_KEY", "EXTERNAL_IDP"])
+async def test_an_empty_credential_with_a_token_type_is_still_refused_by_name(
+    home: Path, monkeypatch: pytest.MonkeyPatch, token_type: str
+) -> None:
+    # A team Crew (API_KEY) must name its crew API key: it never falls to the sign-in.
+    sign_in = _SignIn()
+    monkeypatch.setattr(lease_signin, "read_lease_sign_in", sign_in)
+    settings = RelaySettings.from_config(_cfg("", "", token_type))
+    assert not settings.uses_sign_in
+    with pytest.raises(RelaySettingsError, match="tunnel.relay_lease_credential is not set"):
+        settings.validate()
+    source = lease_token_source(settings)
+    try:
+        with pytest.raises(HostTokenUnavailable, match="tunnel.relay_lease_credential"):
+            await source.current()
+    finally:
+        await source.aclose()
+    assert sign_in.asked == []
+
+
+async def test_an_empty_credential_on_a_workload_identity_host_is_still_refused_by_name(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A host whose agent identity seam reports a workload identity keeps its own
+    # rule: an empty credential never falls to the owner's sign-in.
+    seam = SimpleNamespace(agent_identity=SimpleNamespace(enabled=lambda: True))
+    _pin_seam(monkeypatch, lambda: seam)
+    sign_in = _SignIn()
+    monkeypatch.setattr(lease_signin, "read_lease_sign_in", sign_in)
+    settings = RelaySettings.from_config(_cfg("", ""))
+    with pytest.raises(RelaySettingsError, match="tunnel.relay_lease_credential is not set"):
+        settings.validate()
+    provider = public_tunnel_provider(_cfg("", ""))
+    await provider.start()
+    try:
+        snapshot = provider.status_snapshot()
+        assert snapshot is not None and snapshot["state"] == "error"
+        assert "tunnel.relay_lease_credential is not set" in snapshot["error"]
+    finally:
+        await provider.stop()
+    assert sign_in.asked == []
+
+
+async def test_a_failed_agent_identity_lookup_refuses_the_sign_in_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Fail closed: a seam that cannot be read counts as a workload identity.
+    def broken() -> Any:
+        raise RuntimeError("adapter down")
+
+    _pin_seam(monkeypatch, broken)
+    with pytest.raises(RelaySettingsError, match="tunnel.relay_lease_credential is not set"):
+        RelaySettings.from_config(_cfg("", "")).validate()
+    # A named sign-in never asks the seam.
+    RelaySettings.from_config(_cfg("", "kiro-sign-in")).validate()
+
+
+async def test_a_seam_reporting_no_workload_identity_keeps_the_sign_in_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seam = SimpleNamespace(agent_identity=SimpleNamespace(enabled=lambda: False))
+    _pin_seam(monkeypatch, lambda: seam)
+    RelaySettings.from_config(_cfg("", "")).validate()
+
+
+async def test_an_empty_credential_leases_from_the_built_in_url_on_the_sign_in(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lease_signin, "read_lease_sign_in", _SignIn())
+    async with FakeLeaseService({STALE}) as lease:
+        asked: List[Optional[str]] = []
+
+        def built_in(profile_arn: Optional[str]) -> str:
+            asked.append(profile_arn)
+            return lease.url
+
+        monkeypatch.setattr(lease_module, "built_in_lease_url", built_in)
+        lease.queue(200, answer(0))
+        source = lease_token_source(RelaySettings.from_config(_cfg("", "")))
+        try:
+            assert (await source.current()).token == answer(0)["hostToken"]
+        finally:
+            await source.aclose()
+    assert set(asked) == {ARN}
+    (renew,) = lease.requests
+    assert renew["auth"] == f"Bearer {STALE}" and renew["body"]["profileArn"] == ARN
+
+
+@pytest.mark.parametrize("credential", ["kiro-sign-in", ""])
 @pytest.mark.parametrize("token_type", [None, "EXTERNAL_IDP"])
 async def test_kiro_sign_in_renews_and_releases_with_the_sign_in_and_its_profile(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     token_type: Optional[str],
+    credential: str,
 ) -> None:
     caplog.set_level(logging.DEBUG)
     monkeypatch.setattr(lease_signin, "read_lease_sign_in", _SignIn(token_type))
     async with RawLeaseService({STALE}) as lease:
-        source = lease_token_source(RelaySettings.from_config(_cfg(lease.url, "kiro-sign-in")))
+        source = lease_token_source(RelaySettings.from_config(_cfg(lease.url, credential)))
         renew, release = await _renew_and_release(lease, source)
     instance_id = renew["body"]["crewInstanceId"]
     name = lease_module.default_display_name()
@@ -166,15 +279,19 @@ async def test_kiro_sign_in_renews_and_releases_with_the_sign_in_and_its_profile
         assert secret not in caplog.text
 
 
+@pytest.mark.parametrize("credential", ["kiro-sign-in", ""])
 async def test_a_401_refreshes_the_sign_in_once_then_stops(
-    home: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    credential: str,
 ) -> None:
     caplog.set_level(logging.DEBUG)
     sign_in = _SignIn()
     monkeypatch.setattr(lease_signin, "read_lease_sign_in", sign_in)
     async with FakeLeaseService({FRESH}) as lease:
         lease.queue(200, answer(0))
-        source = lease_token_source(RelaySettings.from_config(_cfg(lease.url, "kiro-sign-in")))
+        source = lease_token_source(RelaySettings.from_config(_cfg(lease.url, credential)))
         try:
             assert (await source.current()).token == answer(0)["hostToken"]
         finally:
@@ -186,7 +303,7 @@ async def test_a_401_refreshes_the_sign_in_once_then_stops(
         stuck = _SignIn(refreshes=False)
         monkeypatch.setattr(lease_signin, "read_lease_sign_in", stuck)
         lease.requests.clear()
-        source = lease_token_source(RelaySettings.from_config(_cfg(lease.url, "kiro-sign-in")))
+        source = lease_token_source(RelaySettings.from_config(_cfg(lease.url, credential)))
         try:
             with pytest.raises(HostTokenUnavailable, match="HTTP 401") as caught:
                 await source.current()
@@ -197,20 +314,24 @@ async def test_a_401_refreshes_the_sign_in_once_then_stops(
         assert secret not in caplog.text and secret not in str(caught.value)
 
 
+@pytest.mark.parametrize("credential", ["kiro-sign-in", ""])
 async def test_a_sign_in_failure_backs_off_and_a_later_sign_in_resumes(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, credential: str
 ) -> None:
     sign_in = _SignIn()
     sign_in.fail = LeaseCredentialError("the Crew is not signed in to Kiro")
     monkeypatch.setattr(lease_signin, "read_lease_sign_in", sign_in)
     now = [1000.0]
     async with FakeLeaseService({STALE}) as lease:
-        settings = RelaySettings.from_config(_cfg(lease.url, "kiro-sign-in"))
+        settings = RelaySettings.from_config(_cfg(lease.url, credential))
         source = lease_token_source(settings)
         assert isinstance(source, LeaseHostTokenSource)
         source._monotonic = lambda: now[0]
         try:
-            with pytest.raises(HostTokenRetryLater, match="not signed in"):
+            with pytest.raises(
+                HostTokenRetryLater,
+                match="the Crew's Kiro sign-in could not be used: the Crew is not signed in",
+            ):
                 await source.current()
             assert lease.requests == [] and not source.stopped_reason
             # The person signs in again; once the backoff runs out, hosting resumes.

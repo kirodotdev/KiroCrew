@@ -1122,7 +1122,9 @@ Wired sites:
   (`secret://NAME` or a file, never the value), and hands each new host token to
   the client. When it is empty and no edition names the relay, the lease client
   calls the built-in control plane URL (`lease.py::built_in_lease_url`) for the
-  sign-in profile's region, us-east-1 otherwise. With `kiro-sign-in` instead, a
+  sign-in profile's region, us-east-1 otherwise. With `kiro-sign-in`, or with the
+  credential and `tunnel.relay_lease_token_type` both empty while the `agent_identity`
+  seam reports no workload identity (`provider.py::RelaySettings.validate`), a
   personal Crew leases with the Crew's
   own Kiro sign-in (`relay_client/lease_signin.py::read_lease_sign_in`), refreshed
   as needed, and sends that sign-in's `profileArn`. Each call's `connectedCount` is `RelayClient.connected_people()`:

@@ -1388,8 +1388,10 @@ async def test_lease_settings_the_client_must_not_use_are_refused_without_echo()
     # No lease URL: the built-in one, which still needs the credential.
     settings(lease_credential="secret://x").validate()
     settings(lease_credential="kiro-sign-in").validate()
+    # An empty credential is the sign-in only for a personal Crew (see the sign-in
+    # wiring tests, which pin the agent identity seam); a team Crew must name its key.
     with pytest.raises(RelaySettingsError, match="tunnel.relay_lease_credential is not set"):
-        settings().validate()
+        settings(lease_token_type="API_KEY").validate()
     with pytest.raises(RelaySettingsError) as refused:
         settings(lease_credential=CREDENTIAL).validate()
     assert CREDENTIAL not in str(refused.value)
