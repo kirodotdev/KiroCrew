@@ -90,6 +90,7 @@ def _apply_document_migrations(
     default_kiro_agent: str,
     adopt_keys: frozenset[str] = frozenset(),
     recorded_adoptions: list[str] | None = None,
+    relay_base_seen: tuple | None = None,
 ) -> bool:
     """Apply the pending write-back migrations; see :func:`migration.apply_document_migrations`.
 
@@ -105,6 +106,7 @@ def _apply_document_migrations(
         recorded_adoptions=recorded_adoptions,
         record_adoptions=record_adoptions,
         dispatch=dispatch_kiro_agent,
+        relay_base_seen=relay_base_seen,
     )
 
 
@@ -144,6 +146,7 @@ def _persist_config_migration(
     default_kiro_agent: str,
     adopt_keys: frozenset[str] = frozenset(),
     confirmed_adoptions: list[str] | None = None,
+    relay_base_seen: tuple | None = None,
 ) -> bool:
     """Write the pending migrations to *path* as a read-modify-write.
 
@@ -239,6 +242,7 @@ def _persist_config_migration(
             default_kiro_agent=default_kiro_agent,
             adopt_keys=adopt_keys,
             recorded_adoptions=recorded_adoptions,
+            relay_base_seen=relay_base_seen,
         ):
             # Nothing left to migrate -- another writer got here first. Returning
             # None skips the write, so we do not rewrite a file we agree with.

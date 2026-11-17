@@ -93,7 +93,8 @@ async def test_the_default_config_sends_todays_bytes(
     name = lease_module.default_display_name()
     assert renew["raw"] == raw(todays_renew(instance_id, name, __version__))
     assert release["raw"] == raw({"crewInstanceId": instance_id})
-    assert renew["token_type"] is None and release["token_type"] is None
+    # A credential in a file with the type empty is a crew API key.
+    assert renew["token_type"] == release["token_type"] == "API_KEY"
 
 
 @pytest.mark.parametrize("token_type", [None, "EXTERNAL_IDP"])

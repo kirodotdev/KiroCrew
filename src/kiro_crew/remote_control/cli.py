@@ -22,6 +22,10 @@ _ACTIONS = (
 
 #: An LTS build ignores ``tunnel.relay_enabled`` (``edition_locks``), so no restart connects.
 LOCKED_NOTICE = "Remote Control is managed by this build and cannot be turned on here."
+#: Off outranks a set lease credential, so say how this host hosts again.
+CREDENTIAL_NOTICE = (
+    "A lease credential is set; this host hosts again after kirocrew remote-control on."
+)
 
 
 def register_parser(sub: Any) -> None:
@@ -74,6 +78,8 @@ def run(args: argparse.Namespace) -> None:
         _audit("allowed", "enabled=false")
         print("Remote Control is off. It stays off until you turn it back on.")
         print("   A running gateway stops the relay within a few seconds.")
+        if setting.credential_set():
+            print(f"   {CREDENTIAL_NOTICE}")
         return
     if setting.locked():
         # As the config PATCH's 409 locked_by_policy: saving it would do nothing.

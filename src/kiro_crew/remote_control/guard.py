@@ -19,6 +19,8 @@ import logging
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Optional
 
+from kiro_crew.remote_control.defaults import hosting_requested
+
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 2.0
@@ -92,7 +94,7 @@ class RemoteControlGuard:
         only to stop the relay (:meth:`_act`), never to start it, so ``restart=True``
         on the field stays true for turning it on.
         """
-        self._requested = change.new.tunnel.relay_enabled is True
+        self._requested = hosting_requested(change.new.tunnel)
 
     async def running(self) -> bool:
         """Whether a relay client exists now, connected, starting or failed.

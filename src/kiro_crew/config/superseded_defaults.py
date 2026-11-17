@@ -728,8 +728,15 @@ def adopted_superseded() -> dict[str, object]:
     :func:`adoption_summary`, because the load-path WARNING that announced the
     removal is one line in one gateway log; this map is what an operator reads a
     week later to learn what changed in their file and how to put it back.
+
+    The Remote Control check recorded as ``False`` changed nothing, so it is left out
+    here; :func:`adopted_superseded_if_readable`, which the one-shot decides from,
+    keeps it.
     """
-    return _map_from_document(_read_ack_document(), ADOPTED_SECTION)
+    adopted = _map_from_document(_read_ack_document(), ADOPTED_SECTION)
+    if adopted.get(RELAY_TURNED_OFF_ADOPTION_KEY, True) is not True:
+        del adopted[RELAY_TURNED_OFF_ADOPTION_KEY]
+    return adopted
 
 
 def adopted_superseded_if_readable() -> dict[str, object] | None:
@@ -752,6 +759,21 @@ def adopted_superseded_if_readable() -> dict[str, object] | None:
 #: and the marker-first residual (record landed, config write failed) leaves a value
 #: that row still lists as drift.
 LEGACY_LAZY_LOAD_ADOPTION: tuple[str, object] = ("skills.lazy_load", False)
+
+#: The one-shot Remote Control check ``config.migration`` records on the first load by
+#: a build where a lease credential starts hosting: ``True`` when it wrote
+#: ``tunnel.relay_turned_off`` (a credential was set but the host was not hosting),
+#: ``False`` when nothing applied. Either value ends the check for this install, so a
+#: downgrade that drops the marker and a later upgrade never run it again.
+RELAY_TURNED_OFF_ADOPTION_KEY = "tunnel.relay_turned_off"
+
+#: What the owner of an adopted host reads, in the load-path WARNING and in
+#: ``doctor`` / ``kirocrew config defaults``.
+RELAY_TURNED_OFF_NOTICE = (
+    "Remote Control stays off on this host: a lease credential is set, but a host that "
+    "was not hosting before this release does not start hosting because of it; turn it "
+    "on with kirocrew remote-control on"
+)
 
 
 def _sidecar_holds_unparsable_data() -> bool:
@@ -1112,9 +1134,16 @@ def record_adoptions(values: dict[str, object]) -> dict[str, object]:
     The value is recorded rather than a bare key so the ledger says what was taken
     away, which is what a ``doctor`` line or a bug report needs.
     """
-    return _update_map(
-        ADOPTED_SECTION, lambda existing: {**existing, **values}, wait_for_lock=False
-    )
+
+    def _merge(existing: dict[str, object]) -> dict[str, object]:
+        merged = {**existing, **values}
+        # A marker this check wrote stays recorded: a concurrent load that read the
+        # marker and decided "nothing to write" must not overwrite True with False.
+        if existing.get(RELAY_TURNED_OFF_ADOPTION_KEY) is True:
+            merged[RELAY_TURNED_OFF_ADOPTION_KEY] = True
+        return merged
+
+    return _update_map(ADOPTED_SECTION, _merge, wait_for_lock=False)
 
 
 @dataclass(frozen=True)
@@ -1317,6 +1346,13 @@ def adoption_summary(dotted_key: str, removed: object) -> str:
     ``cmd.exe`` metacharacters live), so a value the registry does not vouch for gets
     no command at all -- it is shown, escaped, as unrecognised.
     """
+    if dotted_key == RELAY_TURNED_OFF_ADOPTION_KEY:
+        # Fixed text: neither sidecar field reaches the terminal.
+        if removed is True:
+            return (
+                f"{RELAY_TURNED_OFF_ADOPTION_KEY}: set once at upgrade. {RELAY_TURNED_OFF_NOTICE}"
+            )
+        return f"{RELAY_TURNED_OFF_ADOPTION_KEY}: checked once at upgrade; nothing changed"
     key = _terminal_safe(dotted_key)
     shown = _terminal_safe(repr(removed))
     vouched = next(

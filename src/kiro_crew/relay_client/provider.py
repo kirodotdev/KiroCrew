@@ -29,8 +29,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayClient
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
-    SIGN_IN_CREDENTIAL,
+    SECRET_URI_PREFIX,
     TOKEN_TYPE_API_KEY,
+    TOKEN_TYPE_NONE,
     TOKEN_TYPES,
     LeaseHostTokenSource,
     credential_reference_problem,
@@ -43,6 +44,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import HostTokenSource, UnavailableHostTokenSource
+from kiro_crew.remote_control.defaults import SIGN_IN_CREDENTIAL, hosting_requested
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress as GatewayRelayIngress
@@ -79,15 +81,15 @@ class RelaySettings:
     crew_domain: str
     lease_url: str = ""
     lease_credential: str = field(default="", repr=False)
-    #: The lease call's ``TokenType`` header; empty sends none.
+    #: The lease call's ``TokenType`` header (:attr:`lease_header_token_type`): empty
+    #: sends ``API_KEY`` for a stored credential, ``NONE`` sends none.
     lease_token_type: str = ""
 
     @classmethod
     def from_config(cls, cfg: Any) -> "RelaySettings":
         tunnel = getattr(cfg, "tunnel", None)
         return cls(
-            # ``is True``: a stand-in config object answers any attribute truthily.
-            enabled=getattr(tunnel, "relay_enabled", False) is True,
+            enabled=hosting_requested(tunnel),
             host_url="",
             crew_domain="",
             lease_url=_setting_text(tunnel, "relay_lease_url"),
@@ -150,11 +152,12 @@ class RelaySettings:
                 problem = credential_reference_problem(self.lease_credential)
                 if problem is not None:
                     raise RelaySettingsError(problem)
-            if self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
+            allowed = TOKEN_TYPES | {TOKEN_TYPE_NONE}
+            if self.lease_token_type and self.lease_token_type not in allowed:
                 # Not echoed: a credential pasted in here by mistake stays out of logs.
                 raise RelaySettingsError(
                     "tunnel.relay_lease_token_type must be empty or one of "
-                    + ", ".join(sorted(TOKEN_TYPES))
+                    + ", ".join(sorted(allowed))
                 )
 
     @property
@@ -170,13 +173,32 @@ class RelaySettings:
         """Whether the Crew leases on its own Kiro sign-in: a personal Crew.
 
         ``kiro-sign-in`` says so, and so does an empty credential with no token type.
-        A team Crew names its type (``API_KEY``), so an empty credential there is
-        still refused by name; so is one on a host with an agent workload identity,
-        which :meth:`validate` checks when the provider starts.
+        An empty credential with a token type is still refused by name; so is one on
+        a host with an agent workload identity, which :meth:`validate` checks when
+        the provider starts.
         """
         if self.lease_credential == SIGN_IN_CREDENTIAL:
             return True
         return not (self.lease_credential or self.lease_token_type)
+
+    @property
+    def lease_header_token_type(self) -> Optional[str]:
+        """The ``TokenType`` header a lease call with ``lease_credential`` sends, or ``None``.
+
+        A named type is sent as it is, and ``NONE`` sends none. With the type empty,
+        a credential stored as ``secret://NAME`` or a file is a team Crew's crew API
+        key (``API_KEY``); anything else, such as a workload identity reference,
+        sends none.
+        """
+        if self.lease_token_type == TOKEN_TYPE_NONE:
+            return None
+        if self.lease_token_type:
+            return self.lease_token_type if self.lease_token_type in TOKEN_TYPES else None
+        ref = self.lease_credential
+        # Named forms only: a reference credential_reference_problem() admits some
+        # other way (a workload identity) must never become a crew API key.
+        stored = ref.startswith(SECRET_URI_PREFIX) or os.path.isabs(os.path.expanduser(ref))
+        return TOKEN_TYPE_API_KEY if ref and stored else None
 
     @property
     def is_team_crew(self) -> bool:
@@ -184,7 +206,7 @@ class RelaySettings:
 
         Rules meant for personal Remote Control can use it to skip team Crews.
         """
-        return self.lease_token_type == TOKEN_TYPE_API_KEY
+        return self.lease_header_token_type == TOKEN_TYPE_API_KEY
 
     def crew_url_for(self, endpoint_id: str) -> str:
         """The Crew's relay URL from ``crew_domain``.
@@ -419,7 +441,7 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
         crew_version=_crew_version(),
         # An unknown type is refused by validate() when the provider starts, so the
         # composition root, which builds this before any start, never raises here.
-        token_type=settings.lease_token_type if settings.lease_token_type in TOKEN_TYPES else None,
+        token_type=settings.lease_header_token_type,
     )
 
 

@@ -49,6 +49,7 @@ from kiro_crew.config.loader_document import (
     _SIDECAR_BASE_SHADOW,
     _SIDECAR_BASE_UNREADABLE,
     _SIDECAR_OVERLAY_UNREADABLE,
+    _SIDECAR_RELAY_KEEP_OFF,
     PendingEditBlocksSave,
     _config_fingerprint,
     _content_digest_of,
@@ -148,7 +149,12 @@ from kiro_crew.config.sections import (
     _validate_activation,
     coerce_effort,
 )
-from kiro_crew.config.superseded_defaults import SupersededDefault, auto_adoptable
+from kiro_crew.config.superseded_defaults import (
+    RELAY_TURNED_OFF_NOTICE,
+    SupersededDefault,
+    auto_adoptable,
+    record_adoptions,
+)
 from kiro_crew.config.validation import _CONFIG_CACHE
 from kiro_crew.config.validation import validate_config_data as _validate_config_data
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, memory_store_name_defect
@@ -354,6 +360,16 @@ class ConfigDocument:
     adoptable: list[SupersededDefault] = field(default_factory=list)
     #: The 0.6.x-or-older writer stamp when the legacy ``skills.lazy_load`` rewrite is due.
     legacy_lazy_stamp: str | None = None
+    #: The one-shot Remote Control check (``migration.relay_turned_off_due``); only a
+    #: disk read decides it.
+    relay_off_due: bool | None = None
+    #: This load must not host (the marker is due, or the ledger is unreadable for a
+    #: host that looks off). Applied in memory on every build of this document, the
+    #: cached ones included, until the marker is on disk.
+    relay_keep_off: bool = False
+    #: The base's turn-on keys as this read saw them (``migration.relay_turn_on_keys``),
+    #: so the in-lock write lands only while no writer has turned hosting on since.
+    relay_base_seen: tuple | None = None
     #: True when this read parsed the files, False on a cache hit or an in-memory
     #: document. The build's advisory warnings fire only on a disk read, as
     #: validation's do, so a cached load does not repeat them.
@@ -417,6 +433,7 @@ def read_config_document() -> ConfigDocument:
             overlay_unreadable=bool(sidecar.get(_SIDECAR_OVERLAY_UNREADABLE, False)),
             base_shadow=sidecar.get(_SIDECAR_BASE_SHADOW, {}),
             agents_repaired=bool(sidecar.get(_SIDECAR_AGENTS_REPAIRED, False)),
+            relay_keep_off=bool(sidecar.get(_SIDECAR_RELAY_KEEP_OFF, False)),
         )
 
     # Pre-overlay base copy of the sections the overlay touched. Filled below.
@@ -505,6 +522,12 @@ def read_config_document() -> ConfigDocument:
     # Skipped when no base file loaded -- nothing is stored to adopt or
     # report on.
     adoptable = []
+    # The one-shot Remote Control check: None (nothing to decide), True (write the
+    # off marker) or False (record the check only). Decided on the base, like an
+    # adoption, before the overlay merge and before this load writes anything.
+    relay_off_due: bool | None = None
+    relay_keep_off = False
+    relay_base_seen: tuple | None = None
     # False while the Windows one-shot close is deferred: the document is then
     # not cached, so the next load retries the close instead of hitting the cache.
     close_settled = True
@@ -566,11 +589,31 @@ def read_config_document() -> ConfigDocument:
             logger.warning("Failed to load config.local.json: %s", e)
             _mark_file_degraded(local_path)
 
+    if loaded_base:
+        relay_base_seen = _migration.relay_turn_on_keys(data)
     if local_data:
         # Remember the base copy of what the overlay is about to shadow —
         # the last moment both documents exist. See _shadowed_base_sections.
         base_shadow = _shadowed_base_sections(data, local_data)
         data = _deep_merge(data, local_data)
+
+    # The one-shot Remote Control check, on the MERGED view: a key held only in
+    # config.local.json starts hosting too. Only a disk read of the base decides it.
+    if loaded_base and overlay_unreadable:
+        # An unreadable config.local.json may hold the off choice: keep a host that
+        # would start from its credential alone off in memory, and leave the one-shot
+        # check (its write and its record) until both files read.
+        relay_keep_off = _migration.relay_keep_off_unknown_overlay(data)
+    elif loaded_base:
+        relay_off_due, relay_keep_off = _migration.relay_turned_off_due(data)
+    elif base_unreadable and local_data:
+        # An unreadable config.json may hold the off choice: keep an overlay-only
+        # host that looks off off in memory; persistence waits for a readable base.
+        relay_keep_off = _migration.relay_keep_off_without_base(data)
+    elif not loaded_base and local_data:
+        # No config.json at all: an overlay that holds the off choice keeps the host
+        # off in memory; nothing is written or recorded until config.json exists.
+        relay_keep_off = _migration.relay_keep_off_without_base(data)
 
     # A present source that cannot be read or parsed may contain the
     # operator's hard-off switch. Preserve that unknown as disabled
@@ -744,6 +787,7 @@ def read_config_document() -> ConfigDocument:
                 _SIDECAR_BASE_UNREADABLE: base_unreadable,
                 _SIDECAR_OVERLAY_UNREADABLE: overlay_unreadable,
                 _SIDECAR_AGENTS_REPAIRED: agents_repaired,
+                _SIDECAR_RELAY_KEEP_OFF: relay_keep_off,
             },
             expected_generation=read_generation,
             content_digest=content_digest,
@@ -761,6 +805,9 @@ def read_config_document() -> ConfigDocument:
         overlay=local_data,
         adoptable=adoptable,
         legacy_lazy_stamp=legacy_lazy_stamp,
+        relay_off_due=relay_off_due,
+        relay_keep_off=relay_keep_off,
+        relay_base_seen=relay_base_seen,
         disk_read=True,
         agents_repaired=agents_repaired,
     )
@@ -1358,6 +1405,15 @@ def build_config(
     return cfg
 
 
+#: Config paths whose one-shot Remote Control check kept this process off.
+_RELAY_KEEP_OFF_PATHS: set[str] = set()
+#: Config paths whose unlanded Remote Control marker already dropped the config cache
+#: once in this process. One retry covers a contended lock; a write that keeps failing
+#: (a read-only data home) must not re-read config.json on every load, and the
+#: keep-off above holds the host off until a later process lands it.
+_RELAY_RETRIED_PATHS: set[str] = set()
+
+
 def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
     """Run the write-back migration a LOADED document makes due, in memory and on disk.
 
@@ -1379,6 +1435,19 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
     data = doc.data
     adoptable = doc.adoptable
     legacy_lazy_stamp = doc.legacy_lazy_stamp
+    relay_off_due = doc.relay_off_due
+    # Fail closed in memory, and keep it for this config path for the life of the
+    # process: a later load can be a cache hit (which decides nothing), and a
+    # degraded or unwritable load keeps the marker off disk. Harmless once the marker
+    # is stored, and `remote-control on` writes relay_enabled true, which outranks it.
+    if doc.relay_keep_off:
+        _RELAY_KEEP_OFF_PATHS.add(str(path))
+    elif doc.disk_read and not doc.base_unreadable and not doc.overlay_unreadable:
+        # Both files read and nothing keeps it off: the stored document answers, so a
+        # keep-off from an earlier unreadable or malformed read ends here.
+        _RELAY_KEEP_OFF_PATHS.discard(str(path))
+    if str(path) in _RELAY_KEEP_OFF_PATHS:
+        cfg.tunnel.relay_turned_off = True
     local_data = doc.overlay
     # The workspace table as build_config read it: a value that is not an object
     # was reported there and holds nothing to migrate.
@@ -1480,6 +1549,8 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
         # confirmed-only in-memory half as an adoption (see its id's docstring).
         if legacy_lazy_stamp is not None:
             pending.add(_migration.MIGRATE_SKILLS_LAZY_LOAD)
+        if relay_off_due:
+            pending.add(_migration.MIGRATE_RELAY_TURNED_OFF)
 
         needs_migration = bool(pending)
 
@@ -1498,6 +1569,7 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
                 default_kiro_agent=default_template(cfg),
                 adopt_keys=frozenset(adopt_keys),
                 confirmed_adoptions=confirmed_adoptions,
+                relay_base_seen=doc.relay_base_seen,
             )
             adoption_landed = persisted
             # In memory only for keys the migration CONFIRMED it removed, and
@@ -1564,6 +1636,27 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
         # which finds nothing to strip. One extra boot, same endpoint.)
         # Failure to write the marker itself is logged and retried next
         # load — the strip's own condition makes the retry converge.
+        # The Remote Control check is recorded only once its outcome is on disk: a
+        # check with nothing to write, or a marker write that landed. A deferred or
+        # failed write records nothing, so the next load decides again. Recording
+        # after the write means the residual is a marker without its record, which
+        # the next load re-detects as nothing to write.
+        if (
+            relay_off_due is not None
+            and not cfg._degraded_sections
+            and (not relay_off_due or persisted)
+        ):
+            try:
+                record_adoptions({_migration.RELAY_TURNED_OFF_ADOPTION_KEY: relay_off_due})
+            except OSError as e:
+                logger.info("config: Remote Control check not recorded yet: %s", e)
+            else:
+                # On disk now (the marker, or nothing to write): the stored document
+                # answers from here on, so the process-wide keep-off ends.
+                _RELAY_KEEP_OFF_PATHS.discard(str(path))
+                if relay_off_due:
+                    logger.warning("config: %s", RELAY_TURNED_OFF_NOTICE)
+
         if connections_migrating and persisted and not cfg._degraded_sections:
             atomic_write(
                 connections_marker,
@@ -1602,9 +1695,12 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
         # EVERY load for as long as the two conditions coexist. After the
         # restart the fixed file's fingerprint misses the (empty) cache and the
         # adoption retries on that first load -- no invalidation needed.
+        relay_retry = bool(relay_off_due) and str(path) not in _RELAY_RETRIED_PATHS
         if (
-            (adopt_keys or legacy_lazy_stamp is not None)
+            (adopt_keys or legacy_lazy_stamp is not None or relay_retry)
             and not adoption_landed
             and not cfg._degraded_sections
         ):
+            if relay_retry:
+                _RELAY_RETRIED_PATHS.add(str(path))
             _invalidate_config_cache()

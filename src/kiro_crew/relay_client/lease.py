@@ -101,11 +101,15 @@ AWS_JSON_CONTENT_TYPE = "application/x-amz-json-1.0"
 #: Builder ID and Kiro social sign-ins send none; a token straight from an outside
 #: identity provider (Okta, Entra ID) sends ``EXTERNAL_IDP``. A team Crew on a
 #: Kiro-issued crew API key sends ``API_KEY``. The lease service refuses any other
-#: type with a crew key, so the client accepts no other. It never guesses the type
-#: from the credential: ``tunnel.relay_lease_token_type`` names it.
+#: type with a crew key, so the client sends no other. With
+#: ``tunnel.relay_lease_token_type`` empty, a credential stored as a secret or a file
+#: is taken to be a crew API key and sends ``API_KEY``; the setting's ``NONE`` sends
+#: no header, for a sign-in bearer stored that way.
 TOKEN_TYPE_EXTERNAL_IDP = "EXTERNAL_IDP"
 TOKEN_TYPE_API_KEY = "API_KEY"
 TOKEN_TYPES = frozenset({TOKEN_TYPE_EXTERNAL_IDP, TOKEN_TYPE_API_KEY})
+#: The ``tunnel.relay_lease_token_type`` value that sends no ``TokenType`` header.
+TOKEN_TYPE_NONE = "NONE"
 #: How long one call may take, connecting included.
 CALL_TIMEOUT_SECONDS = 15.0
 #: How long the release at a stop may take, credential read included. It runs
@@ -145,9 +149,6 @@ INSTANCE_ID_FILE = Path("relay") / "crew-instance-id"
 #: The last leaseVersion the service returned, with the instance ID it was for.
 LEASE_VERSION_FILE = Path("relay") / "crew-lease-version"
 SECRET_URI_PREFIX = "secret://"
-#: The ``tunnel.relay_lease_credential`` value that leases with the Crew's own Kiro
-#: sign-in (a personal Crew) instead of a file or a stored secret.
-SIGN_IN_CREDENTIAL = "kiro-sign-in"
 
 #: Error types the service refuses this Crew with, and why. An access refusal
 #: waits ``RETRY_AFTER_MAX_SECONDS``; the others stop until Remote Control restarts.
@@ -870,9 +871,10 @@ class LeaseHostTokenSource:
             self._stop(
                 "the lease service refused the Crew's credential (HTTP 401): check that "
                 "tunnel.relay_lease_credential's credential is current and that "
-                "tunnel.relay_lease_token_type matches its kind (a team Crew on a crew API "
-                "key needs API_KEY, a token from an outside identity provider needs "
-                "EXTERNAL_IDP, and a Kiro sign-in leaves it empty), then restart Remote Control"
+                "tunnel.relay_lease_token_type matches its kind (empty or API_KEY for a "
+                "team Crew's crew API key, EXTERNAL_IDP for a token from an outside "
+                "identity provider, NONE for an IAM Identity Center token, and a Kiro "
+                "sign-in leaves both empty), then restart Remote Control"
             )
         kind, reason = refusal_of(payload, answered.error_type)
         named = f"{kind} {reason}" if kind and reason else (kind or f"HTTP {status}")

@@ -1172,8 +1172,11 @@ def test_a_deferred_adoption_is_not_frozen_behind_the_cache(tmp_path, monkeypatc
 
     calls: list[int] = []
 
-    def _contended(_values):
-        calls.append(1)
+    def _contended(values):
+        # Only this adoption's record counts: the one-shot Remote Control check
+        # records through the same writer.
+        if "agent.subagent_timeout_secs" in values:
+            calls.append(1)
         raise BlockingIOError("another writer holds the sidecar")
 
     monkeypatch.setattr(L, "record_adoptions", _contended)

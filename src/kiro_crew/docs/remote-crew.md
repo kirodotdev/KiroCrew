@@ -405,34 +405,59 @@ viewer then uses that credential instead of your Kiro sign-in. Leave it empty.
 
 ### Hosting this Crew on the relay
 
-To let people open this Crew through the Kiro relay, turn Remote Control on where
-the Crew runs, then restart. It is off by default:
+A team Crew leases with its crew API key, and the key is the whole setup:
+
+1. Store the key under **Settings → Secrets**, for example as `crew-key`.
+2. Run one config set line:
+
+   ```bash
+   kirocrew config set tunnel.relay_lease_credential secret://crew-key
+   ```
+
+3. Restart Kiro Crew, for example with `kirocrew restart`. A restart is a step,
+   not a setting: hosting starts when Kiro Crew next starts.
+
+A team host needs no `kirocrew remote-control on` step. With
+`tunnel.relay_lease_token_type` left empty, a credential stored as
+`secret://<name>` or an absolute file path is sent as a crew API key (`API_KEY`).
+A host that keeps an IAM Identity Center bearer token in a secret or a file, with
+the token type empty, used to send no token type and now sends `API_KEY`. To keep
+the old behaviour, set the type to `NONE`, which sends none:
+
+```bash
+kirocrew config set tunnel.relay_lease_token_type NONE
+```
+
+`kirocrew remote-control off`, or the one-click off under
+**Settings → Remote Crew**, stops hosting within a few seconds and keeps it off
+across restarts, even with the key still set. `kirocrew remote-control on` turns it back on.
+
+On upgrade, a host that already has a key set but was not hosting before this release
+does not start hosting because of it; turn it on with `kirocrew remote-control on`.
+The gateway log and `kirocrew doctor` say so once. A host set up on this release
+from the key alone hosts. A fresh install whose `config.json` already holds a key
+before this release first loads it can't be told apart from an upgraded host, so it
+needs `kirocrew remote-control on` too. A host that
+leases with a workload identity is not usable yet: that waits for the workload
+identity changes to land. It never falls back to the sign-in.
+
+A personal Crew (your own Kiro sign-in, no lease credential and no
+`tunnel.relay_lease_token_type`) never starts hosting on its own. Turn it on where
+the Crew runs, then restart:
 
 ```bash
 kirocrew remote-control on
 kirocrew restart
 ```
 
-A personal Crew needs nothing else. A Crew is personal when it sets no
-`tunnel.relay_lease_token_type` and its host has no agent workload identity. It
-holds its lease with the Crew's own Kiro
-sign-in, which must be IAM Identity Center or your organization's identity
-provider with a Kiro profile. Builder ID and social sign-ins can't host a Crew.
-While the sign-in can't be used, the tunnel status says why and tries again, so
-signing in resumes hosting without another restart.
+It holds its lease with the Crew's own Kiro sign-in, which must be IAM Identity
+Center or your organization's identity provider with a Kiro profile. Builder ID and
+social sign-ins can't host a Crew. While the sign-in can't be used, the tunnel
+status says why and tries again, so signing in resumes hosting without another
+restart.
 
-A team Crew leases with its crew API key. Store the key under **Settings →
-Secrets**, then name it:
-
-```bash
-kirocrew config set tunnel.relay_lease_credential secret://<name>
-kirocrew config set tunnel.relay_lease_token_type API_KEY
-```
-
-Without the key, a team Crew does not connect, and the tunnel status names
-`tunnel.relay_lease_credential`. A host with a workload identity follows the same
-rule: it never falls back to the sign-in. `kirocrew remote-control off` turns hosting off
-and stops the relay within a few seconds, with no restart.
+A host that sets `tunnel.relay_lease_token_type` to `API_KEY` but no credential
+does not connect, and the tunnel status names `tunnel.relay_lease_credential`.
 
 ## The four things called "crew"
 

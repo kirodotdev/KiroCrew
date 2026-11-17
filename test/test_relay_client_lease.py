@@ -1804,12 +1804,17 @@ async def test_a_client_stopped_by_its_lease_gives_up_its_relay_url(
             await source.aclose()
 
 
-@pytest.mark.parametrize("token_type", ["EXTERNAL_IDP", "API_KEY", ""])
+@pytest.mark.parametrize(
+    "token_type, header",
+    # Empty, with a credential in a file, is a crew API key; NONE sends no header.
+    [("EXTERNAL_IDP", "EXTERNAL_IDP"), ("API_KEY", "API_KEY"), ("", "API_KEY"), ("NONE", None)],
+)
 async def test_the_token_type_setting_names_the_lease_calls_header(
     lease: FakeLeaseService,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     token_type: str,
+    header: Optional[str],
 ) -> None:
     monkeypatch.setattr("kiro_crew.relay_client.lease._data_home", lambda: tmp_path)
     lease.queue(200, answer(0))
@@ -1828,8 +1833,7 @@ async def test_the_token_type_setting_names_the_lease_calls_header(
         await source.current()
     finally:
         await source.aclose()
-    # Empty sends no header at all.
-    assert lease.requests[0]["token_type"] == (token_type or None)
+    assert lease.requests[0]["token_type"] == header
 
 
 async def test_an_unknown_token_type_setting_keeps_the_relay_from_starting() -> None:
@@ -1862,7 +1866,7 @@ async def test_a_refused_credential_stop_names_both_settings_and_no_credential(
     for message in (str(stopped.value), reason):
         assert "tunnel.relay_lease_credential" in message
         assert "tunnel.relay_lease_token_type" in message
-        assert "needs API_KEY" in message
+        assert "API_KEY" in message
         assert CREDENTIAL not in message
 
 
@@ -1971,9 +1975,10 @@ async def test_a_refused_credential_stop_names_the_token_type_for_each_kind_of_c
     assert len(lease.requests) == 2
     for message in (str(stopped.value), reason):
         assert "credential is current" in message
-        assert "a team Crew on a crew API key needs API_KEY" in message
-        assert "a token from an outside identity provider needs EXTERNAL_IDP" in message
-        assert "a Kiro sign-in leaves it empty" in message
+        assert "empty or API_KEY for a team Crew's crew API key" in message
+        assert "EXTERNAL_IDP for a token from an outside identity provider" in message
+        assert "NONE for an IAM Identity Center token" in message
+        assert "a Kiro sign-in leaves both empty" in message
         assert CREDENTIAL not in message
 
 

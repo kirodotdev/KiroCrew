@@ -642,6 +642,7 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         # Only the JSON boolean ``true`` opens the relay path: a string or a number
         # left by a hand edit keeps it off rather than reading as truthy.
         relay_enabled=section.get("relay_enabled") is True,
+        relay_turned_off=section.get("relay_turned_off") is True,
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),

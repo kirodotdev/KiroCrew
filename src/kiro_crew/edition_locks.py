@@ -93,7 +93,10 @@ def local_enable_locked(control: str) -> bool:
 
 
 def relay_selected(cfg: Any) -> bool:
-    """Whether ``tunnel.relay_enabled`` turns the Kiro relay path on in this build.
+    """Whether the Remote Control setting turns the Kiro relay path on in this build.
+
+    The setting is :func:`~kiro_crew.remote_control.defaults.hosting_requested`:
+    ``tunnel.relay_enabled``, or a lease credential not turned off.
 
     The one rule for the relay switch: the public composition's tunnel slot, the
     dashboard app's relay ingress and the gateway's ingress publish all ask it. Only
@@ -102,7 +105,9 @@ def relay_selected(cfg: Any) -> bool:
     the ``tunnel`` control (RFC D3). It imports nothing from ``kiro_crew.relay_client``,
     so a process that asks it with the relay off never loads that package.
     """
-    if getattr(getattr(cfg, "tunnel", None), "relay_enabled", False) is not True:
+    from kiro_crew.remote_control.defaults import hosting_requested
+
+    if not hosting_requested(getattr(cfg, "tunnel", None)):
         return False
     return not local_enable_locked("tunnel")
 

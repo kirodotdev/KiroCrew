@@ -114,6 +114,8 @@ READONLY_REASONS: dict[str, str] = {
     "tunnel.enabled": WHY_REACH,
     "tunnel.name_mode": WHY_REACH,
     "tunnel.relay_enabled": WHY_REACH,
+    # Clearing it turns a host with a lease credential back on; off has its own route.
+    "tunnel.relay_turned_off": WHY_REACH,
     "dashboard.tailscale.bind_refresh_chains": WHY_REACH,
     "dashboard.tailscale.pin_scope": WHY_REACH,
     "dashboard.shared_crew.containment_enabled": WHY_REACH,

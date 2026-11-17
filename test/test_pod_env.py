@@ -66,7 +66,11 @@ class TestSeedSanitization:
     def test_overwrites_non_dict_tunnel(self, tmp_path: Path) -> None:
         seed = self._write(tmp_path / "s", {"tunnel": True})
         out = rt.sanitized_seed_config(seed)
-        assert out is not None and out["tunnel"] == {"enabled": False, "relay_enabled": False}
+        assert out is not None and out["tunnel"] == {
+            "enabled": False,
+            "relay_enabled": False,
+            "relay_turned_off": True,
+        }
 
     def test_drops_the_seed_homes_instance_label(self, tmp_path: Path) -> None:
         """A pod seeded from a labelled home must not name itself as that home."""

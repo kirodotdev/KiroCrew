@@ -1093,8 +1093,10 @@ Wired sites:
   `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
   **The relay client in the slot.** `build_default_context` fills the slot through
   `platform/bootstrap.py::_public_tunnel_provider`: the no-op
-  `DefaultTunnelProvider` unless `edition_locks.py::relay_selected` says
-  `tunnel.relay_enabled` is on and `local_enable_locked("tunnel")` is false, and
+  `DefaultTunnelProvider` unless `edition_locks.py::relay_selected` says hosting is
+  requested (`remote_control/defaults.py::hosting_requested`: `tunnel.relay_enabled`
+  is on, or `tunnel.relay_lease_credential` names a credential and
+  `tunnel.relay_turned_off` is not set) and `local_enable_locked("tunnel")` is false, and
   then `relay_client/provider.py::public_tunnel_provider`'s `RelayTunnelProvider`,
   the Kiro relay's host leg (protocol v1). `relay_selected` imports nothing from
   `relay_client/`, so a composition with the relay off never loads it. Only the
@@ -1109,8 +1111,8 @@ Wired sites:
   stamped by the dashboard app's `dashboard/kiro_relay/ingress.py::RelayIngress`,
   which owns the relay-path header rule (the caller in `x-kiro-relay-user` and the
   per-process handover credential). The gateway publishes that app's ingress to the
-  relay client in `_start_aea_tunnel` only when `tunnel.relay_enabled is True`,
-  before the tunnel starts. With the switch off, it imports no relay client modules;
+  relay client in `_start_aea_tunnel` only when `relay_selected(cfg)` is true (the
+  same rule), before the tunnel starts. With the switch off, it imports no relay client modules;
   the headless API server builds none, so the relay client does not start there.
   The client binds the host connection in that ingress once `ready` arrives, with
   the Crew kind and owner the host token names, and unbinds it when the connection

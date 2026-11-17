@@ -1,10 +1,11 @@
 """Reading and writing the personal Remote Control setting, ``tunnel.relay_enabled``.
 
-There is one control. Turning Remote Control off writes an explicit ``false``, so it
-stays off across a restart and across a later change to the default
-(:data:`~kiro_crew.remote_control.defaults.REMOTE_CONTROL_ON_BY_DEFAULT`). An
-overlay (``config.local.json``) outranks ``config.json``, so when the overlay names
-the key it is written too; an overlay that does not name it is left alone.
+There is one control. Turning Remote Control off writes an explicit ``false`` and
+``tunnel.relay_turned_off`` true, so it stays off across a restart, across a later
+change to the default and with a lease credential set
+(:func:`~kiro_crew.remote_control.defaults.hosting_requested`). An overlay
+(``config.local.json``) outranks ``config.json``, so when the overlay names either
+key both are written there too; an overlay that names neither is left alone.
 
 Both writes are blocking file IO; a handler calls them off the event loop. A
 running gateway notices the change on its own (:mod:`kiro_crew.remote_control.guard`).
@@ -13,13 +14,25 @@ running gateway notices the change on its own (:mod:`kiro_crew.remote_control.gu
 from __future__ import annotations
 
 SETTING_PATH = "tunnel.relay_enabled"
+#: Written true by :func:`turn_off` and false by :func:`turn_on`, so off outranks
+#: a lease credential (:func:`~kiro_crew.remote_control.defaults.hosting_requested`).
+OFF_MARKER = "relay_turned_off"
 
 
 def requested() -> bool:
     """Whether config asks for Remote Control, overlay and default included."""
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.remote_control.defaults import hosting_requested
 
-    return KiroCrewConfig.load().tunnel.relay_enabled is True
+    return hosting_requested(KiroCrewConfig.load().tunnel)
+
+
+def credential_set() -> bool:
+    """Whether ``tunnel.relay_lease_credential`` names a host credential."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.remote_control import defaults
+
+    return defaults.credential_set(KiroCrewConfig.load().tunnel.relay_lease_credential)
 
 
 def locked() -> bool:
@@ -39,6 +52,9 @@ def _set_in(doc: dict, value: bool) -> dict:
         section = {}
         doc["tunnel"] = section
     section["relay_enabled"] = value
+    # Off is its own marker: a stored relay_enabled false is also every install's
+    # saved default, and a lease credential would start hosting over it.
+    section[OFF_MARKER] = not value
     return doc
 
 
@@ -58,7 +74,7 @@ def _write(value: bool) -> None:
 
     def _overlay(doc: dict) -> dict | None:
         section = doc.get("tunnel")
-        if not isinstance(section, dict) or "relay_enabled" not in section:
+        if not isinstance(section, dict) or not {"relay_enabled", OFF_MARKER} & section.keys():
             return None
         return _set_in(doc, value)
 

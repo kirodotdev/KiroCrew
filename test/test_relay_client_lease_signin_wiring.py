@@ -123,8 +123,8 @@ async def test_existing_configs_send_todays_bytes_and_never_read_the_sign_in(
     assert renew["raw"] == raw(todays_renew(instance_id, name, __version__))
     assert release["raw"] == raw({"crewInstanceId": instance_id})
     assert renew["auth"] == release["auth"] == f"Bearer {CREDENTIAL}"
-    expected_type = "API_KEY" if kind == "api_key" else None
-    assert renew["token_type"] == release["token_type"] == expected_type
+    # A stored credential with the type empty is a crew API key, as API_KEY says.
+    assert renew["token_type"] == release["token_type"] == "API_KEY"
 
 
 @pytest.mark.parametrize("credential", ["kiro-sign-in", ""])

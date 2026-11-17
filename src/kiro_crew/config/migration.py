@@ -24,6 +24,7 @@ from kiro_crew.config import windows_exec_adoption
 from kiro_crew.config.sections import DEFAULT_KIRO_TEMPLATE, KiroCrewAgentConfig, WorkspaceConfig
 from kiro_crew.config.superseded_defaults import (
     LEGACY_LAZY_LOAD_ADOPTION,
+    RELAY_TURNED_OFF_ADOPTION_KEY,
     adopted_superseded_if_readable,
     auto_adoptable,
     drift_summary,
@@ -71,6 +72,15 @@ CONNECTIONS_UI_MIGRATION_MARKER = "connections_ui_migrated.json"
 #: generic one is not.
 MIGRATE_SKILLS_LAZY_LOAD = "skills_lazy_load"
 LAZY_LOAD_KEY = LEGACY_LAZY_LOAD_ADOPTION[0]
+
+#: Write ``tunnel.relay_turned_off: true`` once, on the first load by a build where a
+#: set lease credential starts hosting, for a document that stores the credential
+#: with ``relay_enabled: false`` and no marker. Every ``config.json`` stores
+#: ``relay_enabled: false`` (the schema is saved in full), so on disk a host turned off
+#: on an older build and one never turned on are the same bytes as a key-only setup;
+#: only this first load can tell that the host was not hosting before. The check is
+#: one-shot through the adoption ledger (:data:`RELAY_TURNED_OFF_ADOPTION_KEY`).
+MIGRATE_RELAY_TURNED_OFF = "relay_turned_off"
 
 #: Carry the template plain sessions ran before they were template sessions into
 #: ``agent.default_agent``, so an upgrade does not switch it. Such a document
@@ -153,6 +163,110 @@ def legacy_lazy_load_rewrite_due(base_data: dict, *, connections_marker: Path) -
     return stamp
 
 
+def _not_hosting_with_credential(data: dict) -> bool:
+    """A stored credential, ``relay_enabled`` not true (false or left out, which an
+    older build read as off) and no off marker at all."""
+    from kiro_crew.remote_control.defaults import credential_set
+
+    tunnel = data.get("tunnel")
+    return (
+        isinstance(tunnel, dict)
+        and tunnel.get("relay_enabled") is not True
+        # Absent, or present but not a boolean (validation drops a malformed value,
+        # which would otherwise read as "not turned off"): keep off. A real true or
+        # false is this build's own answer.
+        and not isinstance(tunnel.get("relay_turned_off"), bool)
+        and credential_set(tunnel.get("relay_lease_credential", ""))
+    )
+
+
+def relay_turned_off_due(merged_data: dict) -> tuple[bool | None, bool]:
+    """The one-shot Remote Control check for this load, on the MERGED document.
+
+    Decided on ``config.json`` plus ``config.local.json``: a key held only in the
+    overlay starts hosting as surely as one in the base. Returns ``(due, keep_off)``.
+    *due* is ``None`` when there is nothing to record (the ledger already names the
+    key, so a downgrade that drops the marker never re-arms it, or the ledger cannot
+    be read), ``True`` when the marker must be written and ``False`` when only the
+    check is recorded. *keep_off* is True whenever this load must not host: the marker
+    is due, or the ledger cannot be read and the document looks like a host that was
+    not hosting (unknown is never "already checked", and nothing is written then).
+    """
+    adopted = adopted_superseded_if_readable()
+    not_hosting = _not_hosting_with_credential(merged_data)
+    # A present marker that is not a boolean (a hand edit such as "true") keeps the
+    # host off on every load, ledger or not: validation drops it, which would
+    # otherwise read as never turned off.
+    malformed = _relay_marker_malformed(merged_data)
+    if adopted is None:
+        return None, not_hosting or malformed
+    if RELAY_TURNED_OFF_ADOPTION_KEY in adopted:
+        return None, malformed
+    return not_hosting, not_hosting or malformed
+
+
+def _relay_marker_malformed(data: dict) -> bool:
+    tunnel = data.get("tunnel")
+    return (
+        isinstance(tunnel, dict)
+        and "relay_turned_off" in tunnel
+        and not isinstance(tunnel["relay_turned_off"], bool)
+    )
+
+
+def relay_keep_off_unknown_overlay(merged_data: dict) -> bool:
+    """Keep-off for a load whose ``config.local.json`` could not be read: a stored
+    credential with ``relay_enabled`` not true stays off in memory, whatever the base
+    marker says, because the unread overlay may hold the off marker."""
+    from kiro_crew.remote_control.defaults import credential_set
+
+    tunnel = merged_data.get("tunnel")
+    return (
+        isinstance(tunnel, dict)
+        and tunnel.get("relay_enabled") is not True
+        and credential_set(tunnel.get("relay_lease_credential", ""))
+    )
+
+
+def relay_keep_off_without_base(merged_data: dict) -> bool:
+    """Keep-off for a load whose ``config.json`` could not be read: decided on the
+    overlay alone, in memory only. Nothing is written or recorded until the base
+    reads again, and ``config.local.json`` is never written."""
+    return _not_hosting_with_credential(merged_data) or _relay_marker_malformed(merged_data)
+
+
+_RELAY_TURN_ON_KEYS = ("relay_enabled", "relay_turned_off")
+
+
+def relay_turn_on_keys(base_data: dict) -> tuple:
+    """The base ``config.json``'s turn-on keys as stored: ``(key, present, value)`` each."""
+    tunnel = base_data.get("tunnel") if isinstance(base_data, dict) else None
+    if not isinstance(tunnel, dict):
+        return ()
+    return tuple((key, key in tunnel, tunnel.get(key)) for key in _RELAY_TURN_ON_KEYS)
+
+
+def _relay_marker_still_due(base_data: dict, seen: tuple | None = None) -> bool:
+    """In the write lock: the base still has no marker and no writer turned hosting on.
+
+    Hosting was judged on the merged view by the load, so ``config.local.json`` may be
+    what turned it off over a base ``relay_enabled: true``. Given *seen*, the base's
+    turn-on keys as that load read them, the marker is still due only while they are
+    unchanged, so a concurrent ``remote-control on`` or marker write wins. Without
+    *seen*, a base true counts as turned on.
+    """
+    tunnel = base_data.get("tunnel")
+    if seen is not None and relay_turn_on_keys(base_data) != seen:
+        return False
+    if tunnel is None:
+        return True
+    return (
+        isinstance(tunnel, dict)
+        and (seen is not None or tunnel.get("relay_enabled") is not True)
+        and not isinstance(tunnel.get("relay_turned_off"), bool)
+    )
+
+
 def star_default_template_due(
     stored_template: object, default_alias: object, rows: object
 ) -> str | None:
@@ -195,6 +309,7 @@ def apply_document_migrations(
     recorded_adoptions: list[str] | None = None,
     record_adoptions: Callable[[dict[str, object]], object],
     dispatch: Callable[[str], str] = lambda name: name,
+    relay_base_seen: tuple | None = None,
 ) -> bool:
     """Apply the pending write-back migrations to a raw config document in place.
 
@@ -342,6 +457,16 @@ def apply_document_migrations(
     # value set since this load's read is never undone. Both go to the ledger in ONE
     # record, so a failed record cannot leave one half marked adopted with nothing
     # removed.
+    # Keep a host that was not hosting off: only the marker is written, and only while
+    # *data* still has no marker and the base's turn-on keys are as the load read them
+    # (*relay_base_seen*), so a concurrent writer that set the marker or turned hosting
+    # on wins. The ledger is written by the loader AFTER this write lands: here the
+    # marker itself is the state, so a write that landed without its record is
+    # re-detected as done.
+    if MIGRATE_RELAY_TURNED_OFF in pending and _relay_marker_still_due(data, relay_base_seen):
+        data.setdefault("tunnel", {})["relay_turned_off"] = True
+        changed = True
+
     to_record: dict[str, object] = {}
     if MIGRATE_SUPERSEDED_DEFAULTS in pending and adopt_keys:
         for entry in auto_adoptable(data):

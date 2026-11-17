@@ -1376,6 +1376,11 @@ _SIDECAR_OVERLAY_UNREADABLE = "overlay_unreadable"
 #: ``agents`` entry in validation, carried forward so a hit reports it the same way.
 _SIDECAR_AGENTS_REPAIRED = "agents_repaired"
 
+#: Whether the load that filled this cache entry decided Remote Control must stay off
+#: (``ConfigDocument.relay_keep_off``), carried forward so a hit that runs before the
+#: filling load's write-back still keeps the host off.
+_SIDECAR_RELAY_KEEP_OFF = "relay_keep_off"
+
 
 def _shadowed_base_sections(base: dict, overlay: dict) -> dict:
     """The base document's copy of every top-level section the overlay touches.

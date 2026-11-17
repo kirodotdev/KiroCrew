@@ -1263,8 +1263,10 @@ def _apply_seed_config_floor(data: dict) -> None:
             data[section] = {}
         data[section]["enabled"] = False
     # The tunnel section's second switch: left on, a seeded pod would dial the
-    # operator's Kiro relay with the operator's lease credential.
+    # operator's Kiro relay with the operator's lease credential. A set credential
+    # starts hosting on its own, so the off marker is written too.
     data["tunnel"]["relay_enabled"] = False
+    data["tunnel"]["relay_turned_off"] = True
     _force_seed_agent_security(data)
 
 

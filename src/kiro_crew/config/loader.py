@@ -970,6 +970,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         workspace_root,
     )
     from kiro_crew.config.loader_pipeline import (  # noqa: F401
+        _RELAY_KEEP_OFF_PATHS,
+        _RELAY_RETRIED_PATHS,
         _TOP_LEVEL_DEFAULTS,
         ConfigDocument,
         _parse_app_settings,

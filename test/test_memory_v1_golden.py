@@ -32,7 +32,6 @@ import pytest
 
 from kiro_crew import context as ctx
 from kiro_crew import embeddings, resource_status, session_surface, vector_memory
-from kiro_crew.config import loader as config_loader
 from kiro_crew.config import paths as config_paths
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import config_dir
@@ -775,17 +774,16 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
     * ``config-provenance/published``: ``config.write_provenance``, POSIX only.
     * ``config-provenance/endorsed/config.json``: the same save's endorsed copy
       (``config.loosening_provenance``), every platform.
-    * ``superseded_acked.json`` and its ``.lock``: ``config.windows_exec_adoption``
-      records an absent ``agent.sandbox_allow_unsandboxed_exec`` once, Windows only.
+    * ``superseded_acked.json`` and its ``.lock``: the first load records the one-shot
+      Remote Control check (``config.migration``), every platform; on Windows
+      ``config.windows_exec_adoption`` also records an absent
+      ``agent.sandbox_allow_unsandboxed_exec`` there once.
     """
     history = seeded.history_file.relative_to(seeded.home).as_posix()
     provenance = set() if sys.platform == "win32" else {"config-provenance/published"}
-    exec_close = (
-        {"superseded_acked.json", "superseded_acked.json.lock"}
-        if config_loader.unsandboxed_exec_platform_default()
-        else set()
-    )
-    assert _home_files(seeded.home) == provenance | exec_close | {
+    assert _home_files(seeded.home) == provenance | {
+        "superseded_acked.json",
+        "superseded_acked.json.lock",
         "agent-prompt.md",
         "config-provenance/endorsed/config.json",
         "config.json",

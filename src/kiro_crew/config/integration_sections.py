@@ -1227,7 +1227,10 @@ class TunnelConfig:
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Off by default. It holds a lease (from Relay "
+            "the caller named by the relay. Off by default, and a Kiro sign-in alone "
+            "never turns it on. A Relay Lease Credential that names a credential (not "
+            "empty and not kiro-sign-in) starts it too, unless Remote Control Turned Off "
+            "is set. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
             "team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
@@ -1240,6 +1243,16 @@ class TunnelConfig:
             "proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment "
             "variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in "
             "macOS System Settings is not used.",
+            restart=True,
+        ),
+    )
+    relay_turned_off: bool = field(
+        default=False,
+        metadata=_meta(
+            "Remote Control Turned Off",
+            "Set by turning Remote Control off (Settings or kirocrew remote-control off) "
+            "and cleared by turning it on. While set, a Relay Lease Credential does not "
+            "start hosting.",
             restart=True,
         ),
     )
@@ -1265,7 +1278,8 @@ class TunnelConfig:
             "Center or your organization's identity provider), refreshed automatically. "
             "Empty (the default) uses that sign-in too, on a personal Crew: one with no "
             "Relay Lease Token Type, on a host with no agent workload identity. "
-            "A team Crew must name its crew API key here. "
+            "A team Crew must name its crew API key here, and naming one starts Remote "
+            "Control at the next restart with no other setting. "
             "Never the credential itself; it is read for each call and never logged.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
@@ -1277,9 +1291,11 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Token Type",
             "The TokenType the Crew sends with its lease credential. Empty (the "
-            "default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for "
-            "a token from an outside identity provider, API_KEY for a team Crew's crew "
-            "API key. Must be empty with kiro-sign-in, which sends the type its sign-in "
+            "default) sends API_KEY when the credential is a secret or a file, so a team "
+            "Crew's crew API key needs nothing here. API_KEY says so too, EXTERNAL_IDP "
+            "is for a token from an outside identity provider, and NONE sends no type, "
+            "for an IAM Identity Center token kept in a secret or a file. Must be empty "
+            "with kiro-sign-in or an empty credential, which send the type their sign-in "
             "needs. Any other value keeps Remote Control from starting.",
             restart=True,
         ),
