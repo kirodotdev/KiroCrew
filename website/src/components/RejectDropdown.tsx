@@ -14,6 +14,9 @@ interface RejectDropdownProps {
   takesReason?: boolean
   /** `reason` is the trimmed text typed in that box, absent when it is empty. */
   onAction: (action: string, reason?: string) => void
+  /** Passed to the menu: the approval card sets it so that, on touch, an
+   *  outside tap only closes the menu (see `DropdownMenu`). */
+  modal?: boolean
 }
 
 /** Matches the server's cap (`REJECTION_REASON_MAX_CHARS`). */
@@ -39,7 +42,7 @@ const REASON_MAX_CHARS = 1000
  * The menu ranks the two explicitly, which is the thing peer buttons cannot do
  * — the rule's own rationale for the cap.
  */
-export default function RejectDropdown({ disabled, className, takesReason = false, onAction }: RejectDropdownProps) {
+export default function RejectDropdown({ disabled, className, takesReason = false, onAction, modal }: RejectDropdownProps) {
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState('')
   const reasonRef = useRef<HTMLInputElement>(null)
@@ -57,7 +60,7 @@ export default function RejectDropdown({ disabled, className, takesReason = fals
   }
 
   return (
-    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+    <DropdownMenu open={open} onOpenChange={onOpenChange} modal={modal}>
       <DropdownMenuTrigger asChild>
         <button
           disabled={disabled}
