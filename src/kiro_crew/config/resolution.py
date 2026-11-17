@@ -161,7 +161,10 @@ _SECTION_KEYS_RETIRED: dict = {
     # `conductor/SKILL.md` delegation guide (the dashboard "Orchestrator Mode"
     # switch). Crew routing goes through the `select_crew` / `route_crew` MCP
     # tools, so the flag has nothing behind it and is dropped on save.
-    "agent": frozenset({"conductor_skill"}),
+    # RETIRED: agent.subagent_cpu_cost_cores priced a subagent start in CPU
+    # cores. CPU never sizes subagent concurrency (memory does), so nothing read
+    # it, and every saved config carried its 1.0 default.
+    "agent": frozenset({"conductor_skill", "subagent_cpu_cost_cores"}),
     # RETIRED: auto_discover_folder, auto_discover_dirname,
     # auto_ingest_chunk_budget, auto_register_project_docs and max_sources all
     # configured the automatic folder-registration paths, which are gone, so
@@ -189,6 +192,15 @@ _SECTION_KEYS_RETIRED: dict = {
     # gateway installs the engine on its own). Only pre-release builds wrote it,
     # so it is dropped on save without a load-time warning.
     "browser": frozenset({"first_run_dismissed"}),
+}
+#: Retired ENTRIES of a map-valued section key, as ``{(section, key): names}``.
+#: The loader already reads only the names it knows, so ``save()`` drops these;
+#: a raw write keeps the rest of the map as stored, so it drops these here
+#: (``drop_retired_section_keys``).
+_MAP_ENTRIES_RETIRED: dict = {
+    # RETIRED: the layout_harness preview switch gated nothing;
+    # /developer/layout-editor opens with no switch.
+    ("dashboard", "feature_previews"): frozenset({"layout_harness"}),
 }
 _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     section: _SECTION_KEYS_RENAMED.get(section, frozenset())
@@ -336,7 +348,8 @@ def drop_retired_section_keys(data: dict) -> bool:
     ``save()`` drops them because it rebuilds the document from the model; a
     write that edits the raw dict under ``update_config_locked`` (a dashboard
     save, ``kirocrew config set``) does not, so without this the keys outlived
-    every such save. Only :data:`_SECTION_KEYS_RETIRED` is touched: a RENAMED
+    every such save. Only :data:`_SECTION_KEYS_RETIRED` and
+    :data:`_MAP_ENTRIES_RETIRED` are touched: a RENAMED
     spelling is still read as the live value when the canonical key is absent,
     so a raw write must keep it. Returns whether anything was removed.
     """
@@ -348,6 +361,15 @@ def drop_retired_section_keys(data: dict) -> bool:
         for key in keys:
             if key in raw:
                 del raw[key]
+                removed = True
+    for (section, key), names in _MAP_ENTRIES_RETIRED.items():
+        raw = data.get(section)
+        entries = raw.get(key) if isinstance(raw, dict) else None
+        if not isinstance(entries, dict):
+            continue
+        for name in names:
+            if name in entries:
+                del entries[name]
                 removed = True
     return removed
 

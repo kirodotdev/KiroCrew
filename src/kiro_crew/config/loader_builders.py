@@ -947,7 +947,6 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # bool.
         crew_panel=section.read("crew_panel", _safe_bool),
         subagent_cost_gb=section.read("subagent_cost_gb", _safe_float),
-        subagent_cpu_cost_cores=section.read("subagent_cpu_cost_cores", _safe_float),
         subagent_auto_max=section.read(
             "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),

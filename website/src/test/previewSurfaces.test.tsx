@@ -388,7 +388,6 @@ describe('Settings > Developer > Feature Previews', () => {
     'Webhooks': true,
     'MCP sign-in by Kiro Crew': true,
     'Secrets vault redesign': false,
-    'Composable layout': true,
     'Decisions': true,
   }
   /** The drawn rows in the table's shape: label -> carries an InfoTip. */
