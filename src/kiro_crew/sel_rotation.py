@@ -46,6 +46,14 @@ logger = logging.getLogger("kiro_crew.sel")
 _RETENTION_DAYS = 365
 
 
+# Name of the temp the live-log rewrite writes beside the live log. A prune killed
+# mid-rewrite leaves one, and the next prune removes it by this name.
+_PRUNE_TMP_PREFIX = ".sel_prune_"
+
+
+_PRUNE_TMP_SUFFIX = ".tmp"
+
+
 # ── Size rotation ──
 # The live log is closed (renamed into _SEGMENT_SUBDIR) once an append would
 # push it past _SEGMENT_MAX_BYTES, and at most _SEGMENT_KEEP closed segments are
@@ -608,8 +616,9 @@ def _prune_live_locked(self: SecurityEventLog, cutoff_dt: datetime, keep_days: i
     can rotate the file out from under the read-then-replace below.
     """
     cutoff_str = cutoff_dt.isoformat()
+    _remove_orphan_prune_temps(self._path.parent)
     tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(self._path.parent), prefix=".sel_prune_", suffix=".tmp"
+        dir=str(self._path.parent), prefix=_PRUNE_TMP_PREFIX, suffix=_PRUNE_TMP_SUFFIX
     )
     live_removed = 0
     try:
@@ -648,6 +657,25 @@ def _prune_live_locked(self: SecurityEventLog, cutoff_dt: datetime, keep_days: i
             pass
         raise
     return live_removed
+
+
+def _remove_orphan_prune_temps(directory: Path) -> None:
+    """Delete the rewrite temps a prune killed mid-rewrite left in *directory*.
+
+    The rewrite unlinks its temp on every in-process exit, so only a process that
+    died inside it (SIGKILL, a watchdog exit, power loss) leaves one. The caller
+    holds the cross-process rotation lock and every live rewrite runs under it, so
+    no matching temp can belong to a prune that is still running. Removing one
+    loses no record: the replace that would have published it never ran, so each
+    record it holds was also in the live log.
+    """
+    for path in directory.glob(f"{_PRUNE_TMP_PREFIX}*{_PRUNE_TMP_SUFFIX}"):
+        try:
+            path.unlink()
+        except OSError:
+            logger.warning("SEL could not remove orphaned prune temp %s", path, exc_info=True)
+            continue
+        logger.info("SEL removed %s, left by a prune that did not finish", path.name)
 
 
 def _prune_segments_locked(self: SecurityEventLog, cutoff: datetime) -> int:
