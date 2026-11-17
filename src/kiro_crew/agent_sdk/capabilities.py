@@ -166,7 +166,7 @@ class SessionCapabilities:
     #: cannot refuse a tool call (``postToolUse``, ``userPromptSubmit``,
     #: ``agentSpawn``, ``stop``).
     #:
-    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude and codex,
+    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude, codex and mimocode,
     #: whose harnesses are handed no spec but approve some calls without asking, so
     #: only these events are fired there and ``preToolUse`` runs nowhere. False
     #: where the harness runs the field itself.

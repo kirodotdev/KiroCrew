@@ -50,7 +50,11 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.copilot import COPILOT_IDENTITY_OVERFLOW
-from kiro_crew.acp.harness_tool_names import HARNESS_UNASKED_TOOL_IDS, mimocode_actor_asks_nothing
+from kiro_crew.acp.harness_tool_names import (
+    HARNESS_UNASKED_TOOL_IDS,
+    MIMOCODE_SIDE_UNASKED_TOOL_IDS,
+    mimocode_actor_asks_nothing,
+)
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -1193,6 +1197,10 @@ async def _unasked_call_is_expected(client: AcpClient, update: dict, tool_call_i
     if getattr(client, "_tool_call_mcp_server", {}).get(tool_call_id):
         return False
     name = getattr(client, "_tool_call_harness_tool_name", {}).get(tool_call_id, "")
+    if client.backend == ACP_BACKEND_MIMOCODE and getattr(client, "_side_read_only", False):
+        # A Side Chat seed hides every other unasked tool, so one completing here is a
+        # tool the seed failed to hide.
+        return name in MIMOCODE_SIDE_UNASKED_TOOL_IDS
     if name == "actor" and client.backend == ACP_BACKEND_MIMOCODE:
         return mimocode_actor_asks_nothing(_completed_call_input(client, update, tool_call_id))
     return name in HARNESS_UNASKED_TOOL_IDS.get(client.backend, frozenset())

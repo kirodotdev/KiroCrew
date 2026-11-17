@@ -804,6 +804,38 @@ async def test_side_turn_on_strands_runs_read_only_with_file_reads_alone(
 
 
 @pytest.mark.asyncio
+async def test_side_turn_on_mimocode_runs_read_only_on_its_side_seed(
+    tmp_path, monkeypatch, _published_readonly_spec
+):
+    """On MiMo Code the confinement is the side seed its launch writes for
+    ``side_read_only``: nothing is derived, the turn streams READ_ONLY, and the
+    prompt names reads and searches, no shell, and fetching pages refused."""
+    from kiro_crew.acp_backends import ACP_BACKEND_MIMOCODE
+    from kiro_crew.dashboard.side_prompts import (
+        SIDE_BOUNDARY_PROMPT_NO_SHELL,
+        SIDE_BOUNDARY_PROMPT_NO_WEB,
+    )
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    _configure_backend(monkeypatch, ACP_BACKEND_MIMOCODE)
+    state, parent, _events, created = _side_turn_fixture(tmp_path, "run-mimocode")
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+
+    await _run_side_turn(state, parent, "run-mimocode", _SIDE_QUESTION, is_first_turn=True)
+
+    assert _published_readonly_spec == [], "MiMo Code reads no kiro agent spec"
+    assert created[0]["side_read_only"] is True
+    assert not (created[0]["agent"] or "").endswith("--readonly")
+    assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.READ_ONLY
+    prompt = stream_mock.await_args.args[1]
+    assert SIDE_BOUNDARY_PROMPT_NO_WEB in prompt
+    assert SIDE_BOUNDARY_PROMPT_NO_SHELL not in prompt
+    assert "git status" not in prompt
+    assert parent._side.binding == (created[0]["agent"] or "", "", "mimocode_read_only")
+
+
+@pytest.mark.asyncio
 async def test_side_turn_on_claude_with_an_unverified_adapter_runs_no_tools(
     tmp_path, monkeypatch, _published_readonly_spec
 ):

@@ -2,7 +2,7 @@
 
 The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
 ``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
-MiMo Code shell-permission deferral, the liveness consult and the redaction of a
+MiMo Code shell and Side Chat read permission deferrals, the liveness consult and the redaction of a
 Claude native child's events, with the flush of their held text for a turn cut short.
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -24,7 +24,7 @@ Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``,
 ``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``,
 ``_process``, ``_registered_session``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
-``_session_key``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``.
+``_session_key``, ``_side_read_only``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator, Callable
 
@@ -66,6 +67,7 @@ from kiro_crew.acp.client_turn_control import format_command_result, parse_slash
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.end_token import drop_end_token
 from kiro_crew.acp.engine_fallback import is_v2_model_fallback, normalize_kiro_v2
+from kiro_crew.acp.harness_tool_names import MIMOCODE_READ_ONLY_BUILTINS
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.prompt_blocks import (
@@ -293,19 +295,20 @@ _MIMOCODE_COMMANDLESS_SHELL_ASKS = frozenset({"bash", "external_directory"})
 
 
 def _is_mimocode_running_input(
-    update_frame: JsonRpcMessage, session_id: object, call_id: str
+    update_frame: JsonRpcMessage, session_id: object, call_id: str, key: str = "command"
 ) -> bool:
-    """Whether *update_frame* is MiMo Code's running-state update carrying the command.
+    """Whether *update_frame* is MiMo Code's running-state update carrying *key*.
 
     MiMo Code sends one ``tool_call_update`` per state of a tool part, and the
     running one carries the parsed input as ``rawInput`` and no output yet
-    (``acp/agent.ts:284-336`` on 0.1.15).
+    (``acp/agent.ts:284-336`` on 0.1.15). *key* is the argument the waiting
+    permission needs: a shell call's ``command``, a read tool's target.
     """
     frame_params = update_frame.params if isinstance(update_frame.params, dict) else {}
     update = frame_params.get("update")
     update = update if isinstance(update, dict) else {}
     raw_input = update.get("rawInput")
-    command = raw_input.get("command") if isinstance(raw_input, dict) else None
+    command = raw_input.get(key) if isinstance(raw_input, dict) else None
     return (
         update_frame.is_method(METHOD_SESSION_UPDATE)
         and isinstance(session_id, str)
@@ -354,17 +357,67 @@ async def _defer_mimocode_shell_permission(
     following = await self._read_message(
         timeout=min(_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT, remaining)
     )
-    if following is None:
+    return following is not None and _put_running_input_first(
+        self._buffer, msg, following, call_id, "command"
+    )
+
+
+def _put_running_input_first(
+    buffer: deque, msg: JsonRpcMessage, following: JsonRpcMessage, call_id: str, key: str
+) -> bool:
+    """Re-queue *msg* behind *following* when that is the running update carrying *key*.
+
+    Both go back on the front of *buffer*, update first, so the dispatcher caches the
+    argument before it builds the permission, and True is returned. Any other frame
+    is handed back untouched, ahead of everything still queued.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    room = buffer.maxlen is None or len(buffer) <= buffer.maxlen - 2
+    if not (room and _is_mimocode_running_input(following, params.get("sessionId"), call_id, key)):
+        buffer.appendleft(following)
         return False
-    room = self._buffer.maxlen is None or len(self._buffer) <= self._buffer.maxlen - 2
-    if not (room and _is_mimocode_running_input(following, params.get("sessionId"), call_id)):
-        # Not the update: hand it back untouched, ahead of everything still queued.
-        self._buffer.appendleft(following)
-        return False
-    # Update first, so the dispatcher caches the command before it builds the permission.
-    self._buffer.appendleft(msg)
-    self._buffer.appendleft(following)
+    buffer.appendleft(msg)
+    buffer.appendleft(following)
     return True
+
+
+async def _defer_mimocode_side_read_permission(
+    self: AcpClient, msg: JsonRpcMessage, remaining: float
+) -> bool:
+    """Let a MiMo Code Side Chat read's running update reach the cache first.
+
+    A side read is allowed only on its target as the harness parsed it, and the
+    trusted source of that is the part's running update: the call's first
+    ``tool_call`` frame states ``rawInput: {}``, and the permission's own
+    ``rawInput`` is the request's metadata, which never fills the trusted cache.
+    0.1.15 sent the update before the ``read`` request and after the ``grep`` and
+    ``glob`` ones (``test/fixtures/acp_frames/mimocode/side-read-only-live.jsonl``),
+    so a request that arrives first is held for one frame, as a shell one is.
+
+    Side Chat only, and only for a call the tool_call frame named as one of
+    :data:`~kiro_crew.acp.harness_tool_names.MIMOCODE_READ_ONLY_BUILTINS`.
+    """
+    if not getattr(self, "_side_read_only", False):
+        return False
+    params = msg.params if isinstance(msg.params, dict) else {}
+    tool_call = params.get("toolCall")
+    tool_call = tool_call if isinstance(tool_call, dict) else {}
+    call_id = tool_call.get("toolCallId")
+    if not isinstance(call_id, str):
+        return False
+    names = getattr(self, "_tool_call_harness_tool_name", None) or {}
+    entry = MIMOCODE_READ_ONLY_BUILTINS.get(names.get(call_id, ""))
+    if entry is None:
+        return False
+    cached = self._tool_call_params.get(call_id, {})
+    if isinstance(cached, dict) and cached.get(entry[1]):
+        return False
+    following = await self._read_message(
+        timeout=min(_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT, remaining)
+    )
+    return following is not None and _put_running_input_first(
+        self._buffer, msg, following, call_id, entry[1]
+    )
 
 
 async def _prompt_loop(
@@ -684,6 +737,10 @@ async def _prompt_loop(
                 or (
                     self.backend == ACP_BACKEND_MIMOCODE
                     and await self._defer_mimocode_shell_permission(msg, remaining)
+                )
+                or (
+                    self.backend == ACP_BACKEND_MIMOCODE
+                    and await self._defer_mimocode_side_read_permission(msg, remaining)
                 )
             ):
                 self.last_prompt_stats.event_count -= 1

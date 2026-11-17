@@ -76,7 +76,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 9 | `[USER PROFILE]` | onboarding answers in config | non-empty, `lessons` group |
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
-| 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound, except on Codex, OpenCode and Pi, which read `AGENTS.md` from their working directory), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code, Codex, OpenCode and Pi backends** (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`), `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
+| 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound, except on Codex, OpenCode, Pi and MiMo Code, which read `AGENTS.md` from their working directory), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code, Codex, OpenCode, Pi and MiMo Code backends** (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`), `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
 | 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
@@ -589,7 +589,7 @@ re-adds, once:
    `[Learned corrections — relevant to this message …]` row above), the
    shown-lesson record restarts from this block, so that block does not repeat it.
 8. `[REINJECTED AFTER COMPACTION — steering resources]` — row 12's text, Claude
-   Code and Codex backends only, through the same `steering_resources_part` gate as
+   Code, Codex, OpenCode, Pi and MiMo Code backends only, through the same `steering_resources_part` gate as
    session start, payload scrubbed of structural markers. kiro-cli loads the agent's
    `resources` natively and keeps them across its own compaction, so the kiro and
    KAS paths get nothing here.

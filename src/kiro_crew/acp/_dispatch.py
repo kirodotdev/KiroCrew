@@ -29,6 +29,7 @@ from kiro_crew.acp.harness_tool_names import (  # noqa: F401
     CODEX_TOOL_IDS_BY_KIRO_TOOL,
     GOOSE_READ_ONLY_BUILTINS,
     MAX_HARNESS_TOOL_NAME_LEN,
+    MIMOCODE_READ_ONLY_BUILTINS,
     qualified_harness_tool_id,
     start_event_tool_id,
 )
@@ -78,6 +79,7 @@ from kiro_crew.acp_backends import (  # noqa: F401
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_META_IDENTITY,
@@ -677,6 +679,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _anchored_in_workspace,
         _envelope_mcp_owner,
         _is_kas_remote_builtin,
+        _mimocode_search_stays_clear,
         _pi_connection_identity,
         _workspace_call_arguments,
         bridged_title_identity,

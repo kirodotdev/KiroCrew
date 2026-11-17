@@ -22,6 +22,7 @@ from kiro_crew import name_grant, redaction_seams
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_SIDE_READONLY,
 )
@@ -596,14 +597,24 @@ async def _run_side_turn(
         claude_side = tools_available and is_claude_backend_name(side_backend)
         goose_side = tools_available and side_backend == ACP_BACKEND_GOOSE
         strands_side = tools_available and side_backend == ACP_BACKEND_STRANDS
+        mimocode_side = tools_available and side_backend == ACP_BACKEND_MIMOCODE
         side_session_kwargs: dict[str, Any] = {}
-        if strands_side:
+        if mimocode_side:
+            # MiMo Code reads no kiro agent spec. Its launch seeds the side session
+            # with every writer, the shell and every unasked tool denied, mounts no
+            # MCP server and refuses the session when a deny is not in force, so
+            # every call left reaches the READ_ONLY gate below.
+            side_agent: str | None = kiro_agent or slot_agent
+            approval_policy = ToolApprovalPolicy.READ_ONLY
+            binding: tuple[str, ...] = (side_agent or "", project or "", "mimocode_read_only")
+            side_session_kwargs["side_read_only"] = True
+        elif strands_side:
             # Strands reads no kiro agent spec. Every call asks through Crew's gate
             # module; on a ``side_read_only`` session only the harness's own file
             # read is proven, and every other call is refused before the gate.
-            side_agent: str | None = kiro_agent or slot_agent
+            side_agent = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.READ_ONLY
-            binding: tuple[str, ...] = (side_agent or "", project or "", "strands_read_only")
+            binding = (side_agent or "", project or "", "strands_read_only")
             side_session_kwargs["side_read_only"] = True
         elif goose_side:
             # goose reads no kiro agent spec either. Its launch starts the side
@@ -743,7 +754,7 @@ async def _run_side_turn(
         # card to fall back to, so the boundary names no shell. The check stats
         # files, so it runs off the loop and only for a turn that sends the
         # boundary.
-        shell_available = not (claude_side or goose_side or strands_side)
+        shell_available = not (claude_side or goose_side or strands_side or mimocode_side)
         if send_envelope and shell_available:
             shell_available = await asyncio.to_thread(name_grant.environment_refusal) is None
         message = build_side_message(
@@ -754,6 +765,7 @@ async def _run_side_turn(
             shell_available=shell_available,
             file_reads_available=not goose_side,
             searches_available=not strands_side,
+            web_available=not mimocode_side,
             cfg=cfg,
         )
         try:

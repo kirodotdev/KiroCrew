@@ -103,6 +103,19 @@ from kiro_crew.agent_sdk.backends import (
 #   refused and left no file. No MCP server is mounted, only that built-in ``read``
 #   is named ``fs_read`` (``acp._dispatch.is_strands_side_read``), and every other
 #   call is refused before the gate (``side_read_only_refusal``).
+# * mimocode: its pre-approval surface is its own ``permission`` setting, and several
+#   of its tools never ask (``memory``, ``history``, ``task``). The side session's seed
+#   (``acp.harness.mimocode._mimocode_seed_denies``) denies every writer, the shell and
+#   every unasked tool but ``invalid`` and ``mcp_tool_search``
+#   (``acp.harness_tool_names.MIMOCODE_SIDE_DENIED_TOOLS``), which removes each from
+#   the tool list the model is offered; the read-back refuses the session when one of
+#   those denies is not in force or the harness mounts an MCP server of its own, the
+#   array is empty, and the tripwire stops the harness on any other unasked call.
+#   Captured on 0.1.15 (``test/fixtures/acp_frames/mimocode/side-read-only-live.jsonl``):
+#   ``read``, ``grep`` and ``glob`` asked, no write or shell tool was offered and no
+#   file was created. A read is proved only from the tool id the first ``tool_call``
+#   frame states, for those three, with an absolute target
+#   (``acp.harness_tool_names.MIMOCODE_READ_ONLY_BUILTINS``).
 #
 # Off this set (and on goose off POSIX) the side turn runs ``REJECT_ALL`` and its
 # footer says tools are unavailable:
@@ -112,9 +125,6 @@ from kiro_crew.agent_sdk.backends import (
 #   reads no kiro agent spec, so the derived spec cannot express a read-only posture.
 # * pi: Crew's gate extension asks about every call but expresses no read-only
 #   posture.
-# * mimocode: for opencode's reason, and one of its own: its ``memory``, ``history``
-#   and ``task`` tools run without asking (``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``), so
-#   a side turn could not be confined to reads even if every asked call were.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -123,6 +133,7 @@ ACP_BACKENDS_SIDE_READONLY = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -349,11 +360,19 @@ ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
 #: antigravity is a member of this set alone for the same reason: it is handed no
 #: spec, and its file reads run with no permission request, so its ``preToolUse``
 #: entries get the same notice.
+#: mimocode is a member on the same ground. ``mimo acp`` is handed no spec and its
+#: ``session/new`` has no hooks field, so nothing else runs the field. It stays out
+#: of the gating set because some of its tools never reach its permission service
+#: (``memory``, ``history``, ``task``, an edit under its memory directory, and
+#: ``question`` and ``plan_exit``, which ask through its question service), so a
+#: gating ``preToolUse`` hook would be skipped on exactly those calls. A call that
+#: asks is named through ``MIMOCODE_TOOL_IDS_BY_KIRO_TOOL`` from its ``tool_call``
+#: title; an unasked call is matched by its title alone.
 #:
 #: kiro-cli is NOT a member and must never become one: it runs the field itself,
 #: so membership would run every spec hook twice.
 ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
-    {ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+    {ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_MIMOCODE}
 )
 
 #: Backends on the direct ``AcpClient`` whose session never reads the agent spec's
@@ -384,14 +403,23 @@ ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_
 #: chat that is not a crew member's. Context assembly asks it by provider label
 #: (``agent_sdk.drivers.acp.crew_loads_spec_steering``).
 #:
-#: claude, codex, opencode and pi are the members: each is handed no spec, reads
-#: no ``.kiro/steering`` tree of its own, and Crew's prompt text reaches each one.
-#: kiro-cli is NOT a member and must never become one: it reads the spec off disk,
-#: so membership would send every document twice. KAS is not either: it reports
-#: ``native_steering`` and loads the trees itself. The other harnesses stay out
-#: until their prompt is shown to carry the documents.
+#: claude, codex, opencode, pi and mimocode are the members: each is handed no
+#: spec, reads no ``.kiro/steering`` tree of its own, and Crew's prompt text reaches
+#: each one. For mimocode that was measured on 0.1.15: in a project holding both a
+#: ``.kiro/steering`` rule and an ``AGENTS.md`` it answered from ``AGENTS.md`` and
+#: said it had not been told the steering rule. kiro-cli is NOT a member and must
+#: never become one: it reads the spec off disk, so membership would send every
+#: document twice. KAS is not either: it reports ``native_steering`` and loads the
+#: trees itself. The other harnesses stay out until their prompt is shown to carry
+#: the documents.
 ACP_BACKENDS_CREW_LOADS_SPEC_STEERING: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_MIMOCODE,
+    }
 )
 
 #: Backends that read the project's ``AGENTS.md`` themselves from the session's
@@ -399,10 +427,13 @@ ACP_BACKENDS_CREW_LOADS_SPEC_STEERING: FrozenSet[str] = frozenset(
 #: (``agent_sdk.drivers.acp.reads_project_agents_md``). Crew sends the project as
 #: the ACP ``cwd``. codex is a member: its project-doc discovery reads ``AGENTS.md``
 #: from it. opencode and pi are members: each loads ``AGENTS.md`` from its working
-#: directory and the folders above it into its system prompt. claude is not: Crew's
-#: load is how the file reaches it.
+#: directory and the folders above it into its system prompt. mimocode is a member
+#: on the same ground: its instruction loader looks ``AGENTS.md`` up from the session
+#: directory to the worktree root (0.1.15), and in the run above the model quoted
+#: that file without calling a tool. claude is not: Crew's load is how the file
+#: reaches it.
 ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI, ACP_BACKEND_MIMOCODE}
 )
 
 

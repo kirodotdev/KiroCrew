@@ -102,7 +102,7 @@ def every_session_body(body: str, *, truncated: bool = False) -> str | None:
     """*body* with its front matter stripped, or ``None`` when it is not for every session.
 
     The one inclusion rule both steering loads apply: this module's folder
-    collection and the Claude Code, Codex, OpenCode and Pi ``[Steering resources]`` load
+    collection and the Claude Code, Codex, OpenCode, Pi and MiMo Code ``[Steering resources]`` load
     (``context_assembly.agent_spec._load_steering_resources``). A leading
     byte-order mark is dropped, since it would hide the column-0 fence and turn
     a ``manual`` document into an always-loaded one, and line endings are

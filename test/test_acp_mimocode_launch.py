@@ -487,6 +487,29 @@ def test_an_mcp_control_lets_a_session_with_no_server_start(
     assert rig.client._unasked_shell_tripwire is True
 
 
+def test_an_mcp_control_lets_a_side_session_start_with_its_empty_array(
+    governed_host, monkeypatch, tmp_path
+) -> None:
+    """A Side Chat session sends an empty array whatever the spec resolves, so the
+    control has no Crew server to refuse it for."""
+    from kiro_crew.acp.harness_tool_names import MIMOCODE_SIDE_DENIED_TOOLS
+
+    governed_host.install(_MCP_CEILING)
+    denies = ("docs_search", *MIMOCODE_SIDE_DENIED_TOOLS)
+    rig = _MimoCodeLaunchRig(
+        monkeypatch,
+        tmp_path,
+        readback_stdout=mimocode_mod._mimocode_routing_config(ACP_BACKEND_MIMOCODE, denies),
+    )
+    rig.client._side_read_only = True
+    rig.client._session_harness_deny_rules = ("docs_search",)
+    rig.client._session_mcp_cache = [{"name": "kirocrew-core"}]
+    rig.run()
+    assert rig.client._mimocode_session_mcp_servers() == []
+    assert mimocode_mod._mimocode_mounted_mcp_servers(rig.client) == ()
+    assert rig.client._unasked_shell_tripwire is True
+
+
 def test_without_an_mcp_control_a_mounting_session_starts(
     governed_host, monkeypatch, tmp_path
 ) -> None:

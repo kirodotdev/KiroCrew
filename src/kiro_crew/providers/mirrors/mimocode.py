@@ -30,6 +30,7 @@ import logging
 from collections.abc import Collection
 from typing import Any, Mapping
 
+from kiro_crew import mcp_discovery_managed
 from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN, mimocode_spelling
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_mcp import (
@@ -38,7 +39,11 @@ from kiro_crew.acp.session_mcp import (
     session_mcp_projection,
 )
 from kiro_crew.acp_backends import ACP_BACKEND_MIMOCODE
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.providers.mirrors.base import (
+    RESOURCES_NO_READER,
     AgentConfigMirror,
     Concern,
     Disposition,
@@ -47,6 +52,7 @@ from kiro_crew.providers.mirrors.base import (
 )
 from kiro_crew.providers.mirrors.identity import (
     control_plane_identity_env,
+    identity_bound_crew_servers,
     with_env,
     withheld_servers,
 )
@@ -190,6 +196,83 @@ def _withhold_reason(
     )
 
 
+def _stub_registered_servers(args: Any) -> list[str] | None:
+    """Every ``--server`` value a broker-stub argv names, or ``None`` if it is not one.
+
+    ``None`` when the argv is not a list of strings, its flag envelope cannot be read,
+    or it does not run :data:`~kiro_crew.mcp_gateway.STUB_MODULE`: an element that is
+    not the gateway's stub is not vouched for by the gateway.
+    """
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return None
+    try:
+        argv = expand_stub_flags(args)
+    except ValueError:
+        return None
+    if not any(
+        token == "-m" and i + 1 < len(argv) and argv[i + 1] == STUB_MODULE
+        for i, token in enumerate(argv)
+    ):
+        return None
+    servers: list[str] = []
+    for i, token in enumerate(argv):
+        if token == "--server":
+            if i + 1 >= len(argv):
+                return None
+            servers.append(argv[i + 1])
+        elif token.startswith("--server="):
+            servers.append(token.partition("=")[2])
+    return servers
+
+
+def is_session_bound_crew_stub(stub: Mapping[str, Any], session_token: str) -> bool:
+    """Whether *stub* is the gateway's broker stub for one of Crew's servers, for THIS session.
+
+    Crew's identity-bound servers are withheld from this array because an element the
+    spec describes cannot carry this session's identity. The broker stub is the form
+    that still works: the gateway rewriter authored its launch, the stub token the
+    broker checks on every call names the session, and gatewayd hands the server that
+    caller per call. Only that exact shape is admitted:
+
+    * the name is an identity-bound Crew server
+      (:func:`~kiro_crew.providers.mirrors.identity.identity_bound_crew_servers`) that
+      consumes the caller gatewayd injects (``managed_server_is_session_bound`` is
+      False for it);
+    * it is stdio (tagged or untagged), its argv runs the broker stub module, and it
+      registers under exactly one ``--server``, that same name;
+    * its ``env`` is exactly one pair, :data:`STUB_SESSION_TOKEN_ENV` carrying
+      *session_token*, which must be nonempty.
+
+    The rule is codex's (``providers/mirrors/codex.py``), kept as this mirror's own copy
+    so a change to one harness's admission cannot move the other's. Fails closed:
+    anything unreadable answers ``False``. Grants and restrictions are the caller's.
+    """
+    server = stub.get("name")
+    if not session_token or not isinstance(server, str):
+        return False
+    if server not in identity_bound_crew_servers() or (
+        mcp_discovery_managed.managed_server_is_session_bound(server)
+    ):
+        return False
+    if str(stub.get("type") or "stdio") != "stdio":
+        return False
+    command = stub.get("command")
+    if not isinstance(command, str) or not command:
+        return False
+    if _stub_registered_servers(stub.get("args")) != [server]:
+        return False
+    env = stub.get("env")
+    if not isinstance(env, list) or len(env) != 1:
+        return False
+    pair = env[0]
+    return (
+        isinstance(pair, Mapping)
+        and set(pair) == {"name", "value"}
+        and pair.get("name") == STUB_SESSION_TOKEN_ENV
+        and pair.get("value") == session_token
+    )
+
+
 def place_mimocode_array(
     projection: SessionMcpProjection,
     *,
@@ -210,7 +293,10 @@ def place_mimocode_array(
     under it; the withhold rule therefore covers both halves. *unhonoured* names the
     narrowed servers whose per-tool rule is not in force, withheld whole; Crew's
     identity-bound servers are withheld from the spec-described half
-    (:func:`~kiro_crew.providers.mirrors.identity.withheld_servers`). A stub is also
+    (:func:`~kiro_crew.providers.mirrors.identity.withheld_servers`). Their broker stubs
+    are the exception: one in the exact gateway shape bound to *session_token*
+    (:func:`is_session_bound_crew_stub`) is mounted as given, with no identity env
+    added, because the stub token is the credential the broker checks. A stub is also
     held to the spec's ``tools`` allowlist from the same parse. A narrowed server
     that is NOT withheld mounts fine as a stub: the per-tool rule keys on the server
     name, which the stub shares.
@@ -230,7 +316,11 @@ def place_mimocode_array(
         if not isinstance(stub, Mapping):
             continue
         name = stub.get("name")
-        if _logged_withhold(name, withheld, unhonoured, stub=True):
+        # A broker stub for one of Crew's own servers is admitted in its exact
+        # gateway shape bound to this session's token, unless a switched-off tool on
+        # it has no deny rule in force; the allowlist below still applies.
+        admitted = name not in unhonoured and is_session_bound_crew_stub(stub, session_token)
+        if not admitted and _logged_withhold(name, withheld, unhonoured, stub=True):
             continue
         if not projection.allowlist.grants(str(name)):
             logger.info(
@@ -290,6 +380,8 @@ def mimocode_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+        # A crewmate's worker reads its own spec by its session's record.
+        session_key=session_key,
     )
     rules = mimocode_deny_rules(projection.disabled_tools)
     in_force = frozenset(rules if denies_in_force is None else denies_in_force)
@@ -361,6 +453,11 @@ class MimoCodeMirror(AgentConfigMirror):
                 "credential-less, since it would answer not_bound to every call, "
                 "and that set is DERIVED as the managed servers minus the control "
                 "plane (providers.mirrors.identity.identity_bound_crew_servers). "
+                "Their gateway broker stubs are the exception: a stub in the exact "
+                "shape the rewriter authors, bound to this session's stub token, is "
+                "mounted as given (is_session_bound_crew_stub, codex's rule), since "
+                "gatewayd hands the server its caller per call; it keeps the spec's "
+                "allowlist and per-tool deny. "
                 "The array and the withhold set come from ONE parse of the spec "
                 "(session_mcp_projection), so a narrowing that lands between two "
                 "reads of a user-writable file cannot leave a narrowed server "
@@ -465,19 +562,31 @@ class MimoCodeMirror(AgentConfigMirror):
             ),
             Concern.RESOURCES: Ruling(
                 _D.WITHHELD,
-                "same as PROMPT -- steering files are injected as context text, "
-                "not projected into a backend's config",
+                RESOURCES_NO_READER,
             ),
             Concern.HOOKS: Ruling(
-                _D.WITHHELD,
-                "the session/new element set has no hooks field and this backend is not "
-                "in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS: its memory, history and task tools, "
-                "and an edit under its memory directory, never consult its permission "
-                "service, and question and plan_exit ask through its question service "
-                "instead (tool/question.ts:47-51, tool/plan.ts:42-57 on 0.1.15), which "
-                "its ACP layer never forwards. A PreToolUse hook fired from the "
-                "permission request would silently miss all of them. A saved hooks "
-                "block is reported as a projection gap rather than claimed",
+                _D.NO_CHANNEL,
+                "the session/new element set has no hooks field, so the harness never "
+                "sees the spec's hooks block; Crew's turn loop fires its postToolUse, "
+                "userPromptSubmit, agentSpawn and stop hooks instead "
+                "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS). "
+                "A call that asks is named through MiMo Code's row in "
+                "acp/harness_tool_names.py (MIMOCODE_TOOL_IDS_BY_KIRO_TOOL) from its "
+                "tool_call title, so bash is execute_bash and notebook_edit fs_write; a "
+                "call that never asks is matched by its title alone. preToolUse is "
+                "withheld: this backend is not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS, "
+                "because its memory, history and task tools, and an edit under its "
+                "memory directory, never consult its permission service, and question "
+                "and plan_exit ask through its question service instead "
+                "(tool/question.ts:47-51, tool/plan.ts:42-57 on 0.1.15), which its ACP "
+                "layer never forwards. A gating hook fired from the permission request "
+                "would silently miss all of them, so a new session whose spec has one "
+                "gets a notice. Crew's OWN hooks (hooks.py, fired on ACP tool events) "
+                "are unaffected",
+                channel="a hooks field on the mimo acp session/new element set, or a "
+                "permission request on every native tool call (memory, history, task, "
+                "question, plan_exit) so a Crew-fired preToolUse hook could gate each of "
+                "them -- neither exists on 0.1.15",
             ),
             Concern.TOOLS_SETTINGS: Ruling(
                 _D.WITHHELD,

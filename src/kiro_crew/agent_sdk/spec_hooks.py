@@ -20,7 +20,7 @@ Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
 capabilities say Crew owns the job.
 
-claude and codex are members of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
+claude, codex and mimocode are members of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
 alone. Neither harness is handed the spec, so Crew fires the events that cannot
 refuse a call (:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
 (:func:`observer_spec_hooks`): each approves some calls without asking, so a
@@ -1394,7 +1394,7 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     field and Crew does not fire it (``backend_mcp_ability._broker_only_dispositions``).
     False where the harness runs the field itself (kiro-cli), where Crew fires it
     (``crew_fires_spec_hooks``) or all of it but ``preToolUse``
-    (``crew_fires_spec_observer_hooks``, claude and codex, whose ``preToolUse``
+    (``crew_fires_spec_observer_hooks``, claude, codex and mimocode, whose ``preToolUse``
     entries get their own notice), and for a backend with no ruling, about which
     nothing is established.
     """
@@ -1431,7 +1431,7 @@ def spec_steering_read_nowhere(provider: object) -> bool:
 
     True where the backend's mirror rules ``resources`` ``withheld`` or
     ``no-channel``: the harness is handed no spec, and Crew's own steering load
-    serves only the default agent, on Claude Code, Codex, OpenCode and Pi
+    serves only the default agent, on Claude Code, Codex, OpenCode, Pi and MiMo Code
     (``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``,
     ``providers.mirrors.base.RESOURCES_NO_READER``). False for a backend with no
     mirror (kiro-cli and KAS read ``resources`` themselves) and for one whose
@@ -1509,7 +1509,7 @@ def spec_hook_events(agent_id: str, project_dir: str | None = None) -> list[str]
 def _fires_observer_spec_hooks_only(provider: object) -> bool:
     """Whether Crew fires *provider*'s spec hooks on :data:`OBSERVER_HOOK_EVENTS` only.
 
-    True on claude and codex: neither is handed the spec, and each approves some
+    True on claude, codex and mimocode: none is handed the spec, and each runs some
     calls without a permission request, so a ``preToolUse`` hook could not gate them.
     """
     caps = capabilities_of(provider)
@@ -1734,7 +1734,7 @@ async def turn_spec_hooks(
     resolved through :func:`session_agent`; when none can be named, every
     permission request is refused, since whose hooks apply is unknown.
 
-    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude, codex) the turn
+    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude, codex, mimocode) the turn
     is not gated: it gets those hooks, and an agent that cannot be named or a
     spec that cannot be read leaves it with none.
 

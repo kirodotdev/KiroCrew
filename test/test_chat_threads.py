@@ -1579,6 +1579,28 @@ async def test_a_strands_turn_runs_read_only_with_file_reads_alone(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_a_mimocode_turn_runs_read_only_on_a_side_session(tmp_path, monkeypatch):
+    """On MiMo Code the thread gets the Side Chat's MiMo Code shape: the base agent's
+    session requested with ``side_read_only`` (no derived kiro spec, which MiMo Code
+    would not read), READ_ONLY, and a boundary with reads and searches but no shell
+    or web tool."""
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="mimocode")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert acquired["agent"] == "kirocrew"
+    assert acquired["side_read_only"] is True
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_WEB in streamed["message"]
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_SHELL not in streamed["message"]
+
+
+@pytest.mark.asyncio
 async def test_a_goose_turn_on_a_host_without_a_side_home_runs_no_tools(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     slot, mid = _member_slot(state)

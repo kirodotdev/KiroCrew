@@ -409,6 +409,7 @@ async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[in
         ("codex", "yes", ""),
         ("opencode", "yes", ""),
         ("pi", "yes", ""),
+        ("mimocode", "yes", ""),
         ("deepseek", "no", "harness_has_no_path"),
     ],
 )
@@ -416,7 +417,8 @@ async def test_a_cold_chat_lists_global_steering_as_its_harness_receives_it(
     home, monkeypatch, backend, reaches, reason
 ):
     """The route answers for a cold chat on the harness it would start on: Crew's
-    steering load reaches Codex, OpenCode and Pi, and DeepSeek has no path for the trees."""
+    steering load reaches Codex, OpenCode, Pi and MiMo Code, and DeepSeek has no path for the trees.
+    """
     _config(monkeypatch, backend)
     status, data = await _get(_state(_ChatSlot("main")), "main")
     assert status == 200
@@ -436,11 +438,11 @@ async def test_a_cold_chat_lists_global_steering_as_its_harness_receives_it(
 
 @pytest.mark.asyncio
 async def test_a_codex_chat_does_not_list_the_project_agents_md(home, tmp_path, monkeypatch):
-    """Codex reads the project's ``AGENTS.md`` itself, so Crew's load and the list
-    leave it out; on Claude Code the load sends it and the list names it."""
+    """Codex and MiMo Code read the project's ``AGENTS.md`` themselves, so Crew's load
+    and the list leave it out; on Claude Code the load sends it and the list names it."""
     project = tmp_path / "project"
     _write(project / "AGENTS.md", "# Agents\n")
-    for backend, listed in (("codex", False), ("claude", True)):
+    for backend, listed in (("codex", False), ("mimocode", False), ("claude", True)):
         _config(monkeypatch, backend)
         slot = _ChatSlot("main")
         slot.project = str(project)

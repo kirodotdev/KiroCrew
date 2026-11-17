@@ -1553,6 +1553,16 @@ with `{command, deletes}` after `bash` was answered, to the dispatcher. When bot
 categories ask for one call, the first reorders and the second finds the command
 cached. It shares no code with the OpenCode method.
 
+A MiMo Code Side Chat read has the same race for its target.
+`_defer_mimocode_side_read_permission` runs on a `side_read_only` session alone,
+for a call whose first `tool_call` frame was titled `read`, `grep` or `glob`
+(`MIMOCODE_READ_ONLY_BUILTINS`), and waits the same bound for the running update
+carrying that tool's target (`file_path` or `path`). 0.1.15 sent that update before
+the `read` request and after the `grep` and `glob` ones
+(`mimocode/side-read-only-live.jsonl`). Both deferrals hand the frame they read to
+`_put_running_input_first`, which re-queues the update ahead of the request or
+hands the frame back untouched.
+
 MiMo Code's sessions also carry an unasked-call tripwire. The launch seeds
 `permission: "ask"` and reads it back, but the harness's loopback listener can change
 the outcome from outside the read-back's sight: `POST /permission/skip-all` switches
@@ -3808,7 +3818,7 @@ An open approval is a different case, and the client does not handle it. A cance
 
 ### An MCP change applied by relaunch (`acp/relaunch_reload.py`)
 
-A harness in `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` reads its MCP servers once, at launch, and keeps its own session records. The Strands CLI is one: its servers come from the `--mcp-config` file the adapter writes at each spawn, and project mode refuses a non-empty `session/new` array. So a running process cannot take a new server. A second process launched with a changed file can: it `session/load`s the same id, replays the saved conversation, answers `{}`, and offers the new set on the next turn (`test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl`, an added server; `mcp-relaunch-remove-live.jsonl`, a withdrawn one).
+A harness in `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` reads its MCP servers once, at launch, and keeps its own session records. The Strands CLI is one: its servers come from the `--mcp-config` file the adapter writes at each spawn, and project mode refuses a non-empty `session/new` array. So a running process cannot take a new server. A second process launched with a changed file can: it `session/load`s the same id, replays the saved conversation, answers `{}`, and offers the new set on the next turn (`test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl`, an added server; `mcp-relaunch-remove-live.jsonl`, a withdrawn one). MiMo Code is the other member: it mounts the `mcpServers` array of each `session/new` and `session/load`, so a running process keeps the set it was handed, and a second process that loads the same id with a changed array starts an added server and drops a withdrawn one, with the conversation kept (`test/fixtures/acp_frames/mimocode/mcp-relaunch-add-live.jsonl`, `mcp-relaunch-remove-live.jsonl`). Its launch clears the mark right before it derives the array, as the Strands launch does before it writes the file.
 
 | Step | Where | What happens |
 |---|---|---|

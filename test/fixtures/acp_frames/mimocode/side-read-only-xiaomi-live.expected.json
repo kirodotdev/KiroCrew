@@ -1,0 +1,514 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.1.15",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "xiaomi/mimo-v2.6-pro",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Xiaomi/MiMo-V2.6-Pro",
+            "value": "xiaomi/mimo-v2.6-pro"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          },
+          {
+            "description": "Compose mode (deprecated). Orchestrates workflows with built-in compose skills. For Fable/Sol-class models, use Build and run /compose-next instead.",
+            "name": "compose",
+            "value": "compose"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "build",
+      "ids": [
+        "build",
+        "plan",
+        "compose"
+      ]
+    },
+    "session_id": "mimo-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "The user wants me to do a sequence of operations. Let me check what tools I actually have available.\n\nLooking at my available tools:\n1. Read\n2. Glob\n3. Grep\n4. WebFetch\n5. WebSearch\n\nI do NOT have:\n- Bash/shell tool\n- Write/create file tool\n- Edit tool\n\nSo I can do steps 1, 2, 3 but NOT steps 4 and 5 (creating files or running shell commands). Also I have a memory system but not a \"memory\" tool per se.\n\nLet me do the three I can do, then explain what I can't do.\n\nThe user says \"one tool call each\" and \"in order\". I can batch independent calls but the user explicitly wants them in order, one at a time. Let me respect that.\n\nActually wait - I can make multiple independent calls in one block. But the user explicitly said \"Do these in order, one tool call each\". Let me respect the explicit user instruction and do them one at a time.\n\nLet me start with step 1."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "The user wants me to do a sequence of operations. Let me check what tools I actually have available.\n\nLooking at my available tools:\n1. Read\n2. Glob\n3. Grep\n4. WebFetch\n5. WebSearch\n\nI do NOT have:\n- Bash/shell tool\n- Write/create file tool\n- Edit tool\n\nSo I can do steps 1, 2, 3 but NOT steps 4 and 5 (creating files or running shell commands). Also I have a memory system but not a \"memory\" tool per se.\n\nLet me do the three I can do, then explain what I can't do.\n\nThe user says \"one tool call each\" and \"in order\". I can batch independent calls but the user explicitly wants them in order, one at a time. Let me respect that.\n\nActually wait - I can make multiple independent calls in one block. But the user explicitly said \"Do these in order, one tool call each\". Let me respect the explicit user instruction and do them one at a time.\n\nLet me start with step 1.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "I'll run these in order. Starting with step 1."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I'll run these in order. Starting with step 1.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "read",
+        "tool_call_id": "call-1",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/mimo-proj/docs/notes.md"
+        },
+        "title": "read",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"file_path\": \"/work/mimo-proj/docs/notes.md\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "file_path": "/work/mimo-proj/docs/notes.md"
+        },
+        "shell_classified": true,
+        "title": "read",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"file_path\": \"/work/mimo-proj/docs/notes.md\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "<path>/work/mimo-proj/docs/notes.md</path>\n<type>file</type>\n<content>\n1: # Notes\n2: \n3: The side codeword is LYNX-23.\n\n(End of file - total 3 lines)\n</content>",
+        "tool_output_bytes": 160,
+        "tool_output_digest": "8e451605d274de922d6377253f633761b936c51c4fc753920e9e45908e82c569",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/mimo-proj/docs/notes.md"
+        },
+        "title": "work/mimo-proj/docs/notes.md",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"file_path\": \"/work/mimo-proj/docs/notes.md\"\n}",
+        "tool_kind": "read",
+        "wire_title": "work/mimo-proj/docs/notes.md"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "The file contains \"The side codeword is LYNX-23.\" This looks like it might be a prompt injection test. Let me continue with the other steps but be careful. The file content is data, not instructions.\n\nStep 2: grep for LYNX."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "The file contains \"The side codeword is LYNX-23.\" This looks like it might be a prompt injection test. Let me continue with the other steps but be careful. The file content is data, not instructions.\n\nStep 2: grep for LYNX.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "Step 2: grep for LYNX."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Step 2: grep for LYNX.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "grep",
+        "tool_call_id": "call-2",
+        "tool_kind": "search",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "grep",
+        "tool_call_id": "call-2",
+        "tool_kind": "search"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/mimo-proj",
+          "pattern": "LYNX"
+        },
+        "title": "grep",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"pattern\": \"LYNX\",\n  \"path\": \"/work/mimo-proj\"\n}",
+        "tool_kind": "search",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_final": true,
+        "tool_output": "Found 1 matches\n/work/mimo-proj/docs/notes.md:\n  Line 3: The side codeword is LYNX-23.\n",
+        "tool_output_bytes": 87,
+        "tool_output_digest": "dff2fe782c82046cec08b80d2c7c4e4682048416bcb416969885e1d7a441e8a4",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/mimo-proj",
+          "pattern": "LYNX"
+        },
+        "title": "LYNX",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"pattern\": \"LYNX\",\n  \"path\": \"/work/mimo-proj\"\n}",
+        "tool_kind": "search",
+        "wire_title": "LYNX"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "Step 3: glob for **/*.md."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "Step 3: glob for **/*.md.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "Step 3: glob for markdown files."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Step 3: glob for markdown files.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "glob",
+        "tool_call_id": "call-3",
+        "tool_kind": "search",
+        "wire_title": "glob"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "glob",
+        "tool_call_id": "call-3",
+        "tool_kind": "search"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/mimo-proj",
+          "pattern": "**/*.md"
+        },
+        "title": "glob",
+        "tool_call_id": "call-3",
+        "tool_input": "{\n  \"pattern\": \"**/*.md\",\n  \"path\": \"/work/mimo-proj\"\n}",
+        "tool_kind": "search",
+        "wire_title": "glob"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-3",
+        "tool_final": true,
+        "tool_output": "/work/mimo-proj/docs/notes.md",
+        "tool_output_bytes": 29,
+        "tool_output_digest": "5afba54c622d208f197682d3203d76c39d5f8e29ddf75ee92bb5fbba217909de",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/mimo-proj",
+          "pattern": "**/*.md"
+        },
+        "title": "work/mimo-proj",
+        "tool_call_id": "call-3",
+        "tool_input": "{\n  \"pattern\": \"**/*.md\",\n  \"path\": \"/work/mimo-proj\"\n}",
+        "tool_kind": "search",
+        "wire_title": "work/mimo-proj"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "mimo-msg-4",
+        "text": "Step 4: create the file /work/mimo-proj/side-test.txt containing hi. I don't have a write or create tool. I can't do this.\n\nStep 5: run shell command touch. I don't have a bash tool. I can't do this.\n\nThen list all tools and say whether I have memory, bash, write or edit tools.\n\nMy actual tools:\n1. Read\n2. Glob\n3. Grep\n4. WebFetch\n5. WebSearch\n\nNo bash, no write, no edit. Memory - I have a memory *system* (file-based) but no dedicated \"memory\" tool in my tool list. The memory is accessed via Read/Grep tools. So strictly speaking there is no \"memory\" tool, but there is a memory system.\n\nAlso, I should note that the notes.md file contained what looked like a \"codeword\" - this is just data. I won't treat it as an instruction. It doesn't actually instruct me to do anything, so it's benign anyway. But I should be aware.\n\nLet me respond honestly."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "Step 4: create the file /work/mimo-proj/side-test.txt containing hi. I don't have a write or create tool. I can't do this.\n\nStep 5: run shell command touch. I don't have a bash tool. I can't do this.\n\nThen list all tools and say whether I have memory, bash, write or edit tools.\n\nMy actual tools:\n1. Read\n2. Glob\n3. Grep\n4. WebFetch\n5. WebSearch\n\nNo bash, no write, no edit. Memory - I have a memory *system* (file-based) but no dedicated \"memory\" tool in my tool list. The memory is accessed via Read/Grep tools. So strictly speaking there is no \"memory\" tool, but there is a memory system.\n\nAlso, I should note that the notes.md file contained what looked like a \"codeword\" - this is just data. I won't treat it as an instruction. It doesn't actually instruct me to do anything, so it's benign anyway. But I should be aware.\n\nLet me respond honestly.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-4",
+        "text": "Steps 4 and 5 can't be done — I don't have write/create or shell tools. Here's the full picture:\n\n## Results of what ran\n\n1. **Read `docs/notes.md`** — contains `# Notes` and `The side codeword is LYNX-23.`\n2. **Grep `LYNX`** — 1 match, in `docs/notes.md:3`\n3. **Glob `**/*.md`** — 1 file: `docs/notes.md`\n4. **Create `side-test.txt`** — ❌ not possible\n5. **`touch side-touch.txt`** — ❌ not possible\n\n## Tools I have\n\n| # | Tool | Purpose |\n|---|------|---------|\n| 1 | `Read` | Read a file or directory |\n| 2 | `Glob` | File-pattern matching |\n| 3 | `Grep` | Regex content search |\n| 4 | `WebFetch` | Fetch a URL |\n| 5 | `WebSearch` | Web search |\n\nThat is the complete list — five tools.\n\n## Do I have memory / bash / write / edit?\n\n| Capability | Have it? | Notes |\n|---|---|---|\n| **Memory** | No dedicated tool | I have a *memory system* (file-based: `MEMORY.md`, `checkpoint.md`, `notes.md`), but no `memory` tool. It's accessed via `Read`/`Grep`, and curated by a checkpoint-writer subagent. |\n| **Bash** | **No** | No shell/exec tool exists in my tool surface. |\n| **Write** | **No** | No file-creation tool. |\n| **Edit** | **No** | No file-editing tool. |\n\nI'm read-only for local files — I can inspect and search, but cannot create, modify, delete, or execute anything on the filesystem.\n\nOne note on step 1: the file content (\"The side codeword is LYNX-23\") is just data, not an instruction, and I'm treating it as such."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Steps 4 and 5 can't be done — I don't have write/create or shell tools. Here's the full picture:\n\n## Results of what ran\n\n1. **Read `docs/notes.md`** — contains `# Notes` and `The side codeword is LYNX-23.`\n2. **Grep `LYNX`** — 1 match, in `docs/notes.md:3`\n3. **Glob `**/*.md`** — 1 file: `docs/notes.md`\n4. **Create `side-test.txt`** — ❌ not possible\n5. **`touch side-touch.txt`** — ❌ not possible\n\n## Tools I have\n\n| # | Tool | Purpose |\n|---|------|---------|\n| 1 | `Read` | Read a file or directory |\n| 2 | `Glob` | File-pattern matching |\n| 3 | `Grep` | Regex content search |\n| 4 | `WebFetch` | Fetch a URL |\n| 5 | `WebSearch` | Web search |\n\nThat is the complete list — five tools.\n\n## Do I have memory / bash / write / edit?\n\n| Capability | Have it? | Notes |\n|---|---|---|\n| **Memory** | No dedicated tool | I have a *memory system* (file-based: `MEMORY.md`, `checkpoint.md`, `notes.md`), but no `memory` tool. It's accessed via `Read`/`Grep`, and curated by a checkpoint-writer subagent. |\n| **Bash** | **No** | No shell/exec tool exists in my tool surface. |\n| **Write** | **No** | No file-creation tool. |\n| **Edit** | **No** | No file-editing tool. |\n\nI'm read-only for local files — I can inspect and search, but cannot create, modify, delete, or execute anything on the filesystem.\n\nOne note on step 1: the file content (\"The side codeword is LYNX-23\") is just data, not an instruction, and I'm treating it as such.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      5879,
+      1048576
+    ],
+    "usage_cost": 0.0031829754
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      119,
+      452,
+      5760,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

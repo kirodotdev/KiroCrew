@@ -40,6 +40,7 @@ from kiro_crew.acp._dispatch_parts.tool_call_provenance import scoped_tool_cache
 from kiro_crew.acp.harness_tool_names import (
     CLAUDE_READ_ONLY_BUILTINS,
     GOOSE_READ_ONLY_BUILTINS,
+    MIMOCODE_READ_ONLY_BUILTINS,
     qualified_harness_tool_id,
 )
 from kiro_crew.acp.types import (
@@ -55,6 +56,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
 )
@@ -68,6 +70,30 @@ logger = logging.getLogger("kiro_crew.acp._dispatch")
 
 #: The workspace tool arguments that name a guest path (``cwd`` is ``run_command``'s).
 _WORKSPACE_PATH_ARGUMENTS = ("path", "cwd")
+
+
+def _mimocode_search_stays_clear(builtin: str, target: str, params: dict | None) -> bool:
+    """Whether a MiMo Code Side Chat read reaches only what its target names.
+
+    A file read names its file, so it passes. A ``grep`` or ``glob`` walks every
+    folder below its root, hidden ones included, so the root must hold no sensitive
+    location (``security.path_contains_sensitive``, which counts a stall as one),
+    and a ``glob`` pattern must neither start a root of its own nor climb out of the
+    one given: the harness joins it onto that root.
+    """
+    if builtin not in ("grep", "glob"):
+        return True
+    from kiro_crew.security import path_contains_sensitive
+
+    if path_contains_sensitive(target):
+        return False
+    if builtin == "glob":
+        pattern = params.get("pattern") if isinstance(params, dict) else None
+        if not isinstance(pattern, str) or pattern.startswith("~") or os.path.isabs(pattern):
+            return False
+        if ".." in re.split(r"[\\/]", pattern):
+            return False
+    return True
 
 
 def _anchored_in_workspace(params: dict | None, root: str) -> dict | None:
@@ -766,11 +792,13 @@ def build_permission_event(
     and ``harness_backend`` give a backend that states no ``_meta.kiro.toolId`` a
     ``harness_tool_id`` anyway: the tool name its preceding ``tool_call`` frame
     stated, qualified by the backend (``goose#shell``). Only a backend with a name
-    table (:mod:`kiro_crew.acp.harness_tool_names`) gets one. On a claude or goose
-    Side Chat session (``side_read_only``) the same cache also gives
+    table (:mod:`kiro_crew.acp.harness_tool_names`) gets one. On a claude, goose or
+    MiMo Code Side Chat session (``side_read_only``) the same cache also gives
     ``harness_builtin_tool``: the kiro-cli read built-in the call stands
     for (:data:`~kiro_crew.acp.harness_tool_names.CLAUDE_READ_ONLY_BUILTINS`,
-    :data:`~kiro_crew.acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS`). Every
+    :data:`~kiro_crew.acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS`,
+    :data:`~kiro_crew.acp.harness_tool_names.MIMOCODE_READ_ONLY_BUILTINS`, the last
+    only for a call naming its target as an absolute path). Every
     other session's event is built exactly as before.
     ``harness_mcp_servers`` are the server names
     Crew placed on the session, so an opencode MCP tool's fused name is split and a
@@ -1368,6 +1396,41 @@ def build_permission_event(
             # pair is the read, so that placeholder is read as ``read``; any kind
             # goose does state is kept, and a non-read one still refuses the call.
             if tool_kind in ("", "other"):
+                tool_kind = "read"
+    # MiMo Code names its own tool only as the title of the call's first tool_call
+    # frame, and names no ``_meta``; a side session mounts no MCP server and its seed
+    # hides every writer, so that name is read as the built-in only for the read tools
+    # (``MIMOCODE_READ_ONLY_BUILTINS``), and only when the call names its target as an
+    # ABSOLUTE path, since the harness resolves a missing or relative one against the
+    # session's directory and the gate's path checks against the gateway's. A grep or
+    # glob also walks every folder below its root, hidden ones included, so its root
+    # must hold no sensitive location and a glob pattern must stay under that root
+    # (``_mimocode_search_stays_clear``), as kiro-cli's own search proof requires.
+    # Side Chat only.
+    elif (
+        side_read_only
+        and harness_backend == ACP_BACKEND_MIMOCODE
+        and harness_tool_name_cache is not None
+        and tool_call_id
+        and not _mcp_server_name
+    ):
+        entry = MIMOCODE_READ_ONLY_BUILTINS.get(harness_tool_name_cache.get(_ck, ""))
+        target = (
+            _resolved_raw_params.get(entry[1])
+            if entry is not None and isinstance(_resolved_raw_params, dict)
+            else None
+        )
+        if (
+            entry is not None
+            and _raw_params_trusted
+            and isinstance(target, str)
+            and os.path.isabs(target)
+            and _mimocode_search_stays_clear(entry[0], target, _resolved_raw_params)
+        ):
+            _harness_builtin_tool = entry[0]
+            # MiMo Code states ``search`` for grep and glob (captured live, 0.1.15),
+            # a kind the READ_ONLY gate does not take; the name proves the search.
+            if _harness_builtin_tool in ("grep", "glob") and tool_kind == "search":
                 tool_kind = "read"
 
     # A remote workspace's tools stand in for the engine built-ins Crew unmounted

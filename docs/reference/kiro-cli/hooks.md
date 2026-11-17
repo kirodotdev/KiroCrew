@@ -139,7 +139,7 @@ hook, for example `"command": "~/.kiro/hooks/check.sh"`.
 ## Output size (Kiro Crew)
 
 Where Kiro Crew runs an agent's spec hooks itself (KAS, goose, opencode and
-strands, and claude and codex for every event but `preToolUse`), an object-form hook's
+strands, and claude, codex and mimocode for every event but `preToolUse`), an object-form hook's
 `max_output_size` cuts its STDOUT at that many UTF-8 bytes, after redaction,
 and appends a truncation marker. Every hook's stream is capped at 64 KiB as
 well, so a larger value, or none, leaves that cap.

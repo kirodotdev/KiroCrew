@@ -630,13 +630,13 @@ with `base_spec_missing` before a session exists.
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
 `ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends_routing.py`, harness-parity H6):
-kiro-cli, KAS, claude, goose, deepseek and strands. A harness has its own pre-approval surface
+kiro-cli, KAS, claude, goose, deepseek, strands and mimocode. A harness has its own pre-approval surface
 (claude-agent-acp `permissions.allow` / `bypassPermissions`, KAS `permissions`
-rules from its own store, goose's `permission.yaml`) that the host gate cannot see: a call it pre-approves
+rules from its own store, goose's `permission.yaml`, MiMo Code's `permission`) that the host gate cannot see: a call it pre-approves
 would run with no READ_ONLY decision and no SEL row. A member therefore starts
 the side session in a shape where that surface cannot reach a write — kiro-cli
 through the derived spec above, KAS through the same spec taken over the wire,
-claude and goose through the session shapes below, deepseek through Crew's verified gate plugin, and strands through Crew's gate module. KAS receives `<agent>--readonly` as a
+claude and goose through the session shapes below, deepseek through Crew's verified gate plugin, strands through Crew's gate module, and mimocode through its side seed. KAS receives `<agent>--readonly` as a
 projected custom agent (`acp/kas_agents` puts it in `customAgents`), and the
 derivation empties its `permissions` block with the other grants, so every KAS
 tool call raises `session/request_permission` (measured on kiro-cli 2.29.0,
@@ -688,6 +688,43 @@ command included, carries `side_read_only_refusal` and is refused in
 `llm_helpers` before the gate, so the gate's shell classifier never sees it. The
 prompt is `SIDE_BOUNDARY_PROMPT_FILE_READS`: file reads only, no shell, search
 or web. Thread replies take the same posture (`THREAD_BOUNDARY_PROMPT_FILE_READS`).
+mimocode reads no kiro agent spec and its own `permission` setting is its
+pre-approval surface, and some of its tools (`memory`, `history`, `task`) never
+ask. Its side session's seed (`acp/harness/mimocode._mimocode_seed_denies`) keeps
+`"*": "ask"` and denies every tool in `MIMOCODE_SIDE_DENIED_TOOLS`: the writers,
+the shell and every unasked tool but `invalid` and `mcp_tool_search`. A deny
+removes the tool from the list the model is offered (0.1.15 `mimo debug agent
+build` keeps `read`, `grep`, `glob`, `webfetch`, `websearch`, `invalid` and
+`mcp_tool_search`). The launch read-back refuses the session when one of those
+denies is not in force in every context or when the harness mounts an MCP server
+from its own config, or when it loads any plugin (a plugin can register a tool
+under a built-in's name and replace it: measured on 0.1.15, a project
+`.mimocode/plugin/` file's `read` ran in place of the built-in, so a call titled
+`read` proves nothing while one is loaded; the resolved `plugin` list names every
+one, directory plugins included); Crew's array is empty, so an `mcp` governance control, which
+refuses a MiMo Code session that mounts any server, finds none to refuse it for
+(`_mimocode_mounted_mcp_servers` reads the same seam `session/new` does), and the tripwire stops the harness on
+any unasked call outside `MIMOCODE_SIDE_UNASKED_TOOL_IDS`. Captured live on 0.1.15
+through a `side_read_only` seed (`acp_frames/mimocode/side-read-only-live.jsonl`, and
+again on the harness's own xiaomi provider in `side-read-only-xiaomi-live.jsonl`):
+`read`, `grep` and `glob` asked, no write or shell tool was offered, and no file
+was created. Only those three, named by the title of the call's first `tool_call`
+frame (`MIMOCODE_READ_ONLY_BUILTINS`), with an ABSOLUTE target in the trusted
+params cache, are named `fs_read`, `grep` and `glob`; a `grep` or `glob` also needs
+a root with no sensitive location below it (`security.path_contains_sensitive`:
+a search walks hidden folders, so one over the home folder reads `~/.ssh`) and a
+`glob` pattern that stays under that root, as kiro-cli's search proof requires
+(`_mimocode_search_stays_clear`); MiMo Code states `search`
+for grep and glob, which is read as `read` for those two. The target arrives on
+the call's running update, which 0.1.15 sent before the `read` request and after
+the `grep` and `glob` ones, so a request that comes first is held for one frame
+(`acp/client_turn._defer_mimocode_side_read_permission`), as a shell one is; the
+request's own `rawInput` never fills the cache. Every other call, a web fetch
+included, is refused by `READ_ONLY`. The prompt is `SIDE_BOUNDARY_PROMPT_NO_WEB`:
+reads and searches by an absolute path, no shell, and fetching pages refused (the
+seed leaves `webfetch` and `websearch` on the list; `READ_ONLY` refuses them). Thread
+replies take
+the same posture (`THREAD_BOUNDARY_PROMPT_NO_WEB`).
 Another
 harness may have its own pre-approval surface the host gate cannot see. Off the set,
 or with the harness unknown because the config never loaded, `_run_side_turn`

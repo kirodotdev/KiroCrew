@@ -540,12 +540,18 @@ ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset(
 # the same way -- measured on Antigravity ACP 1.4.4 on Linux with an invalid API key:
 # a ``session/new`` whose array names a command that does not exist still creates
 # the session, and neither the wire nor the server's stderr names the server.
+# mimocode drops such an
+# element the way goose does, measured on 0.1.15: a session/new naming one stdio
+# element whose command does not exist beside one that does starts the session, the
+# working server's tool is called, and nothing on the wire names the missing one
+# (``test/fixtures/acp_frames/mimocode/mcp-stdio-dropped-live.jsonl``).
 ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset(
     {
         ACP_BACKEND_ANTIGRAVITY,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -692,7 +698,16 @@ ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
 # array (``ACP_BACKENDS_SESSION_MCP_ARRAY``) and reads none at launch, so a
 # relaunch has no launch-time config to change, and none was captured. Outside all
 # three sets, an MCP write resets its sessions.
-ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
+# mimocode is a member on its own measured relaunch. ``mimo acp`` mounts the
+# ``mcpServers`` array of each ``session/new`` and ``session/load``, and the
+# replacement's spawn re-derives that array from the agent spec
+# (``MimoCodeLaunch.resolve_spawn``). Driven live on 0.1.15, a SECOND process sent
+# ``session/load`` of a first process's session with a changed array: an added
+# server was started and its tool called with the earlier turns kept
+# (``test/fixtures/acp_frames/mimocode/mcp-relaunch-add-live.jsonl``), and a
+# withdrawn server was not started and its tool was not offered
+# (``test/fixtures/acp_frames/mimocode/mcp-relaunch-remove-live.jsonl``).
+ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS, ACP_BACKEND_MIMOCODE})
 
 # Backends on which a per-template MCP addition reaches a session of a template
 # Crew does NOT own (a third-party or other custom agent) without Crew writing into
@@ -703,7 +718,9 @@ ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
 # build their ``session/new`` array from ``session_mcp._session_spec_and_snapshot_for``,
 # each with a live capture of a spec-declared server running in the session
 # (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``,
-# ``test/fixtures/acp_frames/codex/saved-spec-projection-live.jsonl``).
+# ``test/fixtures/acp_frames/codex/saved-spec-projection-live.jsonl``). mimocode builds
+# its array through the same read, captured live on 0.1.15
+# (``test/fixtures/acp_frames/mimocode/saved-spec-projection-live.jsonl``).
 # kiro-cli is not a member: it reads ``--agent`` off disk at spawn and has no
 # per-session channel for a whole spec, and Crew never writes a spec it does not
 # own. pi is not a member: its projection is broker-only, so a declared server does
@@ -712,5 +729,5 @@ ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
 # Templates Crew owns (default, worker, conductors) are merged by their installer and
 # reach every backend; this set is only about the others.
 ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN = frozenset(
-    {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+    {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_MIMOCODE}
 )

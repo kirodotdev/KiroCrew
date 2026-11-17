@@ -25,6 +25,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEEPSEEK,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_MIMOCODE,
     PROVIDER_LABEL_OPENCODE,
     PROVIDER_LABEL_PI,
 )
@@ -101,6 +102,7 @@ def _opt_out(project: Path) -> None:
         (PROVIDER_LABEL_CODEX, False, True),
         (PROVIDER_LABEL_OPENCODE, False, True),
         (PROVIDER_LABEL_PI, False, True),
+        (PROVIDER_LABEL_MIMOCODE, False, True),
         (PROVIDER_LABEL_DEEPSEEK, False, False),
         ("acme-config-authored-harness", False, False),
         (None, False, False),
@@ -670,13 +672,14 @@ def test_claude_receives_project_steering_and_agents_md_once(
     [[SHIPPED_STEERING_RESOURCE], [SHIPPED_STEERING_RESOURCE, "file://AGENTS.md"]],
     ids=["shipped-spec", "spec-lists-agents-md"],
 )
+@pytest.mark.parametrize("harness", [PROVIDER_LABEL_CODEX, PROVIDER_LABEL_MIMOCODE])
 def test_codex_receives_project_and_global_steering_once_and_not_agents_md(
-    tmp_path, trees, fresh, resources
+    tmp_path, trees, fresh, resources, harness
 ):
-    """A Codex chat with no folder gets what kiro-cli loads for the project, once.
+    """A Codex or MiMo Code chat with no folder gets what kiro-cli loads for the project, once.
 
-    Codex is handed no spec, so Crew's steering load sends the project and the
-    global steering, at session start and again after a compaction. Codex reads
+    Neither harness is handed a spec, so Crew's steering load sends the project and
+    the global steering, at session start and again after a compaction. Each reads
     the project's ``AGENTS.md`` itself from its working directory, so the load
     leaves that file out, also when the spec lists it.
     """
@@ -685,8 +688,8 @@ def test_codex_receives_project_and_global_steering_once_and_not_agents_md(
     msg, _ = _builder(tmp_path).build_message(
         "hello",
         fresh,
-        "dashboard:codex",
-        provider_type=PROVIDER_LABEL_CODEX,
+        f"dashboard:{harness}",
+        provider_type=harness,
         project=str(trees["project"]),
         steering_dirs=(),
         needs_reinjection=not fresh,
@@ -734,11 +737,13 @@ def test_crew_loads_spec_steering_names_exactly_the_harnesses_handed_no_spec():
         PROVIDER_LABEL_CODEX,
         PROVIDER_LABEL_OPENCODE,
         PROVIDER_LABEL_PI,
+        PROVIDER_LABEL_MIMOCODE,
     }
     assert {label for label in labels if acp_driver.reads_project_agents_md(label)} == {
         PROVIDER_LABEL_CODEX,
         PROVIDER_LABEL_OPENCODE,
         PROVIDER_LABEL_PI,
+        PROVIDER_LABEL_MIMOCODE,
     }
 
 

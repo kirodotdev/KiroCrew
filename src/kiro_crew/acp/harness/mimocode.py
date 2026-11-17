@@ -43,6 +43,7 @@ from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnCont
 from kiro_crew.acp.harness_tool_names import (
     MAX_HARNESS_CONFIG_MCP_SERVERS,
     MAX_HARNESS_TOOL_NAME_LEN,
+    MIMOCODE_SIDE_DENIED_TOOLS,
     mimocode_rewrites_name,
 )
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
@@ -604,6 +605,20 @@ def _mimocode_ambient_inline_config() -> dict[str, Any]:
     return {}
 
 
+def _mimocode_seed_denies(session: ProcessSession) -> tuple[str, ...]:
+    """The tool ids this session's seed denies: the projection's, then a side session's.
+
+    A Side Chat session (``side_read_only``) also denies every MiMo Code tool that
+    writes, runs a command or runs without asking (``MIMOCODE_SIDE_DENIED_TOOLS``),
+    which removes each from the tool list the model is offered; the read-back refuses
+    the session when any of them is not in force.
+    """
+    rules = tuple(getattr(session, "_session_harness_deny_rules", ()) or ())
+    if not getattr(session, "_side_read_only", False):
+        return rules
+    return rules + tuple(t for t in MIMOCODE_SIDE_DENIED_TOOLS if t not in rules)
+
+
 def _mimocode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> str:
     """The ``MIMOCODE_CONFIG_CONTENT`` value that makes this session ask.
 
@@ -767,6 +782,36 @@ def _verify_mimocode_routing(
     # context. A rule that lost is normally not a refusal: the projection withholds
     # its server.
     read_back.denies_unenforced = _mimocode_unenforced_denies(contexts, seeded_denies)
+    # A Side Chat session rests its read-only promise on its seed hiding every writer,
+    # the shell and every unasked tool. One of them left in force in any context is a
+    # tool the model can call outside the READ_ONLY gate, and an MCP server the
+    # harness mounts from its own config is one more such tool: refuse the session.
+    if getattr(session, "_side_read_only", False):
+        side_lost = sorted(
+            _mimocode_unenforced_denies(contexts, MIMOCODE_SIDE_DENIED_TOOLS)
+            | (frozenset(MIMOCODE_SIDE_DENIED_TOOLS) - frozenset(seeded_denies))
+        )
+        if side_lost:
+            return (
+                "MiMo Code's own config keeps tools a Side Chat must not offer "
+                f"({', '.join(side_lost)})",
+                "Remove the permission rules for those tools from MiMo Code's own config "
+                "or agent files, then reopen the side chat.",
+            )
+        # A plugin can register a tool under a built-in's name and replace it (0.1.15,
+        # measured: a project `.mimocode/plugin/` file's `read` ran in place of the
+        # built-in), so with any plugin loaded a call titled `read`, `grep` or `glob`
+        # does not prove the read it names. The resolved `plugin` list names every
+        # one, directory plugins included as `file://` URLs.
+        plugins = resolved.get("plugin")
+        if isinstance(plugins, list) and plugins:
+            names = ", ".join(repr(session._scrub_observed(str(p))) for p in plugins)
+            return (
+                f"MiMo Code loads the plugins {names}, and a plugin can replace its read "
+                "tools, so this side chat cannot start",
+                "Remove those plugins from MiMo Code's config or plugin folders, then "
+                "reopen the side chat.",
+            )
     # ...unless the harness mounts that server from its OWN config too. Withholding the
     # array element does not reach that mount, so the switched-off tool would stay
     # callable there: refuse the session instead.
@@ -795,6 +840,14 @@ def _verify_mimocode_routing(
     native = sorted(set(native) | (mounts & unhonoured))
     if native:
         return _native_mount_refusal(session, native)
+    if mounts and getattr(session, "_side_read_only", False):
+        names = ", ".join(repr(session._scrub_observed(n)) for n in sorted(mounts))
+        return (
+            f"MiMo Code loads the MCP server {names} from its own config, and a Side Chat "
+            "runs with no MCP server, so this side chat cannot start",
+            f"Stop loading those servers from {_MIMOCODE_MCP_SOURCES}, then reopen the "
+            "side chat.",
+        )
     disabled = sorted(mounts & read_back.disabled_servers)
     if disabled:
         return _native_disabled_refusal(session, disabled)
@@ -823,13 +876,15 @@ def _verify_mimocode_routing(
 def _mimocode_mounted_mcp_servers(session: ProcessSession) -> tuple[str, ...]:
     """Every MCP server this session would mount: Crew's array, then the harness's own.
 
-    Blocking when the array is still cold, so callers run it off the loop.
+    Crew's part is read through the same seam ``session/new`` is
+    (``session_mcp_servers``), so a Side Chat session, whose array is empty, names
+    none. Blocking when the array is still cold, so callers run it off the loop.
     """
     if getattr(session, "_session_mcp_cache", None) is None:
         session._session_mcp_cache = session._resolve_session_mcp_servers()
     placed = [
         element["name"]
-        for element in session._session_mcp_servers()
+        for element in session._mimocode_session_mcp_servers()
         if isinstance(element, dict) and isinstance(element.get("name"), str)
     ]
     native: frozenset[str] = session._harness_read_back().native_mounts
@@ -969,7 +1024,11 @@ class MimoCodeLaunch(ProcessAdapter):
         # Translate the agent spec into this session's MCP array HERE, as the claude
         # adapter does: the translation reads disk, and the shared session/new site
         # would put an executor hop on every backend's path (harness-parity H13). The
-        # array is unconditional: the routing is seeded and read back below.
+        # array is unconditional: the routing is seeded and read back below. This
+        # launch reads the spec as it is now, so an MCP change marked before this
+        # point is applied by it; a mark landing after the read survives for the
+        # next boundary (``acp/relaunch_reload.py``).
+        session._mcp_relaunch_pending = False
         await session._prepare_session_mcp()
         # The refuse-then-mask preflight, keyed on the routing question rather than
         # on this harness's identity: it is ENFORCED, so the OS credential mask is
@@ -1027,7 +1086,8 @@ class MimoCodeLaunch(ProcessAdapter):
         # synchronous spawn on the gateway loop is the stall this path guards
         # against everywhere else.
         self._config_content = _mimocode_routing_config(
-            self.backend, getattr(session, "_session_harness_deny_rules", ())
+            self.backend,
+            _mimocode_seed_denies(session),
         )
         # Wrapped in the SAME sandbox, with the SAME credential mask, as the session
         # spawn. The read-back runs the harness's own binary, and this harness
