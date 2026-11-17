@@ -1035,6 +1035,13 @@
       "configKey": "session.max_per_creator"
     },
     {
+      "id": "chat.show-agent-name-on-session-cards",
+      "label": "Show Agent Name on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.show-agent-name-on-session-cards",
+      "hint": "Turn off to drop the agent name row; the time moves up beside the title"
+    },
+    {
       "id": "chat.show-context-percentage",
       "label": "Show Context Percentage",
       "tab": "chat",

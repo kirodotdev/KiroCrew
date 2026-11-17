@@ -18855,6 +18855,8 @@
         "full_titles_on_scroll_description": "滚动会话列表时，完整显示被侧边栏截断的标题",
         "session_title_lines": "会话卡片的标题行数",
         "session_title_lines_desc": "会话标题在被截断前可占用的行数",
+        "session_card_agent_name": "在会话卡片上显示代理名称",
+        "session_card_agent_name_desc": "关闭后不再显示代理名称这一行，时间移到标题旁边",
         "session_preview_lines": "会话卡片的预览行数",
         "session_preview_lines_desc": "最新消息预览在被截断前可占用的行数",
         "content_width": "内容宽度",

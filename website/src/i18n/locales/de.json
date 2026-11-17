@@ -19366,6 +19366,8 @@
         "full_titles_on_scroll_description": "Beim Scrollen der Sitzungsliste werden von der Seitenleiste abgeschnittene Titel vollständig angezeigt",
         "session_title_lines": "Titelzeilen auf Sitzungskarten",
         "session_title_lines_desc": "Wie viele Zeilen ein Sitzungstitel nutzen darf, bevor er abgeschnitten wird",
+        "session_card_agent_name": "Agentennamen auf Sitzungskarten anzeigen",
+        "session_card_agent_name_desc": "Ausschalten, um die Zeile mit dem Agentennamen zu entfernen; die Uhrzeit rückt neben den Titel",
         "session_preview_lines": "Vorschauzeilen auf Sitzungskarten",
         "session_preview_lines_desc": "Wie viele Zeilen die Vorschau der letzten Nachricht nutzen darf, bevor sie abgeschnitten wird",
         "content_width": "Inhaltsbreite",

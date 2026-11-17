@@ -10700,6 +10700,8 @@
         "full_titles_on_scroll_description": "While you scroll the session list, cut-off titles show in full",
         "session_title_lines": "Title Lines on Session Cards",
         "session_title_lines_desc": "How many lines a session title can use before it is cut off",
+        "session_card_agent_name": "Show Agent Name on Session Cards",
+        "session_card_agent_name_desc": "Turn off to drop the agent name row; the time moves up beside the title",
         "session_preview_lines": "Preview Lines on Session Cards",
         "session_preview_lines_desc": "How many lines the latest-message preview can use before it is cut off",
         "content_width": "Content Width",

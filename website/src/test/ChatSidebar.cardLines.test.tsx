@@ -6,6 +6,9 @@
  * lines wrap and cut off after the last allowed line. A change applies to rows
  * already on screen, without a reload, and a stored value outside 1-3 falls
  * back to one line rather than leaving the text unbounded.
+ *
+ * "Show Agent Name on Session Cards" off drops the agent name and floats the
+ * rest of its line (the time) onto the title row, so each card loses a row.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
@@ -128,5 +131,41 @@ describe('session card line counts', () => {
     const cfg = loadChatConfig()
     expect(cfg.sessionTitleLines).toBe(1)
     expect(cfg.sessionPreviewLines).toBe(1)
+  })
+})
+
+describe('session card agent name', () => {
+  beforeEach(() => localStorage.clear())
+  afterEach(() => localStorage.clear())
+
+  const agentLine = () => titleEl().parentElement!.querySelector('[data-session-agent-line]') as HTMLElement
+  const setAgent = (on: unknown) =>
+    saveChatConfig({ ...loadChatConfig(), showAgentNameOnCards: on } as ReturnType<typeof loadChatConfig>)
+
+  it('shows the agent name on its own line when nothing is set', () => {
+    renderSidebar()
+    expect(screen.getByTestId('session-row-agent')).toBeInTheDocument()
+    expect(agentLine().className).not.toContain('float-right')
+  })
+
+  it('drops the agent name and floats the time onto the title row when turned off', () => {
+    setAgent(false)
+    renderSidebar()
+    expect(screen.queryByTestId('session-row-agent')).toBeNull()
+    expect(agentLine().className).toContain('float-right')
+    expect(agentLine().querySelector('[data-testid="session-row-time"]')).not.toBeNull()
+  })
+
+  it('applies a change to rows already on screen, without a reload', () => {
+    renderSidebar()
+    act(() => { setAgent(false) })
+    expect(screen.queryByTestId('session-row-agent')).toBeNull()
+    act(() => { setAgent(true) })
+    expect(screen.getByTestId('session-row-agent')).toBeInTheDocument()
+  })
+
+  it.each([['no'], [0], [null]])('keeps the agent name for a stored %p', (bad) => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showAgentNameOnCards: bad }))
+    expect(loadChatConfig().showAgentNameOnCards).toBe(true)
   })
 })

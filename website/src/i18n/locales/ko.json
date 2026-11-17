@@ -18855,6 +18855,8 @@
         "full_titles_on_scroll_description": "세션 목록을 스크롤하는 동안 사이드바에서 잘린 제목을 전체로 보여 줍니다",
         "session_title_lines": "세션 카드의 제목 줄 수",
         "session_title_lines_desc": "세션 제목이 잘리기 전까지 사용할 수 있는 줄 수",
+        "session_card_agent_name": "세션 카드에 에이전트 이름 표시",
+        "session_card_agent_name_desc": "끄면 에이전트 이름 줄이 사라지고 시간이 제목 옆으로 이동합니다",
         "session_preview_lines": "세션 카드의 미리보기 줄 수",
         "session_preview_lines_desc": "최신 메시지 미리보기가 잘리기 전까지 사용할 수 있는 줄 수",
         "content_width": "콘텐츠 너비",
