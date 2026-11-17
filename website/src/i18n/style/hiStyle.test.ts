@@ -84,7 +84,7 @@ describe('hi tone (style/hi.md §4)', () => {
     // Baselined: the existing catalog uses आप extensively. Each block migrated
     // to तुम lowers this ceiling by the strings it converts, so the count can
     // only go down.
-    expect(bad.length, report(bad)).toBeLessThanOrEqual(113)
+    expect(bad.length, report(bad)).toBeLessThanOrEqual(73)
   })
 })
 
@@ -157,10 +157,20 @@ describe('hi register (style/hi.md §4)', () => {
       .toEqual([])
   })
 
-  // The Kiro CLI setup screen mixed both registers side by side (#34956); its block is all तुम.
-  it('addresses the reader as तुम throughout components.kiroPrerequisiteGate', () => {
+  // These screens mixed both registers side by side: the Kiro CLI setup screen
+  // (#34956), and the Kiro sign-in chooser and the first-run chapters (#35056).
+  // Each block is all तुम.
+  it.each([
+    'kiroPrerequisiteGate',
+    'kasLogin',
+    'onboardingChapterShell',
+    'meetCrewmatesFlow',
+    'onboardingFlow',
+    'agentImportFlow',
+    'privacyChapter',
+  ])('addresses the reader as तुम throughout components.%s', (block) => {
     const bad = Object.entries(hi)
-      .filter(([key]) => key.startsWith('components.kiroPrerequisiteGate.'))
+      .filter(([key]) => key.startsWith(`components.${block}.`))
       .filter(([, value]) => hasFormalPronoun(value) || FORMAL_IMPERATIVE.test(value))
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, report(bad)).toEqual([])
