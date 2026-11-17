@@ -75,6 +75,24 @@ jobs:
             pad_bytes: "0"
             min_zip_bytes: "0"
             drive_timeout: "300"
+            blockmap: none
+          # Block (differential) download: the installed version's zip is in
+          # the updater cache, as after any earlier update, and both blockmaps
+          # are served. Only the changed blocks may cross the feed.
+          - payload: blockmap
+            pad_bytes: "0"
+            min_zip_bytes: "0"
+            drive_timeout: "300"
+            blockmap: good
+          # A blockmap that does not describe the installed zip: the rebuilt
+          # zip fails its sha512, and the client must fall back to a full
+          # download and still install. This is the failure a bad publish would
+          # cause in the field.
+          - payload: wrong-blockmap
+            pad_bytes: "0"
+            min_zip_bytes: "0"
+            drive_timeout: "300"
+            blockmap: wrong
           - payload: over-1gib
             # 1.1 GiB of random bytes; the app itself adds the rest.
             pad_bytes: "1181116007"
@@ -84,6 +102,7 @@ jobs:
             # Over a gigabyte goes through the loopback feed, the sha512
             # check and Squirrel's own transfer before "downloaded".
             drive_timeout: "900"
+            blockmap: none
     env:
       PORT: "8799"
       OUT: "/tmp/kirocrew-ota"
@@ -157,12 +176,36 @@ jobs:
           [ "$zip_bytes" -ge "$MIN_ZIP_BYTES" ] \
             || { echo "update zip is too small to test the size this leg exists for"; exit 1; }
 
-      - name: Start the local update feed
+      # The state a block download starts from: the zip the installed version
+      # came in, cached where MacUpdater keeps the last download, and a
+      # blockmap for each version built by the script the release uses.
+      - name: Seed the updater cache and build the blockmaps
+        if: matrix.blockmap != 'none'
         working-directory: website/electron
         run: |
           set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent "$INSTALLED_APP" "$OUT/installed.zip"
+          cache="$HOME/Library/Caches/$(node -p "require('./package.json').name.toLowerCase() + '-updater'")"
+          mkdir -p "$cache"
+          cp "$OUT/installed.zip" "$cache/update.zip"
+          node scripts/build-zip-blockmap.js "$OUT/installed.zip" "$OUT/old.blockmap" "$OUT/old.json"
+          node scripts/build-zip-blockmap.js "$UPDATE_ZIP" "$OUT/new.blockmap" "$OUT/new.json"
+
+      - name: Start the local update feed
+        working-directory: website/electron
+        env:
+          BLOCKMAP: ${{ matrix.blockmap }}
+        run: |
+          set -euo pipefail
+          # macOS bash 3.2 calls an empty array unbound under `set -u`, hence the
+          # ${feed_args[@]+...} spelling below.
+          feed_args=()
+          case "$BLOCKMAP" in
+            good)  feed_args=(--blockmap "$OUT/new.blockmap" --old-version "$INSTALLED_VER" --old-blockmap "$OUT/old.blockmap") ;;
+            wrong) feed_args=(--blockmap "$OUT/new.blockmap" --old-version "$INSTALLED_VER" --old-blockmap "$OUT/new.blockmap") ;;
+          esac
           nohup node scripts/local-feed-server.js \
-            --port "$PORT" --zip "$UPDATE_ZIP" --version "$UPDATE_VER" \
+            --port "$PORT" --zip "$UPDATE_ZIP" --version "$UPDATE_VER" ${feed_args[@]+"${feed_args[@]}"} \
             > /tmp/ota-feed.log 2>&1 &
           # The feed hashes the whole ZIP before it listens; allow for a
           # padded one.
@@ -217,6 +260,28 @@ jobs:
           echo "--- app log ---"; cat /tmp/ota-app.log || true
           echo "--- feed log ---"; cat /tmp/ota-feed.log || true
           exit 1
+
+      # How many zip bytes crossed the feed, read after the swap so a block
+      # download that failed and fell back is counted in full.
+      - name: Assert how the update was downloaded
+        if: matrix.blockmap != 'none'
+        env:
+          BLOCKMAP: ${{ matrix.blockmap }}
+        run: |
+          set -euo pipefail
+          stats=$(curl -fsS "http://127.0.0.1:${PORT}/stats")
+          echo "feed stats: $stats"
+          size=$(echo "$stats" | python3 -c 'import json,sys; print(json.load(sys.stdin)["zip_size"])')
+          served=$(echo "$stats" | python3 -c 'import json,sys; print(json.load(sys.stdin)["zip_bytes_served"])')
+          if [ "$BLOCKMAP" = good ]; then
+            [ "$served" -gt 0 ] && [ "$served" -lt "$size" ] \
+              || { echo "expected a block download (0 < served < $size), got $served"; cat /tmp/ota-feed.log; exit 1; }
+            echo "BLOCK DOWNLOAD CONFIRMED: $served of $size bytes"
+          else
+            [ "$served" -ge "$size" ] \
+              || { echo "expected a full download after the bad blockmap, got $served of $size"; cat /tmp/ota-feed.log; exit 1; }
+            echo "FALLBACK CONFIRMED: full download ($served bytes served for a $size-byte zip)"
+          fi
 
       - name: Confirm the swapped app is signed and launchable
         run: |
