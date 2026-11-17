@@ -129,6 +129,7 @@ from kiro_crew.vector_memory_runtime import embedding_repair as _embedding_repai
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import episodic_write as _episodic_write
 from kiro_crew.vector_memory_runtime import faiss_index as _faiss_index
+from kiro_crew.vector_memory_runtime import lesson_candidates as _lesson_candidates  # noqa: F401
 from kiro_crew.vector_memory_runtime import lesson_write as _lesson_write
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime import migration as _migration
@@ -364,9 +365,6 @@ _BUILTIN_PREFIXES = [
 ]
 
 # ── Schema ──
-
-
-_MAX_BACKFILLS_PER_CALL = 5  # cap lazy embedding backfills to bound latency
 
 
 def _lesson_slug(rule: str) -> str:

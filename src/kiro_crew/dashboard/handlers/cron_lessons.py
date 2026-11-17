@@ -542,15 +542,10 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             # The embed above was attempted; a None from it must not trigger a
             # second, unbounded embed of the same text inside the write.
             rule_emb_resolved=True,
-            # Stored lessons that still lack a vector are the standing repair
-            # sweep's to fill. Embedding them here is PRIORITY_BULK work with no
-            # deadline, queued behind every other bulk job, so it can hold this
-            # request past the MCP client's read timeout (``mcp_core._post``) while
-            # the write still lands later. Until the sweep fills such a row, both
-            # semantic checks (dedup here, the contradiction scan below) pass it
-            # over; the exact-rule, substring and keyword-overlap rules still apply
-            # to it.
-            defer_backfills=True,
+            # The write embeds no stored lesson: one that still lacks a vector is the
+            # standing repair sweep's to fill. Until it does, both semantic checks
+            # (dedup here, the contradiction scan below) pass it over; the exact-rule,
+            # substring and keyword-overlap rules still apply to it.
             written_by=written_by,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value

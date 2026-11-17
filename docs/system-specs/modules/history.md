@@ -3367,14 +3367,13 @@ how a new refusal reason silently reads as a completed pass.
 **Loop safety:** the task body runs on the event loop thread, so any blocking
 work inside it must be offloaded. `_write_structured_memory` and `_save_lessons`
 both embed items via blocking in-process llama.cpp inference calls
-(`write_lesson` performs a rule embed plus up to `_MAX_BACKFILLS_PER_CALL` lazy
-backfill embeds per lesson), so they are invoked through `asyncio.to_thread()` —
+(`write_lesson` performs one rule embed and embeds no stored lesson), so they are invoked through `asyncio.to_thread()` —
 running them inline would freeze the gateway loop (heartbeats, Slack, dashboard)
 for the duration of each embed, and can trip the faulthandler hard-kill. A
 transcript-derived pass resolves its lesson or episode embedding before entering
 `ConversationLog.publication_hold`; `rule_emb_resolved` / `embedding_resolved`
-prevent a second inference inside that short hold, and lazy lesson backfills
-remain for the standing repair sweep. (The
+prevent a second inference inside that short hold, and a stored lesson with no
+vector is left to the standing repair sweep. (The
 model load itself never blocks the embed call — it runs on a background daemon
 thread; embed returns `None` until the model is resident.) The same
 applies to `TaskRunner._extract_lesson`, which calls `write_lesson` after a task
@@ -3383,7 +3382,7 @@ failure. Dashboard memory handlers that write semantic entries or embed a query
 on worker threads concurrently with loop-thread reads (`search_episodic` during
 context assembly), `VectorMemoryStore` serializes the semantic UPSERT
 read-modify-write and the FAISS add + id-map append with `_db_lock` (a `RLock`);
-`write_lesson`'s dedup scan and backfill UPDATEs rely on sqlite's serialized-mode
+`write_lesson`'s dedup checks and vector UPDATE rely on sqlite's serialized-mode
 statement atomicity (WAL + `busy_timeout`) rather than application-level locking
 — the lock is never held across a blocking embed.
 

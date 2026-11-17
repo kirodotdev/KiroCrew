@@ -21,6 +21,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from kiro_crew.vector_memory_runtime import lesson_candidates
 from kiro_crew.vector_memory_runtime.embedding import _EmbeddingVector
 
 if TYPE_CHECKING:
@@ -73,9 +74,12 @@ def _invalidate_semantic_scoring(self: VectorMemoryStore, key: str | None = None
         )
 
         semantic_scoring_patch.patch_semantic_scoring(self, key)
+        with self._db_lock:
+            lesson_candidates.note_key_write(self, key)
         return
     self._semantic_scoring_generation += 1
     self._semantic_scoring = None
+    lesson_candidates.drop(self)
 
 
 def _sqlite_data_version(self: VectorMemoryStore) -> int | None:
