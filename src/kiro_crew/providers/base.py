@@ -113,6 +113,11 @@ class SessionMcpReport(Protocol):
     #: read it.
     def not_ready(self) -> dict[str, tuple[str, ...]]: ...
 
+    #: Record servers a config write changed that this running session will not
+    #: load, so its ``restart_to_load`` names them until the next session. Returns
+    #: the names not already recorded.
+    def mark_restart_to_load(self, names: list[str]) -> tuple[str, ...]: ...
+
     #: Called, with no argument, each time a frame changed the report. Set
     #: through ``LLMProvider.set_mcp_report_changed_hook``.
     on_change: Callable[[], None] | None

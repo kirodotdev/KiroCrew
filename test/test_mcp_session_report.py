@@ -88,6 +88,7 @@ class TestBuckets:
             "states_omitted": 0,
             "failures": {},
             "restart_to_load": [],
+            "reload_pending": [],
         }
 
     def test_failure_records_its_reason(self):
@@ -125,6 +126,7 @@ class TestBuckets:
             "states_omitted": 0,
             "failures": {},
             "restart_to_load": [],
+            "reload_pending": [],
         }
 
     def test_initialized_then_failure_moves_to_failed(self):

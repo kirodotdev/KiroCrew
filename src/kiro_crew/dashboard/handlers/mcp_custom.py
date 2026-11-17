@@ -376,6 +376,38 @@ async def _rebuild_agent_config() -> bool:
     return await asyncio.to_thread(rebuild_agent_spec, "MCP custom write")
 
 
+def _launch_spec(entry: dict) -> dict:
+    """*entry* without the keys a save keeps apart from the spec, to tell a real edit."""
+    return {k: v for k, v in entry.items() if k not in ("disabled", MARKER_KEY)}
+
+
+def _tell_running_sessions(request: web.Request, names: list[str]) -> None:
+    """Reach each running session with a change to *names*, without restarting any.
+
+    A session that applies an MCP change at its next turn (KAS re-injects its
+    projection, Strands relaunches) is marked for it, as the sibling writers do
+    (``connections_custom_oauth._mark_live_sessions_for_new_bridge``); kiro-cli
+    watches its agent file. Every other
+    session lists the servers in its MCP report's ``restart_to_load`` with one
+    notice row in its chat. Best effort: the write already landed.
+    """
+    # Body-scope import: the chat runner is the only import path of its owners,
+    # and importing it at module scope from a handler would close a cycle.
+    from kiro_crew.dashboard.chat_runner import notice_mcp_restart_to_load
+    from kiro_crew.dashboard.handlers.connections_custom_oauth import (
+        _mark_live_sessions_for_new_bridge,
+    )
+
+    try:
+        _mark_live_sessions_for_new_bridge(request.app)
+    except Exception:  # noqa: BLE001 -- the write itself already landed
+        logger.warning("could not mark live sessions for %s", names, exc_info=True)
+    try:
+        notice_mcp_restart_to_load(request.app["state"], names)
+    except Exception:  # noqa: BLE001 -- the write itself already landed
+        logger.warning("could not tell running sessions about %s", names, exc_info=True)
+
+
 async def api_mcp_custom_add(request: web.Request) -> web.Response:
     """POST /api/mcp/custom — add one or more user-authored MCP servers.
 
@@ -480,6 +512,8 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
     spec_rewritten = await _rebuild_agent_config()
 
     added = sorted(cleaned)
+    if spec_rewritten and enable:
+        _tell_running_sessions(request, added)
     sel().log_api_access(
         caller="dashboard",
         operation="mcp_custom_add",
@@ -651,6 +685,12 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
 
     await _record_owner_servers({name: spec})
     spec_rewritten = await _rebuild_agent_config()
+    if (
+        spec_rewritten
+        and not mcp_entry_is_muted(existing)
+        and _launch_spec(spec) != _launch_spec(existing)
+    ):
+        _tell_running_sessions(request, [name])
 
     sel().log_api_access(
         caller="dashboard",

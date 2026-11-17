@@ -133,6 +133,12 @@ export interface McpSessionReport {
    */
   restart_to_load?: string[]
   /**
+   * The servers in ``restart_to_load`` because a config write changed them after
+   * the session started, not because a credential was missing. Optional because
+   * an older gateway sends no such key.
+   */
+  reload_pending?: string[]
+  /**
    * The servers this session cannot use right now, by what is true of each.
    * Optional: a gateway or an agent backend that does not report it sends no
    * such key, and then no server is known to be connecting.

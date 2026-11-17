@@ -136,6 +136,7 @@ class TestAcpClientCapture:
                 "states_omitted": 0,
                 "failures": {},
                 "restart_to_load": [],
+                "reload_pending": [],
             }
         )
 

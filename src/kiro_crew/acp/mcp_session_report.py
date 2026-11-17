@@ -813,6 +813,11 @@ class McpSessionReport:
     #: :meth:`restart_to_load`: the next turn may bring them up. Set by the
     #: session handle through :meth:`set_reattempting`.
     _reattempting: frozenset[str] = frozenset()
+    #: Servers a config write added or changed after this session started, on a
+    #: backend that applies no such change to a running session. Listed in
+    #: :meth:`restart_to_load` until the next session, which loads them. Set
+    #: through :meth:`mark_restart_to_load`.
+    _reload_pending: tuple[str, ...] = ()
     #: True once ``begin_session`` has run. Distinguishes "no session" from "a
     #: session that has reported nothing yet" — see ``payload``. Without it, the
     #: kiro-cli path (whose wire roster is empty by design) reads as no session.
@@ -859,6 +864,7 @@ class McpSessionReport:
         self._awaiting_auth.clear()
         self._failures.clear()
         self._reattempting = frozenset()
+        self._reload_pending = ()
 
     @property
     def left_out(self) -> int:
@@ -1486,7 +1492,7 @@ class McpSessionReport:
                     else ""
                 )
             )
-        restart = self.restart_to_load()
+        restart = self._credential_restart()
         if restart:
             parts.append(
                 "missing a credential, or its credential was rejected (once the credential "
@@ -1529,7 +1535,33 @@ class McpSessionReport:
             )
         return "; ".join(parts)
 
+    def mark_restart_to_load(self, names: Any) -> tuple[str, ...]:
+        """Record servers a config write changed that this running session will not load.
+
+        Returns the names newly recorded, so a caller tells a chat about each server
+        once; the caller publishes the report either way. The list is bounded at
+        ``_STATUS_CAP`` like every other, and each name past the bound is added to
+        ``left_out`` on every call that brings it, not recorded or returned.
+        :meth:`begin_session` clears both: a new session loads them.
+        """
+        before = set(self._reload_pending)
+        kept, more = keep((*self._reload_pending, *_clean(names)), _STATUS_CAP)
+        if more:
+            self._cut["reload_pending"] = self._cut.get("reload_pending", 0) + more
+        self._reload_pending = kept
+        return tuple(n for n in kept if n not in before)
+
     def restart_to_load(self) -> list[str]:
+        """The servers a new session would load that this one will not.
+
+        A failed server whose reason reads as a missing or rejected credential
+        (:meth:`_credential_restart`), then each server a config write added or
+        changed after this session started (:meth:`mark_restart_to_load`).
+        """
+        restart = self._credential_restart()
+        return restart + [n for n in self._reload_pending if n not in restart]
+
+    def _credential_restart(self) -> list[str]:
         """Failed servers whose reason reads as a missing or rejected credential.
 
         Such a server can work once a credential exists, but an engine
@@ -1579,4 +1611,7 @@ class McpSessionReport:
             "states_omitted": self.left_out,
             "failures": dict(self._failures),
             "restart_to_load": self.restart_to_load(),
+            # The ``restart_to_load`` names a config write put there, so a reader
+            # does not describe them as a missing credential.
+            "reload_pending": list(self._reload_pending),
         }
