@@ -365,7 +365,7 @@ async def _read_update_request(
 
 
 def _update_record_busy() -> web.Response:
-    """The armed-update record stayed unreadable past the read retry; the client retries.
+    """A cancel found the armed-update record unreadable past the read retry; the client retries.
 
     Call this inside the ``except`` block, where ``exc_info`` still sees it.
     """
@@ -448,10 +448,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # The desktop app owns its own update feed and apply (this gateway often cannot
     # see the release at all), so a gateway it hosts records the version it names.
     if named_version and update_boot_apply.hosted_by_desktop():
-        try:
-            armed = await asyncio.to_thread(update_next_start.arm, named_version)
-        except OSError:
-            return _update_record_busy()
+        armed = await asyncio.to_thread(update_next_start.arm, named_version)
         state.push_refresh("update_available")
         return web.json_response(
             {"ok": True, "armed": True, "version": armed.armed_version}, status=202
@@ -499,12 +496,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
     behind = _update_info.get("commits_behind")
-    try:
-        armed = await asyncio.to_thread(
-            lambda: update_next_start.arm(version, behind=behind if isinstance(behind, int) else 0)
-        )
-    except OSError:
-        return _update_record_busy()
+    armed = await asyncio.to_thread(
+        lambda: update_next_start.arm(version, behind=behind if isinstance(behind, int) else 0)
+    )
     state.push_refresh("update_available")
     return web.json_response(
         {"ok": True, "armed": True, "version": armed.armed_version}, status=202

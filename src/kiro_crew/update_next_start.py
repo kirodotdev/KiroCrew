@@ -154,13 +154,24 @@ def arm(version: str, *, behind: int = 0) -> NextStartState:
     every other route). Every call is a new request and stamps a fresh ``armed_at``,
     including a re-arm of the version already armed; the attempts already spent on
     it carry over. Arming clears the last apply's error: the person asked again.
+
+    A record still unreadable after the sharing-violation retry does not stop the
+    arm: the person asked for it, so it is armed afresh with its attempts at 0.
     """
     version = version.strip()
     if not version:
         raise ValueError("an armed update needs a version")
     behind = max(0, behind)
     with _lock:
-        old = _read_for_update()
+        try:
+            old = _read_for_update()
+        except OSError:
+            logger.warning(
+                "Update record unreadable; arming %s with its attempt count reset",
+                version,
+                exc_info=True,
+            )
+            old = NextStartState()
         if old.armed and old.armed_version == version:
             state = NextStartState(version, time.time(), old.attempts, "", behind)
         else:

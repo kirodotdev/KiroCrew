@@ -168,11 +168,20 @@ def test_a_lock_past_the_retry_budget_raises_and_leaves_the_record(_home, window
         with pytest.raises(PermissionError):
             update_next_start.note_boot_attempt()
         with pytest.raises(PermissionError):
-            update_next_start.arm("9.9.9")
-        with pytest.raises(PermissionError):
             update_next_start.disarm()
 
     assert _on_disk(_home) == before
+
+
+def test_an_arm_past_the_retry_budget_still_arms_with_its_attempts_reset(_home, windows) -> None:
+    update_next_start.arm("9.9.9")
+    update_next_start.note_boot_attempt()
+
+    with read_sharing_violation(match=update_next_start.STATE_FILE, times=1000):
+        state = update_next_start.arm("9.9.9")
+
+    assert (state.armed_version, state.attempts) == ("9.9.9", 0)
+    assert (_on_disk(_home)["armed_version"], _on_disk(_home)["attempts"]) == ("9.9.9", 0)
 
 
 def test_a_short_sharing_lock_keeps_a_re_arms_attempts(_home, windows) -> None:
