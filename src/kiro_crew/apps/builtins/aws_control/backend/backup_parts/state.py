@@ -29,6 +29,7 @@ from kiro_crew.apps.builtins.aws_control.backend.backup_parts import _FACADE_MOD
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.platform_compat import file_lock, open_lock_file
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE_MODULE)
 
@@ -157,7 +158,9 @@ def _read_state_checked() -> tuple[dict[str, Any], bool]:
         # should be loud rather than folded into "unreadable".
         return {}, False
     try:
-        data = json.loads(raw)
+        # One leading UTF-8 byte-order mark (a Windows "UTF-8 with BOM" save) is
+        # not content; plain `json.loads` would call the whole document corrupt.
+        data = loads_user_json(raw)
     except json.JSONDecodeError:
         return {}, False
     if not isinstance(data, dict):
@@ -214,10 +217,12 @@ def _read_state_for_update() -> dict[str, Any]:
     parsed to nothing usable carries nothing to lose. That covers a file which
     DECODED and then failed to parse. Bytes that are not UTF-8 never reached the
     parser, so they are the unreadable kind, not the corrupt kind, and the
-    mutation is abandoned rather than published over them.
+    mutation is abandoned rather than published over them. A leading UTF-8
+    byte-order mark is neither: the document is whole, so it is parsed past the
+    mark and every account carries forward.
     """
     try:
-        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        data = loads_user_json(_state_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
     except UnicodeDecodeError as exc:
