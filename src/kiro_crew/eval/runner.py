@@ -51,6 +51,19 @@ from kiro_crew.terminal_safe import safe_terminal_line
 
 logger = logging.getLogger(__name__)
 
+
+class ModelNotOffered(RuntimeError):
+    """A session refused its pinned model at start, so it would run on the backend default.
+
+    Scoring that session would credit the default with the named model's results,
+    so the run stops before the first turn instead.
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(f"{model} is not a model this backend offers")
+        self.model = model
+
+
 #: What the model is told when the eval harness refuses a tool it does not know
 #: to be read-only. The eval SURFACE refuses the call -- nothing about the call
 #: itself was judged -- so the reason says what this surface permits, which is
@@ -601,6 +614,14 @@ class EvalRunner:
         session_key = f"eval_{session_def.name}_{time.monotonic_ns()}"
         provider = factory(session_key, **self.provider_kwargs)
         await provider.start()
+        # Read as provider_model_pin_refused reads it (a non-empty str), through
+        # getattr: the runner also drives scripted providers that never declare it.
+        refused = getattr(provider, "model_pin_refused", "")
+        if isinstance(refused, str) and refused:
+            # The session stays on the backend default and says nothing; every
+            # turn from here would be scored as the model that was asked for.
+            await provider.shutdown()
+            raise ModelNotOffered(refused)
 
         # Build memory context once for the first turn of non-first sessions
         memory_context = ""
