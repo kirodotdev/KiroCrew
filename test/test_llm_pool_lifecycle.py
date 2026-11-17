@@ -520,6 +520,11 @@ def _real_kiro_worker(tmp_path, monkeypatch) -> tuple[AcpWorker, object]:
 
 @pytest.mark.asyncio
 async def test_acp_worker_sends_each_prompt_alone_on_one_process(tmp_path, monkeypatch):
+    """Each prompt is sent alone on the same child; then, on that same child (one
+    interpreter start for both cases), a failure after the old session id is
+    dropped ends the process, as a failed start does, so the client is never left
+    alive with no session."""
+    from kiro_crew.acp.transport_errors import AcpError
     from kiro_crew.config.paths import kiro_sessions_dir
     from kiro_crew.testing import fake_acp_backend
 
@@ -534,35 +539,23 @@ async def test_acp_worker_sends_each_prompt_alone_on_one_process(tmp_path, monke
         transcript.parent.mkdir(parents=True, exist_ok=True)
         transcript.write_text("{}")
         await pool.send("SECOND chunk about pears")
-    finally:
-        await worker.shutdown()
 
-    log = store / fake_acp_backend.NATIVE_REQUEST_LOG
-    first, second = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert [first["turn"], second["turn"]] == [1, 1]
-    assert "FIRST" not in second["request"]
-    assert first["pid"] == second["pid"]
-    assert second["sid"] == next_sid != first["sid"]
-    # The reset after the second prompt ended its session and deleted the transcript.
-    assert not transcript.exists()
+        log = store / fake_acp_backend.NATIVE_REQUEST_LOG
+        lines = log.read_text(encoding="utf-8").splitlines()
+        first, second = [json.loads(line) for line in lines]
+        assert [first["turn"], second["turn"]] == [1, 1]
+        assert "FIRST" not in second["request"]
+        assert first["pid"] == second["pid"]
+        assert second["sid"] == next_sid != first["sid"]
+        # The reset after the second prompt ended its session and deleted the transcript.
+        assert not transcript.exists()
 
-
-@pytest.mark.asyncio
-async def test_a_failed_new_session_ends_the_process(tmp_path, monkeypatch):
-    """A failure after the old session id is dropped ends the process, as a failed
-    start does, so the client is never left alive with no session."""
-    from kiro_crew.acp.transport_errors import AcpError
-
-    worker, _store = _real_kiro_worker(tmp_path, monkeypatch)
-    try:
-        await worker.start()
+        # Last, as it ends the shared child.
         client = worker._client
         process = client._process
         client._initialize_session = AsyncMock(side_effect=AcpError("session/new refused"))
-
         with pytest.raises(AcpError):
             await client.start_new_session()
-
         assert not client.is_ready
         assert client._process is None
         assert process.returncode is not None
