@@ -1608,6 +1608,17 @@ fail-soft, and is retried after `SEED_RETRY_COOLDOWN_SECS` (30 s) rather than la
 for the life of the process. The poll costs above (376 ms cold, 90-120 ms warm at the
 cap) are the cold seed's, not a poll's.
 
+**The checkpoint's own size ceiling.** The tree checkpoint is measured against
+`MAX_SESSION_TREE_CHECKPOINT_BYTES` (32 MiB), on the write and on the read, and not against
+`MAX_CHECKPOINT_BYTES` (the 2 MiB crew-log payload ceiling every other savepoint keeps). The caps
+hold at most `TREE_UNIT_CAP` records, decisions and spawns; a row at its string bounds is about
+1.3 KB, so the largest file they admit is about 16 MiB and the ceiling is twice that. A save that is
+refused for size, or that fails, logs a WARNING and writes `session-tree.refused.json` beside the
+checkpoint (`reason` `over_ceiling` or `write_failed`, with `bytes` for the first); the save that
+next lands removes it. `kirocrew doctor` reads that marker in its Session Tree Checkpoint section
+and counts it as an issue, since a gateway that cannot save the checkpoint replays the crew log
+from an older one at the next start.
+
 **Where the projection's code lives.** `crew_log/session_tree_projection.py` is the module
 every caller imports and patches. It keeps `SessionTreeProjection`'s state, its reads,
 every delta (`apply`, `apply_edge`, `apply_spawned`, `retract_parent`, `reconcile_edge`,
@@ -1617,7 +1628,7 @@ of its responsibility:
 
 | Owner | Holds |
 |---|---|
-| `crew_log/session_tree_projection_checkpoint.py` | the checkpoint: `CHECKPOINT_NAME`, `CHECKPOINT_VERSION`, the store identity a payload is bound to (`_current_root`), the row codec with the string bounds every door into the state applies (`_within_bounds`, `_edge_within_bounds`), `_load_checkpoint`, `_save_checkpoint`, and the debounced write (`_schedule_checkpoint`, `flush_checkpoint`, `cancel_pending_checkpoint`) |
+| `crew_log/session_tree_projection_checkpoint.py` | the checkpoint: `CHECKPOINT_NAME`, `CHECKPOINT_VERSION`, the store identity a payload is bound to (`_current_root`), the row codec with the string bounds every door into the state applies (`_within_bounds`, `_edge_within_bounds`), `_load_checkpoint`, `_save_checkpoint` with its refusal marker (`checkpoint_refusal`), the ceiling (`MAX_SESSION_TREE_CHECKPOINT_BYTES`), and the debounced write (`_schedule_checkpoint`, `flush_checkpoint`, `cancel_pending_checkpoint`) |
 | `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
 
 The module is a mirror facade (`kiro_crew._facade_mirror`). An owner function whose first
