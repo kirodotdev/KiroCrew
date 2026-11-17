@@ -10,7 +10,6 @@ import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
 from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import _stub_sel_for_permission_tests  # noqa: F401
 from acp_runtime_helpers import (
@@ -36,6 +35,19 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.testing.wait import await_until
+
+
+@pytest.fixture(autouse=True)
+def _mcp_free_drain(_floor_monkeypatch):
+    """The fake backend starts no MCP server, so no report can arm ``drain_init``.
+
+    A zero ceiling is what production passes for an MCP-free runtime: the drain ends
+    once the queue goes quiet. Any positive ceiling still waits the drain's full
+    ``duration`` (it holds until ``max(duration, ceiling)``) on every session start.
+    """
+    import kiro_crew.acp.session_handle as sh
+
+    _floor_monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.0)
 
 
 def _kas_turn_frame(session_id: str, *, replay: bool) -> dict:
@@ -637,6 +649,9 @@ class TestAcpRuntimeLoadSession:
             "_guard_unresolved_mcp_refs",
             lambda handle, spec, agent, wire, mcp_json=(): reported.append(wire),
         )
+        # The wait for mounted servers is best effort and no frame here mounts one;
+        # this test is about the array the resume sent, so the wait returns at once.
+        monkeypatch.setattr(AcpSessionHandle, "wait_mounted_mcp", AsyncMock(return_value=None))
         rt._acp_backend = ACP_BACKEND_KAS
 
         await rt.load_session("", "sid-hoist", cwd="/work", agent="kirocrew")
@@ -699,6 +714,7 @@ class TestAcpRuntimeLoadSession:
         # test_acp_runtime.py); this one is about what the request carried, so the
         # wait returns at once.
         monkeypatch.setattr(AcpSessionHandle, "wait_mcp_ready", AsyncMock(return_value=None))
+        monkeypatch.setattr(AcpSessionHandle, "wait_mounted_mcp", AsyncMock(return_value=None))
         rt._acp_backend = ACP_BACKEND_KAS
 
         if resume:
