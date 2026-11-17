@@ -764,7 +764,8 @@ def usable_workspace_dir_from_entry(
     working directory of a scheduled run or a channel turn: the base workspace folder is
     returned instead and one line is logged. A scheduled run passes ``must_exist=False``:
     a folder that is not there yet is created on use, so only the sensitive-path half
-    applies. The base folder itself is returned as it is.
+    applies. The folder is returned as its realpath, the path that was judged, and a link
+    that appeared on it since is refused. The base folder itself is returned as it is.
     """
     ws = workspace_dir_from_entry(entry)
     base = workspace_dir_from_entry(None)
@@ -775,7 +776,10 @@ def usable_workspace_dir_from_entry(
     try:
         real = os.path.realpath(str(ws))
         if (not must_exist or os.path.isdir(real)) and not is_sensitive_canonical_path(real):
-            return ws
+            # Return the path judged. It resolves to itself only while no link sits on
+            # it, so one swapped in since the judgment is refused here, not followed.
+            if os.path.realpath(real) == real:
+                return Path(real)
     except Exception:  # noqa: BLE001 - an unjudgeable folder is not used
         pass
     logger.warning(
