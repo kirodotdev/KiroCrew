@@ -32,6 +32,7 @@ from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import apps_dir
 from kiro_crew.apps.registry import NATIVE_WINDOWS_HOOK_REFUSAL, minimal_env
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     wrap_argv,
@@ -96,7 +97,13 @@ async def run_lifecycle_script(
 
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
-    sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)
+    # The script is app-authored text: it must not read the gateway's secret files.
+    sandboxed_cmd, cleanup = await wrap_argv_async(
+        base_cmd,
+        mode="standard",
+        _prepare=wrap_argv,
+        extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
+    )
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:

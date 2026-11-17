@@ -60,6 +60,7 @@ from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
 from kiro_crew.apps.version import parse_version as _parse_version
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     create_subprocess_limited,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
@@ -682,6 +683,9 @@ async def _detect_installed_probe(
                 base_cmd,
                 mode="strict",
                 env=_detect_probe_env(),
+                # ``strict`` leaves run/ and .local_secret readable, and this shell string
+                # comes from a registry manifest.
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
                 _prepare=sandboxed_spawn_argv,
             )
             proc = await create_subprocess_limited(
