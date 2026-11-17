@@ -589,6 +589,17 @@ Two tests in `test/metrics/test_metrics_schema.py` enforce the rule:
   renamed row, a removed key or value, or a changed kind, unit, scope or
   temporality fails, even when the manifest was regenerated.
 
+CI also runs `scripts/check_metrics_schema_history.py` in its own job, Metric
+Schema Only Grows. It applies the same only-grows rule against the manifest at the pull
+request's merge base, with no package install, so the check does not depend on
+the test run finding a base commit. It loads the rule from the base commit, so
+a change cannot loosen the rule and drop a row at once. To run it locally:
+
+```bash
+METRICS_SCHEMA_BASE="$(git merge-base HEAD origin/main)" \
+  python3 scripts/check_metrics_schema_history.py
+```
+
 To add a metric, key or value: change the code, then regenerate the manifest
 and commit it in the same pull request.
 

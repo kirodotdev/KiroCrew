@@ -3692,6 +3692,35 @@ jobs:
             exit 1
           }
 
+  # The exported metric schema (src/kiro_crew/metrics/schema_manifest.json) is
+  # append-only: a row, key or value at the merge base must still be there at
+  # head. Its own job, not a step in backend-ratchets, because it judges a
+  # change against a base rather than the whole tree (the Main Ratchet Audit
+  # mirrors backend-ratchets outright). Stdlib only, so no install.
+  metrics-schema-history:
+    name: Metric Schema Only Grows
+    needs: [changes, await-fast-gate]
+    if: needs.changes.outputs.only_frontend != 'true'
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Check that the exported metric schema only grows
+        env:
+          METRICS_SCHEMA_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          METRICS_SCHEMA_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$METRICS_SCHEMA_BASE_REF" 'the metric schema gate')" || exit 1
+          export METRICS_SCHEMA_BASE="$METRICS_SCHEMA_BASE_REF"
+          # Self-test first: a weakened rule fails here, not as a silent pass.
+          python3 scripts/check_metrics_schema_history.py --test
+          python3 scripts/check_metrics_schema_history.py
+
   cfn-lint:
     name: CloudFormation Lint
     needs: [changes, await-fast-gate]
