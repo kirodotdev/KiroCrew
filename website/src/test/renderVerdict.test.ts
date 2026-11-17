@@ -324,7 +324,7 @@ describe('CI supplies a base commit on both paths', () => {
   // tests above would still pass.
   // Both blocking workflows, not just ci.yml. The cheap diff-scoped gates moved
   // into fast-gate.yml, which ci.yml blocks on through `await-fast-gate`; reading
-  // ci.yml alone would have silently dropped eight of the twelve wirings out of this
+  // ci.yml alone would have silently dropped nine of the thirteen wirings out of this
   // file's view while every assertion below still passed on the remaining four.
   const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => ({
     name,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy, Settings } from 'lucide-react'
+import { Search, BookOpen, Circle, Network, FolderSync, HelpCircle, FileText, X, Copy, Settings } from 'lucide-react'
 import { Btn, Input, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
@@ -883,10 +883,10 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
           <div className="whitespace-nowrap">{i18nT('pages.knowledge.index.stats_sources', { count: stats.sources })}</div>
           {stats.embeddings?.enabled ? (
             <div className={`whitespace-nowrap ${stats.embeddings.available ? 'text-ok' : 'text-warn'}`} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : i18nT('pages.knowledge.index.embedding_model_loading', { name: stats.embeddings.model })}>
-              ● {stats.embeddings.available ? i18nT('pages.knowledge.index.embeddings_count', { value: stats.embeddings.embedded_items }) : i18nT('pages.knowledge.index.embeddings_loading')}
+              <Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} /> {stats.embeddings.available ? i18nT('pages.knowledge.index.embeddings_count', { value: stats.embeddings.embedded_items }) : i18nT('pages.knowledge.index.embeddings_loading')}
             </div>
           ) : (
-            <div className="text-muted whitespace-nowrap" title={i18nT('pages.knowledge.index.embedding_model_is_downloading_in_the_background')}>{i18nT('pages.knowledge.index.embeddings_initializing')}</div>
+            <div className="text-muted whitespace-nowrap" title={i18nT('pages.knowledge.index.embedding_model_is_downloading_in_the_background')}><Circle className="lucide-inline scale-75" /> {i18nT('pages.knowledge.index.embeddings_initializing')}</div>
           )}
           {tab === 'list' && <div className="ml-auto text-[10px] hidden sm:block">{i18nT('pages.knowledge.index.to_search_esc_to_back_to_page')}</div>}
         </div>

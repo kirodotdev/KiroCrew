@@ -32,6 +32,10 @@ import { installApiTransport } from './apiTransport'
 import { isDeadlineError, queryClient, invalidateAcrossQueryClients } from './queryClient'
 import { recordError, recordTransportRejection, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
+import { createElement } from 'react'
+import { flushSync } from 'react-dom'
+import { createRoot } from 'react-dom/client'
+import { X } from 'lucide-react'
 import type { ClientTransport } from './client/transport'
 import { gatedRead } from './readGate'
 import { createSystemEndpoints } from './client/system'
@@ -747,7 +751,9 @@ function showSessionExpiredBanner(lead?: string): void {
     input.after(scan)
   })
   const dismiss = document.createElement('button')
-  dismiss.textContent = '✕'
+  dismiss.setAttribute('aria-label', i18nT('app.dismiss'))
+  // flushSync so the icon is in the DOM when this returns, like the rest of the banner.
+  flushSync(() => createRoot(dismiss).render(createElement(X, { className: 'lucide-inline' })))
   dismiss.style.cssText =
     'margin-left:12px;background:none;border:none;color:#fca5a5;cursor:pointer;font-size:18px;vertical-align:middle;'
   dismiss.addEventListener('click', () => {

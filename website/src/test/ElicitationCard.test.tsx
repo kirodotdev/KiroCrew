@@ -108,8 +108,19 @@ describe('draft helpers', () => {
     expect(draftToContent(f, initialDraft(f))).toEqual({ missing: 'Proto' })
     const shaped = draftToContent(f, Object.assign(initialDraft(f), { ['__proto__']: 'x' }))
     expect(JSON.parse(JSON.stringify(shaped.content))).toEqual({ ['__proto__']: 'x' })
-    expect(answerSummary(f, JSON.parse('{"__proto__": "x"}'))).toBe('Proto: x')
-    expect(answerSummary(f, {})).toBe('')
+    expect(render(<>{answerSummary(f, JSON.parse('{"__proto__": "x"}'))}</>).container.textContent).toBe('Proto: x')
+    expect(answerSummary(f, {})).toBeNull()
+  })
+
+  it('shows a boolean answer as a lucide check or X with a spoken yes or no', () => {
+    const f: ElicitationField[] = [
+      { name: 'a', kind: 'boolean', required: true, title: 'A' },
+      { name: 'b', kind: 'boolean', required: true, title: 'B' },
+    ]
+    const { container } = render(<>{answerSummary(f, { a: true, b: false })}</>)
+    expect(container.textContent).toBe('A:  · B: ')
+    expect(container.querySelector('svg.lucide-check')).toHaveAttribute('aria-label', 'Yes')
+    expect(container.querySelector('svg.lucide-x')).toHaveAttribute('aria-label', 'No')
   })
 
   it('shapes numbers from their text and leaves optional empties out', () => {

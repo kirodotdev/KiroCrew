@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -265,7 +265,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
             const active = currentIdx === i && !isFailed
             return (
               <div key={s} className={`flex items-center gap-2.5 text-[13px] transition-colors ${done ? 'text-ok' : active ? 'text-accent font-medium' : 'text-muted/40'}`}>
-                <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : '○'}</span>
+                <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : <Circle className="lucide-inline" />}</span>
                 <span>{i18nT(UPDATE_STEP_LABEL_KEY[s])}</span>
                 {active && <span className="ml-auto text-[11px] text-muted animate-pulse">{elapsedStr}</span>}
               </div>

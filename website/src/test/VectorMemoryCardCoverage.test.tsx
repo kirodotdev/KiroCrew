@@ -214,9 +214,9 @@ describe('VectorMemoryCard — Episodic tab', () => {
       expect(screen.getAllByText(t).length).toBeGreaterThan(0)
     }
     // Importance badge tiers: ok / warn / err.
-    expect(screen.getByText(/●\s*0\.98/)).toBeInTheDocument()
-    expect(screen.getByText(/●\s*0\.85/)).toBeInTheDocument()
-    expect(screen.getByText(/●\s*0\.50/)).toBeInTheDocument()
+    expect(screen.getByText(/^\s*0\.98$/).querySelector('svg.lucide-circle')).not.toBeNull()
+    expect(screen.getByText(/^\s*0\.85$/).querySelector('svg.lucide-circle')).not.toBeNull()
+    expect(screen.getByText(/^\s*0\.50$/).querySelector('svg.lucide-circle')).not.toBeNull()
 
     // A bracketed date prefix wins over created_at; an unparseable date is an em dash.
     expect(screen.getByText('2026-08-10')).toBeInTheDocument()

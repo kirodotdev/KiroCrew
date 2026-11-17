@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Copy, Check, Smartphone, X, ArrowRight } from 'lucide-react'
+import { Copy, Check, Circle, Smartphone, X, ArrowRight } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn } from './ui'
 import { settingsPath } from './settingsPath'
@@ -369,7 +369,7 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
       {ready && mintQr.data && (
         <div className="flex items-center justify-between gap-2">
           <p className="text-[11.5px] text-muted">
-            <span className="text-accent">● </span>
+            <Circle className="lucide-inline text-accent scale-75" fill="currentColor" strokeWidth={0} />{' '}
             {t('components.mobileConnect.the_code_signs_you_in_automatically_and_expires_in', {
               // The SCAN window (link_window_secs), not the session TTL: the
               // QR stops being redeemable long before the session it opens

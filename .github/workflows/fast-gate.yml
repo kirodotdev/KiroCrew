@@ -11,11 +11,11 @@ name: Fast Gate
 #      (CI's median wall clock) when the gates it actually needs are green
 #      after one or two.
 #
-# Three jobs, not one per gate. The fourteen stdlib-only gates share one
+# Three jobs, not one per gate. The fifteen stdlib-only gates share one
 # `source-gates` job and run as consecutive steps: each costs seconds of real
 # work, and as separate jobs ~70% of their job-seconds went to runner
 # acquisition and checkout while every one of them held a runner slot of its
-# own. Fourteen slots per push on a repository that pushes ~1,400 times a day
+# own. Fifteen slots per push on a repository that pushes ~1,400 times a day
 # is most of this workflow's concurrency footprint, and the two pytest-backed
 # ratchet jobs below (uv install plus pytest) are the long pole of the run, so
 # running the stdlib gates in sequence adds no wall clock to the verdict the
@@ -84,7 +84,7 @@ jobs:
     # a gate. The AWS webhook independently enforces actor admission; this
     # expression controls availability, not the security boundary.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    # Fourteen gates of a few seconds each, plus one checkout and one Python
+    # Fifteen gates of a few seconds each, plus one checkout and one Python
     # setup. A green run is well under five minutes; the cap is a hang
     # backstop, not a budget.
     timeout-minutes: 15
@@ -174,6 +174,21 @@ jobs:
           # fails here instead of shipping a gate that passes everything.
           python3 scripts/check_focus_cue.py --test
           python3 scripts/check_focus_cue.py
+
+      - name: Check that no emoji is added as a dashboard icon
+        if: ${{ !cancelled() }}
+        # Diff-scoped for the same reason as the focus-cue gate: the tree keeps
+        # code that matches gateway text such as a leading tool glyph, so a
+        # whole-tree gate would charge it to whoever pushed next. The whole-tree
+        # count is still printed as a non-failing report.
+        env:
+          EMOJI_ICON_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          EMOJI_ICON_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$EMOJI_ICON_BASE_REF" 'the emoji-icon gate')" || exit 1
+          export EMOJI_ICON_BASE_REF
+          python3 scripts/check_emoji_icons.py --test
+          python3 scripts/check_emoji_icons.py
 
       - name: Check the feature map covers the features this change adds
         if: ${{ !cancelled() }}

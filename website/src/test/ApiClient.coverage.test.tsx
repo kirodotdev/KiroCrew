@@ -629,7 +629,7 @@ describe('session-expired banner', () => {
     // and a field to paste the resulting URL into.
     expect(el.textContent).toContain('kirocrew token')
     expect(el.querySelector('input')).not.toBeNull()
-    expect(el.querySelector('button')?.textContent).toBe('✕')
+    expect(el.querySelector('button svg.lucide-x')).not.toBeNull()
   })
 
   it('is idempotent — a second challenge does not stack a second banner', async () => {
@@ -684,7 +684,7 @@ describe('session-expired banner', () => {
       await vi.waitFor(() => expect(banner()).not.toBeNull())
 
       const dismiss = Array.from(banner()?.querySelectorAll('button') ?? []).find(
-        b => b.textContent === '✕',
+        b => b.querySelector('svg.lucide-x') !== null,
       )
       expect(dismiss).toBeDefined()
       dismiss?.click()

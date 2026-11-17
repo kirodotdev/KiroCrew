@@ -48,6 +48,8 @@
     "BASE=\"$(git merge-base HEAD origin/main)\" && METRICS_SCHEMA_BASE=\"$BASE\" python3 scripts/check_metrics_schema_history.py",
     "python3 scripts/check_focus_cue.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && FOCUS_CUE_BASE_REF=\"$BASE\" python3 scripts/check_focus_cue.py",
+    "python3 scripts/check_emoji_icons.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && EMOJI_ICON_BASE_REF=\"$BASE\" python3 scripts/check_emoji_icons.py",
     "python3 scripts/docs_lint.py --test",
     "./scripts/docs-lint.sh",
     "python3 scripts/check_per_file_coverage.py --test",
