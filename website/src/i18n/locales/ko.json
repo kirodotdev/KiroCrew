@@ -20957,7 +20957,7 @@
         "default_tag": "기본값",
         "delete": "삭제…",
         "delete_crew": "{{name}} 삭제",
-        "delete_warning": "삭제하면 EC2 인스턴스가 종료되고 요금도 멈춥니다. 되돌릴 수 없습니다.",
+        "delete_warning": "삭제하면 EC2 인스턴스가 종료되고 디스크, IAM 역할, 보안 그룹도 함께 삭제되어 요금도 멈춥니다. 크루의 채팅, 메모리, 파일, 설정은 이 디스크에 저장되어 있으므로 모두 사라지며 복구할 수 없습니다.",
         "deleting": "삭제 중…",
         "doesnt_manage": "{{productName}}은(는) 이 크루를 관리하지 않습니다",
         "edit_crew": "{{name}} 편집",

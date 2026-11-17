@@ -20957,7 +20957,7 @@
         "default_tag": "Default",
         "delete": "Delete…",
         "delete_crew": "Delete {{name}}",
-        "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
+        "delete_warning": "删除会终止 EC2 实例，并一并移除它的磁盘、IAM 角色和安全组，费用随之停止。这个 Crew 的对话、记忆、文件和设置都存放在这块磁盘上，会永久丢失，无法恢复。",
         "deleting": "正在删除…",
         "doesnt_manage": "{{productName}} 不管理这个 Crew",
         "edit_crew": "编辑 {{name}}",

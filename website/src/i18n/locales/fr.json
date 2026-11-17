@@ -22023,7 +22023,7 @@
         "default_tag": "Par défaut",
         "delete": "Supprimer…",
         "delete_crew": "Supprimer {{name}}",
-        "delete_warning": "Supprimer met fin à l’instance EC2 et à ses frais. C’est irréversible.",
+        "delete_warning": "Supprimer met fin à l’instance EC2 et efface aussi son disque, son rôle IAM et son groupe de sécurité, ce qui arrête ses frais. Les conversations, la mémoire, les fichiers et les réglages de la crew sont sur ce disque, donc ils sont perdus et ne peuvent pas être récupérés.",
         "deleting": "Suppression…",
         "doesnt_manage": "{{productName}} ne gère pas cette crew",
         "edit_crew": "Modifier {{name}}",

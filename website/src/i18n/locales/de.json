@@ -21490,7 +21490,7 @@
         "default_tag": "Standard",
         "delete": "Löschen…",
         "delete_crew": "{{name}} löschen",
-        "delete_warning": "Löschen beendet die EC2-Instanz und damit ihre Kosten. Das lässt sich nicht rückgängig machen.",
+        "delete_warning": "Löschen beendet die EC2-Instanz und entfernt auch ihre Festplatte, IAM-Rolle und Sicherheitsgruppe; damit enden ihre Kosten. Chats, Gedächtnis, Dateien und Einstellungen der Crew liegen auf dieser Festplatte und gehen unwiederbringlich verloren.",
         "deleting": "Wird gelöscht…",
         "doesnt_manage": "{{productName}} verwaltet diese Crew nicht",
         "edit_crew": "{{name}} bearbeiten",
