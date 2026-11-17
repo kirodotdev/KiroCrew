@@ -88,6 +88,7 @@ export function runStatusLabel(run: Pick<ProjectRun, 'running' | 'status'>): str
 export default function ProjectsPage() {
   const ime = useImeGuard()
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  const catalogRefreshTrigger = useAppSelector(s => s.dashboard.catalogRefreshTrigger)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const dispatch = useAppDispatch()
@@ -104,12 +105,12 @@ export default function ProjectsPage() {
   // The shared roster hook, not a direct `/api/agents` fetch: the hook is where
   // a failed fetch becomes readable state (`error`) instead of a silently empty
   // list, which #5990 showed is indistinguishable from a one-agent install.
-  // `refreshTrigger` keeps the existing behaviour of re-fetching the roster
-  // whenever the dashboard-wide refresh fires.
+  // `catalogRefreshTrigger` keeps the existing behaviour of re-fetching the roster
+  // whenever the dashboard-wide refresh fires for something that can change it.
   const {
     agents, defaultAgent: defaultAgentName,
     error: rosterError, reload: reloadRoster, reloading: rosterReloading,
-  } = useAgents(refreshTrigger)
+  } = useAgents(catalogRefreshTrigger)
   // A recovered roster must not be recovered for this page alone. `useAgents`
   // holds per-instance state and the app shell keeps its own copy, so the retry
   // bumps the shared refresh trigger — the same shape SchedulePage ships — and

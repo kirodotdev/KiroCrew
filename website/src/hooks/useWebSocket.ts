@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
-import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerLiveRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
+import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerRefreshExceptCatalog, triggerLiveRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
@@ -66,6 +66,7 @@ import {
   handleThreadReply,
   invalidateChatPins,
   invalidateRefreshQueries,
+  refreshMayChangeRegistry,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
 import { useChatStream } from './websocket/chatStream'
@@ -564,7 +565,10 @@ export function useWebSocket() {
             // A turn-end frame inside the window re-reads none of the config caches,
             // but the page on screen still follows it (`liveRefreshTrigger`).
             let othersNow = false
-            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => { othersNow = true; dispatch(triggerRefresh()) })
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => {
+              othersNow = true
+              dispatch(refreshMayChangeRegistry(kinds) ? triggerRefresh() : triggerRefreshExceptCatalog())
+            })
             if (!othersNow) dispatch(triggerLiveRefresh())
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break

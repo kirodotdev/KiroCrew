@@ -776,7 +776,7 @@ def test_members_count_agrees_with_the_roster_dashboard_created_rule():
 
     from kiro_crew.dashboard.handlers import members_roster
 
-    assert "is_person_created_crewmate" in inspect.getsource(members_roster.api_members)
+    assert "is_person_created_crewmate" in inspect.getsource(members_roster._build_roster)
     assert "count_person_created_crewmates" in inspect.getsource(ig.read_members)
 
 

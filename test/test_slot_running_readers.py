@@ -246,7 +246,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("handlers/slot_question.py", "api_chat_slot_question_steer"),
                 ("handlers/members_thread_turns.py", "api_member_fresh_start"),
                 ("handlers/members_thread.py", "api_member_thread"),
-                ("handlers/members_roster.py", "api_members"),
+                ("handlers/members_roster.py", "_build_roster"),
                 # The session-side delivery entry point: idle queues and drains,
                 # a reserved slot gets the queue or a steer.
                 ("session_deliver.py", "deliver"),
