@@ -70,7 +70,8 @@ const CHIP = 'shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1
 /**
  * Make a wave digest's per-agent outcomes readable without an emoji font.
  *
- * The gateway marks each digest row's outcome with an emoji, and on a host whose
+ * Older gateways marked each digest row's outcome with an emoji (current ones
+ * write the word, which needs nothing here), and on a host whose
  * fonts lack them (a plain Linux desktop, and the screenshot container) they
  * render as tofu boxes. A SUCCESS row is the case that actually loses
  * information: the gateway writes no status word beside its glyph, so the reader

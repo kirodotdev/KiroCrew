@@ -97,7 +97,7 @@ single completion path that serves every terminal outcome:
 
 ```
 [Subagent completion event]
-Agent `<id>` (<agent name>) <status> <emoji>
+Agent `<id>` (<agent name>) <status>
 Task: <first 100 chars of the task>
 
 Usage: <credits> credits · <elapsed>
@@ -108,9 +108,14 @@ Usage: <credits> credits · <elapsed>
 - `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'` is defined in
   `constants.py` and included in `injected_turns.py`'s `SUBAGENT_COMPLETION_PREFIXES`
   aggregate.
-- `<status> <emoji>` is one of `completed ✅`, `failed ❌`, or `stopped by user ⏹`.
-  The agent-name parenthetical is present only when the sub-agent ran under a named
-  agent.
+- `<status>` leads with an outcome word: `completed`, `failed`, `stopped by user`,
+  or `failed: reaped`. A note after the word follows a colon. The agent-name
+  parenthetical is present only when the sub-agent ran under a named agent.
+- Gateways before the plain-word wording wrote `<status> <emoji>` (`completed ✅`,
+  `failed ❌`, `stopped by user ⏹`), and saved history keeps them. Every reader
+  (`subagentCompletion.ts`, `system_notices.py`) accepts both forms. A wave's
+  final chunk reads `wave finished: <n> completed · <n> failed · <n> stopped of
+  <n> agents.`, formerly `<n> ✅ · <n> ❌ · <n> ⏹`.
 - The detail is the trimmed result when it fits. When the completion copy dropped
   content, it is a summary plus a `result_path` pointer, so
   the parent reads the full transcript on demand (`read`, `grep`, `spawn_status`)
@@ -163,7 +168,7 @@ synthesis turn follows either; a sibling still queued holds the synthesis, and
 its own completion turn decides it. The one exception is a task store the turn-end fire gate could not
 read; its later re-check fires the synthesis as before. Because the
 synthesis turn is not always there, a completed run that made no tool call
-carries its own ``⚠ Agent `<id>` made no tool calls in this run…`` line, in the
+carries its own ``Warning: Agent `<id>` made no tool calls in this run…`` line, in the
 completion event or under its digest entry, asking the parent to check any
 reported change on disk.
 
@@ -184,7 +189,7 @@ reached through `SubagentManager.notify_injection_failed`:
 
 ```
 [Subagent completion event]
-Agent `<id>` ❌ <reason>
+Agent `<id>` failed: <reason>
 Task: <first 100 chars of the task>
 Usage: <credits> credits · <elapsed>
 <outcome line>
@@ -214,22 +219,22 @@ on disk**, so use the `read` tool to retrieve it rather than re-running the work
 Four adjacent variants exist for a gateway restart, same prefix. They omit
 usage because a run the restart caught has no settled terminal billing record:
 
-- `✅ finished before gateway restart` plus `Result saved at: <path>` and
+- `completed: finished before gateway restart` plus `Result saved at: <path>` and
   `Use the read tool to retrieve it.` — only when the run recorded
   `result_complete`, which a run that claimed its completed ending does once
   `result.txt` holds the whole answer (the window this leaves:
   [subagent](../modules/subagent.md#gateway-restart-reconciliation)). It is a
   completed run (outcome `ok`) that arrives late.
-- `✅ finished before gateway restart` plus a line saying it finished without
+- `completed: finished before gateway restart` plus a line saying it finished without
   writing any text — a run that recorded `result_complete` with no
   `result.txt` (a tool-only run).
-- `⚠️ cut off mid-turn by gateway restart` plus `Partial output saved at: <path>`
+- `interrupted: cut off mid-turn by gateway restart` plus `Partial output saved at: <path>`
   and a line saying the text stops wherever the restart landed. `result.txt` is
   appended per streamed chunk, so a run killed mid-turn leaves a non-empty file
   holding an opening sentence; this variant exists so the parent is not sent to
   read a fragment as though it were the answer. It carries the same resume line
   as the next variant, on the same condition.
-- `❌ lost to gateway restart` plus `No result was captured before the restart.`
+- `failed: lost to gateway restart` plus `No result was captured before the restart.`
   When the run's conversation is still resumable
   (`session_map.session_files_resumable` on the orphan's `session_id` /
   `provider`), one more line follows: how many turns it completed, its last

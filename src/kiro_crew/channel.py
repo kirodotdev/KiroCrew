@@ -691,7 +691,7 @@ class Channel:
                     from_role="System",
                     mention=None,
                     msg_type="system",
-                    content=f"⚠️ @{target.role} is no longer active.",
+                    content=f"Warning: @{target.role} is no longer active.",
                 )
                 self.messages.append(bounce)
                 self._msg_index[bounce.id] = bounce
@@ -1001,7 +1001,7 @@ async def run_channel_agent(
         elif agent.is_orchestrator:
             await channel.post(
                 "system",
-                f"✅ @{agent.role} is ready. Send a message to get started.",
+                f"@{agent.role} is ready. Send a message to get started.",
                 from_role="System",
                 msg_type="system",
             )
@@ -1052,7 +1052,7 @@ async def run_channel_agent(
                 if replacement is None:
                     await channel.post(
                         agent.id,
-                        "❌ This agent's session could not be re-acquired after its context "
+                        "Error: This agent's session could not be re-acquired after its context "
                         "was cleared. Wake it to try again.",
                         from_role=agent.role,
                         msg_type="system",
@@ -1102,9 +1102,9 @@ async def run_channel_agent(
                     await channel.post(
                         agent.id,
                         (
-                            "❌ This agent's session is stuck and could not be recovered. "
+                            "Error: This agent's session is stuck and could not be recovered. "
                             if fault == _STREAM_BUSY
-                            else f"❌ {_lost_give_up_text(agent)} "
+                            else f"Error: {_lost_give_up_text(agent)} "
                         )
                         + "Clear its context or wake it to try again.",
                         from_role=agent.role,
@@ -1748,7 +1748,7 @@ async def _stream_task(
                 except Exception:
                     logger.exception("name-grant environment check failed")
                     _grants_refused = True
-                _prose = f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```"
+                _prose = f"Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```"
                 if _ng_refusal is not None:
                     # ``log_text`` is a constant; ``detail`` is built from the unredacted command.
                     _prose += f"\nAsking again even though this is trusted: {_ng_refusal.log_text}."
@@ -1915,7 +1915,7 @@ async def _stream_task(
         logger.exception("LLM stream error for agent %s (%s)", agent.id, agent.role)
         await channel.post(
             agent.id,
-            "❌ An error occurred while processing. Check logs for details.",
+            "Error: An error occurred while processing. Check logs for details.",
             from_role=agent.role,
             msg_type="system",
             thread_id=thread_id,

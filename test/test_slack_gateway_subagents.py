@@ -288,8 +288,8 @@ class TestSubagentDoneStoppedClassification:
 
     @pytest.mark.asyncio
     async def test_stopped_agent_notification_says_stopped_not_completed(self):
-        """Slot-gone path: title carries ⏹ and body frames a stop with partial
-        output — never 'completed ✅'."""
+        """Slot-gone path: title says stopped and body frames a stop with partial
+        output — never completed."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = _mock_context_builder()
@@ -303,8 +303,8 @@ class TestSubagentDoneStoppedClassification:
         orch.dashboard_state.notify.assert_called_once()
         args = orch.dashboard_state.notify.call_args
         title, body = args.args[1], args.args[2]
-        assert "⏹" in title
-        assert "✅" not in title
+        assert title.endswith(" stopped")
+        assert "completed" not in title
         assert "Stopped by the user" in body
         assert "partial notes so far" in body
 
@@ -327,7 +327,7 @@ class TestSubagentDoneStoppedClassification:
 
         orch.dashboard_state.notify.assert_called_once()
         title, body = orch.dashboard_state.notify.call_args.args[1:3]
-        assert "⏹" in title
+        assert title.endswith(" stopped")
         assert "parent conversation ended (retire_kiro_identity_sessions)" in body
         assert "Stopped by the user" not in body
         assert "stopped by user" not in body

@@ -39,6 +39,7 @@ import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
 import { durableMessageId, type UnreadRun } from '../chat-core/transcript/caughtUpMarker'
 import NewMessagesDivider from './NewMessagesDivider'
+import { isToolRefusedRow } from '../lib/toolRowContract'
 
 // ── Types ──
 
@@ -340,16 +341,16 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   )
 
   // tool_call_ids whose call was blocked by a security-policy deny rule or
-  // hook. The gateway appends a hidden "🚫 …" tool message sharing the visible
-  // 🔧 pill's tool_call_id; the pill itself never sees it (only 🔧 messages
+  // hook. The gateway appends a hidden "Refused: …" tool message sharing the visible
+  // Tool: pill's tool_call_id; the pill itself never sees it (only Tool: messages
   // render), so the host computes the set once and passes a flag down. A
-  // user-rejected call also has a 🚫 sibling but carries meta.resolved =
+  // user-rejected call also has a Refused: sibling but carries meta.resolved =
   // 'rejected' on its permission/pill state, which the pill checks first.
   const autoDeniedIds = useMemo(() => {
     const ids = new Set<string>()
     for (const m of versioned.messages) {
       const tcid = m.meta?.tool_call_id as string | undefined
-      if (m.role === 'tool' && tcid && m.content?.startsWith('🚫')) ids.add(tcid)
+      if (m.role === 'tool' && tcid && isToolRefusedRow(m.content)) ids.add(tcid)
     }
     return ids
   }, [versioned])

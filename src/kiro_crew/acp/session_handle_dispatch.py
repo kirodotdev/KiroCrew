@@ -1016,7 +1016,7 @@ async def _dispatch_events(
                         # and cap the display, consistent with the drain
                         # notice and the [:4096] pre-redaction bounds.
                         text=(
-                            "⛔ permission auto-rejected (missing security "
+                            "Blocked: permission auto-rejected (missing security "
                             "context): "
                             f"{redact_text(str(_perm_event.title or '<unknown tool>')[:4096])[:120]}"
                         ),

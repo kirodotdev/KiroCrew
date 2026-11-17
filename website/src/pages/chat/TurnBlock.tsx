@@ -22,6 +22,7 @@ import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
 import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
+import { isToolCallRow } from '../../lib/toolRowContract'
 
 /**
  * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
@@ -91,7 +92,7 @@ const isTool = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) &&
   !isSpawnRunItem(it) && !isMcpAppItem(it, appToolCallIds) && !isDiffCardItem(it) &&
   !isAskAnsweredItem(it)
-const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')
+const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !isToolCallRow(it.msg.content)
 const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming' || it.msg.role === 'file')
 /**
  * "Always visible" items — must render inline regardless of TurnBlock collapse state.
@@ -212,7 +213,7 @@ const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinn
 /** How many tool-call rows a RUNNING turn keeps open. */
 const LIVE_ACTIVITY_WINDOW = 5
 
-/** A hidden ✅/🚫 completion row renders nothing in every host, so it is
+/** A hidden Approved:/Refused: completion row renders nothing in every host, so it is
  *  never folded and never counted: one call is one step. A notice the user
  *  dismissed draws nothing either, so it is not a step to expand onto. */
 const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>

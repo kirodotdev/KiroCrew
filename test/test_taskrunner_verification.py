@@ -483,7 +483,12 @@ class TestRecordAndReport:
         run = _run(tmp_path, *steps)
         run.started_at = 1.0
         task_list = format_completion_summary(run).split("**Tasks:**\n", 1)[1]
-        assert task_list.splitlines() == ["  ✅ S1", "  ❌ S2", "  ⏭️ S3", "  ✅ S4"]
+        assert task_list.splitlines() == [
+            "  Passed S1",
+            "  Failed S2",
+            "  Skipped S3",
+            "  Passed S4",
+        ]
 
 
 class TestARequeuedStepKeepsNoEarlierVerdict:

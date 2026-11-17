@@ -144,7 +144,7 @@ class TestRenderer:
             ]
         )
         await TurnDriver(provider, _renderer(client), approval_mode="auto").run("hi")
-        assert client.sent == ["✅ Context compacted."]
+        assert client.sent == ["Context compacted."]
         assert "OBJECTIVE" not in "".join(client.sent)
         assert "user guidance" not in "".join(client.sent)
 

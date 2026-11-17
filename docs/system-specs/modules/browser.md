@@ -731,7 +731,7 @@ One card per turn, attached to the turn's first `browser` call (anchor =
 folded. A browser row is recognised by the stamped `tool_name` when there is one
 (`browser` or a server-qualified `…/browser`, `…::browser`, `…___browser`) and
 otherwise by its pill text, which for the managed-MCP tool reads
-`🔧 @kirocrew-core/browser` -- the `@server/tool` form every MCP call arrives in; a new `turn_id` closes the previous record as done. Takeover grows the
+`Tool: @kirocrew-core/browser` (or the older wrench lead) -- the `@server/tool` form every MCP call arrives in; a new `turn_id` closes the previous record as done. Takeover grows the
 same element; it never swaps in another component. Frames are decoded from the
 binary message (the TS mirror of `decode_frame`, every field checked), acked ONCE
 per `(stream, seq)` even when no live turn shows them (so the relay never

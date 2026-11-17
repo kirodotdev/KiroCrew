@@ -329,6 +329,20 @@ class TestSearchChatHistoryHandler:
         assert listed == [f"toolu_{i}" for i in range(1, TOOL_POINTER_MAX_ROWS + 1)]
         assert "(1 older results not listed.)" in text
 
+    @pytest.mark.parametrize(
+        "content",
+        ["\U0001f527 Run: ls", "Tool: Run: ls", "\u2705 Run: ls", "Approved: Run: ls"],
+    )
+    def test_the_listed_tool_drops_either_lead(self, content):
+        """Saved rows keep the old glyph lead and new rows write the word; both list the bare title."""
+        from kiro_crew.context_assembly.replay import tool_pointer_text
+
+        rows = [{"role": "tool", "content": content, "meta": {"tool_call_id": "toolu_1"}}]
+        (line,) = [
+            ln for ln in tool_pointer_text(rows, "s").splitlines() if ln.startswith("toolu_1")
+        ]
+        assert line.split(" | ")[1] == "Run: ls"
+
     def test_a_large_tool_output_is_cut_to_the_promised_length(self, tmp_path, monkeypatch):
         """Storage keeps up to 1M chars; one read returns at most the 8,000 it promises."""
         from kiro_crew.mcp_tools.sessions import TOOL_CALL_OUTPUT_MAX_CHARS

@@ -1091,7 +1091,10 @@ class TestDenyRowTitleRedaction:
             ]
             if turn_file.name != "__init__.py"
         )
-        assert source.count("🚫 {event.title}") == 0, (
+        assert (
+            source.count("🚫 {event.title}") == 0
+            and source.count('"refused", f"{event.title}') == 0
+        ), (
             "a transcript row interpolates the raw model-authored title -- "
             "route the deny through _reject_invalid_tool/_reject_hook_error"
         )
@@ -1100,8 +1103,8 @@ class TestDenyRowTitleRedaction:
             "(reuse an in-scope redacted variable or _redact_display_text)"
         )
         # Each deny shape is rendered in exactly one place — its helper.
-        assert source.count('f"🚫 {title} (invalid: {error})"') == 1
-        assert source.count('f"🚫 {title} (hook error)"') == 1
+        assert source.count('tool_row("refused", f"{title} (invalid: {error})")') == 1
+        assert source.count('tool_row("refused", f"{title} (hook error)")') == 1
 
 
 # ── Long read titles carrying a canonical identity ──

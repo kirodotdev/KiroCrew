@@ -71,6 +71,7 @@ import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, thr
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
+import { isToolCallRow } from '../../lib/toolRowContract'
 
 /** Disclosure-map identity for a tool row (#8204). messageRowKey is
  *  `${role}-${clientTs ?? ts}` and tool rows are never clientTs-stamped, so a
@@ -522,7 +523,7 @@ export function createTranscriptRenderers(
     {
       id: 'workflow_run_tool',
       roles: ['tool'],
-      match: m => !!m.content?.startsWith('🔧') && isWorkflowRunTool(m),
+      match: m => isToolCallRow(m.content) && isWorkflowRunTool(m),
       render: (m, ctx) => {
         const runId = extractWorkflowRunId(m)
         // The match already proved this, but a null here must draw the generic
@@ -534,7 +535,7 @@ export function createTranscriptRenderers(
     {
       id: 'subagent_run_tool',
       roles: ['tool'],
-      match: m => !!m.content?.startsWith('🔧') && isSpawnRunTool(m),
+      match: m => isToolCallRow(m.content) && isSpawnRunTool(m),
       render: (m, ctx) => {
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
@@ -552,7 +553,7 @@ export function createTranscriptRenderers(
       // fan-out.
       id: 'session_send_tool',
       roles: ['tool'],
-      match: m => !!m.content?.startsWith('🔧') && isSessionSendTool(m),
+      match: m => isToolCallRow(m.content) && isSessionSendTool(m),
       render: (m, ctx) => {
         const call = parseSessionSend(m)
         if (!call) return toolLine(m, ctx)
@@ -586,19 +587,19 @@ export function createTranscriptRenderers(
     {
       // Replaces the default pill with the live, store-connected tool line:
       // purpose label, expandable detail, elapsed time, file affordance, MCP
-      // app reveal. The 🔧 guard is the default's and must be kept — the
-      // hidden 🚫 deny sibling shares this role and is never drawn.
+      // app reveal. The Tool: guard is the default's and must be kept — the
+      // hidden Refused: deny sibling shares this role and is never drawn.
       id: 'tool',
       roles: ['tool'],
-      match: m => !!m.content?.startsWith('🔧'),
+      match: m => isToolCallRow(m.content),
       render: toolLine,
     },
     {
-      // The ✅ / 🚫 completion sibling of a tool call carries state, not a row:
-      // completion is drawn by the tool line's own icon, and the 🚫 sibling is
+      // The Approved: / Refused: completion sibling of a tool call carries state, not a row:
+      // completion is drawn by the tool line's own icon, and the Refused: sibling is
       // read for the auto-denied flag. Claimed explicitly so it draws nothing on
       // EVERY surface -- a pane's unclaimed-role fallback already drew nothing,
-      // but the single-chat surface's is the bubble, and "✅ done" as a bubble is
+      // but the single-chat surface's is the bubble, and "Approved: done" as a bubble is
       // the row this closes.
       id: 'tool_completion',
       roles: ['tool'],

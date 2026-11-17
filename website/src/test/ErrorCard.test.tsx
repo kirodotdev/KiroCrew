@@ -107,6 +107,11 @@ describe('ErrorCard', () => {
       expect(retryProse('⟳ Backend hiccup — please retry.')).toBe('The agent hit a brief problem — resume to pick up where it stopped.')
     })
 
+    it('reads the plain-word form current gateways write the same as the glyph form', () => {
+      expect(retryProse('Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+      expect(retryProse('Error: Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+    })
+
     it('keeps the exit-code detail a connection-lost row carries', () => {
       expect(retryProse('⟳ Connection lost (exit 1) — please retry.')).toBe('Connection lost (exit 1) — resume to pick up where it stopped.')
       expect(retryProse('⟳ Connection lost (exit -9) — please retry.')).toBe('Connection lost (exit -9) — resume to pick up where it stopped.')
@@ -114,7 +119,6 @@ describe('ErrorCard', () => {
 
     it('leaves anything else verbatim — an unknown or newer gateway string must still reach the screen', () => {
       expect(retryProse('⟳ Connection lost — please retry')).toBeNull()      // no full stop: not the wire shape
-      expect(retryProse('Connection lost — please retry.')).toBeNull()        // no glyph
       expect(retryProse('⟳ Something new — please retry.')).toBeNull()
       expect(retryProse('boom')).toBeNull()
       render(<ErrorCard content="⟳ Something new — please retry." />)

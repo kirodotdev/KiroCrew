@@ -48,6 +48,7 @@ from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR  # noqa:
 from kiro_crew.security.deny_waiver import deny_key_description
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
+from kiro_crew.tool_row_prefix import tool_row
 from kiro_crew.trust_patterns import (
     GrantEnded,
     approval_command,
@@ -163,7 +164,7 @@ def _spec_confirm_hooks_notice(agent: str, count: int) -> str:
     """The session-start notice for ``confirm: true`` spec hooks this backend skips."""
     hooks = "hook asks" if count == 1 else "hooks ask"
     return (
-        f"ℹ️ Agent {agent} has {count} {hooks} to be confirmed before running. "
+        f"Note: Agent {agent} has {count} {hooks} to be confirmed before running. "
         "This backend cannot ask, so they do not run in this session."
     )
 
@@ -171,7 +172,7 @@ def _spec_confirm_hooks_notice(agent: str, count: int) -> str:
 def _spec_hooks_run_nowhere_notice(agent: str, events: list[str]) -> str:
     """The session-start notice for spec hooks that nothing runs on this backend."""
     return (
-        f"ℹ️ Agent {agent} has hooks on {', '.join(events)}. This backend does not run "
+        f"Note: Agent {agent} has hooks on {', '.join(events)}. This backend does not run "
         "an agent's hooks, so they have no effect in this session."
     )
 
@@ -184,7 +185,7 @@ def _spec_withheld_hooks_notice(agent: str, *, user_hooks_run: bool) -> str:
     notice say some still run; otherwise it names where a trusted hook can go.
     """
     lead = (
-        f"ℹ Project hooks for agent {agent} do not run in this session: Crew does "
+        f"Note: Project hooks for agent {agent} do not run in this session: Crew does "
         "not run commands from a project checkout."
     )
     if user_hooks_run:
@@ -201,7 +202,7 @@ def _project_hook_files_notice() -> str:
     silently.
     """
     return (
-        "ℹ️ This project has hook files in .kiro/hooks that do not run in this "
+        "Note: This project has hook files in .kiro/hooks that do not run in this "
         "session: Crew cannot read this backend's workspace-trust decision, so it "
         "does not run commands from a project checkout. Your own ~/.kiro/hooks "
         "files still run."
@@ -754,7 +755,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # and a mutated title would store junk pattern entries for
     # exactly the requests that need the clearest presentation.
     _child_lf_warning = (
-        "⚠️ UNVERIFIED child request (security context " "missing — title is agent-authored): "
+        "Warning: UNVERIFIED child request (security context "
+        "missing — title is agent-authored): "
         if _child_low_fidelity
         else ""
     )
@@ -858,7 +860,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             await _reject_attributed(client, event.request_id, attribution="steered")
             slot.append(
                 "tool",
-                f"🚫 {_deny_title} — {_deny_msg}",
+                tool_row("refused", f"{_deny_title} — {_deny_msg}"),
                 "msg msg-tool",
                 meta=_tool_meta(event),
             )
@@ -1391,7 +1393,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 _tool_title, _ = redact_credentials(_tool_title)
                 slot.append(
                     "tool",
-                    f"🔧 {_tool_title}",
+                    tool_row("call", _tool_title),
                     "msg msg-tool",
                     # `_tool_meta` for parity with every other rung: same
                     # `_MAX_TOOL_PURPOSE` cap (a hand-rolled 200-char cap
@@ -1484,7 +1486,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             _tool_title = _broadcast_auto_tool(state, slot, event)
             slot.append(
                 "tool",
-                f"🔧 {_tool_title}",
+                tool_row("call", _tool_title),
                 "msg msg-tool",
                 meta=_tool_meta(event),
             )
@@ -1730,7 +1732,12 @@ async def _refuse_overridden_call(turn: _ChatTurn, event: Any, reason: str, *, w
     )
     await _steer_policy_notice(turn.client, title, shown_reason, _refusal_notices, slot, turn.state)
     await _reject_attributed(turn.client, event.request_id, attribution="steered")
-    slot.append("tool", f"🚫 {title} — {shown_reason}", "msg msg-tool", meta=_tool_meta(event))
+    slot.append(
+        "tool",
+        tool_row("refused", f"{title} — {shown_reason}"),
+        "msg msg-tool",
+        meta=_tool_meta(event),
+    )
     turn.state.broadcast_ws(
         "activity_event",
         {"slot": slot.key, "kind": "permission", "text": f"Blocked: {title} — {shown_reason}"},
@@ -1747,7 +1754,7 @@ def _note_override_used(slot: Any, offer: DenyOverrideOffer) -> None:
     """
     shown = deny_key_note_label(_redact_display_text(offer.key))
     if offer.scope == "session":
-        text = f"⚠️ Security rule {shown} overridden for the rest of this session."
+        text = f"Warning: Security rule {shown} overridden for the rest of this session."
     else:
-        text = f"⚠️ Security rule {shown} overridden for this one call."
+        text = f"Warning: Security rule {shown} overridden for this one call."
     slot.append("system", text, "msg msg-info")

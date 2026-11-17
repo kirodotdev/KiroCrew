@@ -530,7 +530,7 @@ async def test_the_announce_is_redacted_again_before_it_reaches_the_tab(done: _D
     await done.drain()
 
     ((_slot, text, _kw),) = done.chats
-    assert "Agent `a1` (agent[R]) completed ✅" in text
+    assert "Agent `a1` (agent[R]) completed" in text
 
 
 @pytest.mark.asyncio
@@ -542,7 +542,7 @@ async def test_a_closed_tab_gets_the_bell_with_its_slot_and_counts_as_delivered(
     await done.done(info)
 
     ((args, kwargs),) = done.notices()
-    assert args[:2] == ("subagent", "Subagent `a1` ✅")
+    assert args[:2] == ("subagent", "Subagent `a1` completed")
     assert kwargs == {"meta": {"slot": "main"}}
     assert info._report_delivered is True
     assert done.chats == []
@@ -579,7 +579,7 @@ async def test_each_channel_attempt_builds_the_parent_turn_from_its_session(
         ("release", "slack:C1:1700000000.1"),
     ]
     ((notice_args, _kw),) = done.notices()
-    assert notice_args[:2] == ("subagent", "Subagent `a1` ✅")
+    assert notice_args[:2] == ("subagent", "Subagent `a1` completed")
 
 
 @pytest.mark.asyncio
@@ -783,7 +783,7 @@ async def test_a_parent_with_no_conversation_is_told_by_the_bell(done: _Done) ->
     await done.done(info)
 
     ((args, kwargs),) = done.notices()
-    assert args[:2] == ("subagent", "Subagent `a1` ✅")
+    assert args[:2] == ("subagent", "Subagent `a1` completed")
     assert kwargs == {"meta": None}
     assert info._report_delivered is True
     assert not any(c[0] == "acquire" for c in done.calls)

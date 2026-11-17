@@ -50,7 +50,7 @@ export function loadSlotActivity(state: ChatState, key: string): void {
  * carrying `tid`, in both the live list and the per-slot cache.
  *
  * All matching messages, not just the newest: an auto-approved tool produces
- * TWO tool messages sharing one tool_call_id (🔧 pre-approval + ✅
+ * TWO tool messages sharing one tool_call_id (Tool: pre-approval + Approved:
  * post-approval) and the server patches both, so stopping at the first would
  * leave the pair disagreeing about the same call.
  */
