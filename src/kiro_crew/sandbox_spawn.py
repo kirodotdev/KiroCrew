@@ -401,6 +401,7 @@ async def wrap_argv_async(
     exec_cwd: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
+    tool_less: bool = False,
     _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
 ) -> tuple[list[str], str | None]:
     """Cancellation-safe, off-loop sandbox preparation for async spawn paths.
@@ -436,6 +437,8 @@ async def wrap_argv_async(
         options["is_kiro_cli"] = is_kiro_cli
     if first_party_fixed_argv:
         options["first_party_fixed_argv"] = True
+    if tool_less:
+        options["tool_less"] = True
     prepare = functools.partial(wrap_argv if _prepare is None else _prepare, argv, **options)
 
     def _prepare_wrapped() -> tuple[list[str], dict[str, str], str | None]:

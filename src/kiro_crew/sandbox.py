@@ -827,6 +827,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _INHERITED_USERNS_FAILURE_ENV,
         _backend,
         _background_warm,
+        _direct_executable_argv,
         _holds_inherited_unshare_failure,
         _inherited_unshare_failure,
         _kick_background_warm,

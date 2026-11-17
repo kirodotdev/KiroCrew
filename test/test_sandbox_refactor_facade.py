@@ -297,7 +297,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _set_inherited_userns_failure _inherited_unshare_failure
         _last_unshare_failure unavailable_remedy unavailable_reason remedy_guidance
         _warm_thread _record_probe_failure _holds_inherited_unshare_failure
-        _background_warm _kick_background_warm
+        _background_warm _kick_background_warm _direct_executable_argv
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
         """.split()),

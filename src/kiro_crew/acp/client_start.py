@@ -266,6 +266,7 @@ async def _spawn(self: AcpClient) -> None:
     # Kept BEFORE the plan, so what the launch reads back lands where the session
     # reads it (``_harness_read_back``). ``_reset_state`` drops it.
     self._process_adapter = adapter
+    tool_less = False
     if adapter is not None:
         # The host's own launch knowledge -- its binary, argv, labels, credential
         # mask and gate -- in its own file. The context names this session, which
@@ -417,6 +418,16 @@ async def _spawn(self: AcpClient) -> None:
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
+        # This process loads one agent, so the spec kiro-cli is handed says whether
+        # the process can mount a tool. A tool-less one may run the executable behind
+        # an edition's managed launcher (``sandbox_wrap._direct_executable_argv``).
+        # Judged on what is launched: the prepared view and its published alias when
+        # a projection names one, else the authored spec. Unconfirmed answers False.
+        tool_less = await asyncio.to_thread(
+            lambda: self.effective_spec_declares_zero_tools(
+                authored_before_spawn=self.authored_spec_declares_zero_tools()
+            )
+        )
 
     async def _env_before_scrub(env: dict[str, str], spawned_binary: str | None) -> dict[str, str]:
         # The host's own variables first, then this session's identity, so a
@@ -473,6 +484,7 @@ async def _spawn(self: AcpClient) -> None:
             extra_expose_files=plan.extra_expose_files,
             internal_sandbox=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
             pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP,
+            tool_less=tool_less,
         ),
         _launch_tools(),
     )

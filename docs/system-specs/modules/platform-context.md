@@ -783,8 +783,9 @@ Wired sites:
   `current_context().sandbox` through `sandbox._sandbox_policy` (Seatbelt's
   `.aws`-exclusion at the cc tier is preserved, as that renderer's declared capability). `sandbox_argv.py`'s
   `namespace_argv` / `sandbox_exec_argv` resolve argv[0] through
-  `current_context().agent_executable` before applying the core sandbox. The
-  public Default is identity; a companion may return the direct
+  `current_context().agent_executable` before applying the core sandbox;
+  `wrap_argv`'s unwrapped branches call the same seam through
+  `sandbox_wrap._direct_executable_argv`, for a `tool_less` spawn only. The public Default is identity; a companion may return the direct
   executable behind an edition-managed launcher to avoid nested isolation, but
   cannot disable or weaken the outer sandbox. A transient adapter error falls
   back to the original executable (outer sandbox still applies); a

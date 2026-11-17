@@ -479,6 +479,7 @@ def _delegate_to_kiro_internal_sandbox(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    launcher_skipped: bool = False,
 ) -> tuple[list[str], str | None] | None:
     """Delegate an explicitly trusted kiro-cli spawn to its internal sandbox.
 
@@ -496,9 +497,11 @@ def _delegate_to_kiro_internal_sandbox(
     so every production caller must pass :func:`scrub_agent_subprocess_env`'s
     result as the child environment; regression tests pin those call sites.
 
-    Deliberately does NOT resolve the real kiro binary: the launcher shim is
-    part of kiro's own sandbox mechanism on this path, so bypassing it here
-    would defeat the delegated layer.
+    Does NOT resolve the real kiro binary itself: the launcher shim is part of
+    kiro's own sandbox mechanism on this path, so bypassing it would defeat the
+    delegated layer for a child with tools. The caller may pass an *argv* already
+    resolved for a tool-less child (``sandbox_wrap._direct_executable_argv``), and
+    says so with *launcher_skipped*, which the audit record names.
     """
 
     global _kiro_delegation_warned
@@ -528,7 +531,8 @@ def _delegate_to_kiro_internal_sandbox(
                 if sys.platform == "win32"
                 else "macOS sandbox mutual exclusion: kiro internal sandbox on -> "
                 "Kiro Crew seatbelt off for this kiro-cli spawn"
-            ),
+            )
+            + ("; tool-less child: the edition launcher was skipped" if launcher_skipped else ""),
             # audit-or-deny: written synchronously; a filesystem failure
             # re-raises so an unaudited delegation can never proceed.
             critical=True,

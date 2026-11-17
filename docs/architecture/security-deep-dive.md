@@ -167,9 +167,12 @@ Layers 1, 2 and 4 are what cover these paths on those two platforms, and a NEW
 leaf inherits exactly this residual: adding one strictly improves Linux and
 non-delegated macOS, and changes nothing on the delegated paths.
 
-**Launcher shims are deliberately not bypassed on the delegated path.** On that
-path the shim is part of `kiro-cli`'s own sandbox mechanism, so resolving past it
-would defeat the delegated layer. Where an edition needs a managed launcher
+**Launcher shims are deliberately not bypassed on the delegated path for a child
+with tools.** On that path the shim is part of `kiro-cli`'s own sandbox mechanism,
+so resolving past it would defeat the delegated layer. A tool-less child (its
+agent spec mounts no tool, `wrap_argv(tool_less=True)`) is the one exception: it
+has nothing that layer guards, and Crew's zero-tool check still reads its spec.
+Where an edition needs a managed launcher
 replaced with the executable it ultimately invokes, that goes through the
 `PlatformContext.agent_executable` resolver, whose result is always placed
 *inside* the same namespace/Seatbelt wrapper. The capability probe never runs an

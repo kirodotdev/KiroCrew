@@ -955,6 +955,9 @@ class LaunchRequest:
     extra_private_dirs: tuple[str, ...] = ()
     internal_sandbox: bool = False
     pod_home_remap: bool = False
+    #: The agent spec this process loads mounts no tool (kiro-cli's ``--agent``
+    #: route). Handed to the sandbox wrap as ``tool_less``.
+    tool_less: bool = False
     #: The runtime allocates scratch through its guarded hop; the client never has.
     guard_scratch_hops: bool = False
     #: A frozen SSH_AUTH_SOCK-forward request the caller resolved earlier (the
@@ -1166,6 +1169,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         extra_expose_files=request.extra_expose_files,
         **exec_cwd_options(host),
         is_kiro_cli=delegate_internal_sandbox,
+        tool_less=request.tool_less,
         _prepare=tools.wrap_argv,
     )
     # Which isolation layer this spawn actually got, recorded HERE from the argv

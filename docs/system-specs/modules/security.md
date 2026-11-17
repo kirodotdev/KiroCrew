@@ -1893,8 +1893,18 @@ The public `DefaultAgentExecutableResolver` is identity, so ordinary PATH
 resolution and an explicit `KIROCREW_KIRO_BIN` override behave unchanged. An
 edition companion may replace a managed launcher with the direct executable it
 ultimately invokes when nesting two OS-isolation layers would fail. This seam
-cannot disable sandboxing: the resolved executable is always placed *inside*
-the same namespace/Seatbelt wrapper. A transient resolver failure falls back to
+cannot disable sandboxing: on the namespace/Seatbelt paths the resolved
+executable is always placed *inside* the same wrapper. `wrap_argv`'s other
+branches, where no Crew wrap is built, pass argv through
+`sandbox_wrap._direct_executable_argv`: inside a Crew sandbox, with sandbox
+`off`, with no backend on an opted-in host, or on a spawn delegated to kiro-cli's
+own sandbox, the resolved executable runs only when the caller passes
+`tool_less=True` (the child's agent spec mounts no tool; `AcpClient` judges the
+spec it launches on the kiro-cli `--agent` arm, the projection's view and
+published alias when one is prepared). A child with tools keeps the launcher
+there, whose sandbox may be the only one or part of the delegated one. A
+SEL record those branches write (delegated, unconfined, nested passthrough) is
+written after the swap and notes when the launcher was skipped. A transient resolver failure falls back to
 the original executable while preserving the outer sandbox; a platform
 composition failure propagates fail-closed. The capability probe
 (`_probe_sandbox_exec`) still runs only the trusted fixed `/usr/bin/true` target
