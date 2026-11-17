@@ -40,10 +40,14 @@ def _fast_no_report_ceiling(monkeypatch):
     The fake backend never emits MCP registration frames, so the production ceiling
     would stall each session start for seconds. drain_init() reads the constant at
     call time; tests of the ceiling pass an explicit value.
+
+    A zero ceiling, the value production passes for an MCP-free runtime: any
+    positive one still holds the drain for its full ``duration``, because the
+    drain waits until ``max(duration, ceiling)`` for a first report.
     """
     import kiro_crew.acp.session_handle as sh
 
-    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05, raising=False)
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.0, raising=False)
 
 
 def _spawn_client_mod():
