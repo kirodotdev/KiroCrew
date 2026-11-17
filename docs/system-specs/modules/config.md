@@ -39,6 +39,12 @@ so the loader's mirror does not reach them). The loader facade and
 it with `.clear()`, never rebind it. `test_config_refactor_contract.py` pins
 representative seams of each kind; `test_facade_mirror_guards.py` holds every name
 the test trees patch through the loader to reaching every owner that binds it.
+`cli_config.py` is not a loader owner, so it does not copy `config_path` or
+`config_local_path` at import: its own functions of those names call
+`loader.config_path()` / `loader.config_local_path()` at every call. A patch of
+the loader therefore reaches `config set`, an undo restores it, and a patch of
+`kiro_crew.cli_config.config_path` stays a seam for that module alone
+(`test_cli_config_path_lookup.py`).
 
 | Owner | Owns |
 |---|---|
