@@ -13,8 +13,10 @@ Off unless ``tunnel.relay_viewer_enabled`` is set: both routes answer 404
 
 Both calls to the control plane go through :mod:`kiro_crew.relay_viewer.cps` with
 the person's Kiro sign-in from the gateway's own vault, or the test credential
-``tunnel.relay_viewer_credential`` names. No token, sign-in or credential value is
-logged or put in an error. Every answer is ``Cache-Control: no-store``.
+``tunnel.relay_viewer_credential`` names. They go to ``tunnel.relay_viewer_cps_url``
+when it is set, else to the built-in control plane for the sign-in's region. No
+token, sign-in or credential value is logged or put in an error. Every answer is
+``Cache-Control: no-store``.
 """
 
 from __future__ import annotations
@@ -133,6 +135,28 @@ async def _settings() -> Optional[tuple[str, str, str]]:
         ref.strip() if isinstance(ref, str) else "",
         domain.strip() if isinstance(domain, str) else "",
     )
+
+
+def _control_plane(cps_url: str, profile_arn: str) -> str:
+    """*cps_url* when it is set, else the built-in control plane for the sign-in's region.
+
+    The built-in hosts are the ones sign-in already sends this bearer to. With no
+    profile (the test credential, a Builder ID sign-in) or a value that is not a
+    profile ARN, it is the table's us-east-1 host, as sign-in does.
+    """
+    if cps_url:
+        return cps_url
+    from kiro_crew.auth.login.control_plane import (
+        ControlPlaneError,
+        control_plane_url,
+        profile_region,
+    )
+
+    try:
+        region = profile_region(profile_arn) if profile_arn else ""
+    except ControlPlaneError:
+        region = ""
+    return control_plane_url(region)
 
 
 def _may_force(identity: str) -> bool:
@@ -268,8 +292,11 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     try:
         crews = await _with_sign_in(
             ref,
-            lambda bearer, token_type, _profile_arn: cps.list_crew_endpoints(
-                cps_url, bearer, crew_domain=crew_domain, token_type=token_type
+            lambda bearer, token_type, profile_arn: cps.list_crew_endpoints(
+                _control_plane(cps_url, profile_arn),
+                bearer,
+                crew_domain=crew_domain,
+                token_type=token_type,
             ),
         )
     except cps.CpsRefused as exc:
@@ -355,11 +382,12 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     ) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken]:
         # Listed again on each call because the list is the only source of the
         # Crew's URL (and its domain check), so the URL is the one CPS gives now.
+        url = _control_plane(cps_url, profile_arn)
         crew = next(
             (
                 c
                 for c in await cps.list_crew_endpoints(
-                    cps_url, bearer, crew_domain=crew_domain, token_type=token_type
+                    url, bearer, crew_domain=crew_domain, token_type=token_type
                 )
                 if c.endpoint_id == endpoint_id
             ),
@@ -372,7 +400,7 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         if crew.crew_type == "PERSONAL" and not profile:
             logger.info("relay viewer: personal Crew, but the sign-in has no profile")
         grant = await cps.create_crew_access_token(
-            cps_url, bearer, endpoint_id, token_type=token_type, profile_arn=profile
+            url, bearer, endpoint_id, token_type=token_type, profile_arn=profile
         )
         return crew, grant
 

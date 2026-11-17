@@ -1621,8 +1621,8 @@ async def test_poll_idc_asks_the_relay_viewer_control_plane_first(tmp_path, monk
 
 @pytest.mark.parametrize(
     "enabled, url",
-    [(False, _GAMMA_CPS), (True, "")],
-    ids=["viewer-off", "url-unset"],
+    [(False, _GAMMA_CPS), (True, ""), (True, "http://management.rejected.kiro.example")],
+    ids=["viewer-off", "url-unset", "url-rejected"],
 )
 @pytest.mark.asyncio
 async def test_poll_idc_without_the_viewer_asks_only_the_prod_control_planes(

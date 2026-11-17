@@ -257,12 +257,19 @@ installed web app shows nothing new.
 
 ### Turning it on
 
-Three settings, all on the gateway the desktop app runs:
+Two settings, both on the gateway the desktop app runs:
 
 ```bash
 kirocrew config set tunnel.relay_viewer_enabled true
-kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
 kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
+```
+
+The viewer uses the built-in Kiro control plane for your sign-in's region. Set
+`tunnel.relay_viewer_cps_url` only to use another control plane. A test setup that
+uses `tunnel.relay_viewer_credential` must also set it:
+
+```bash
+kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
 ```
 
 The desktop app opens a Crew, and sends its access token, only at exactly
@@ -280,7 +287,7 @@ the edit as a pending change, even across a restart, until you apply it in
 **Settings → Security**. Until then it has no effect.
 
 Reload the dashboard once the change is in effect: a tab that last saw the feature
-off stops asking until it reloads. The control plane URL must be `https://`
+off stops asking until it reloads. A set control plane URL must be `https://`
 (`http://` only for a loopback port-forward). A URL that breaks that rule is
 ignored with a warning, and the list then says Team Crews over the relay aren't
 set up.

@@ -1241,9 +1241,11 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Viewer Control Plane URL",
             "The base URL of the control plane the viewer lists remote Crews from and "
-            "gets access tokens from. Empty (the default) means not set up. Must be "
+            "gets access tokens from. Empty (the default) uses the built-in Kiro control "
+            "plane for your sign-in's region. Must be "
             "https:// (http:// only for a loopback port-forward). A value that breaks "
-            "that rule is ignored with a warning.",
+            "that rule is ignored with a warning, and the viewer says it is not set up. "
+            "A test setup that uses tunnel.relay_viewer_credential must also set this.",
         ),
     )
     relay_viewer_credential: str = field(
