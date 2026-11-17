@@ -112,7 +112,7 @@ def test_absent_core_files_are_still_installed_with_their_mode(tmp_path, capsys)
     assert (mc / "crons.json").stat().st_mode & 0o777 == 0o640
     out = capsys.readouterr().out
     assert "Memory: copied" in out and "Crons: copied" in out
-    assert "✅ memory" in out and "✅ crons" in out
+    assert "Done: memory" in out and "Done: crons" in out
 
 
 @requires_symlinks

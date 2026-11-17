@@ -112,7 +112,7 @@ def _do_merge(
     # aborting with the restore already half applied. The snapshot side gates the same
     # way, at entry.
     facade._staging_is_pinned(allow_unpinned=allow_unpinned, what="merge restore")
-    print("🔀 Merge mode — importing...")
+    print("Merge mode — importing...")
 
     if _want(components, "memory") and (snap / "memory.db").is_file():
         memory_ok = True
@@ -126,16 +126,16 @@ def _do_merge(
                     # The index is never overwritten, so a leftover one does not
                     # match the memory.db just installed: search misses its rows
                     # until the index is rebuilt.
-                    print(f"  ↩️  {_core_file_not_installed(mc / 'memory_index.db', index=True)}")
+                    print(f"  Note: {_core_file_not_installed(mc / 'memory_index.db', index=True)}")
                 print("  Memory: copied (no existing memory.db)")
             else:
-                print(f"  ↩️  {_core_file_not_installed(mc / 'memory.db')}")
+                print(f"  Note: {_core_file_not_installed(mc / 'memory.db')}")
                 memory_ok = False
         else:
             # A refused merge imported nothing, so it must not print the success tick.
             memory_ok = _merge_memory(snap / "memory.db", mc / "memory.db")
         if memory_ok:
-            print("  ✅ memory")
+            print("  Done: memory")
 
     # The markdown half of memory (preferences, projects, history, knowledge). Named
     # by the memory component so restoring memory does not require the whole
@@ -160,7 +160,7 @@ def _do_merge(
                     kept = facade._merge_named_stores(sd, dd, allow_unpinned=allow_unpinned)
                     for store in kept:
                         print(
-                            f"  ↩️  {tree}/{_safe_name(store)}: kept the existing store; "
+                            f"  Note: {tree}/{_safe_name(store)}: kept the existing store; "
                             "the bundle's copy was NOT merged into it. "
                             "To take the bundle's copy instead, use --mode replace."
                         )
@@ -178,18 +178,18 @@ def _do_merge(
             elif _install_core_file_if_absent(sc, dc):
                 print("  Crons: copied (no existing crons)")
             else:
-                print(f"  ↩️  {_core_file_not_installed(dc)}")
+                print(f"  Note: {_core_file_not_installed(dc)}")
                 crons_ok = False
         if crons_ok:
-            print("  ✅ crons")
+            print("  Done: crons")
         else:
-            print("  ⚠️  crons: merge skipped (see warning above) — no jobs imported")
+            print("  Warning: crons: merge skipped (see warning above) — no jobs imported")
 
     if _want(components, "config"):
         # Merge never overwrites, and for this component that usually means NOTHING is
         # restored: every running install already has a config.json. So each bundle file
         # kept that way is named, the way a kept named store is, and the tick is printed
-        # only when no bundle file was left behind -- a bare "✅ config" over a restore
+        # only when no bundle file was left behind -- a bare "Done: config" over a restore
         # that took none of the bundle's settings read as "my settings came back".
         kept_config: list[str] = []
         for f in CORE_FILES["config"]:
@@ -202,7 +202,7 @@ def _do_merge(
                 # the comparison below, which would otherwise read a linked target --
                 # possibly a credential file outside the data home. Left as it is.
                 kept_config.append(f)
-                print(f"  ↩️  {f}: not restored; the existing entry is not a regular file.")
+                print(f"  Note: {f}: not restored; the existing entry is not a regular file.")
                 continue
             if d.is_file() and filecmp.cmp(s, d, shallow=False):
                 continue  # the same bytes: nothing of the bundle's was left behind
@@ -213,7 +213,7 @@ def _do_merge(
                 # with none of the dashboard Merge's filtering. Replace takes it.
                 kept_config.append(f)
                 print(
-                    f"  ↩️  {f}: not applied; a merge never installs the bundle's config "
+                    f"  Note: {f}: not applied; a merge never installs the bundle's config "
                     "overlay, which would outrank this install's config.json. To take it, "
                     "re-run with --mode replace --components config."
                 )
@@ -239,12 +239,12 @@ def _do_merge(
                 continue
             kept_config.append(f)
             print(
-                f"  ↩️  {f}: kept the existing file; the bundle's copy was NOT merged "
+                f"  Note: {f}: kept the existing file; the bundle's copy was NOT merged "
                 "into it. To take the bundle's settings instead, re-run with "
                 "--mode replace --components config."
             )
         if not kept_config:
-            print("  ✅ config")
+            print("  Done: config")
 
     if _want(components, "notifications"):
         sn, dn = snap / "notifications.jsonl", mc / "notifications.jsonl"
@@ -260,7 +260,7 @@ def _do_merge(
                 try:
                     _merge_notifications(sn, dn)
                 except NotificationCopyUnsupported as exc:
-                    print(f"  ⚠️  Notifications: SKIPPED -- {exc}")
+                    print(f"  Warning: Notifications: SKIPPED -- {exc}")
                     notifications_ok = False
             else:
                 # Not `copy2`: a byte-exact copy installs records the live file's
@@ -275,12 +275,12 @@ def _do_merge(
                     _copy_notifications(sn, dn)
                     print("  Notifications: copied")
                 except NotificationCopyUnsupported as exc:
-                    print(f"  ⚠️  Notifications: SKIPPED -- {exc}")
+                    print(f"  Warning: Notifications: SKIPPED -- {exc}")
                     notifications_ok = False
         # A skipped component must never report a success tick, exactly as the
         # crons branch gates its own tick on `crons_ok` above.
         if notifications_ok:
-            print("  ✅ notifications")
+            print("  Done: notifications")
 
     if _want(components, "security"):
         for f in CORE_FILES["security"]:
@@ -288,7 +288,7 @@ def _do_merge(
             if s.is_file() and not d.is_file():
                 if _copy_locked(s, d):
                     print(f"  {f}: restored (was missing)")
-        print("  ✅ security")
+        print("  Done: security")
 
     for comp in _WHOLE_TREE_COMPONENTS:
         if not _want(components, comp):
@@ -297,7 +297,7 @@ def _do_merge(
             # Named, not passed over in silence, and BEFORE the tick below so a component
             # this run did not import never reports one.
             print(
-                f"  ⚠️  {comp}: SKIPPED -- restored with --mode replace only, which swaps "
+                f"  Warning: {comp}: SKIPPED -- restored with --mode replace only, which swaps "
                 "the tree whole and keeps the previous one in the pre-restore backup."
             )
             continue
@@ -311,6 +311,6 @@ def _do_merge(
                 dd = mc / dirname
                 dd.mkdir(parents=True, exist_ok=True)
                 _copy_tree_no_overwrite(sd, dd, allow_unpinned=allow_unpinned)
-        print(f"  ✅ {comp}")
+        print(f"  Done: {comp}")
 
-    print("✅ Merge complete.")
+    print("Done: Merge complete.")

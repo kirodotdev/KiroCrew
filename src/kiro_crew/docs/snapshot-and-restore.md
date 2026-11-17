@@ -253,13 +253,13 @@ component was being replaced.
   imported with fresh IDs. If either cron file has a JSON shape the merger cannot use, the cron merge is skipped.
 - **Notifications**: deduplicated by timestamp. On a platform without
   `O_NOFOLLOW` (native Windows), a merge into an existing `notifications.jsonl`
-  is skipped with a message and no `✅ notifications` tick; the dashboard import
+  is skipped with a message and no `Done: notifications` line; the dashboard import
   lists it under `refused_merges`.
 - **Config and security**: only files that are missing are restored, never
   overwritten. Every running install already has a `config.json`, so a merge
   usually restores none of the bundle's settings; each settings file kept that
-  way is named (`↩️  config.json: kept the existing file; the bundle's copy was
-  NOT merged into it ...`) and `✅ config` is printed only when no setting was
+  way is named (`Note: config.json: kept the existing file; the bundle's copy was
+  NOT merged into it ...`) and `Done: config` is printed only when no setting was
   left behind. Host state in the same component (`session_map.json`,
   `project_dir`, `workspace_dir`) keeps this machine's copy silently. A bundle
   `ui-prefs.json` or `notification_settings.json` that its own store would read
@@ -268,7 +268,7 @@ component was being replaced.
   because only then would the merge install it. A restored `config.json`, `config.local.json` or `ui-prefs.json` is
   installed owner-only, as its own writer creates it. A bundle's `config.local.json` is never installed by a merge, even
   where the receiving install has none: that overlay outranks `config.json`, so
-  it is reported (`↩️  config.local.json: not applied ...`) instead. To take the
+  it is reported (`Note: config.local.json: not applied ...`) instead. To take the
   bundle's settings, re-run with `--mode replace --components config`, which
   saves the current files in the pre-restore backup first.
 - **Workspace and skills**: only files that do not exist at the destination are

@@ -500,7 +500,7 @@ class TestRestoreMerge:
         assert ret == 1, "a refusal must be an exit code, not an exception"
         out_text = capsys.readouterr().out
         assert "not valid UTF-8" in out_text, "the refusal must say WHY"
-        assert out_text.count("❌") >= 1, "reported through the same channel as its neighbours"
+        assert out_text.count("Error: ") >= 1, "reported through the same channel as its neighbours"
 
     def test_merge_cron_dedup(self, env, monkeypatch):
         """TEST 8"""
@@ -1194,7 +1194,7 @@ class TestCorruptSourceDB:
         out_text = capsys.readouterr().out
         assert ret == 0
         assert "skipping merge" in out_text
-        assert "✅ memory" not in out_text
+        assert "Done: memory" not in out_text
 
 
 class TestGatewayRunningRefusal:
