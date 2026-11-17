@@ -581,7 +581,7 @@ async def _run_task(args: argparse.Namespace) -> None:
 
 
 def _service_cmd(args: argparse.Namespace) -> int:
-    """Dispatch ``kirocrew service {install,uninstall,status}``.
+    """Dispatch ``kirocrew service {install,uninstall,status,disable,enable}``.
 
     Wraps :mod:`kiro_crew.service.controller` so that platform detection
     and the underlying systemctl/launchctl calls live there. The CLI
@@ -618,7 +618,21 @@ def _service_cmd(args: argparse.Namespace) -> int:
             resources=f"rc={rc}",
         )
         return rc
-    print("Usage: kirocrew service {install|uninstall|status}", file=sys.stderr)
+    if action in ("disable", "enable"):
+        rc = (
+            service_controller.disable_service()
+            if action == "disable"
+            else service_controller.enable_service()
+        )
+        sel().log_api_access(
+            caller="cli",
+            operation=f"service_{action}",
+            outcome="allowed" if rc == 0 else "error",
+            source="cli",
+            resources=f"rc={rc}",
+        )
+        return rc
+    print("Usage: kirocrew service {install|uninstall|status|disable|enable}", file=sys.stderr)
     return 2
 
 

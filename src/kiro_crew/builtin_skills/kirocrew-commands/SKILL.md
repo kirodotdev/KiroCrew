@@ -84,7 +84,9 @@ transcripts.
 |---------|-------------|
 | `kirocrew service install` | Install and start as system service (sudo on Linux) |
 | `kirocrew service uninstall` | Stop and remove system service (Linux: both system and per-user unit, each scope reported) |
-| `kirocrew service status` | Show service status (systemctl/launchctl; Linux: system and per-user unit, each named) |
+| `kirocrew service status` | Show service status (systemctl/launchctl; Linux: system and per-user unit, each named), and whether it starts at the next boot or login |
+| `kirocrew service disable` | Stop the service and keep it from starting at boot or login; it stays installed (`kirocrew stop` lasts only until then) |
+| `kirocrew service enable` | Start the service and have it start at boot or login again |
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |

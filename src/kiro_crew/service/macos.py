@@ -326,8 +326,12 @@ def ensure_live_program() -> bool:
 #: How long :func:`install` waits for a ``bootout`` to take effect before it
 #: bootstraps the new plist. ``bootout`` returns before launchd has finished
 #: unloading the job, and a ``bootstrap`` of a label that is still loaded fails.
-_BOOTOUT_SETTLE_SECS = 10.0
+#: launchd lets a busy gateway take the plist's ``ExitTimeOut`` before it kills
+#: it, so the window covers that budget plus one second for the unload itself.
+_BOOTOUT_SETTLE_SECS = float(TOTAL_SHUTDOWN_BUDGET_SECS) + 1.0
 _BOOTOUT_POLL_SECS = 0.2
+#: How long ``service enable`` waits for a loaded agent to show a ``pid``.
+_START_SETTLE_SECS = 2.0
 
 
 def _uid() -> int:
@@ -402,6 +406,46 @@ def install() -> None:
     # still loaded, and bootstrapping over it fails with "5: Input/output error".
     _bootout(wait=True)
     _write_plist_atomic(render_plist())
+    domain, load_res = _bootstrap()
+    if load_res.returncode != 0:
+        reason = (load_res.stderr or load_res.stdout).strip()
+        raise ServiceInstallError(
+            f"`launchctl bootstrap {domain}` failed: {reason}\n"
+            f"   Plist: {PLIST_PATH}\n"
+            f"   Tail the agent logs at {STDOUT_LOG} / {STDERR_LOG} for details."
+        )
+    log.info("Bootstrapped %s into launchd domain %s", LAUNCHD_LABEL, domain)
+
+
+def _bootstrap() -> tuple[str, subprocess.CompletedProcess[str]]:
+    """Clear the disabled override in every domain, then bootstrap the plist
+    into ``gui/<uid>``, or ``user/<uid>`` when there is no desktop login.
+
+    Every domain is enabled, not only the one bootstrapped into: a label left
+    disabled by ``kirocrew service disable`` refuses ``bootstrap`` with
+    "5: Input/output error", and a ``gui/<uid>`` override left in place would
+    keep the agent from loading at the next login after an SSH install. With
+    nobody at the desktop ``gui/<uid>`` does not exist and cannot be cleared;
+    that is logged. Returns the domain tried last and launchd's answer.
+    """
+    for target in _legacy_domains():
+        res = _launchctl("enable", f"{target}/{LAUNCHD_LABEL}")
+        if res.returncode != 0 and _domain_unavailable(res):
+            # No desktop login: launchd cannot clear a gui/<uid> override now,
+            # so one left by `service disable` still blocks the next login.
+            log.warning(
+                "launchd domain %s is unavailable (no desktop login), so a disabled "
+                "override there was not cleared; if %s does not load at the next "
+                "desktop login, run `kirocrew service enable` from that session",
+                target, LAUNCHD_LABEL,
+            )
+        elif res.returncode != 0:
+            # Not fatal here: the bootstrap below reports its own failure, and
+            # this line keeps the cause visible behind a generic error 5.
+            log.warning(
+                "launchctl enable %s/%s refused (rc=%s): %s",
+                target, LAUNCHD_LABEL, res.returncode, (res.stderr or res.stdout).strip(),
+            )
     domain = _pod_launchd.domain()
     load_res = _bootstrap_into(domain)
     if load_res.returncode != 0 and _domain_unavailable(load_res):
@@ -417,19 +461,12 @@ def install() -> None:
         )
         domain = fallback
         load_res = _bootstrap_into(domain)
-    if load_res.returncode != 0:
-        reason = (load_res.stderr or load_res.stdout).strip()
-        raise ServiceInstallError(
-            f"`launchctl bootstrap {domain}` failed: {reason}\n"
-            f"   Plist: {PLIST_PATH}\n"
-            f"   Tail the agent logs at {STDOUT_LOG} / {STDERR_LOG} for details."
-        )
-    log.info("Bootstrapped %s into launchd domain %s", LAUNCHD_LABEL, domain)
+    return domain, load_res
 
 
 def _bootstrap_into(domain: str) -> subprocess.CompletedProcess[str]:
-    """``enable`` then ``bootstrap`` the plist into ``domain``."""
-    _launchctl("enable", f"{domain}/{LAUNCHD_LABEL}")
+    """``bootstrap`` the plist into ``domain``; :func:`_bootstrap` has already
+    cleared the disabled override there."""
     return _launchctl("bootstrap", domain, str(PLIST_PATH))
 
 
@@ -521,11 +558,132 @@ def stop() -> bool:
     operator stop boots the job out of its domain, so there is nothing left for
     ``KeepAlive`` to respawn, while the plist and its enabled state stay in
     place for the next login. Returns True only when launchd accepted the
-    bootout, so no caller reports a stop that was refused.
+    bootout, so no caller reports a stop that was refused. The bootout is
+    waited out, so a ``service enable`` right after it bootstraps instead of
+    taking a job that is still leaving for a loaded one.
     """
     if not PLIST_PATH.exists():
         return False
-    return _bootout(wait=False)
+    return _bootout(wait=True)
+
+
+def disable() -> tuple[bool, list[str]] | None:
+    """Keep the plist installed but stop the agent loading at login, and stop it
+    now: ``launchctl disable`` in every domain, then ``bootout``.
+
+    ``None`` when no plist is installed. Otherwise ``(stopped, skipped)``.
+    ``stopped`` is False when launchd refused the disable in a domain that
+    exists (logged; the agent is left running), or when the agent still reads
+    as loaded after the bootout settled: :func:`is_loaded` counts only a
+    definite "not found" as gone, so a refused bootout or a failed probe is not
+    reported as a stop. ``skipped`` names each domain that does not exist (no
+    desktop login), where the disable was not recorded: launchd still loads the
+    agent there at the next desktop login, so the caller must not report a
+    lasting stop. The bootout is waited out, so an ``enable`` right after it
+    never sees a job that is still leaving.
+    """
+    if not PLIST_PATH.exists():
+        return None
+    accepted = False
+    skipped: list[str] = []
+    for domain in _legacy_domains():
+        res = _launchctl("disable", f"{domain}/{LAUNCHD_LABEL}")
+        if res.returncode == 0:
+            accepted = True
+        elif _domain_unavailable(res):
+            skipped.append(domain)
+        else:
+            log.warning(
+                "launchctl disable %s/%s refused (rc=%s): %s",
+                domain, LAUNCHD_LABEL, res.returncode, (res.stderr or res.stdout).strip(),
+            )
+            return False, skipped
+    if not accepted:
+        return False, skipped
+    _bootout(wait=True)
+    return not is_loaded(), skipped
+
+
+def enable() -> tuple[bool, list[str]] | None:
+    """Undo :func:`disable`: clear the override and bootstrap the agent unless it
+    is already loaded. ``None`` when no plist is installed. Otherwise
+    ``(loaded, skipped)``: ``loaded`` is False when launchd refused to clear the
+    override in a domain that exists (logged), or when a ``print`` probe
+    answered neither loaded nor "not found", else whether the agent runs
+    afterwards (:func:`_running_in`). ``skipped`` names each domain that does not exist (no desktop
+    login), where a disabled override, if one was recorded, is still in place."""
+    if not PLIST_PATH.exists():
+        return None
+    skipped: list[str] = []
+    for domain in _legacy_domains():
+        res = _launchctl("enable", f"{domain}/{LAUNCHD_LABEL}")
+        if res.returncode == 0:
+            continue
+        if _domain_unavailable(res):
+            skipped.append(domain)
+            continue
+        log.warning(
+            "launchctl enable %s/%s refused (rc=%s): %s",
+            domain, LAUNCHD_LABEL, res.returncode, (res.stderr or res.stdout).strip(),
+        )
+        return False, skipped
+    # A strict probe, unlike is_loaded(): only a definite answer counts either
+    # way, so an indeterminate one is a failure rather than a start nobody ran.
+    indeterminate = False
+    for domain in _legacy_domains():
+        res = _launchctl("print", f"{domain}/{LAUNCHD_LABEL}")
+        if res.returncode == 0:
+            return _running_in(domain, res), skipped
+        if not (_pod_launchd._service_absent(res) or _domain_unavailable(res)):
+            indeterminate = True
+    if indeterminate:
+        return False, skipped
+    domain, load_res = _bootstrap()
+    return load_res.returncode == 0 and _running_in(domain), skipped
+
+
+def _running_in(domain: str, printed: subprocess.CompletedProcess[str] | None = None) -> bool:
+    """Whether launchd runs the agent in ``domain``: its ``launchctl print``
+    names a numeric ``pid``. A loaded job whose program exits at once has none.
+    Re-read for :data:`_START_SETTLE_SECS`, since launchd spawns a job it has
+    just bootstrapped asynchronously; ``printed`` is a read already made."""
+    deadline = time.monotonic() + _START_SETTLE_SECS
+    res = printed or _launchctl("print", f"{domain}/{LAUNCHD_LABEL}")
+    while True:
+        pid = _launchctl_print_value(res.stdout or "", "pid") if res.returncode == 0 else None
+        if pid is not None and pid.isdigit():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_BOOTOUT_POLL_SECS)
+        res = _launchctl("print", f"{domain}/{LAUNCHD_LABEL}")
+
+
+def _disabled_in(domain: str) -> bool | None:
+    """Whether ``launchctl print-disabled <domain>`` lists our label as disabled;
+    ``None`` when launchd did not answer. Newer macOS prints ``=> disabled`` /
+    ``=> enabled``, older ``=> true`` / ``=> false``; an unlisted label is enabled."""
+    res = _launchctl("print-disabled", domain)
+    if res.returncode != 0:
+        return None
+    for line in res.stdout.splitlines():
+        name, sep, value = line.strip().partition("=>")
+        if sep and name.strip() == f'"{LAUNCHD_LABEL}"':
+            return value.strip() in ("disabled", "true")
+    return False
+
+
+def _login_start_line() -> str:
+    """One line saying whether the agent loads at the next login, or empty when
+    no plist is installed."""
+    if not PLIST_PATH.exists():
+        return ""
+    disabled = _disabled_in(_pod_launchd.domain())
+    if disabled is None:
+        return "Starts at the next login: unknown (launchctl print-disabled did not answer)\n"
+    if disabled:
+        return "Starts at the next login: no (disabled). To turn it back on: kirocrew service enable\n"
+    return "Starts at the next login: yes. To keep it stopped: kirocrew service disable\n"
 
 
 def is_loaded() -> bool:
@@ -577,5 +735,10 @@ def status() -> str:
     """Return a human-readable status block from launchctl."""
     res = _launchctl("list", LAUNCHD_LABEL)
     if res.returncode != 0:
-        return f"kirocrew service is not loaded ({res.stderr.strip() or 'no entry'})\n"
-    return res.stdout
+        block = f"kirocrew service is not loaded ({res.stderr.strip() or 'no entry'})\n"
+    else:
+        block = res.stdout
+    line = _login_start_line()
+    if line and block and not block.endswith("\n"):
+        block += "\n"
+    return block + line

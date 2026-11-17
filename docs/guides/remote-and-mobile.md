@@ -1232,7 +1232,9 @@ after exit, and force-kills only after the graceful stop deadline. An explicit
 ```bash
 kirocrew service status      # service state
 kirocrew logs -f             # tail live logs
-kirocrew stop                # stop
+kirocrew stop                # stop until the next boot or login
+kirocrew service disable     # stop and keep it stopped (stays installed)
+kirocrew service enable      # turn it back on
 kirocrew restart             # restart (service-aware)
 kirocrew service uninstall   # remove the unit / plist
 ```
