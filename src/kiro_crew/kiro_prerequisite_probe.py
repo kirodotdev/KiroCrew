@@ -864,14 +864,26 @@ async def _audited_probe(
     args: list[str],
     *,
     first_party_fixed_argv: bool = False,
+    signed_in: bool = False,
 ) -> ProcessResult:
-    """Run one credential-free status probe with paired SEL lifecycle events.
+    """Run one status probe with paired SEL lifecycle events.
+
+    By default the probe is credential-free: the strict sandbox hides Kiro CLI's
+    own identity stores and the environment carries no credential.
+
+    *signed_in* is for a subcommand that needs the sign-in ``whoami`` already
+    confirmed, so it runs the way ``whoami`` does (:func:`_run_auth_command`
+    against the real home). ``agent validate`` answers "You are not logged in"
+    without reading the file when its identity store is hidden.
 
     *first_party_fixed_argv* is for the LTS sign-in check's fixed
     ``--version`` only (``_probe``): it claims ``wrap_argv``'s first-party
-    carve-out and opts into reaping survivors.
+    carve-out and opts into reaping survivors. It never combines with
+    *signed_in*, which would drop the carve-out silently, so that pair raises.
     """
 
+    if signed_in and first_party_fixed_argv:
+        raise ValueError("a signed-in probe cannot claim the first-party carve-out")
     await self._audit(
         action=action,
         outcome="invoked",
@@ -879,16 +891,25 @@ async def _audited_probe(
         critical=True,
     )
     try:
-        result = await self._run(
-            executable,
-            args,
-            env=self._probe_environment,
-            timeout_secs=_PROBE_TIMEOUT_SECS,
-            sandbox_mode=_UNVERIFIED_SANDBOX_MODE,
-            extra_hidden_dirs=self._hidden_probe_dirs,
-            first_party_fixed_argv=first_party_fixed_argv,
-            reap_survivors=first_party_fixed_argv,
-        )
+        if signed_in:
+            result = await self._run_auth_command(
+                executable,
+                args,
+                base_env=await _identity_environment(self),
+                timeout_secs=_PROBE_TIMEOUT_SECS,
+                isolate_home=False,
+            )
+        else:
+            result = await self._run(
+                executable,
+                args,
+                env=self._probe_environment,
+                timeout_secs=_PROBE_TIMEOUT_SECS,
+                sandbox_mode=_UNVERIFIED_SANDBOX_MODE,
+                extra_hidden_dirs=self._hidden_probe_dirs,
+                first_party_fixed_argv=first_party_fixed_argv,
+                reap_survivors=first_party_fixed_argv,
+            )
     except asyncio.CancelledError:
         await self._set_terminal_audit(action, "failed", "gateway-status", "cancelled")
         raise
@@ -1001,6 +1022,28 @@ async def _run_auth_command(
         await asyncio.to_thread(shutil.rmtree, str(workspace.root), ignore_errors=True)
 
 
+async def _identity_environment(self: KiroPrerequisiteService) -> dict[str, str]:
+    """The probe environment plus Kiro CLI's own credential and proxy keys.
+
+    For subcommands that need the sign-in: ``whoami`` and the per-spec
+    ``agent validate``. See :data:`_IDENTITY_PROBE_ENV_KEYS`.
+    """
+    base_env = _identity_probe_env(self._environ, self._probe_environment)
+    if not base_env.get(CRED_KIRO_API_KEY):
+        # Post-scrub Docker: the entrypoint moved the CLI's own credential
+        # from the process environ into the data home's .env (mode 600), so
+        # the environ allowlist above found nothing. Read it back from the
+        # file — otherwise an API-key container reads as "Not logged in"
+        # while ACP sessions (which get the same re-injection at spawn)
+        # authenticate fine. Off-loop: file read.
+        fallback_key = await asyncio.to_thread(
+            read_env_file_credential, CRED_KIRO_API_KEY, self._data_home / ".env"
+        )
+        if fallback_key:
+            base_env[CRED_KIRO_API_KEY] = fallback_key
+    return base_env
+
+
 async def _audited_identity_probe(
     self: KiroPrerequisiteService,
     executable: str,
@@ -1027,19 +1070,7 @@ async def _audited_identity_probe(
         caller="gateway-status",
         critical=True,
     )
-    base_env = _identity_probe_env(self._environ, self._probe_environment)
-    if not base_env.get(CRED_KIRO_API_KEY):
-        # Post-scrub Docker: the entrypoint moved the CLI's own credential
-        # from the process environ into the data home's .env (mode 600), so
-        # the environ allowlist above found nothing. Read it back from the
-        # file — otherwise an API-key container reads as "Not logged in"
-        # while ACP sessions (which get the same re-injection at spawn)
-        # authenticate fine. Off-loop: file read.
-        fallback_key = await asyncio.to_thread(
-            read_env_file_credential, CRED_KIRO_API_KEY, self._data_home / ".env"
-        )
-        if fallback_key:
-            base_env[CRED_KIRO_API_KEY] = fallback_key
+    base_env = await _identity_environment(self)
     try:
         result = await self._run_auth_command(
             executable,
