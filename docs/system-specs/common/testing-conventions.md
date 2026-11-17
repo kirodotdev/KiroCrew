@@ -166,6 +166,15 @@ import as a duration-named argument.
 - **A fixture-pinned seam for a production constant.** ``_floor_monkeypatch.setattr``
   in an autouse fixture keeps the constant out of every test body.
 - **An injected clock** for a module that owns a ``time`` import.
+- **Lift the deadline the assertion rides on, even when the test never names it.**
+  A best-effort write or a bounded cold wait that drops or serves a partial answer
+  when it expires decides the outcome on a slow runner, while the test is green
+  everywhere else: ``platform_log_append._APPEND_TIMEOUT_SECONDS`` under the
+  ``model.route`` strip, ``skills._COLD_CATALOG_WAIT_SECS`` under a cold
+  ``get_context``. Set it to ``FALLBACK_TIMEOUT_SECS`` in the test or a shared fixture
+  (``test_decisions_strip_rides_message.generous_decision_log_append``). K19 sees only
+  a wrong override, never a missing one, so trace the asserted value back through
+  every budget on its path.
 
 **WRONG** (non-zero literal or local constant — K19 flags both):
 

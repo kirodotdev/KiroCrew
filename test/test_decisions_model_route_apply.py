@@ -28,7 +28,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from test_decisions_strip_rides_message import _quiet_sel, _runner_state, _settle, _slot
+from test_decisions_strip_rides_message import (  # noqa: F401 - the fixture is used by name
+    _quiet_sel,
+    _runner_state,
+    _settle,
+    _slot,
+    generous_decision_log_append,
+)
 from turn_harness import ScriptedProvider, SlotSpec, TurnContext, TurnScript, run_turn
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
@@ -41,6 +47,8 @@ from kiro_crew.decisions.points import model_route as mr
 from kiro_crew.decisions.types import Answer
 from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
 from kiro_crew.providers.base import LLMEvent
+
+pytestmark = pytest.mark.usefixtures("generous_decision_log_append")
 
 ADVERTISED = ["model-a", "model-b", "model-c"]
 
