@@ -603,7 +603,7 @@ Six more CI reds (#17237) added two shapes to the ones above:
   the mock to have been CALLED, or for its promise plus a `setTimeout(0)`, is a timing
   barrier, not a state one. The listbox is `aria-busy` exactly while the fetch is in
   flight; wait for the re-rooted call AND for `aria-busy` to clear
-  (`pickerSettledFor` in `ChatPage.dirStaging.test.tsx`).
+  (`ChatPage.dirStaging.test.tsx`).
 - **A one-shot init effect is a latch that lags its source.** `SttSettings` seeded
   its editable rows and the custom-model intent from the served config in an effect,
   so the commit that first showed the model select was one frame short of the
