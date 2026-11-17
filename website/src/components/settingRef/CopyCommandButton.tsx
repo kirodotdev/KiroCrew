@@ -8,10 +8,11 @@
  */
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Check, Copy, X } from 'lucide-react'
-import { copyCode } from '../../utils/clipboard'
+import { copyCode, copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import type { ConfigSetHintsV1 } from '../../api/client'
 import { Input } from '../ui'
+import ErrorNotice from '../ErrorNotice'
 import {
   cliValuePlaceholder,
   configSetCommand,
@@ -22,8 +23,14 @@ import {
 
 type CopyState = 'idle' | 'copied' | 'failed'
 
-export function CopyCommandButton({ text }: { text: string }) {
+/** `label` names the idle button when what it copies is not a command (a
+ *  reference, a username); `verbatim` copies the text as written instead of
+ *  trimmed, for a stored value such as a username; `onResult` hears whether
+ *  the copy landed, for a caller that explains a failure beside it. */
+export function CopyCommandButton({ text, label, verbatim = false, onResult }: { text: string; label?: string; verbatim?: boolean; onResult?: (ok: boolean) => void }) {
   const [state, setState] = useState<CopyState>('idle')
+  // Kept after the icon resets, until a copy lands: the notice is the lasting signal.
+  const [lastFailed, setLastFailed] = useState(false)
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(
@@ -34,29 +41,39 @@ export function CopyCommandButton({ text }: { text: string }) {
   )
 
   const handleCopy = useCallback(async () => {
-    setState(await copyCode(text) ? 'copied' : 'failed')
+    const ok = await (verbatim ? copyToClipboard(text) : copyCode(text))
+    setState(ok ? 'copied' : 'failed')
+    setLastFailed(!ok)
+    onResult?.(ok)
     if (resetTimer.current) clearTimeout(resetTimer.current)
     resetTimer.current = setTimeout(() => setState('idle'), 1500)
-  }, [text])
+  }, [text, verbatim, onResult])
 
   const title =
     state === 'copied'
       ? i18nT('components.settingRef.copied')
       : state === 'failed'
         ? i18nT('components.settingRef.copyFailed')
-        : i18nT('components.settingRef.copyCommand')
+        : label ?? i18nT('components.settingRef.copyCommand')
 
   return (
-    <button
-      type="button"
-      className="p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer shrink-0"
-      onClick={handleCopy}
-      title={title}
-      aria-label={title}
-      aria-live="polite"
-    >
-      {state === 'copied' ? <Check size={11} /> : state === 'failed' ? <X size={11} /> : <Copy size={11} />}
-    </button>
+    <>
+      <button
+        type="button"
+        className="p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer shrink-0"
+        onClick={handleCopy}
+        title={title}
+        aria-label={title}
+        aria-live="polite"
+      >
+        {state === 'copied' ? <Check size={11} /> : state === 'failed' ? <X size={11} /> : <Copy size={11} />}
+      </button>
+      {/* A caller with onResult explains the failure itself. No hand-off: a
+          command row can sit beside an unsaved value (ConfigSetCommandRow). */}
+      {lastFailed && !onResult && (
+        <ErrorNotice variant="inline" message={i18nT('components.runYourselfCard.copy_failed')} />
+      )}
+    </>
   )
 }
 

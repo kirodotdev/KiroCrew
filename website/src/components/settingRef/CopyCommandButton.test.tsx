@@ -57,6 +57,30 @@ describe('CopyCommandButton', () => {
     })
   })
 
+  it('says how to recover when the copy fails and no caller explains it', async () => {
+    mockedCopyCode.mockResolvedValue(false)
+    render(<CopyCommandButton text="test command" />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'))
+    })
+
+    expect(await screen.findByText("Couldn't copy, so select the command and copy it by hand.")).not.toBeNull()
+  })
+
+  it('leaves the failure to a caller that hears the result', async () => {
+    mockedCopyCode.mockResolvedValue(false)
+    const onResult = vi.fn()
+    render(<CopyCommandButton text="test command" onResult={onResult} />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'))
+    })
+
+    await waitFor(() => expect(onResult).toHaveBeenCalledWith(false))
+    expect(screen.queryByText("Couldn't copy, so select the command and copy it by hand.")).toBeNull()
+  })
+
   it('resets to idle state after timeout on failure', async () => {
     vi.useFakeTimers()
     mockedCopyCode.mockResolvedValue(false)

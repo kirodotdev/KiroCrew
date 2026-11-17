@@ -22399,7 +22399,6 @@
       "usage_error": "この項目の使用箇所を確認できませんでした: {{error}}",
       "usage_incomplete": "{{places}} を確認できなかったため、そこでの使用は表示されていません。",
       "delete_in_use": "この項目はまだ使われています。使っているものは動かなくなります。",
-      "reference_title": "参照",
       "copy_reference": "{{reference}} をコピー",
       "corrupt_item": "この項目は読み取れませんでした。削除してもう一度追加してください。",
       "not_found": "その名前の項目はありません。左から選んでください。",
@@ -22407,7 +22406,12 @@
       "open_website": "{{href}} を開く",
       "keep_blank_hint": "保存済みの内容を残すには、パスワードとメモを空のままにします。",
       "copy_failed": "コピーできませんでした。テキストを選択して自分でコピーしてください。",
-      "reference_hint": "この項目を MCP サーバーで使うには、そのサーバーの環境に参照を貼り付けます。#username は 1 つのフィールドを指します。"
+      "usage_kind_browser_signin": "ブラウザーでのサインイン",
+      "usage_signs_in_at": "{{host}} にサインインします",
+      "use_in_tool_title": "ツールで使う",
+      "use_in_tool_tip": "これをツールの設定（MCP サーバーの環境変数など）に貼り付けます。ツールは実行時に値を受け取り、値そのものがそこに表示されることはありません。",
+      "advanced_title": "詳細",
+      "api_call_label": "API 呼び出し"
     }
   },
   "store": {

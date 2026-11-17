@@ -22958,7 +22958,6 @@
       "usage_error": "Konnte nicht prüfen, wo dieser Eintrag verwendet wird: {{error}}",
       "usage_incomplete": "{{places}} konnte nicht geprüft werden, daher wird eine Verwendung dort nicht angezeigt.",
       "delete_in_use": "Dieser Eintrag wird noch verwendet. Was ihn verwendet, funktioniert danach nicht mehr.",
-      "reference_title": "Referenz",
       "copy_reference": "{{reference}} kopieren",
       "corrupt_item": "Dieser Eintrag konnte nicht gelesen werden. Lösche ihn und füge ihn erneut hinzu.",
       "not_found": "Kein Eintrag mit diesem Namen. Wähle links einen aus.",
@@ -22966,7 +22965,12 @@
       "open_website": "{{href}} öffnen",
       "keep_blank_hint": "Lass Passwort und Notizen leer, um die gespeicherten Werte zu behalten.",
       "copy_failed": "Kopieren fehlgeschlagen. Markiere den Text und kopiere ihn selbst.",
-      "reference_hint": "Füge eine Referenz in die Umgebung eines MCP-Servers ein, um diesen Eintrag dort zu nutzen. #username wählt ein Feld."
+      "usage_kind_browser_signin": "Anmeldung im Browser",
+      "usage_signs_in_at": "Meldet dich bei {{host}} an",
+      "use_in_tool_title": "In einem Tool verwenden",
+      "use_in_tool_tip": "Füge dies in die Einstellungen eines Tools ein, etwa in die Umgebung eines MCP-Servers. Das Tool erhält den Wert beim Ausführen; der Wert selbst erscheint dort nie.",
+      "advanced_title": "Erweitert",
+      "api_call_label": "API-Aufruf"
     }
   },
   "store": {

@@ -22399,7 +22399,6 @@
       "usage_error": "无法检查此条目的使用位置：{{error}}",
       "usage_incomplete": "无法检查{{places}}，因此那里的使用情况未显示。",
       "delete_in_use": "此条目仍在使用中。使用它的地方将无法正常工作。",
-      "reference_title": "引用",
       "copy_reference": "复制 {{reference}}",
       "corrupt_item": "此条目无法读取。请删除后重新添加。",
       "not_found": "没有这个名字的条目。请在左侧选择一个。",
@@ -22407,7 +22406,12 @@
       "open_website": "打开 {{href}}",
       "keep_blank_hint": "将密码和笔记留空即可保留已存的内容。",
       "copy_failed": "无法复制。请选中文本自行复制。",
-      "reference_hint": "将引用粘贴到 MCP 服务器的环境中，即可在那里使用此条目。#username 选取一个字段。"
+      "usage_kind_browser_signin": "浏览器登录",
+      "usage_signs_in_at": "在 {{host}} 为你登录",
+      "use_in_tool_title": "在工具中使用",
+      "use_in_tool_tip": "把它粘贴到工具的设置里，例如 MCP 服务器的环境变量。工具运行时才拿到值，值本身不会出现在那里。",
+      "advanced_title": "高级",
+      "api_call_label": "API 调用"
     }
   },
   "store": {
