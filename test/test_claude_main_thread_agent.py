@@ -11,6 +11,7 @@ unreadable, is left agentless as before.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -34,7 +35,25 @@ def _write_spec(agents_dir: Path, *, claude_code_agent: str | None) -> None:
 
 def _options(work_dir: Path) -> dict:
     client = AcpClient(work_dir=work_dir, agent=_AGENT, acp_backend=ACP_BACKEND_CLAUDE)
+    # Every claude start path runs this prepare step before the envelope; the spec
+    # is read there, off the loop, never inside the synchronous envelope build.
+    asyncio.run(client._prepare_claude_side_read_denies())
     return client._claude_session_meta()["claudeCode"]["options"]
+
+
+def test_the_envelope_build_reads_no_spec(tmp_path, agents_dir, monkeypatch):
+    """The synchronous envelope only reads what the prepare step stored."""
+    from kiro_crew.acp import session_mcp
+
+    _write_spec(agents_dir, claude_code_agent=_CLAUDE_AGENT)
+    client = AcpClient(work_dir=tmp_path, agent=_AGENT, acp_backend=ACP_BACKEND_CLAUDE)
+    asyncio.run(client._prepare_claude_side_read_denies())
+
+    def no_read(*_a, **_k):
+        raise AssertionError("the envelope build read the spec")
+
+    monkeypatch.setattr(session_mcp, "agent_spec_snapshot", no_read)
+    assert client._claude_session_meta()["claudeCode"]["options"]["agent"] == _CLAUDE_AGENT
 
 
 def test_the_spec_agent_rides_the_envelope(tmp_path, agents_dir):

@@ -10,6 +10,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``, ``_claude_inline_settings``,
+``_claude_main_thread_agent_name``,
 ``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_worker_builtin_tools``,
 ``_last_substitution_model``, ``_model``, ``_resolved_model_id``, ``_session_mcp_cache``,
 ``claude_mode_pinned_notice``.
@@ -519,7 +520,13 @@ async def _prepare_claude_side_read_denies(self: ClaudeAcpClient) -> None:
     A no-op on any other session. Fail closed: rules that cannot be built (a
     root that cannot be resolved) stop the launch, so the session never starts
     without them.
+
+    Every session also reads its spec's ``claudeCodeAgent`` here, off the loop,
+    because the envelope that ships it (``_claude_session_meta``) is built
+    synchronously and the spec read can materialize the agent from disk. This is
+    the one prepare step every claude start path runs before that envelope.
     """
+    self._claude_main_thread_agent_name = await asyncio.to_thread(_claude_main_thread_agent, self)
     if not getattr(self, "_side_read_only", False):
         return
     try:
@@ -573,7 +580,7 @@ def _bridged_server_asks(client: ClaudeAcpClient) -> list[str]:
     ]
 
 
-def _claude_main_thread_agent(self: ClaudeAcpClient) -> str:
+def _claude_main_thread_agent(client: ClaudeAcpClient) -> str:
     """The Claude Code agent to start this session's main thread as, or ``""``.
 
     Read from the optional ``claudeCodeAgent`` field of this session's agent
@@ -593,7 +600,7 @@ def _claude_main_thread_agent(self: ClaudeAcpClient) -> str:
     try:
         from kiro_crew.acp.session_mcp import agent_spec_snapshot
 
-        spec = agent_spec_snapshot(self._agent, work_dir=self._work_dir)
+        spec = agent_spec_snapshot(client._agent, work_dir=client._work_dir)
     except Exception:
         logger.debug("claude main-thread agent: spec unreadable", exc_info=True)
         return ""
@@ -779,7 +786,7 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
     # ``agent`` option, which applies the agent's system prompt, tool
     # restrictions and model and makes Claude Code set ``SessionStart``'s
     # ``agent_type``. Without it a Crew-started session runs agentless.
-    main_thread_agent = _claude_main_thread_agent(self)
+    main_thread_agent = getattr(self, "_claude_main_thread_agent_name", "")
     if main_thread_agent:
         options["agent"] = main_thread_agent
     # What this envelope ships, recorded as it is built: the session freezes
