@@ -198,7 +198,7 @@ _HISTORY_DASHBOARD_VERBS: frozenset[str] = frozenset(
 # ledger verbs were on the goal AND pipeline conductors for one release before the
 # ledger flow moved to its own spec, and came back to the goal conductor with
 # ``work_brief`` when it took the alias's spec over; they are the base every
-# conductor ships. ``work_report``, the worker's verb, joined them so a
+# conductor ships (with ``work_ask_record``, recorded per spec below). ``work_report``, the worker's verb, joined them so a
 # nested conductor reports without a prompt; the pipeline and security
 # conductors have never shipped it.
 _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
@@ -219,8 +219,9 @@ _HISTORY_CHECK_VERBS: frozenset[str] = frozenset(
 #: today: the goal conductor's bare ``@kirocrew-core`` and ``patrol_budget``. Beyond
 #: each spec's current tuple the table holds exactly those entries (pinned by test),
 #: so an entry can join it only as a grant some release is shown to have shipped. The pipeline
-#: conductor's two work-ledger verbs were shipped for one release, retired, and are
-#: shipped again as the base every conductor holds.
+#: conductor's read and record verbs were shipped for one release, retired, and are
+#: shipped again as the base every conductor holds; ``work_ask_record`` joined that
+#: base later.
 _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
     "kirocrew-conductor": (
         frozenset({"session", "report", "tool_search", "@kirocrew-core"})
@@ -247,6 +248,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_CORE_VERBS
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"}
+        | {"@kirocrew-work/work_ask_record"}
     ),
     "kirocrew-security-conductor": (
         frozenset({"session", "report", "tool_search"})
@@ -254,6 +256,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | {"@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"}
+        | {"@kirocrew-work/work_ask_record"}
     ),
 }
 

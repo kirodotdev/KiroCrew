@@ -703,12 +703,13 @@ def _waits_on_approval(
     """Whether an item, as it stands, still waits on the person for *worker_key*'s approval.
 
     Open, still bound to *worker_key*, last report with reason ``approval``, and not
-    answered since (``work_ledger_board.awaits_person``). With *report_id*, that last
+    answered since (``work_ledger_board.names_person``: the worker's own claim, so a
+    person's answer is recorded whether or not the conductor relayed it). With *report_id*, that last
     report must also be the one the answer was matched to: asked again under the
     board lock, so a newer report filed in between (an approval ask too) is never
     answered by it.
     """
-    from kiro_crew.dashboard.handlers.work_ledger_board import awaits_person
+    from kiro_crew.dashboard.handlers.work_ledger_board import names_person
 
     def waits(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
         return (
@@ -716,7 +717,7 @@ def _waits_on_approval(
             and item.worker_session_key == worker_key
             and item.reason == "approval"
             and (report_id is None or (bool(report_id) and _last_report_id(events) == report_id))
-            and awaits_person(item, events)
+            and names_person(item, events)
         )
 
     return waits

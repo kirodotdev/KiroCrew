@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, NotRequired, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
@@ -82,6 +83,21 @@ def waits_on_person(
         and status in WORK_REASON_STATUSES
         and reason in WORK_BLOCKED_REASONS
     )
+
+
+def ask_is_current(events: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the item's ``ask`` record explains the question waiting now, by the
+    ledger's own event order (*events*, oldest first): no ``report`` was appended
+    after the newest ``ask`` event. Stamps have whole-second resolution and would
+    tie, so the order decides. A tail cut short of the ``ask`` event counts as
+    current only when it holds no report either."""
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == "ask":
+            return True
+        if kind == "report":
+            return False
+    return True
 
 
 #: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's

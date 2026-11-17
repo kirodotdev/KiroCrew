@@ -463,7 +463,11 @@ pins both readings.
 
 A work-ledger watch also HOLDS while every open item waits on a person: each is
 `blocked` or `question` with the worker's `reason` `approval` or `needs_human`,
-no item's worker session is gone, and the ledger's fingerprint
+no item's worker session is gone, each carries the conductor's current `ask`
+record (`probes.work_ledger.person_wait_asked`: no report after its newest `ask`
+event, read only once the fingerprint matches, so a question the conductor has
+not relayed keeps the patrol running and a `decide` or `close`, which clear the
+record, releases it), and the ledger's fingerprint
 (`probes.work_ledger.person_wait_fingerprint`, which is
 `worker_report_revision` -- the same worker-report digest the quiet floor reads,
 so nothing the conductor writes moves it) equals `ledger_seen_fp`, the one read at the tick
@@ -473,7 +477,7 @@ nothing, reaches no probe gate or quiet floor, and is neither extended nor
 stopped; it re-arms at the loop's interval and sets `waiting_on_person` (with
 `waiting_on_person_at`), which `monitor_inspect`, the REST row and the
 `autonudge_state` frame carry. A worker's report changes the fingerprint and
-releases it on the next tick; the conductor's own writes do not; a manual fire clears `ledger_seen_fp` so it
+releases it on the next tick, and so does a conductor `decide` or `close` (both clear the `ask` record); its other writes (`goal`, `verdict`, `ask`) do not; a manual fire clears `ledger_seen_fp` so it
 is never held; a loop already held for an unanswered approval is left to that
 hold. On release the held time is added to `created_ts`, as the approval hold
 does, so it spends neither the runtime budget nor the backstop. That exemption

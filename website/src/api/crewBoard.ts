@@ -36,11 +36,23 @@ export interface WorkBoardEvent {
   id: string
   ts: string
   item_id: string
-  kind: 'create' | 'bind' | 'report' | 'decision' | 'steer' | 'verdict' | 'close'
+  kind: 'create' | 'bind' | 'report' | 'decision' | 'steer' | 'verdict' | 'close' | 'ask'
   /** Present on a `report` line: the status the worker reported. */
   status: WorkReportStatus
   /** Blanked by the server on a `bind` line, whose text is a session key. */
   text: string
+}
+
+/** The conductor's ask record (`work_vocab.coerce_ask`): what it needs from the
+ *  person, why only they can decide, the answers with what each leads to, and its
+ *  pick (one of the labels, or empty). */
+export interface WorkItemAsk {
+  what: string
+  why: string
+  options: { label: string; outcome: string }[]
+  pick: string
+  pick_why: string
+  written_at: string
 }
 
 /** One masked row: the conductor's item minus `worker_session_key`, plus joins. */
@@ -88,6 +100,9 @@ export interface WorkBoardItem {
   /** The item waits on the PERSON: a blocked / question report naming one, not
    *  answered since by the conductor or a steer. Absent on an older gateway. */
   awaits_person?: boolean
+  /** The conductor's vetted question for the person (`work_ask_record`), sent only
+   *  while no newer report has superseded it. Absent otherwise. */
+  ask?: WorkItemAsk
   terminal: boolean
   alive: AliveState
   events: WorkBoardEvent[]

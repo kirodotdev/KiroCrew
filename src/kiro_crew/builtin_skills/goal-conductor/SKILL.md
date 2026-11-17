@@ -453,10 +453,11 @@ Each cycle:
    only the person holds is (a).
 
    When every open item waits on a person (`approval`, or a `needs_human` that
-   passed that check), put the ask in front of the user on that turn: your patrol then holds, takes no
-   turns and does not extend, and the goal popover shows it waiting on the user.
-   A worker's new report releases it; your own writes (decide, goal, close) do
-   not, so answer the user's question or re-dispatch to move it.
+   passed that check), put the ask in front of the user on that turn and record
+   it with `work_ask_record`: your patrol then holds, takes no turns and does not
+   extend, and the goal popover shows it waiting on the user. Without a current
+   ask record it does not hold. A worker's new report releases it, and so do your
+   `decide` and `close` (they clear the ask); `goal` does not.
 
    **Whenever you relay an item's question to the person, load and call
    `work_ask_record` in that turn** (`item_id`, `what`, `why`,

@@ -28,7 +28,7 @@ from kiro_crew import work_ledger as wl
 from kiro_crew.dashboard import crew_work
 from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.dashboard.handlers import work_ledger_worker as worker_routes
-from kiro_crew.dashboard.handlers.work_ledger_board import awaits_person, with_worker_facts
+from kiro_crew.dashboard.handlers.work_ledger_board import names_person, with_worker_facts
 
 
 @pytest.fixture(autouse=True)
@@ -51,9 +51,11 @@ def _events(board: str, item_id: str) -> list[dict]:
 
 
 def _waits(board: str, item_id: str) -> bool:
+    """The worker's own claim (``names_person``): an approval answer is recorded
+    against it whether or not the conductor relayed the question."""
     item = wl.read_work_item(board, item_id)
     assert item is not None
-    return awaits_person(item, _events(board, item_id))
+    return names_person(item, _events(board, item_id))
 
 
 def _steers(board: str, item_id: str) -> list[dict]:
@@ -232,6 +234,8 @@ async def test_a_crew_log_that_does_not_take_it_leaves_the_ask(monkeypatch):
 @pytest.mark.asyncio
 async def test_the_sidebar_count_and_goal_board_agree_after_the_answer():
     ids = await _blocked_on_approval()
+    # The sidebar counts only a question the conductor vetted (a current ask record).
+    wl.apply_ask_record(CONDUCTOR_A, ids["item_a"], what="Approve the tool call")
 
     def rows() -> list[dict]:
         item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])

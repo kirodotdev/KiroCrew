@@ -250,21 +250,21 @@ language (the script of their last three genuine messages):
 1. **Goal**: the conductor's ledger goal, else the session ledger's goal, else
    the owner's newest genuine message.
 2. **Needs you**: each open item the Board's own `awaits_person` test says waits
-   on the owner, with its state, its PR state when read live, and "checked
-   HH:MM"; under it the item's `ask` record (`work_ask_record`:
-   why, each option with what it leads to, the pick with its reason). With no
-   record and exactly one item waiting, the thread's open `[OPTIONS:]` reply is
-   quoted as that item's question with the reply's time and labels, unless the
-   item reported after that reply; otherwise one line points at the question by
-   the item's report time ("See the question at HH:MM."). Question cards
-   and change cards follow with their option labels and a line saying why and
-   what each leads to were not written; a reply's open `[OPTIONS:]` line is
-   listed with "The choices are in the buttons below", unless an item's record
-   (or quote) already covers those labels. With nothing waiting it is one line, "Nothing
-   needs you right now."
+   on the owner (a person-naming report the conductor relayed with a current
+   `ask` record), with its state, its PR state when read live, and "checked
+   HH:MM"; under it that record (`work_ask_record`: why, each option with what
+   it leads to, the pick with its reason), or, when the record holds only its
+   `what`, one line pointing at the question by the item's report time ("See the
+   question at HH:MM."). Question cards and change cards follow with their
+   option labels and a line saying why and what each leads to were not written;
+   a reply's open `[OPTIONS:]` line is listed with "The choices are in the
+   buttons below", unless an item's record already covers those labels. With
+   nothing waiting it is one line, "Nothing needs you right now."
 3. **Being done now**: one line per open item that has a worker or a report: its
    ledger status word, its PR state only when this welcome read it, and
-   "checked HH:MM".
+   "checked HH:MM". An item whose worker names a person but that carries no
+   current `ask` record (or whose event tail cannot be read) reads "main chat is on it" instead of a status
+   word (`work_ledger_board.item_person_state`), never as waiting on the owner.
 4. **Comes after**: open items not started yet, each labelled "plan".
 
 Every ledger string is redacted whole before any cut (`redact_whole`, every scan

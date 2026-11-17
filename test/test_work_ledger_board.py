@@ -357,6 +357,7 @@ async def test_only_a_model_turn_clears_the_persons_ask_on_the_board(turn, await
     item_id = _item()
     _bind(item_id)
     _report(item_id, "question", "pick a region", reason="needs_human")
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Pick a region")
     worker = SimpleNamespace(key="", linked_session_key="", running=turn, turn_running=turn)
     state = _state({WORKER: worker})
     state.workflow_service = SimpleNamespace(

@@ -989,3 +989,18 @@ def test_a_choice_list_asks_even_while_a_background_agent_runs(monkeypatch):
     gw = FakeGateway([dict(BUSY, worker=child)])
     r = _run(_opts(caps={"timeout": 5}), gw, monkeypatch)
     assert r.status == "asked" and r.ask_events[0]["slot"] == WORKER
+
+
+def test_ledger_asks_stops_on_a_wait_or_a_current_record_only():
+    """The board sends ``ask`` only while it is current and ``awaits_person`` only for
+    a relayed person wait, so a record on a ``done`` item (a ``human_approval`` ask)
+    stops the run, and an item the main chat is still checking does not."""
+    asked = {"item_id": "it_1", "state": "open", "awaits_person": True, "ask": {"what": "Pick one"}}
+    approval = {
+        "item_id": "it_2",
+        "state": "open",
+        "awaits_person": False,
+        "ask": {"what": "Ship?"},
+    }
+    checking = {"item_id": "it_3", "state": "open", "awaits_person": False}
+    assert [a["text"] for a in h.ledger_asks([asked, approval, checking])] == ["Pick one", "Ship?"]
