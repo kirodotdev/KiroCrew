@@ -43,7 +43,7 @@ from kiro_crew.feishu.transport import (
     SPOOL_DM_ROUTE_PREFIX,
     SPOOL_GROUP_ROUTE_PREFIX,
 )
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.attachments import (
     IngestResult,
     append_attachment_context,
@@ -694,7 +694,10 @@ class FeishuDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "Feishu"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "Feishu"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(self, inbound: "LarkInbound", session_key: str, provider: Any) -> None:

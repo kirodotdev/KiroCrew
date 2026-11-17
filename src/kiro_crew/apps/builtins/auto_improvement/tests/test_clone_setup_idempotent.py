@@ -551,3 +551,39 @@ def test_linked_git_directory_is_refused_before_target_access(tmp_path: Path) ->
     assert result == {}
     assert "linked Git directory" in reuse_err
     assert not list(foreign.iterdir())
+
+
+def test_a_clone_of_another_repository_at_the_same_name_is_refused(tmp_path: Path) -> None:
+    """After setup both origin urls are the sentinel, so the origin cannot tell two
+    repositories apart on reuse; the recorded identity must."""
+    bare = _seeded_bare(tmp_path)
+    root = tmp_path / "root"
+    first, err = _setup(bare, root)
+    assert err == "" and first["reused"] is False
+
+    other = CloneSpec("o/other", bare.as_uri(), "o--r", "github", "github.com", "o/other")
+    with mock.patch.object(clone_setup, "validate_target_url", return_value=(other, "")):
+        result, reuse_err = clone_setup.setup_safe_clone("https://github.com/o/other", root)
+
+    assert result == {}
+    assert "different repository" in reuse_err
+
+
+def test_a_clone_made_before_identities_were_recorded_is_adopted(tmp_path: Path) -> None:
+    bare = _seeded_bare(tmp_path)
+    root = tmp_path / "root"
+    _first, err = _setup(bare, root)
+    assert err == ""
+    clone = root / "o--r"
+    subprocess.run(
+        ["git", "-C", str(clone), "config", "--unset-all", clone_setup._CLONE_IDENTITY_KEY],
+        check=True,
+        cwd=tmp_path,
+    )
+
+    again, err = _setup(bare, root)
+
+    assert err == "" and again["reused"] is True
+    assert clone_setup._local_config_values(clone, clone_setup._CLONE_IDENTITY_KEY) == [
+        clone_setup._clone_identity(_spec(bare))
+    ]

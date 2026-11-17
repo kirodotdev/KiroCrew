@@ -9,7 +9,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
-import { turnOnCrewModePreview } from './crewModePreview'
 import { ThemeProvider } from '../hooks/useTheme'
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
@@ -71,6 +70,8 @@ import { makeKindOf } from '../pages/chat-sidebar/kindSections'
 import { sectionSeat } from '../pages/chat-sidebar/hoverHold'
 import type { Slot } from '../pages/chat-sidebar/types'
 import type { RootState } from '../store'
+import { turnOffCrewModeAsLts } from './crewModeOff'
+import { applyLockedControls } from '../utils/editionLocks'
 
 const GROUP_BY_KIND = 'mc-session-group-by-kind'
 const T = (h: number) => `2026-10-29T${String(h).padStart(2, '0')}:00:00Z`
@@ -146,7 +147,6 @@ beforeEach(() => {
   // The fixtures carry fixed dates; with the dormant collapse on they would fold
   // away once the clock passes them. This suite is about sections, not age.
   localStorage.setItem('mc-session-stale-collapse-ms', '0')
-  turnOnCrewModePreview()
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -324,11 +324,11 @@ describe('makeKindOf', () => {
     const live = [s({ key: 'mate', agent_kind: 'member' }), s({ key: 'kid', parent: { key: 'mate' } })]
     const kindOf = makeKindOf(live)
     expect(kindOf(s({ key: 'w', crew_root: 'gone' }))).toBe('crew')
-    // With the conductor mode preview off a crew row is an ordinary one.
-    localStorage.removeItem('mc-preview-crew-mode')
+    // In a build without conductor mode (LTS) a crew row is an ordinary one.
+    turnOffCrewModeAsLts()
     expect(makeKindOf([])(s({ key: 'w2', crew_root: 'gone' }))).toBe('normal')
     expect(makeKindOf([])(s({ key: 'r2', crew_mode_root: true }))).toBe('normal')
-    turnOnCrewModePreview()
+    applyLockedControls([])
     expect(kindOf(live[1])).toBe('mate')
     expect(kindOf(s({ key: 'grandkid', parent: { key: 'kid' } }))).toBe('mate')
     expect(kindOf(s({ key: 'p', peer_id: 'peer', parent: { key: 'mate' } }))).toBe('normal')

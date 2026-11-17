@@ -900,6 +900,7 @@ class SessionSearchIndex:
             conn.execute("VACUUM")
             self._truncate_wal(conn)
         except Exception:
+            # A failed pass runs again at the next maintenance interval.
             pass
 
     def close(self) -> None:

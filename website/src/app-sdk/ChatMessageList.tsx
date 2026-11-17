@@ -45,6 +45,9 @@ import NewMessagesDivider from './NewMessagesDivider'
 
 export interface ChatMessageListProps {
   messages: ChatMessage[]
+  /** The session's queued entries when `messages` leaves them out; handed to
+   *  the renderers as `ctx.queued`. */
+  queued?: readonly ChatMessage[]
   running: boolean
   contentWidth?: string
   /** Resolve a pending approval. MUST return the request's promise: rejection
@@ -210,6 +213,7 @@ const ListRow = memo(function ListRow({ item, index, renderItem }: {
 
 const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageListProps>(function ChatMessageList({
   messages,
+  queued,
   running,
   contentWidth = '900px',
   onApprove,
@@ -348,7 +352,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   const renderMessage = useCallback((m: ChatMessage, i: number) => {
     const key = msgKey(m, i)
     const wrapper = (children: React.ReactNode, isUser = false) => (
-      <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''}`}>
           <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
             {children}
@@ -357,7 +361,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       </div>
     )
     const row = (children: React.ReactNode, tight = false) => (
-      <div key={key} className={`px-4 mx-auto w-full ${tight ? 'py-0' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={key} className={`px-4 mx-auto w-full ${tight ? 'py-0' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         {children}
       </div>
     )
@@ -379,6 +383,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const ctx: MessageRenderContext = {
       index: i,
       messages: versioned.messages,
+      queued,
       running,
       key,
       onFileOpen,
@@ -397,7 +402,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return withDivider(entry.render(m, ctx))
-  }, [versioned, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
+  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)
@@ -448,7 +453,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const batchMetas = unresolvedPerms.map(m => m.meta ?? {})
 
     return (
-      <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         <CollapsibleToolGroup
           count={nonPerm.length}
           // This host groups only reasoning rows and permissions, so the rows it

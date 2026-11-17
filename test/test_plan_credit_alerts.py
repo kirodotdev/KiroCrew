@@ -155,6 +155,12 @@ def _alerts(tmp_path):
         yield _cfg, tmp_path
 
 
+def _told(path) -> list[list[float]]:
+    """The told percentages the stored record keeps, one list per account, oldest first."""
+    stored = json.loads((path / plan_credit_alerts.STATE_FILE).read_text(encoding="utf-8"))
+    return [entry["told"] for entry in stored["accounts"].values()]
+
+
 class TestNotify:
     @pytest.mark.asyncio
     async def test_pushes_one_notification_and_not_a_second(self, _alerts):
@@ -200,13 +206,14 @@ class TestNotify:
 
     @pytest.mark.asyncio
     async def test_a_failing_bus_does_not_raise(self, _alerts):
-        cfg, _ = _alerts
+        cfg, path = _alerts
         bus = MagicMock()
         bus.push.side_effect = RuntimeError("boom")
         with cfg(PCTS):
             await plan_credit_alerts.notify_if_crossed(
                 SimpleNamespace(notification_bus=bus), _usage(99)
             )
+        assert _told(path) == [[50.0, 80.0]]
 
     @pytest.mark.asyncio
     async def test_unreadable_record_is_treated_as_empty(self, _alerts):
@@ -218,6 +225,7 @@ class TestNotify:
                 SimpleNamespace(notification_bus=bus), _usage(60)
             )
         bus.push.assert_called_once()
+        assert _told(path) == [[50.0]]
 
 
 class TestPerAccount:
@@ -225,13 +233,14 @@ class TestPerAccount:
 
     @pytest.mark.asyncio
     async def test_another_account_with_the_same_reset_date_is_told_its_own_crossing(self, _alerts):
-        cfg, _ = _alerts
+        cfg, path = _alerts
         bus = MagicMock()
         state = SimpleNamespace(notification_bus=bus)
         with cfg(PCTS):
             await plan_credit_alerts.notify_if_crossed(state, _usage(82, email="a@example.com"))
             await plan_credit_alerts.notify_if_crossed(state, _usage(83, email="b@example.com"))
         assert bus.push.call_count == 2
+        assert _told(path) == [[50.0, 80.0], [50.0, 80.0]]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -246,13 +255,14 @@ class TestPerAccount:
     async def test_the_identity_kept_beside_the_reading_names_the_account(
         self, _alerts, first, second, pushes
     ):
-        cfg, _ = _alerts
+        cfg, path = _alerts
         bus = MagicMock()
         state = SimpleNamespace(notification_bus=bus)
         with cfg(PCTS):
             await plan_credit_alerts.notify_if_crossed(state, _usage(82), **first)
             await plan_credit_alerts.notify_if_crossed(state, _usage(83), **second)
         assert bus.push.call_count == pushes
+        assert _told(path) == [[50.0, 80.0]] * pushes
 
     @pytest.mark.asyncio
     async def test_a_reading_that_names_no_account_sends_nothing_and_keeps_the_record(
@@ -280,7 +290,7 @@ class TestPerAccount:
 
     @pytest.mark.asyncio
     async def test_switching_to_another_account_and_back_does_not_tell_again(self, _alerts):
-        cfg, _ = _alerts
+        cfg, path = _alerts
         bus = MagicMock()
         state = SimpleNamespace(notification_bus=bus)
         with cfg(PCTS):
@@ -288,6 +298,7 @@ class TestPerAccount:
             await plan_credit_alerts.notify_if_crossed(state, _usage(20, email="b@example.com"))
             await plan_credit_alerts.notify_if_crossed(state, _usage(85, email="a@example.com"))
         assert bus.push.call_count == 1
+        assert _told(path) == [[50.0, 80.0], []]
 
     @pytest.mark.asyncio
     async def test_the_record_keeps_at_most_the_newest_accounts(self, _alerts):
@@ -326,7 +337,7 @@ class TestOneClaimPerCrossing:
         # The first evaluation to read the record holds its read open until the second
         # has arrived: either it read the record too (nothing serializes the two, so both
         # saw it empty) or it is waiting for the lock the first one holds.
-        cfg, _ = _alerts
+        cfg, path = _alerts
         arrived = threading.Event()
         readers = itertools.count()
         real_read = plan_credit_alerts._read_record
@@ -352,6 +363,7 @@ class TestOneClaimPerCrossing:
                 plan_credit_alerts.notify_if_crossed(state, _usage(82)),
             )
         bus.push.assert_called_once()
+        assert _told(path) == [[50.0, 80.0]]
 
 
 class TestSetting:

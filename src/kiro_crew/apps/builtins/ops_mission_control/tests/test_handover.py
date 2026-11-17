@@ -16,11 +16,10 @@ emphasizes and what it refuses to imply:
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from typing import Any
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import handover, ledger, store
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
@@ -58,8 +57,13 @@ _ROTATION: dict[str, Any] = {"mode": MODE_OBSERVE, "rules": 0, "on_shift": True}
 class _Env(unittest.TestCase):
     """Isolated data home (tests under src/ get no conftest fixture)."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
 
@@ -68,7 +72,6 @@ class _Env(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _claim(native_id: str = "alarm/a", title: str = "Disk full") -> Any:

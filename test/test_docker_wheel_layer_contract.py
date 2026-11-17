@@ -151,7 +151,7 @@ def test_wheel_never_enters_a_committed_layer(dockerfile: Path) -> None:
         f"{dockerfile.relative_to(ROOT)}: the wheel must reach pip via the bind "
         "mount, never COPY/ADD: a copied wheel is committed to its own layer and "
         "a later `rm` only adds a whiteout, shipping ~48MB of dead weight in "
-        f"every pull (#5778). Use RUN --mount=type=bind,source={wheel_dir},"
+        f"every pull. Use RUN --mount=type=bind,source={wheel_dir},"
         "target=/tmp/wheels instead:\n  " + "\n  ".join(offenders)
     )
 
@@ -166,8 +166,7 @@ def test_wheel_is_consumed_via_context_bind_mount(dockerfile: Path) -> None:
     assert len(install) == 1, (
         f"{rel}: expected exactly one wheel-installing RUN, found "
         f"{len(install)}: {install!r}. The wheel must be consumed from "
-        "/tmp/wheels via the context bind mount -- never COPYed into a layer "
-        "(#5778)"
+        "/tmp/wheels via the context bind mount -- never COPYed into a layer"
     )
     run = install[0]
     # Option order inside --mount is not significant to BuildKit, so assert
@@ -176,7 +175,7 @@ def test_wheel_is_consumed_via_context_bind_mount(dockerfile: Path) -> None:
         token in run for token in ("type=bind", f"source={wheel_dir}", "target=/tmp/wheels")
     ), (
         f"{rel}: the wheel-installing RUN must bind-mount {wheel_dir}/ from the "
-        "build context so the wheel never lands in a layer (#5778)"
+        "build context so the wheel never lands in a layer"
     )
     assert "-eq 1" in run and "WHEEL_COUNT" in run, (
         f"{rel}: the exactly-one-wheel guard must survive: the staging directory "

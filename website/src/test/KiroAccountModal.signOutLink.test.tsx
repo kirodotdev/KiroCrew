@@ -283,7 +283,7 @@ describe('KiroAccountModal with no usable Kiro sign-in', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
     // Waits on this notice's own text: before the config read lands the popup shows the kiro-cli alert.
     await within(dialog).findByText('We could not check sign-in status', {}, QUERY_CHAIN)
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('We could not check sign-in status')
+    expect(within(dialog).getByRole('status')).toHaveTextContent('We could not check sign-in status')
     expect(within(dialog).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(within(dialog).queryByText(/No active Kiro sign-in/)).toBeNull()
     expect(dialog.textContent).not.toMatch(/kiro-cli/)

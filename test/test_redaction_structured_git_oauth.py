@@ -152,7 +152,7 @@ def test_a_64_hex_value_after_the_label_is_not_the_label_shape() -> None:
 
 def test_a_non_aws_label_does_not_beat_the_git_row() -> None:
     sha = synth(40, HEX, 15)
-    for text in (f"commit_sha={sha}\n", f'{{"sha": "{sha}"}}', f"secret={sha}\n"):
+    for text in (f"commit_sha={sha}\n", f'{{"sha": "{sha}"}}', f"secret_sha={sha}\n"):
         out, _spans = redact(text)
         assert out == text
         assert (sha, GIT) in _rules(text)
@@ -184,10 +184,13 @@ def test_git_object_names_stream_like_whole_text() -> None:
 
 
 def test_a_long_hex_run_holds_a_bounded_amount() -> None:
+    """A base64-alphabet run is held while the encoded row may still decode it, no further."""
+    from kiro_crew.security.redaction_structured.encoded import HOLD_MAX
+
     s = StreamRedactor()
     for _ in range(4000):
         s.feed("0123456789abcdef")
-        assert len(s._pending) <= 64 + 47
+        assert len(s._pending) <= HOLD_MAX + 64 + 47
     s.flush()
 
 
@@ -221,7 +224,7 @@ def test_key_is_percent_decoded_and_case_insensitive(key: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "key", ["code", "state", "token", "client_id", "sig", "key", "secret", "access-token",
+    "key", ["code", "state", "client_id", "key", "secret", "access-token",
             "access_token_x", "xaccess_token", "access%5", "access%ZZtoken"],
 )  # fmt: skip
 def test_other_keys_stay(key: str) -> None:
@@ -241,14 +244,14 @@ def test_value_at_end_of_url_in_a_sentence() -> None:
     assert redact(text)[0] == f"Open https://h.example.test/cb?refresh_token={TAG}. Then"
 
 
-def test_key_in_a_path_or_in_prose_stays() -> None:
+def test_key_in_a_path_stays_and_outside_a_url_the_label_row_reads_it() -> None:
     v = synth(30, B64URL, 6)
-    for text in (
-        f"https://h.example.test/access_token={v}/x",
-        f"export access_token={v}",
-        f"the client_secret={v} field",
-    ):
-        assert redact(text)[0] == text
+    path = f"https://h.example.test/access_token={v}/x"
+    assert redact(path)[0] == path
+    for text in (f"export access_token={v}", f"the client_secret={v} field"):
+        out, spans = redact(text)
+        assert out == text.replace(v, TAG)
+        assert [s[2] for s in spans if s[3] == "secret"] == ["labelled.secret"]
 
 
 def test_a_nested_url_is_read_once() -> None:
@@ -296,10 +299,10 @@ def test_a_long_run_of_parameters_costs_linear_work(unit: str) -> None:
     assert_linear_work(build, redact)
 
 
-@pytest.mark.parametrize("key", ["token", "code", "sig", "key", "secret", "api_key"])
+@pytest.mark.parametrize("key", ["code", "key", "secret", "state", "client_id"])
 def test_loader_refuses_a_generic_url_parameter(key: str) -> None:
     row = {"id": "url.x", "tier": "secret", "detector": "url_param", "key": key}
-    with pytest.raises(TableError, match="owner's OAuth keys"):
+    with pytest.raises(TableError, match="URL_PARAM_KEYS"):
         build_table([row])
 
 

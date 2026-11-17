@@ -873,7 +873,7 @@ def decode_env_bytes(raw: bytes, encoding: str | None = None, errors: str = "str
         # encoding is always UTF-8, so a file saved in the real ANSI code page
         # would fail here every time. ``getencoding`` ignores UTF-8 mode and names
         # that code page. Tried only after UTF-8 failed, so a file that decodes
-        # today reads exactly as before.
+        # as UTF-8 is unaffected.
         if not _sys.flags.utf8_mode:
             raise
         actual = _locale.getencoding()

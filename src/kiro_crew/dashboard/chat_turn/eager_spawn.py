@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _recover_app_agent_binding,
         app_agent_binding_applies,
+        app_session_selects_bot,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
     from kiro_crew.dashboard.chat_turn.model_fallback import (
@@ -51,8 +52,15 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
 
 # Debounce before a speculative spawn. Absorbs rapid consecutive signals
-# (slot create immediately followed by a project set, or a user re-picking
-# the project) so only the settled state spawns a session.
+# (a user re-picking the project or the agent) so only the settled state
+# spawns a session. The owner's own new chat skips it (``debounce=0.0`` from
+# the slot-create handler): measured on a pod, a message sent 2 s after "New
+# chat" waited a median 4.3-4.5 s (two runs of five) for its first output with
+# the debounce and 3.0 s without it, because the start had 1.5 s less of its 3 s left to run. A
+# create that a binding change follows (the client sets the project right after
+# it, ``no_session_folder``, or switches it to the Crew Mode conductor) keeps
+# the debounce: that change landing on a start that already reserved the key
+# would throw the start away, and for a project would owe a session reset.
 _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 
 
@@ -444,6 +452,7 @@ def schedule_eager_spawn(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     on_ended: Callable[[Exception | None], None] | None = None,
     focus_resume: bool = False,
+    debounce: float | None = None,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -454,6 +463,10 @@ def schedule_eager_spawn(
 
     At most one pending task per slot: a newer signal cancels the older task,
     so the spawn always reflects the slot's settled agent/model/project.
+
+    ``debounce`` overrides the wait before the start
+    (``_EAGER_SPAWN_DEBOUNCE_SECS`` when ``None``); the owner's new chat passes
+    ``0.0`` because a person is about to type into it.
 
     ``allow_resume`` opts this spawn into resume prefetch (the slot-focused
     intent signal): a resumable key performs the speculative ``session/load``
@@ -525,6 +538,7 @@ def schedule_eager_spawn(
             start_priority=start_priority,
             on_ended=on_ended,
             focus_resume=focus_resume,
+            debounce=debounce,
         )
     )
     slot._eager_spawn_task = task
@@ -587,6 +601,7 @@ async def _eager_spawn(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     on_ended: Callable[[Exception | None], None] | None = None,
     focus_resume: bool = False,
+    debounce: float | None = None,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -622,7 +637,7 @@ async def _eager_spawn(
         # a concurrent signal, and the admission below must not evict it.
         if signal_generation is None:
             signal_generation = _arm_generation
-        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
+        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS if debounce is None else debounce)
         sessions = getattr(state, "sessions", None)
         if sessions is None:
             return
@@ -691,6 +706,7 @@ async def _eager_spawn(
                     cfg,
                     session_key,
                     _bound[0] or None,
+                    _bound[2] or None,
                 )
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
@@ -724,6 +740,7 @@ async def _eager_spawn(
                         cfg,
                         session_key,
                         _bound[0] or None,
+                        _bound[2] or None,
                     )
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
@@ -736,6 +753,10 @@ async def _eager_spawn(
                 if bindings.selection_kind == "template":
                     crew_alias = ""
                 resolved_ok = bindings.requested_resolved
+                if app_session_selects_bot(slot, bindings):
+                    # The first real turn refuses it, so nothing starts as the Bot.
+                    logger.info("Eager spawn: app slot %s names a Bot; not started", slot.key)
+                    return
                 await asyncio.to_thread(
                     _require_session_memory_assignment, session_key, bindings.memory_store_name
                 )
@@ -909,6 +930,7 @@ async def _eager_spawn(
                     _bound=_bound,
                     start_priority=start_priority,
                     focus_resume=focus_resume,
+                    store_to_warm=selected_store,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -955,6 +977,7 @@ async def _spawn_admitted_prefetch(
     _bound: tuple,
     start_priority: StartPriority,
     focus_resume: bool = False,
+    store_to_warm: str | None = None,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
@@ -1048,6 +1071,28 @@ async def _spawn_admitted_prefetch(
         logger.info("Eager spawn: %s left to first turn (refused)", session_key)
         return
     sessions.release(session_key)
+    if is_new and not resumed and not slot.blocks_reads:
+        # The first message's build reads every recent-history file (about 75 in a
+        # busy store, a quarter of a second through the hardened reader). None of
+        # that depends on the message, so it is read now, beside the person's
+        # think time, and the build reuses it while the directory is unchanged
+        # (``MemoryStore.warm_recent_history``). A failure only costs the head start.
+        builder = getattr(state, "context_builder", None)
+        if builder is not None:
+            workspace = slot.workspace or None
+
+            def _read_history_early(warm_builder: Any) -> None:
+                warm_builder.get_memory_for(workspace, store_to_warm).warm_recent_history(days=14)
+
+            async def _warm_history() -> None:
+                try:
+                    await asyncio.to_thread(_read_history_early, builder)
+                except Exception:  # noqa: BLE001 - the first build reads for itself
+                    logger.debug("Eager spawn: history was not read early", exc_info=True)
+
+            warm = asyncio.create_task(_warm_history())
+            state._background_tasks.add(warm)
+            warm.add_done_callback(state._background_tasks.discard)
     # The cleanup below may only tear down a session THIS task created.
     # is_new=False means another creator won the same-key race (or the
     # claim attached to an already-registered session): a real turn

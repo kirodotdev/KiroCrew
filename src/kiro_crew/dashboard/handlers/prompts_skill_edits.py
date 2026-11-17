@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_NAME_BYTES
+from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_NAME_BYTES, _utf8_or_none
 from kiro_crew.dashboard.handlers.prompts_caller_gates import (
     _audit_unread,
     _deny_foreign_app_skill_slot,
@@ -38,6 +38,8 @@ from ._shared import (
     _read_session_key,
     _resolve_skill_root,
     read_skill_file,
+    resolved_skill_file,
+    string_field_error,
 )
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.prompts")
@@ -91,6 +93,8 @@ async def api_skill_pin(request: web.Request) -> web.Response:
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name", "")).strip()
     raw_pinned = body.get("pinned", True)
     if not isinstance(raw_pinned, bool):
@@ -171,6 +175,8 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     # answers with a 400 and a code instead of AttributeError -> 500.
     if not isinstance(body, dict):
         body = {}
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name", "")).strip()
     raw_inject = body.get("inject")
     if not isinstance(raw_inject, bool):
@@ -246,13 +252,25 @@ def _match_package_row(
     and picking the first leaf match would serve the wrong SKILL.md while looking
     entirely successful.
 
+    Two rows under one key that name different files are refused the same way;
+    a root and its alias naming one file are not. It resolves paths, so it runs
+    off the event loop.
+
     So the leaf fallback is used only when it is UNAMBIGUOUS. An ambiguous leaf
     returns ``None`` (the caller 404s) and logs, because a reader who opened one
     skill and silently got another has no way to notice.
     """
-    for row in rows:
-        if row.get("key") == name:
-            return row
+    exact = [row for row in rows if row.get("key") == name]
+    if len({resolved_skill_file(row.get("path")) for row in exact}) == 1:
+        return exact[0]
+    if exact:
+        logger.warning(
+            "skill key %r names %d package rows with different files; "
+            "refusing to guess which SKILL.md was meant",
+            name,
+            len(exact),
+        )
+        return None
     leaf_matches = [row for row in rows if row.get("name") == pkg_name]
     if len(leaf_matches) == 1:
         return leaf_matches[0]
@@ -362,7 +380,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         from ._shared import body_not_object_error, string_field_error
 
         if (not_object := body_not_object_error(body)) is not None:
@@ -375,6 +393,13 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             return not_string
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
+        if _utf8_or_none(content) is None:
+            # JSON allows an escaped lone surrogate, which the SKILL.md writer
+            # cannot encode; the prompt routes answer the same code.
+            return web.json_response(
+                {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+                status=400,
+            )
         # Optional edit base, the same contract as the prompts PUT: the GET
         # hands out ``hash`` (sha256 of SKILL.md), and an editor that presents
         # it as ``base_hash`` is refused with 409 ``content_conflict`` when the
@@ -456,6 +481,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
     content = skills.load_skill(name)
+    package_row_missed = name.startswith("package/")
     if content is None and name.startswith("package/"):
         pkg_name = name[len("package/") :]  # strip "package/" prefix
         # The capability manager owns skill listing + path resolution; it
@@ -465,8 +491,9 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             package_skills = await mgr.list_skills() if mgr.available() else []
         except Exception:
             package_skills = []
-        row = _match_package_row(package_skills, name, pkg_name)
+        row = await asyncio.to_thread(_match_package_row, package_skills, name, pkg_name)
         if row is not None and row.get("path"):
+            package_row_missed = False
             resolved = validate_file_path(str(row["path"]))
             if resolved is None:
                 return web.json_response({"error": "access denied"}, status=403)
@@ -511,7 +538,11 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
                 _audit_unread(
                     "api_skill_detail", "skill", refusal, {"name": name, "path": str(row["path"])}
                 )
-    if content is None and (name.startswith("kiro-user/") or name.startswith("kiro-workspace/")):
+    # A package key no listed row answers goes to the resolver, which still
+    # refuses a bare key naming two distinct files.
+    if content is None and (
+        name.startswith("kiro-user/") or name.startswith("kiro-workspace/") or package_row_missed
+    ):
         # Open-standard kiro-cli skills are read-only here — load via the
         # same path-resolution logic used by the tree/file endpoints so the
         # detail modal can fetch SKILL.md regardless of which root the
@@ -568,6 +599,13 @@ async def api_skills_create(request: web.Request) -> web.Response:
     if not content:
         return web.json_response(
             {"error": "content is required", "code": "content_required"}, status=400
+        )
+    if _utf8_or_none(content) is None:
+        # JSON allows an escaped lone surrogate, which the SKILL.md writer
+        # cannot encode; the prompt routes answer the same code.
+        return web.json_response(
+            {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+            status=400,
         )
     # Sanitize name: lowercase, alphanumeric + hyphens + slashes for nesting
     safe_name = re.sub(r"[^a-z0-9\-/]", "-", name.lower()).strip("-").strip("/")

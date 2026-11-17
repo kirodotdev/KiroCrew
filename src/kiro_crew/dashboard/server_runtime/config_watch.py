@@ -266,6 +266,13 @@ def _register_config_watch(
         if change.touched("dashboard.command_bar_enabled"):
             state.push_refresh("config")
 
+    def _push_channels_switch(change: ConfigChange) -> None:
+        # Channels' sidebar row, its Search Everywhere result and its Settings row
+        # read the shared config query, so a switch set from the CLI, $EDITOR or
+        # another dashboard reaches every open one only through a refresh frame.
+        if change.touched("dashboard.channels_enabled"):
+            state.push_refresh("config")
+
     async def _sync_stale_wake(change: ConfigChange) -> None:
         # The `dashboard_stale_wake` preview's one cron job exists only while the
         # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
@@ -276,11 +283,32 @@ def _register_config_watch(
         # A failure propagates so the watcher retries the apply.
         await stale_wake.sync_job(getattr(state, "crons", None))
 
+    def _count_chat_runtime_sharing_toggle(change: ConfigChange) -> None:
+        # Adoption telemetry: one count per on/off flip of the preview, from
+        # whichever writer flipped it. A synthesized change has no old document.
+        if change.old is None or not change.touched("dashboard.feature_previews"):
+            return
+        from kiro_crew.agent_sdk.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.metrics.chat_runtime_share import record_toggled
+
+        after = chat_runtime_sharing_enabled(change.new)
+        if chat_runtime_sharing_enabled(change.old) != after:
+            record_toggled(after)
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
         if change.touched("apps"):
             state.push_refresh("config")
+
+    def _push_mate_listing(change: ConfigChange) -> None:
+        # Each mate thread's row carries its Bot's "Show in my Sessions list"
+        # switch (crew_mode.stamp_rows), so a flip from any writer re-sends the
+        # slot list and refreshes the roster so every dashboard's lists and
+        # Bot Settings switch follow it.
+        if any(p.endswith(".show_sessions_in_list") for p in change.under("agents")):
+            state.push_slots_update()
+            state.push_refresh("agents")
 
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
@@ -344,11 +372,22 @@ def _register_config_watch(
             callback=_sync_stale_wake,
             name="dashboard.stale_wake",
         ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_count_chat_runtime_sharing_toggle,
+            name="dashboard.chat_runtime_sharing_toggle",
+        ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe("agents", callback=_push_mate_listing, name="agents.show_sessions_in_list"),
         live.subscribe(
             "dashboard.command_bar_enabled",
             callback=_push_command_bar,
             name="dashboard.command_bar_enabled",
+        ),
+        live.subscribe(
+            "dashboard.channels_enabled",
+            callback=_push_channels_switch,
+            name="dashboard.channels_enabled",
         ),
         live.subscribe(
             "dashboard.terminal.enabled",

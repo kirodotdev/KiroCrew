@@ -49,6 +49,7 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
         ("path", "x", "y", "width", "height", "max_dim", "magnify"),
     ),
     "page_info": ("page_info", ()),
+    "dialog": ("_local_dialog", ("action", "text")),
     "wait_for_load": ("wait_for_load", ("timeout",)),
     "new_tab": ("new_tab", ("url",)),
     "switch_tab": ("switch_tab", ("target", "activate")),
@@ -105,6 +106,30 @@ def _local_drag(helpers: Any, x: float, y: float, to_x: float, to_y: float) -> d
         clickCount=1,
     )
     return {"from": [x, y], "to": [to_x, to_y]}
+
+
+def _local_dialog(
+    helpers: Any, action: str | None = None, text: str | None = None
+) -> dict[str, Any]:
+    """Read the tab's open JavaScript dialog and, given an *action*, answer it.
+
+    Harness's daemon records the dialog the page opened (``page_info`` returns it
+    in place of the page's size while it is open). ``accept`` sends *text* to a
+    prompt; ``dismiss`` never does. With no dialog open nothing is sent.
+    """
+    if action not in (None, "accept", "dismiss"):
+        raise ValueError("dialog action must be accept or dismiss")
+    info = helpers.page_info()
+    pending = info.get("dialog") if isinstance(info, dict) else None
+    if not isinstance(pending, dict):
+        return {"dialog": None}
+    if action is None:
+        return {"dialog": pending}
+    params: dict[str, Any] = {"accept": action == "accept"}
+    if action == "accept" and text is not None:
+        params["promptText"] = text
+    helpers.cdp("Page.handleJavaScriptDialog", **params)
+    return {"dialog": pending, "answered": action}
 
 
 #: ``page_clock`` states: hold the page's timers and animation frames, let them run
@@ -348,6 +373,7 @@ def _split_camel(text: str) -> str:
 
 
 _LOCAL: dict[str, Callable[..., Any]] = {
+    "_local_dialog": _local_dialog,
     "_local_mouse_move": _local_mouse_move,
     "_local_drag": _local_drag,
     "_local_page_clock": _local_page_clock,

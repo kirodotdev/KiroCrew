@@ -23,7 +23,6 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     is_deprecated_model,
 )
-from kiro_crew.security.exfil import scoped_exempt_hosts
 from kiro_crew.trust_patterns import extract_bash_command
 
 # An AWS key ID is an Identifier with the structured detectors on, so the
@@ -242,51 +241,16 @@ class TestRedactForDisplay:
         result = _redact_for_display(f"key {SECRET} here")
         assert SECRET not in result
 
-    def test_content_cache_misses_when_exempt_host_set_changes(self, monkeypatch):
-        """The exempt-host set is an input to the battery, so it is part of the key."""
-        chat_utils._clear_display_redaction_cache()
-        calls = {"n": 0}
-        real = chat_utils.redact_exfiltration_urls
-
-        def counted(value, **kwargs):
-            calls["n"] += 1
-            return real(value, **kwargs)
-
-        monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted)
-        monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted)
-        exempt = {"hosts": frozenset()}
-        monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: exempt["hosts"])
-
-        text = (
-            "see https://docs.contoso.sharepoint.com/x?token=abcdefghijklmnopqrstuvwxyz0123456789"
-        )
-        chat_utils._redact_for_display(text)
-        chat_utils._redact_for_display(text)
-        assert calls["n"] == 1, "same text under the same exempt set is a hit"
-
-        exempt["hosts"] = frozenset({"docs.contoso.sharepoint.com"})
-        chat_utils._redact_for_display(text)
-        assert calls["n"] == 2, "a changed exempt set must miss the cache"
-        chat_utils._redact_for_display(text)
-        assert calls["n"] == 2
-
     def test_content_cache_reuses_byte_identical_real_redactions(self, monkeypatch):
         chat_utils._clear_display_redaction_cache()
-        real_exfiltration = chat_utils.redact_exfiltration_urls
         real_credentials = chat_utils.redact_credentials
-        calls = {"exfiltration": 0, "credentials": 0}
-
-        def counted_exfiltration(value, **kwargs):
-            calls["exfiltration"] += 1
-            return real_exfiltration(value, **kwargs)
+        calls = {"credentials": 0}
 
         def counted_credentials(value, **kwargs):
             calls["credentials"] += 1
             return real_credentials(value, **kwargs)
 
-        monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
-        monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(display_battery, "redact_credentials", counted_credentials)
         secret = SECRET
         messages = [
@@ -318,17 +282,17 @@ class TestRedactForDisplay:
     def test_content_cache_key_is_fixed_size_and_fully_accounted(self, monkeypatch):
         """Every byte an entry retains is counted, and the key never carries a container.
 
-        The exempt-host set is an INPUT to the digest, not a component of the key: a
-        key that held the set itself would retain one container per entry outside
-        the byte cap. So the key footprint must not move with the size of that set,
-        and the accounted bytes must cover the digest and the redacted output.
+        The token-parameter prefix set is an INPUT to the digest, not a component of
+        the key: a key that held the set itself would retain one container per entry
+        outside the byte cap. So the key footprint must not move with the size of
+        that set, and the accounted bytes must cover the digest and the redacted output.
         """
         secret = SECRET
         texts = [f"row {i} carries {secret}" for i in range(64)]
 
-        def key_footprint(hosts: frozenset[str]) -> int:
+        def key_footprint(prefixes: tuple[str, ...]) -> int:
             chat_utils._clear_display_redaction_cache()
-            monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
+            monkeypatch.setattr(chat_utils, "_token_param_exempt_prefixes", lambda: prefixes)
             for text in texts:
                 chat_utils._redact_for_display(text)
             entries, accounted_bytes = chat_utils._display_redaction_cache_info()
@@ -341,7 +305,7 @@ class TestRedactForDisplay:
                 assert isinstance(length, int)
                 for part in key:
                     assert not isinstance(part, (frozenset, set, list, dict, tuple))
-                assert hosts not in key
+                assert prefixes not in key
                 retained = len(digest) + len(redacted.encode("utf-8", errors="surrogatepass"))
                 assert entry_bytes >= retained, "an entry must count what it retains"
                 summed += entry_bytes
@@ -349,9 +313,9 @@ class TestRedactForDisplay:
             assert accounted_bytes == summed, "the cache total is the sum of its entries"
             return footprint
 
-        small = key_footprint(frozenset())
-        large = key_footprint(frozenset(f"tenant-{i}.example.com" for i in range(2000)))
-        assert large == small, "the key footprint is independent of the exempt-host set"
+        small = key_footprint(())
+        large = key_footprint(tuple(f"https://tenant-{i}.example.com/" for i in range(2000)))
+        assert large == small, "the key footprint is independent of the prefix set"
 
     def test_content_cache_holds_one_full_page_of_rows(self, monkeypatch):
         """A page at the backend row ceiling renders warm with zero underlying redactions.
@@ -361,21 +325,14 @@ class TestRedactForDisplay:
         the next render reaches it and every render runs cold.
         """
         chat_utils._clear_display_redaction_cache()
-        real_exfiltration = chat_utils.redact_exfiltration_urls
         real_credentials = chat_utils.redact_credentials
-        calls = {"exfiltration": 0, "credentials": 0}
-
-        def counted_exfiltration(value, **kwargs):
-            calls["exfiltration"] += 1
-            return real_exfiltration(value, **kwargs)
+        calls = {"credentials": 0}
 
         def counted_credentials(value, **kwargs):
             calls["credentials"] += 1
             return real_credentials(value, **kwargs)
 
-        monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
-        monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(display_battery, "redact_credentials", counted_credentials)
         secret = SECRET
         rows = chat_utils.SLOT_DETAIL_MAX_LIMIT
@@ -420,21 +377,14 @@ class TestRedactForDisplay:
         it, so every view of a long session ran the full battery again.
         """
         chat_utils._clear_display_redaction_cache()
-        real_exfiltration = chat_utils.redact_exfiltration_urls
         real_credentials = chat_utils.redact_credentials
         calls = {"n": 0}
-
-        def counted_exfiltration(value, **kwargs):
-            calls["n"] += 1
-            return real_exfiltration(value, **kwargs)
 
         def counted_credentials(value, **kwargs):
             calls["n"] += 1
             return real_credentials(value, **kwargs)
 
-        monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
-        monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(display_battery, "redact_credentials", counted_credentials)
         secret = SECRET
         rows = 12_000
@@ -485,48 +435,27 @@ class TestRedactForDisplay:
         chat_utils._redact_for_display("plain text 999")
         assert calls["n"] == 1
 
-    def test_clean_verdict_does_not_carry_over_a_narrowed_host_set(self, monkeypatch):
-        """A text ending in NUL + host under fewer hosts is not the clean text it mimics.
-
-        The MAC input is ``text + NUL + hosts``, so ``T`` under ``{a, b}`` and
-        ``T + NUL + a`` under ``{b}`` digest the same bytes. Only the input length
-        tells them apart; a verdict without it would serve the second one, whose
-        URL is not exempt, unredacted.
-        """
-        chat_utils._clear_display_redaction_cache()
-        monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: frozenset())
-        text = (
-            "See https://a.example.com/x?q=" + "abcdefghijklmnopqrstuvwxyz0123456789" * 4 + " end"
-        )
-        with scoped_exempt_hosts(frozenset({"a.example.com", "b.example.com"})):
-            assert chat_utils._redact_for_display(text) == text, "exempt host stays as written"
-
-        mimic = text + "\0a.example.com"
-        with scoped_exempt_hosts(frozenset({"b.example.com"})):
-            first = chat_utils._redact_for_display(mimic)
-            chat_utils._clear_display_redaction_cache()
-            cold = chat_utils._redact_for_display(mimic)
-        assert cold != mimic, "a.example.com is not exempt here, so its URL is redacted"
-        assert first == cold, "a cached verdict must not change what is shown"
-
-    def test_content_cache_key_is_a_keyed_mac_over_text_and_hosts(self, monkeypatch):
+    def test_content_cache_key_is_a_keyed_mac_over_text_and_prefixes(self, monkeypatch):
         """The retained digest is keyed on a per-process secret, not a bare hash.
 
         The text may hold credentials, and a bare hash can be checked offline against a
-        guessed plaintext. The host set stays inside the MAC input.
+        guessed plaintext. The token-parameter prefix set and the published setting's
+        mark stay inside the MAC input.
         """
-        hosts = frozenset({"docs.contoso.sharepoint.com"})
-        monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
+        from kiro_crew.dashboard import display_verdicts
+
+        prefixes = ("https://docs.contoso.sharepoint.com/",)
+        monkeypatch.setattr(chat_utils, "_token_param_exempt_prefixes", lambda: prefixes)
         text = f"key {SECRET} here"
         raw = text.encode("utf-8")
-        hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8")
+        tail = b"\x01" + "\0".join(prefixes).encode("utf-8") + display_verdicts.published_mark()
         (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text)
         assert len(digest) == 32 and length == len(raw) == input_bytes
-        assert digest != hashlib.sha256(raw + b"\0" + hosts_bytes).digest()
+        assert digest != hashlib.sha256(raw + b"\0" + tail).digest()
         assert (
             digest
             == hmac.new(
-                chat_utils._DISPLAY_REDACTION_SALT, raw + b"\0" + hosts_bytes, hashlib.sha256
+                chat_utils._DISPLAY_REDACTION_SALT, raw + b"\0" + tail, hashlib.sha256
             ).digest()
         )
         assert isinstance(chat_utils._DISPLAY_REDACTION_SALT, bytes)

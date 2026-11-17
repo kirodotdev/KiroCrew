@@ -205,7 +205,9 @@ class TestEagerSpawn:
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
         assert chat_runner._armed_prefetches == {}
-        resolve.assert_called_once_with(cfg, agent, validate_memory_files=False)
+        resolve.assert_called_once_with(
+            cfg, agent, slot.project or None, validate_memory_files=False
+        )
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()
@@ -234,6 +236,32 @@ class TestEagerSpawn:
         state.sessions.get_or_create.assert_awaited_once()
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.release.assert_called_once_with(key)
+
+    @pytest.mark.asyncio
+    async def test_a_bot_name_on_an_apps_session_starts_nothing(self):
+        """An app's session never runs as a Bot, so the same named-store pick that
+        starts above starts nothing when the slot is an app's: the first real turn
+        refuses it, and no provider is warmed as the Bot."""
+        slot = _ChatSlot("t1")
+        slot.agent = "legacy"
+        slot.memory_store = "legacy-v1"
+        slot._app = "shop"
+        state = _mock_state(slot)
+        cfg = _cfg_with_store("legacy-v1", version=1)
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner,
+                "resolve_agent_bindings",
+                return_value=_bindings(
+                    agent="legacy-agent", alias="legacy", memory_store="legacy-v1"
+                ),
+            ),
+        ):
+            await _eager_spawn(state, slot)
+        assert chat_runner._armed_prefetches == {}
+        state.sessions.get_or_create.assert_not_awaited()
+        state.sessions.release.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_private_assignment_blocks_legacy_speculation_without_slot_metadata(self):
@@ -294,11 +322,12 @@ class TestEagerSpawn:
         original = chat_runner.resolve_agent_bindings
         calls = []
 
-        def resolve(cfg, agent, **kwargs):
+        def resolve(cfg, agent, project=None, **kwargs):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             calls.append(agent)
-            result = original(cfg, agent, **kwargs)
+            assert project == (slot.project or None)
+            result = original(cfg, agent, project, **kwargs)
             if change == "store":
                 loop.call_soon_threadsafe(setattr, slot, "memory_store", "member-new")
             elif change == "replacement":
@@ -493,7 +522,7 @@ class TestEagerSpawn:
         state.sessions.remove = AsyncMock()
 
         # A real turn wins registration while our handshake runs (is_new=False),
-        # AND a workspace switch lands — the pre-fix code removed the session.
+        # AND a workspace switch lands — the session must not be removed.
         async def _lose_race_and_switch(*a, **kw):
             slot.project = str(tmp_path / "b")
             return (MagicMock(), False, False)

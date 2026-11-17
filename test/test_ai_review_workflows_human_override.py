@@ -1752,3 +1752,23 @@ class TestTheHandlerScriptsReadTheSameOnEveryCheckout:
         path = _script_file(tmp_path, "echo a\r\necho b\r\n")
 
         assert b"\r" not in Path(path).read_bytes()
+
+
+@pytest.mark.parametrize(
+    "name, prefix",
+    [
+        ("ai-review-human-override.yml", "ai-review-human-override"),
+        ("pr-size-override.yml", "pr-size-override"),
+    ],
+)
+def test_each_comment_gets_its_own_concurrency_group(name: str, prefix: str) -> None:
+    # GitHub keeps one pending run per group and cancels the older pending one
+    # when a newer run joins. A per-PR group therefore dropped the middle of
+    # three override comments posted within seconds, and any plain comment
+    # could evict a pending one. Keying on the comment id gives every comment
+    # its own run.
+    concurrency = load_workflow(WORKFLOWS / name)["concurrency"]
+    assert concurrency["group"] == (
+        f"{prefix}-${{{{ github.event.issue.number }}}}-${{{{ github.event.comment.id }}}}"
+    )
+    assert concurrency["cancel-in-progress"] is False

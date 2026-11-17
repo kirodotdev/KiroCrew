@@ -23,7 +23,7 @@ than one update function with a field allowlist:
   * :func:`apply_conductor_action` writes ``title``, ``acceptance``, ``state``,
     ``verdict``, ``decision``, ``worker_session_key``, ``round`` and ``fails``.
   * :func:`apply_worker_report` writes ``status``, ``reason``, ``wake_at``,
-    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``.
+    ``summary``, ``artifacts``, ``pr``, ``discussion`` and ``last_report_at``.
 
 The two field sets are disjoint. Phase 2 mounts one tool on each, so a worker cannot
 reach a conductor field because the function it can call takes no parameter that
@@ -1009,6 +1009,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_DUPLICATE_ITEM,
     CODE_FIELD_TOO_LONG,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
+    CODE_HOST_MEMORY_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -1064,6 +1065,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     logger,
 )
 from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
+    _EVENT_ID_SHAPE,
     CODE_RETIRED_HISTORY_FULL,
     CREW_STATES,
     MAX_INSTANCE_ID_CHARS,
@@ -1086,6 +1088,7 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     apply_remote_retire,
     binding_id,
     boards_with_open_remote,
+    is_peer_event_id,
     item_liveness,
     open_remote_bindings,
     read_remote_state,
@@ -1105,6 +1108,7 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _require_artifacts,
     _require_choice,
     _require_count,
+    _require_discussion,
     _require_pr,
     _require_text,
     _require_wake_at,
@@ -1211,6 +1215,7 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     _create_item,
     _header_under_lock,
     _read_binding_text,
+    _refuse_if_host_critical,
     _refuse_if_worker_holds_open_item,
     _require_ask_options,
     _restore_binding_text,
@@ -1249,7 +1254,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
-    from kiro_crew import work_preview  # noqa: F401
+    from kiro_crew import resource_status, work_preview  # noqa: F401
     from kiro_crew.atomic_write import read_bytes_with_retry  # noqa: F401
     from kiro_crew.config.paths import data_home  # noqa: F401
     from kiro_crew.platform_compat import (  # noqa: F401
@@ -1286,7 +1291,9 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         WORK_VERDICTS,
         WORK_WORKER_STATUSES,
         coerce_ask,
+        coerce_discussion,
         coerce_retired_bindings,
+        discussion_problem,
         work_event_id,
         worker_statuses,
     )

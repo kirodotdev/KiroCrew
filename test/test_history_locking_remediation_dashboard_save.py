@@ -176,8 +176,8 @@ class TestDashboardSaveHoldsLock:
 
         # Saves #2, #3, #4: disk is byte-identical to save #1's output and the
         # window is still [m1, m2], so each hits the frozen-prefix fast path.
-        # Before the fix these dropped cron-m3; now the cached foreign line is
-        # re-emitted verbatim on every fast-path save.
+        # The cached foreign line (cron-m3) must be re-emitted verbatim on
+        # every fast-path save, never dropped.
         for _ in range(3):
             _save_slot_to_history(state, slot, force=True)
 
@@ -257,7 +257,7 @@ class TestDashboardSaveHoldsLock:
             # the window re-serializes it.
             json.dumps({"role": "assistant", "content": "windowed", "ts": "T2"}),
             # A genuinely DISTINCT event with identical (role, content) but a
-            # different ts — the GPT 5.6 HIGH data-loss case. With the window's
+            # different ts — a data-loss case. With the window's
             # single "windowed" budget already spent by the ts-match above, this
             # MUST be preserved as foreign, not collapsed.
             json.dumps({"role": "assistant", "content": "windowed", "ts": "TX"}),
@@ -289,7 +289,7 @@ class TestDashboardSaveHoldsLock:
         assert foreign_contents.count("windowed") == 1, (
             "distinct same-content foreign event collapsed — the (role, content) "
             "dedup must be count-bounded/timestamp-first so two real events are "
-            "not folded into one (GPT 5.6 HIGH data-loss finding)"
+            "not folded into one (that is data loss)"
         )
         # No-duplication: the append_if_absent fresh-ts copy is folded once into
         # the window (its own budget absorbs it) and NOT re-appended as foreign.

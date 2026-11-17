@@ -875,15 +875,16 @@ class TestConcurrentSync:
         self, builtin_root: Path, base: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Another process recreates the destination between our claim and our
-        # copytree: losing the race keeps the winner's copy and moves on.
+        # publish: losing the race keeps the winner's copy and moves on, and
+        # our staged copy is cleaned up instead of overwriting it.
         _make_skill(base, "deploy", "USER original")
         src = _make_skill(builtin_root, "deploy", "packaged")
         _bump_mtime(src / "SKILL.md")
         real_copytree = skills_mod.shutil.copytree
 
         def _race(src_arg: object, dst_arg: object, **kw: object) -> object:
-            real_copytree(str(src_arg), str(dst_arg), **kw)  # winner lands first
-            raise FileExistsError(str(dst_arg))
+            real_copytree(str(src_arg), str(base / "deploy"))  # winner lands first
+            return real_copytree(str(src_arg), str(dst_arg), **kw)
 
         monkeypatch.setattr(skills_mod.shutil, "copytree", _race)
         _ensure_builtin_skills(base)  # must not raise
@@ -892,6 +893,7 @@ class TestConcurrentSync:
         assert "USER original" in _backup_skill_md(base / ".deploy.user-backup").read_text(
             encoding="utf-8"
         )
+        assert not list(base.glob(".deploy.sync-stage*"))
 
 
 @pytest.mark.real_builtin_skills_sync
@@ -1315,8 +1317,8 @@ class TestMarkerNameCollision:
     ) -> None:
         # The tree walk excludes the marker name, so a directory holding ONLY
         # a user-made file at that name reports content-free and takes the
-        # placeholder-removal path. Before the fix that path unlinked the
-        # file unverified; it must instead fail verification (the content is
+        # placeholder-removal path. That path must not unlink the file
+        # unverified; it must instead fail verification (the content is
         # no fingerprint of this tree) and quarantine the directory intact.
         user = base / "deploy"
         user.mkdir()

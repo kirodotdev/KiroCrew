@@ -68,9 +68,13 @@ from kiro_crew.monitoring.models import (
     MonitorState,
 )
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until, finished
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
+
+#: A GitHub token with a valid checksum, retained as a monitor target.
+_NOTICE_TOKEN = github_classic(seed=167)
 
 
 def _make_orchestrator(**kwargs: Any) -> Any:
@@ -1308,9 +1312,9 @@ class TestNotifyNudgeExpired:
     @pytest.mark.parametrize(
         "target",
         [
-            "https://github.com/acme/ghp_" + "a" * 36 + "/pull/7",
-            "https://example.com/?data=%67%68%70%5F" + "a" * 36,
-            "ghp_" + "a" * 36,
+            "https://github.com/acme/" + _NOTICE_TOKEN + "/pull/7",
+            "https://example.com/?data=%67%68%70%5F" + _NOTICE_TOKEN[4:],
+            _NOTICE_TOKEN,
         ],
     )
     def test_structured_notice_redacts_unsafe_retained_target(self, target):

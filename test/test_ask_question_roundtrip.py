@@ -888,7 +888,9 @@ async def test_reset_chokepoint_cancels_pending_questions() -> None:
     st = _state()
     st.sessions = MagicMock()
 
-    async def _reset(_key: str, *, skip_if_busy: bool = False) -> bool:
+    async def _reset(
+        _key: str, *, skip_if_busy: bool = False, forget_unused_start: bool = False
+    ) -> bool:
         return True
 
     st.sessions.reset = _reset
@@ -1419,31 +1421,55 @@ class TestErrorCodes:
             f"with prose and no machine-readable code: {missing}"
         )
 
-    def test_the_ratchet_can_actually_fail(self) -> None:
-        """Self-check: a scan matching nothing would pass the assertion above vacuously.
+    #: Coded refusal sites the scanner reaches in ``ask_question.py``, by code. Each
+    #: entry is exact, so a scan that stops reaching a site fails, and so does a new
+    #: coded refusal that is not written here. One line per code rather than one
+    #: total keeps two changes adding different codes mergeable
+    #: (testing-conventions.md § Merge-safe ratchets and counts). A refusal whose
+    #: body is built elsewhere (the owner denial, the app-token refusal) is not a
+    #: site in this module.
+    CODED_SITES: dict[str, int] = {
+        "agent_ask_capacity": 1,
+        "answer_too_long": 1,
+        "answers_too_long": 1,
+        "ask_id_conflict": 1,
+        "crew_worker_asks_conductor": 1,
+        "duplicate_question_key": 2,
+        "invalid_answers": 1,
+        "invalid_ask_id": 1,
+        "invalid_body": 4,
+        "invalid_field_type": 1,
+        "invalid_json": 4,
+        "invalid_questions": 2,
+        "invalid_response_id": 1,
+        "missing_card_id": 1,
+        "missing_session_key": 1,
+        "missing_slot": 1,
+        "not_dashboard_session": 1,
+        "question_card_not_found": 1,
+        "question_key_too_long": 1,
+        "question_not_found": 6,
+        "session_unattested": 1,
+        "slot_not_found": 2,
+        "too_many_answers": 1,
+    }
 
-        37 = 36 plus the Crew Mode worker refusal (``crew_worker_asks_conductor``),
-        one response shared by both ask routes (``_crew_worker_refusal``). 36 = the
-        19 pinned after the owner-denial migration, the answer route's
-        ``answers_too_long`` and ``invalid_response_id``, one additional
-        reason-bearing ``question_not_found`` response, plus fourteen coded response sites for the blocking MCP
-        ``ask_question`` routes. The five audited authorization denials construct
-        their literal response at the call site while ``_denied`` only records the
-        shared SEL event, so every refusal remains visible to the universal
-        machine-code ratchet. Open also owns ``invalid_json``, ``invalid_body``,
-        ``slot_not_found``, ``invalid_questions``, ``duplicate_question_key``,
-        ``invalid_ask_id``, and ``agent_ask_capacity``; wait and withdraw each own
-        ``question_not_found`` because a genuinely missing ask is not an
-        authorization denial. Wait reads no body, so it has no ``invalid_body``.
-        The earlier drop from 21: the non-owner ``403`` is not written out here —
-        its ``{"error": "forbidden", "code": "owner_only"}`` body is produced by
-        ``handlers._shared._owner_denial_response``. The wire contract is unchanged.
-        The app-token ``403`` is not written out here either: its body is built by
-        ``dashboard.app_token_refusal.app_token_refusal``.
-        """
+    def test_the_ratchet_can_actually_fail(self) -> None:
+        """Self-check: a scan matching nothing would pass the assertion above vacuously."""
+        from collections import Counter
+
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 37, f"scanner reached {len(coded)} coded sites, expected 37"
         assert all(f.code_value for f in coded)
+        found = Counter(f.code_value for f in coded)
+        drift = [
+            f'        "{code}": {found.get(code, 0)},  # was {self.CODED_SITES.get(code, 0)}'
+            for code in sorted(set(found) | set(self.CODED_SITES))
+            if found.get(code, 0) != self.CODED_SITES.get(code, 0)
+        ]
+        assert self.CODED_SITES and not drift, (
+            "the scanner's coded sites in ask_question.py moved; write these "
+            "CODED_SITES lines (a zero means delete the line):\n" + "\n".join(drift)
+        )
 
     # -- POST /api/ask-question (the MCP tool's leg) --
 

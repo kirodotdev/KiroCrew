@@ -518,14 +518,13 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "cancelled _run_inner completed while the diagnostics write was "
                 "in flight — the detached worker can now overwrite newer "
-                "recovery state (#6306 review)"
+                "recovery state"
             )
             # While draining, the latch _run's recovery gate reads must be up
             # (3.10 wait_for double-cancel can deliver that gate mid-drain).
             assert info._state_drain_active is True, (
                 "drain did not raise the _state_drain_active latch — on 3.10 a "
-                "second outer cancel can schedule recovery mid-drain (#6306 "
-                "review round 4)"
+                "second outer cancel can schedule recovery mid-drain"
             )
             # A SECOND cancel while draining (reachable: wait_for deadline
             # cancels the run, then shutdown's cancel_all delivers another)
@@ -536,7 +535,7 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "a second cancel during the drain detached the worker — the "
                 "drain must keep waiting to its deadline through repeated "
-                "cancels (#6306 review round 2)"
+                "cancels"
             )
         finally:
             release.set()
@@ -599,8 +598,7 @@ async def test_no_recovery_scheduled_while_diagnostics_worker_is_live() -> None:
         # is still inside update_state.
         assert not worker_live, (
             "cancel-respawn recovery scheduled while the diagnostics worker "
-            "was still writing — stale-overwrite race re-opened (#6306 "
-            "review round 4)"
+            "was still writing — stale-overwrite race re-opened"
         )
         recovery_calls.append(info_)
 
@@ -684,7 +682,7 @@ async def test_recovery_gate_respects_live_drain_latch() -> None:
         assert bool(recovery_calls) is expect_recovery, (
             f"latch={latch}: expected recovery_scheduled={expect_recovery}, "
             f"got {bool(recovery_calls)} — the recovery gate does not respect "
-            "_state_drain_active (#6306 review round 4)"
+            "_state_drain_active"
         )
 
 
@@ -850,7 +848,7 @@ async def test_abandoned_diagnostics_worker_exception_is_retrieved() -> None:
             await _event_loop_checkpoint()
         assert not unretrieved, (
             "the abandoned diagnostics worker's exception was never retrieved "
-            f"— missing expiry done-callback (#6306 review round 3): {unretrieved}"
+            f"— missing expiry done-callback: {unretrieved}"
         )
     finally:
         loop.set_exception_handler(prev_handler)
@@ -968,7 +966,7 @@ async def test_provenance_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "cancelled _run_inner completed while the pre-spawn provenance "
                 "write was in flight -- the detached worker can still roll back a "
-                "recovery run's pid/session_id (#6308)"
+                "recovery run's pid/session_id"
             )
             # The same latch the per-turn drain raises, for the same reason: on
             # 3.10 a second outer cancel can deliver _run's recovery gate
@@ -1051,7 +1049,7 @@ async def test_cc_refinement_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "cancelled _run_inner completed while the CC-path refinement "
                 "write was in flight -- the detached worker can still roll back a "
-                "recovery run's pid/session_id (#6308)"
+                "recovery run's pid/session_id"
             )
         finally:
             release.set()
@@ -1123,7 +1121,7 @@ async def test_an_abandoned_state_writer_holds_the_conversation() -> None:
         info.done = True
         assert info.id in manager._abandoned_state_writers, (
             "drain expiry did not record the abandoned state writer -- "
-            "promote/release would run while the zombie is live (#6298)"
+            "promote/release would run while the zombie is live"
         )
         held = manager._conversation_busy(conv_key)
         assert held is not None and held.id == info.id, (
@@ -1238,7 +1236,7 @@ def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
         f"`{allowed}`: " + ", ".join(offenders) + ". An off-loop state write must go "
         "through the helper, which drains the worker on cancellation -- an "
         "undrained worker outlives its run and its stale whole-file rewrite rolls "
-        "back every field written after its read (#6298, #6308)."
+        "back every field written after its read."
     )
 
 
@@ -1304,7 +1302,7 @@ async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() ->
             assert info.id in manager._abandoned_state_writers, (
                 "the conversation is unheld while a writer is live mid-drain -- a "
                 "3.10 double-cancel finalization would let a continuation write "
-                "`keep` for that writer to erase (#6298)"
+                "`keep` for that writer to erase"
             )
             # Simulate exactly that: the run finalizes while the drain is live.
             info.done = True
@@ -1396,7 +1394,7 @@ async def test_pid_and_session_records_are_written_off_loop() -> None:
         "state.json write(s) ran on the event loop: "
         + ", ".join(on_loop)
         + ". update_state ends in a synchronous fsync, and the reaper, every chat "
-        "turn and the heartbeat share this loop (#6288, #7302)."
+        "turn and the heartbeat share this loop."
     )
     # Off-loop is also what makes the write take update_state's per-agent lock,
     # which on-loop callers skip -- so this is the interleave fix too.
@@ -1453,7 +1451,7 @@ async def test_pid_record_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "cancelled _run_inner completed while the PID record write was in "
                 "flight -- the detached worker's whole-file rewrite can still roll "
-                "back a recovery run's state (#7302)"
+                "back a recovery run's state"
             )
             assert (
                 info._state_drain_active is True
@@ -1517,7 +1515,7 @@ async def test_session_record_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "cancelled _run_inner completed while the session record write was "
                 "in flight -- its detached worker can roll back the `keep` that "
-                "promote / release write on the loop (#6298, #7302)"
+                "promote / release write on the loop"
             )
             assert (
                 info._state_drain_active is True
@@ -1586,7 +1584,7 @@ async def test_shared_session_pid_write_is_drained_on_cancellation() -> None:
             assert not task.done(), (
                 "cancelled _create_shared_session completed while its PID record "
                 "write was in flight -- a lost pid is an orphan the reaper can no "
-                "longer reach (#7302)"
+                "longer reach"
             )
             assert (
                 info._state_drain_active is True
@@ -1664,6 +1662,6 @@ def test_no_on_loop_update_state_inside_a_coroutine() -> None:
         + ", ".join(offenders)
         + ". A coroutine runs on the gateway's only event loop, and update_state "
         "ends in a synchronous fsync -- route it through "
-        "`_write_state_off_loop`, which also drains the worker on cancellation "
-        "(#6288, #7302)."
+        "`_write_state_off_loop`, which also drains the worker on cancellation"
+        "."
     )

@@ -248,25 +248,63 @@ def _is_create_task_wrapped_run_chat_dispatch(node: ast.AST) -> bool:
     return has_run_chat and has_wrapper
 
 
+#: The helper-visible ``_run_chat`` dispatch sites, by file. Each entry is exact, so
+#: a new site or a removed one is a visible edit to its own file's line. One line
+#: per file rather than one total keeps two changes to different files mergeable
+#: (testing-conventions.md § Merge-safe ratchets and counts).
+_DISPATCH_SITES: dict[str, int] = {
+    "src/kiro_crew/dashboard/chat_api/chat_send.py": 1,
+    "src/kiro_crew/dashboard/chat_turn/agent_started.py": 1,
+    "src/kiro_crew/dashboard/chat_turn/queue_cycle.py": 1,
+    "src/kiro_crew/dashboard/chat_turn/queue_drain.py": 1,
+}
+
+
+def _dispatch_site_counts() -> dict[str, int]:
+    """Helper-visible ``_run_chat`` dispatch sites per scanned file, zeros omitted."""
+    src_root = _src_root()
+    counts: dict[str, int] = {}
+    for rel_path in _DISPATCH_FILES:
+        found = sum(
+            "_run_chat(" in body
+            for _line_no, body in _find_create_task_dispatches(src_root / rel_path)
+        )
+        if found:
+            counts[rel_path] = found
+    return counts
+
+
+def _site_drift(counts: dict[str, int], recorded: dict[str, int]) -> list[str]:
+    """The ``_DISPATCH_SITES`` line to write for every file whose count moved."""
+    return [
+        f'    "{rel}": {counts.get(rel, 0)},  # was {recorded.get(rel, 0)}'
+        for rel in sorted(set(counts) | set(recorded))
+        if counts.get(rel, 0) != recorded.get(rel, 0)
+    ]
+
+
 def test_dispatch_site_count_matches_expectation() -> None:
-    """Pin the expected number of helper-visible ``_run_chat`` sites at 4.
+    """Pin the helper-visible ``_run_chat`` sites per file.
 
     The guards above catch only missing ceilings; a new site must also be added to
     ``learn-cron-dashboard.md`` and this module.
     """
-    src_root = _src_root()
-
-    total = 0
-    for rel_path in _DISPATCH_FILES:
-        path = src_root / rel_path
-        for _line_no, body in _find_create_task_dispatches(path):
-            if "_run_chat(" in body:
-                total += 1
-
-    assert total == 4, (
-        f"Expected 4 helper-visible _run_chat dispatch sites, found {total}.  "
-        "If you added or removed one, update:\n"
-        "  - the PR description\n"
-        "  - docs/system-specs/modules/learn-cron-dashboard.md (Per-turn timeout section)\n"
-        "  - this test's expected count"
+    assert _DISPATCH_SITES, "the record must name at least one dispatch site"
+    drift = _site_drift(_dispatch_site_counts(), _DISPATCH_SITES)
+    assert not drift, (
+        "helper-visible _run_chat dispatch sites moved. If you added or removed one, "
+        "update docs/system-specs/modules/learn-cron-dashboard.md (Per-turn timeout "
+        "section) and write these _DISPATCH_SITES lines (a zero means delete the line):\n"
+        + "\n".join(drift)
     )
+
+
+def test_site_drift_names_the_line_to_write() -> None:
+    """The failure text is what the next author copies, so it is pinned."""
+    drift = _site_drift({"a.py": 2, "c.py": 1}, {"a.py": 1, "b.py": 1})
+    assert drift == [
+        '    "a.py": 2,  # was 1',
+        '    "b.py": 0,  # was 1',
+        '    "c.py": 1,  # was 0',
+    ]
+    assert _site_drift({"a.py": 1}, {"a.py": 1}) == []

@@ -13,7 +13,8 @@ The generated default configuration is `~/.kiro/agents/kirocrew.json`. Its shipp
 - A `postToolUse` audit hook for shell calls. It appends each command to
   `audit.log` under the data home (`~/.kiro/crew` or `KIROCREW_HOME`); the gateway
   (and a standalone `kirocrew chat`, at its start) rotates that file at 8 MiB,
-  keeping one previous generation as `audit.log.1`.
+  keeping one previous generation as `audit.log.1`. On Windows the hook runs the
+  gateway's Python directly instead of a POSIX shell command.
 
 ## Switching Agents
 
@@ -62,20 +63,21 @@ Cron jobs can specify an agent at creation time.
 
 Kiro Crew owns and rewrites a fixed set of specs; [agent-spec-fields.md](agent-spec-fields.md) lists every one of them with what refreshes it. The primary and lite specs are required; the others support goal conducting, pipeline fleet supervision, security conducting, knowledge extraction, research, and heartbeat features.
 
-`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. **Crew Mode** is a chat that runs on a conductor: pick `kirocrew-conductor` in the agent picker and the chat keeps its memory and history and runs on it. From the first message on it is locked, so the chat stays on the conductor; start a new chat to work with another agent. Making the conductor the default agent starts every new chat on it the same way. `agent.crew_mode_agent` names the conductor Crew Mode runs (default `kirocrew-team-lead`); changing it, or an update that ships a new default, moves every Crew Mode chat, new and old, onto the new conductor (a busy chat at its next idle point), and the chat keeps its work ledger. Every conductor is Crew Mode: a chat you started on the team lead, the pipeline, security or ledger conductor, scheduled ones included, is a Crew Mode chat when the dashboard loads it, locked the same way. A chat that turned Crew Mode on (switched onto the conductor, or a new chat born on it) keeps the sessions it dispatches out of your folders; History still lists them. A conductor chat from before the switch existed keeps filing them as it always did. Nothing is deleted and no folder moves. The server enforces the lock: once the chat has a user message, switching a Crew Mode chat to another agent, from the picker, `/agent` or a session-control send, is refused with `409 crew_mode_locked`, and an agent switch the backend makes mid-turn is blocked the same way. Before the first message only a switch back to a template that is not a conductor passes. The pipeline and security conductors mount `kirocrew-work` too and record each item they dispatch as a work-ledger row, which is what their Dashboard tab reads; their own queue or findings ledger stays the detail behind that row. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default agent's own resolved toolset plus the two reporting tools. In short, `kirocrew-worker` is `kirocrew` + `@kirocrew-work` − cron scheduling − the opt-in sets nobody assigned to it: a worker gets your default agent's own toolset so it can do any item's work, but it does not auto-approve scheduling a recurring job that would outlive the item. Which fields are mirrored, when the mirror is re-checked, and what happens when it cannot be re-derived are in [agent-spec-fields.md](agent-spec-fields.md).
+`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. **Conductor mode** is a chat that runs on a conductor: pick `kirocrew-conductor` in the agent picker and the chat keeps its memory and history and runs on it. From the first message on it is locked, so the chat stays on the conductor; start a new chat to work with another agent. Making the conductor the default agent starts every new chat on it the same way. `agent.crew_mode_agent` names the conductor conductor mode runs (default `kirocrew-conductor`); changing it, or an update that ships a new default, moves every conductor mode chat, new and old, onto the new conductor (a busy chat at its next idle point), and the chat keeps its work ledger. Every conductor is conductor mode: a chat you started on the team lead, the pipeline, security or ledger conductor, scheduled ones included, is a conductor mode chat when the dashboard loads it, locked the same way. A chat that turned conductor mode on (switched onto the conductor, or a new chat born on it) keeps the sessions it dispatches out of your folders; History still lists them. A conductor chat from before the switch existed keeps filing them as it always did. Nothing is deleted and no folder moves. The server enforces the lock: once the chat has a user message, switching a conductor mode chat to another agent, from the picker, `/agent` or a session-control send, is refused with `409 crew_mode_locked`, and an agent switch the backend makes mid-turn is blocked the same way. Before the first message only a switch back to a template that is not a conductor passes. The pipeline and security conductors mount `kirocrew-work` too and record each item they dispatch as a work-ledger row, which is what their Dashboard tab reads; their own queue or findings ledger stays the detail behind that row. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default agent's own resolved toolset plus the two reporting tools. In short, `kirocrew-worker` is `kirocrew` + `@kirocrew-work` − cron scheduling − the opt-in sets nobody assigned to it: a worker gets your default agent's own toolset so it can do any item's work, but it does not auto-approve scheduling a recurring job that would outlive the item. Which fields are mirrored, when the mirror is re-checked, and what happens when it cannot be re-derived are in [agent-spec-fields.md](agent-spec-fields.md).
 
-### Conductor mode is a feature preview
+### Conductor mode in the dashboard
 
-The dashboard's conductor mode is off until you turn on **Settings → Developer →
-Feature Previews → Conductor mode**. It is a per-device switch, kept in this browser.
-On, a new chat's composer offers the conductor mode switch, an ongoing plain chat
-offers it right of the permission button (it turns that chat into a conductor mode
-chat, one way), a conductor mode chat shows its
-welcome, its side panel's **Crew** tab lists its crew members, and the Sessions
-list draws it as a crew card with a **Conductor mode** filter. Its crew members are
-listed there, not as rows of your list.
+Conductor mode is on in the dashboard, with nothing to turn on. A new chat's
+composer offers the conductor mode switch, and an ongoing plain chat offers it
+right of the permission button (that chat then stays in conductor mode). A
+conductor mode chat shows its welcome, its side panel's **Board** tab lists its
+crew members, and the Sessions list draws it as a crew card with a **Conductor
+mode** filter. Its crew members are listed there, not as rows of your list. To
+start every new chat in conductor mode, turn on **Settings → Chat → Sessions →
+Start New Chats in conductor mode** (off by default). Conductor mode used to be a
+Feature Preview; a switch for it saved from then is ignored.
 
-Off, the dashboard looks as it did before conductor mode:
+The LTS edition does not offer conductor mode:
 
 - no conductor mode switch, welcome, filter, Board tab or crew member breadcrumb;
 - the conductor mode agent templates are in the agent picker like any agent;
@@ -85,9 +87,9 @@ Off, the dashboard looks as it did before conductor mode:
 - a conductor mode chat you started yourself that has a message offers no agent
   switch, since the gateway keeps it on its agent.
 
-The gateway is the same either way: the switch changes only what this dashboard
-shows. A conductor mode chat stays locked to its agent (`409 crew_mode_locked`) and
-its crew members stay out of your folders while the preview is off.
+The gateway is the same in every build: only what the dashboard shows changes. A
+conductor mode chat stays locked to its agent (`409 crew_mode_locked`) and its crew
+members stay out of your folders.
 
 ## Custom Agents
 

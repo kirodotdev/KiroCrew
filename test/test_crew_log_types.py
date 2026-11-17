@@ -398,8 +398,9 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # would declare a shape no site produces, and the first emitter to land would
     # have to satisfy a contract written without it. Each type that joins does so
     # because KNOWN_TYPES is derived from this registry: an undeclared type in a
-    # log stops every later fold of it. Bump the count when a new writer lands.
-    assert len(SESSION_ENTRY_TYPES) == 53
+    # log stops every later fold of it. The set equality below pins the membership;
+    # a stored total beside it would only be a line every new writer edits.
+    assert SESSION_ENTRY_TYPES
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

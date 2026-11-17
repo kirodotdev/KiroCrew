@@ -9,6 +9,7 @@ import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, FOLDERS_UNREAD_FIRST_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { previewFlagsLocked } from '../../utils/previewFlags'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
 import { normalizeRunSessionKey } from '../../components/workflows/runModel'
@@ -107,16 +108,17 @@ function turnFilterOff(prev: StatusFilterState, key: SessionFilterKey): StatusFi
 }
 
 /** Read the stored values into one state. A filter stored '2' is on and paused,
- *  each filter on its own. With the Crew Mode preview off a stored Crew Mode
- *  filter is turned off: its key is rewritten to '0' and it is not added, so it
- *  neither narrows the list nor takes part in a pause. */
+ *  each filter on its own. While conductor mode is off a stored conductor mode filter
+ *  is not added, so it neither narrows the list nor takes part in a pause; in an LTS
+ *  build its key is also rewritten to '0'. Before the edition lock is known it is
+ *  left as stored, so a standard build's saved filter comes back once the lock arrives. */
 function readStoredStatusFilters(crewMode: boolean): StatusFilterState {
   const active = new Set<SessionFilterKey>()
   const paused = new Set<SessionFilterKey>()
   for (const filterDef of SESSION_FILTERS) {
     const stored = safeGetItem(filterDef.storageKey)
     if (filterDef.key === 'crew' && !crewMode) {
-      if (stored === FILTER_STORED_ON || stored === FILTER_STORED_PAUSED) writeFilterStored('crew', FILTER_STORED_OFF)
+      if (previewFlagsLocked() && (stored === FILTER_STORED_ON || stored === FILTER_STORED_PAUSED)) writeFilterStored('crew', FILTER_STORED_OFF)
       continue
     }
     if (stored === FILTER_STORED_ON) active.add(filterDef.key)
@@ -127,8 +129,8 @@ function readStoredStatusFilters(crewMode: boolean): StatusFilterState {
 
 /** The status chips, folder hides, tag selection and shelved flag, each persisted. */
 export function useSessionFilterState() {
-  // With the Crew Mode preview off a stored Crew Mode filter is turned off (see
-  // readStoredStatusFilters); flipping the preview re-reads the stored state.
+  // In a build without conductor mode (LTS) a stored conductor mode filter is turned
+  // off (see readStoredStatusFilters); the edition lock arriving re-reads the stored state.
   const crewMode = useCrewMode()
   const [statusFilters, setStatusFilters] = useState<StatusFilterState>(() => readStoredStatusFilters(crewMode))
   const readCrewModeRef = useRef(crewMode)

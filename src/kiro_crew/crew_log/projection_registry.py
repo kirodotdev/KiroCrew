@@ -520,50 +520,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _usage_render,
         affects=USAGE_TYPES,
         copy_state=_usage_copy,
-        # Moved off the base for the per-turn context window and the occupancy pair,
-        # and moved again for the monotonic ordinal counter this fold now keeps. That
-        # counter advances over the TURN HISTORY -- a turn that composed nothing still
-        # consumes an ordinal (``context_turns_seq`` plus the memo
-        # that records which turns were counted), and a REFUSED turn does too now
-        # that the fold sees ``turn/refused`` -- so a savepoint from a build whose
-        # counter only moved on compositions, or on completions but not refusals, would
-        # resume with a differently-numbered sequence; the bump retires THIS fold's
-        # files to a cold fold and leaves the others' standing. Moved again because a new
-        # unit now CLEARS the model/window stamps on ``session/opened``: a savepoint from
-        # a build that carried a prior unit's stamp into the next unit would resume still
-        # carrying it. Moved once more because the counter now REMEMBERS every counted
-        # ``(unit, turn)`` in a map rather than only the most recent, so a rewound or
-        # edit-resent turn reuses its ordinal instead of taking a new one; a savepoint
-        # written with the old scalar companion carries no such map and must refold cold.
-        # Moved again because the key's unit is now ``context_key_unit``, which a
-        # re-attachment does not advance; a savepoint keyed by the per-attachment counter
-        # would hand a regenerated turn a second ordinal.
-        # Moved again for ``context_sources_omitted``: a savepoint without the counter
-        # would resume short of it, and the count it renders would be wrong for good.
-        # Moved once more because the memo is now ``context_turn_keys``, one string
-        # covering the whole rewindable range; a savepoint holding the old bounded map
-        # carries neither the new field nor the turns that map had already evicted.
-        # Moved again for a COUNTING fix that keeps every key: ``tokens_turns`` counts
-        # a block of four zeros as unreported, and a savepoint from a build that
-        # counted it as a report would resume onto this logic still carrying the
-        # inflated count for the life of the unit.
-        # Moved again for ``context_started`` and the per-row ``first_start``: a
-        # savepoint without them would mark a later rebuild as the session's start.
-        # Moved again for the engine-measured rows and the running sum of composed
-        # characters beside them: a savepoint without the sum would subtract nothing
-        # from the engine's user text for the rest of the unit.
-        # Moved again for the fixed-size context part (five running sums, the newest
-        # measurement, a 30-row trend ring whose rows carry their own ordinal): a
-        # savepoint holding per-turn rows has none of it.
-        # Moved again because each ring row now holds its turn whole (its blocks by
-        # name and its own engine measurement): a savepoint's shorter rows would be
-        # read past their end.
-        # Moved again for the ordinal memo (``turn_memo``) a rewind reads its ordinal
-        # from: a savepoint without it would give every rewound turn a new ordinal.
-        # Moved again for the dated readings the fullest-turn peak is taken from and
-        # the configured window (``peaks``, ``conf_window``): a savepoint has neither.
-        # Moved again for each row's version and the write counter it comes from
-        # (``row_writes``): a savepoint's shorter rows have neither.
+        # Off the base: this fold's state holds the per-turn context window, the turn
+        # ordinal and its memo, and the context rows, ring and peaks. Bump this
+        # whenever that state changes shape, so a savepoint of another shape refolds
+        # cold instead of resuming onto logic that would misread it.
         state_version=_FOLD_STATE_VERSION_BASE + 18,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
@@ -701,7 +661,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
     # read by a loop that wakes on a timer and each wakes the worker for one entry type
     # in a log that is otherwise message bodies, so the read it serves is a memo lookup
     # rather than a walk of every unit the slot ran under. What their four warm cells
-    # cost resident is :data:`SLOT_FOLD_CACHE_BYTES`' problem, not this table's.
+    # cost resident is bounded by the slot fold cache budget
+    # (``projection_budget.DEFAULT_SLOT_FOLD_CACHE_BYTES``), not by this table.
     "ledger": _Fold(
         "ledger",
         _ledger_start,
@@ -792,8 +753,9 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _workstreams_render,
         bind_slot=_workstreams_bind_slot,
         affects=WORKSTREAMS_TYPES,
-        # One past the base: ``charged`` joined the state.
-        state_version=_FOLD_STATE_VERSION_BASE + 1,
+        # Two past the base: ``charged`` joined the state, then each item's ``reason``
+        # and ``answered``, which an older savepoint lacks, so it rebuilds.
+        state_version=_FOLD_STATE_VERSION_BASE + 2,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
     ),

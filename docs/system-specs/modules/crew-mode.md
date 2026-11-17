@@ -27,7 +27,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 
 | Rule | Where |
 |---|---|
-| `agent.crew_mode_agent` names THE conductor a chat switches to when conductor mode is turned on (default `kirocrew-team-lead`); read live from the config snapshot, so no restart | `config/sections_agent.py`, `crew_mode.crew_mode_agent` |
+| `agent.crew_mode_agent` names THE conductor a chat switches to when conductor mode is turned on (default `kirocrew-conductor`); read live from the config snapshot, so no restart | `config/sections_agent.py`, `crew_mode.crew_mode_agent` |
 | `kirocrew-team-lead` can call every server an edition contributes (`McpToolingProvider.extra_mcp_servers()`) that its spec mounts: each gets an `@<server>` ref in `tools`, which `build_agent_config()` leaves out; `allowedTools` gains nothing, so those tools prompt. A standalone build contributes none, so its lead spec is unchanged | `service_agents._install_team_lead_agent`, `service_agents._register_edition_refs` |
 | Every conductor runs conductor mode: `conductor_agents` is the shipped conductor templates plus the configured one and the deprecated names that resolve to it; the catalog lists them as `conductor_agents` and names `crew_mode_agent`, and masks both for a non-owner | `crew_mode.conductor_agents`, `handlers/agent_catalog.py` |
 | A chat that turned conductor mode on carries the stamp `crew_mode_agent` (the slot field, persisted with the slot's own metadata), so a root on a custom conductor absent from the config stays conductor mode | `crew_mode.STAMP_FIELD`, `slot_persistence/metadata_codec.py` |
@@ -37,7 +37,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | **The person closing a conductor closes its workers.** When `DELETE /api/chat/slots/{slot}` closes a conductor mode root or a Bot thread with no app token, the open sessions it still manages after its own close (`session_managers.holder`) close too, down the line, each archived to history, but only one that was in the conductor's tree just before that close (its stamped row names the conductor as `crew_root` or `mate_root`, read in one pass with no await before the close) or was opened while the line was closing; the response names them in `closed_workers` and any that stayed open in `failed_workers`. A session handed up or back by the conductor's own hand-back stays open, as does one that left the tree (`session_release`, an adoption elsewhere), which moves the tree edge and not the manager record, as do a plain chat's sessions and every close by an agent, an app or the idle sweep | `chat_api/slot_lifecycle.py` (`api_chat_slot_delete`), `chat_api/conductor_close.py` (`_conductor_line`, `_close_managed`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | A conductor mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
-| `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in Conductor Mode**, shown while the conductor mode preview is on) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
+| `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown wherever conductor mode is, so in every build but LTS) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
 
 The design and its parts are recorded in
@@ -243,6 +243,74 @@ record, once written, stays authoritative. The kind is part of every binding
 tuple the race guards compare (`_slot_binding`, `_current_binding`, the
 agent-conflict compare), so a kind change is a binding change.
 
+An app's session never runs as a Bot. The owner approves the paths an app may
+call (`permissions.api`), never a Bot, so owning a session gives an app no claim
+on what is a Bot's own: its memory store, and its chat with the Permissions
+that chat takes. `apps.cron_sdk` and `apps.spawn_sdk` hold the same rule for a
+job and a background run, and the HTTP entries hold it for every caller with an
+app claim (an app token, or an agent running in an app's session, scheduled run
+or background run): `POST /api/crons` and the `cron_add` tool behind
+`POST /api/crons/tools` refuse a create whose `agent` or `member_id` selects a
+Bot's own (`cron_service.identity.app_schedule_names_bot`), and
+`POST /api/spawn` refuses a run that `crew` / `target_member`, or the parent
+session it names, would make a Bot's (`messaging_api/spawn._app_bot_spawn_refusal`).
+Both judge the execution the create would store with `execution_context.is_bot_own_execution`,
+and both let a caller that already runs as that Bot go on as itself
+(`execution_context.is_same_bot`: the same named store, or on the shared store a
+`member` selection of the same name).
+What counts is one test, `execution_context.is_bot_own_execution`, on an
+execution record: a record bound to a store other than the shared one counts
+whatever its kind (a Bot's id or not, `member` or `template`), and a `member`
+record on the shared store counts when it carries a Bot's id or its chat runs
+on the conductor (a Bot with its own file). A record of either kind whose
+template is a Bot's own file (`mate_worker.is_mate_owned_agent`) counts too:
+that file carries the Bot's prompt, servers and tools.
+`slot_ownership.selects_bot_identity` answers True for bindings that run a
+Bot's own file in either namespace, answers with that test whenever the
+resolved bindings carry a record, and applies it to a `config.agents` row with
+no record: bound to a store other than the shared one, or chatting on the
+conductor. A record on the
+shared store with a plain template -- the reserved `default` row, a row the
+agent sync wrote -- has nothing of its own to give: it names a template with a
+workspace and a model pin on the memory a template session already has, so an
+app that sends `default` as its agent, or as `model` on
+`/v1/chat/completions`, runs as before. Turn admission is the floor
+(`chat_turn/app_agent_binding.app_session_selects_bot`, called from
+`_turn_admit` before the store is attached or a record is written): on a slot
+with an app (`slot._app`) the turn ends on one error row, with the
+`app_agent_refused` kind so the dashboard offers no Resume. That covers a name
+stamped by any route and a record written earlier, by anyone; it starts no
+provider, and the eager start stands down on the same test. A `template` stamp
+on a name a Bot shares still runs the template, unless that name is the Bot's
+own file. The four routes that take an
+agent name from an app answer the request itself with the 404 an app gets for
+anything it may not reach (`slot_ownership.app_names_bot`; request contract in
+[learn-cron-dashboard](learn-cron-dashboard.md) → Chat). A person's own
+session, and a Bot's thread an app reaches through `sessionApproval` with the
+`memberThreads` scope, are not the app's sessions and are not judged here.
+
+An app token is not the owner on the run routes either. `POST /api/spawn` from
+an app token is held to what `apps.spawn_sdk` holds an app's run to
+(`messaging_api/spawn._app_token_spawn_refusal`): it names an agent, the route
+hands the manager the app so the gate proves the agent is the app's own, judges
+the spawn under the app's profile and records the run under the app, and a
+parent session must be the app's own
+(`run_control._app_token_parent_refusal`, by
+`token_auth_callers.app_owner_of_session_key`). The key's namespace decides
+ownership: cron jobs and subagent runs use only their own registries; a
+`dashboard:` key requires its named slot to have no linked session; other keys
+require an exact `linked_session_key` match. A slot name cannot grant ownership
+of a cron or subagent key. The per-run routes and the live half
+of the listing then reach only a run recorded under that app
+([subagent](subagent.md) → Properties). A job an app created takes nothing of a
+Bot's at fire time: a name it stores that is a Bot's own row is dispatched as a
+template, not collapsed onto the Bot's agent, workspace and crew identity
+(`cron_fire._app_job_names_bot`, for the single run and for each
+`agent_sequence` step). A job that captured a Bot's execution before the
+create refused it, or that stores a name which is a Bot's own file, is refused
+when it fires (`cron_fire._app_job_runs_as_bot`,
+`fire_time_denied`, so it does not feed the auto-pause counter).
+
 ## Template names the harness cannot activate
 
 A Bot's private copy is named after the Bot, and a published or
@@ -272,8 +340,7 @@ wire registers and activates it as `agent_files.kas_wire_agent_id(id)`
 (`<id>-crewmate`), and every Crew-side record keeps the Bot's id
 ([acp-client](acp-client.md), Guard (C)). The dashboard renders the
 refusal in the user's language inside the dialog that sent the name
-(`components.agentTemplateDetail.publish_name_reserved`,
-`pages.overview.agentTemplatesTab.err_name_reserved`), naming the typed name.
+(`pages.overview.agentTemplatesTab.err_name_reserved`), naming the typed name.
 
 ## Custom agents tab
 
@@ -2029,9 +2096,8 @@ order, so the order is part of the behaviour, and `MembersPage.owners.test.tsx`
 pins it together with the facade's exports and the rule that no owner imports
 the facade. The owners are stretches of the hook sequence the page had as one
 file, so a few pieces sit where their registration falls rather than with the
-responsibility they serve (the Schedules guard state below, say); a change that
-regroups them reorders registrations deliberately, reviews that as a behaviour
-change, and edits the order pin (follow-up #20512 for the Schedules guard state). New work goes to the owner of its responsibility:
+responsibility they serve; a change that regroups them reorders registrations
+deliberately, reviews that as a behaviour change, and edits the order pin. New work goes to the owner of its responsibility:
 
 | Owner | Holds |
 |---|---|
@@ -2398,6 +2464,29 @@ write, so a caller that must never leave a new Bot in `trust` pins it there
 instead of in a later PUT. A stored choice is applied as stored, a grant already on the slot is
 kept, and the seed runs once per in-memory slot (`_member_approval_seeded`).
 YOLO is never a Bot setting: it is process-global.
+The **Summarize old messages at** row is the Bot's `autocompact_pct`
+(`agents.<name>.autocompact_pct`, #37072): how full each of its chats may get,
+as a share of the model's context window, before it compacts. A Bot's thread
+has no context meter (`CrewComposer` drops the composer's session chrome), so
+this row is how the person bounds what every wake re-sends. Its options are
+Inherited (stored as `0`; the page names the global `session.autocompact_pct`
+it follows as the default in Settings → Chat, read from the thread's
+`GET /api/chat/slots/{slot}/autocompact`, re-read each time the picker opens;
+a failed read shows a plain notice with Try again, and Inherited still names
+where its value comes from, without a number; on a
+harness that compacts on its own, such as KAS, it names that harness instead,
+by its display name (`acpBackendName`),
+as the chat composer's meter does, since the global is not used there)
+and 20 to 90 percent in steps of ten, plus a stored value outside those steps.
+A pick writes the record only: the Bot's sessions read the crew default live
+(`crew_autocompact_pct`), and a thread's own override still outranks it, which
+the page's caption says when the thread holds one; the page then offers
+**Clear this chat's own threshold**, which posts `pct: null` to the thread's
+`/autocompact` route (the Bot's thread has no context meter to clear it from)
+and leaves the record alone. `PUT /api/agents/{name}`
+takes `autocompact_pct` as `0` or a number from 5 to 90, checked by
+`crew_autocompact_pct_refusal` over the slot route's own `parse_autocompact_pct`, and refuses anything else (a bool included) with 400 `invalid_autocompact_pct` before any write;
+`GET /api/members` carries it on each row.
 The permission PUT is compare-and-set: the profile sends
 `expected_approval_mode` (the value it last read), and the server refuses a
 stale write with 409 `approval_mode_conflict` carrying the stored value, which
@@ -2623,7 +2712,10 @@ two bodies are never mounted together), so close, navigation and the tab rail
 refuse to leave Schedules until it settles. While the Heartbeat is on, the
 schedule list's empty line reads "No schedules yet." (`schedule_none_self_waking`)
 instead of "Nothing wakes this Bot on its own yet.", which the row above
-would contradict. Each row states its name, active/paused/
+would contradict. While a goal check-in (daily, weekly or monthly) is on, it
+reads "No schedules yet. This bot's goal check-ins (Goals tab) also wake it."
+(`schedule_none_check_ins`): the check-ins wake the Bot but are listed only on
+its Goals tab. The New schedule page's empty line follows the same rule. Each row states its name, active/paused/
 running state, cadence, previous run, result, and next run. A failed list read
 shows an actionable `ErrorNotice` above any retained rows instead of replacing
 them. A failed previous run remains an inline row status and also produces one
@@ -2675,7 +2767,12 @@ mounted.
 **Sessions** lists every session the Bot dispatched, at any depth: the live
 slots whose `mate_root` is the Bot's DM slot (birth `created_by` alone does not count), merged
 with the Bot's `GET .../crew-workers` answer, which adds closed sessions, the
-ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). The tab keeps its name (a recorded decision), but its empty
+ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). While
+the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
+Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
+`crew_mode.list_view`) unless the Bot's Settings switch **Show in my Sessions list**
+(`show_sessions_in_list`, off by default, stamped on the thread's slot row) is on.
+The Sessions tab lists them either way. The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a Bot would "drive sessions", so the box says session, chat or
 driving nowhere. The
@@ -2794,7 +2891,17 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   `set_key_results` descriptions, the goal-setup nudge and its own context say
   that a few goals and milestones are easier to track, and to suggest merging
   as the list grows), and the whole record stays inside its 64 KiB byte bound;
-- the tab has **two pages**. The first only shows state, in four sections,
+- **Credits used**, a card right after **Goals**: the credits the sessions
+  bound to the Bot's work items reported, read by the GET route only
+  (`handlers.member_goals.work_spend` over the `workstreams` fold of the Bot's
+  thread slot) and kept by the tab across a write, whose answer carries none.
+  Each worker session counts once however many tasks it served. No metered
+  charge reads **Not reported**, never zero; a fold that dropped boards, tasks,
+  units or spenders reads **At least**; a slot fold that is not warm reads
+  **Still counting** and asks one background prime; an unreadable fold hides
+  the card. The Bot's own chat turns are not in the number;
+- the tab has **two pages**. The first only shows state, in four sections
+  (five with **Credits used**),
   each card opening with its header as the FIRST row, a hairline under it
   (`SectionHeader`: the icon on a tinted tile at the Profile tab's `Tile`
   size, 36px, then the title in sentence case; a count or an action rides at
@@ -3711,7 +3818,7 @@ Every piece of text a Bot is told lives in one file,
 `src/kiro_crew/crewmate_prompts.json` (package data, listed in `setup.cfg`
 and `MANIFEST.in`): the conductor's member section (`conductor.*`, assembled by
 `context_assembly/member.py:build_member_section` and `operating_mode_block`),
-the worker's principles (`worker.principles`, `mate_worker.MATE_WORKER_PROMPT`),
+the worker's principles (`worker.principles`, `mate_worker.mate_worker_prompt()`),
 every gateway wake (`wake.preamble` and `reminder.*` in
 `dashboard/goal_reminder.py`; `goal_setup.*` in
 `dashboard/goal_setup.py`; `worker_report.*` and `rebind_notice` in
@@ -3796,7 +3903,9 @@ every assembled prompt, offline; the fixtures and their goldens are in
 A member-mode slot's transcript is the Bot's whole working record: the
 `[auto-nudge cycle N]` turns of its patrol loop, `[Cron notification …]` and
 `[Subagent completion event]` envelopes, every tool call, and the say-nothing
-reply a quiet patrol ends on. The Members page's chat pane shows **only what
+reply a quiet Heartbeat or `[Worker report]` turn ends on. A work-ledger patrol
+wake with nothing for the user ends on one visible line of what the Bot did
+(`patrol_reply`), which the chat pane shows. The Members page's chat pane shows **only what
 the Bot says to the user** and the user's own messages. Everything else stays in the slot's history and is filtered at render time by `filterCrewmateChat`
 (`website/src/components/chat/crewmateBubbles.ts`), which `ChatPane` applies
 when its host passes `crewmate`. Ordinary chats never pass it and are drawn
@@ -3805,7 +3914,7 @@ unchanged.
 What is hidden: rows with role `nudge`, `inject`, `subagent`, `tool`,
 `tool_call`, `tool_result`, `thinking`; and an `assistant` row that is not
 speech — invisible-only content (the bare U+200B the model is instructed to
-answer a quiet patrol with, `isHiddenInvisibleAssistantRow`), a gateway system
+answer a quiet turn with, `isHiddenInvisibleAssistantRow`), a gateway system
 notice written under the assistant role (compaction, session reload), or an
 injected workflow completion. A turn that ends without addressing the user is
 therefore a turn whose final assistant text is empty: the model's own silence
@@ -4133,23 +4242,6 @@ Bot / steer-only user row (through `renderUserContent`), and the sub-agent / wor
 completion cards. A pane host that passes none of it — a side chat, an embedded
 chat — renders those links plainly, as before.
 
-**Blocked links draw as on the chat page.** A Bot's reply that had a link
-removed as a suspicious URL shows the Blocked link chip and its card (Copy URL,
-Open once, Allow for this host), not the raw placeholder text:
-`renderAssistantBubble` hands the row's `meta.blocked_links` to the markdown
-renderer on the same rule as its lock tags, so only a host that names its
-LOCAL slot (`revealSlot`, which `ChatPane` sets to its own slot) gets them, and
-a window drawing another gateway's rows keeps the plain text. *Allow* saves the
-host for that slot through the same owner-only route as the chat page, and the
-pane re-reads its rows afterwards (`useRedactionHostsReload`: `refreshSlot` for
-the active slot, `warmSlotCache` otherwise) so the restored link replaces the
-chip; the chat page's own listener only reaches the slot it shows. Both
-re-reads pass the reply's timestamp (`reachTs`), so a background pane that paged
-back past its newest rows still re-serves that reply. The card keeps its
-"Allowed" and Undo across the re-read: its hold is keyed by the local slot
-(`redactionSlot`, else `slotKey`) and the row timestamp, which every Bot and
-split-pane bubble forwards.
-
 What the Members page supplies is deliberate on all three counts. `sessions` is
 built by `utils/sessionRoster.sessionTitleRoster` from the WS `slots` frame the
 page already subscribes to, narrowed to the slots the DESTINATION can render
@@ -4370,12 +4462,23 @@ parts:
   prompt all dispatch and END the turn rather than waiting or polling: without
   the ledger the worker's report wakes the thread, and no monitor loop is
   armed. **Ledger-tracked work is the one exception**, and only where the
-  conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
-  after the governance ceiling
-  (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
+  conductor's chat spec mounts `kirocrew-work` with `work_ledger_record`
+  selected (`member_mate_tools.binding_ledger_off_reason` answers `""`). A
+  governance ceiling that withholds the verb does not change that: the verb
+  stays mounted and asks for approval when called. The mate conductor and
+  worker installers mount their own `kirocrew-work` entry and never carry the
+  default template's `disabled`, `disabledTools` or an `excludedTools` entry
+  naming it, as conductor mode does (decision 2026-11-15). Where the chat's
+  spec reads but does not mount the ledger, or cannot be read, the tracking
+  sentence is followed by one line naming why tracking is off
+  (`conductor.tracking_off_config`, `conductor.tracking_off_unreadable`), which
+  the Bot says to the user when asked to track or hand off work. Where the ledger is mounted, the tracking sentence
   names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
   in place of `conductor.tracking`), and the operating-mode block appends
-  `conductor.patrol`. There every task the Bot hands to a worker is tracked, a
+  `conductor.patrol`. A turn whose operating-mode block is withheld
+  (`member_gates._member_dispatch_held`: this session lacks the `session_*`
+  mount, or the backend cannot mount it) keeps `conductor.tracking`: it has no
+  worker to hand a task to. There every task the Bot hands to a worker is tracked, a
   single task too, as on the conductor in conductor mode, and so is work the user asked
   to track; the tracking sentence says the same, and the goal-setup nudge
   (`goal_setup.kickoff_step2_ledger`) and the heartbeat hand-off
@@ -4425,9 +4528,9 @@ parts:
   worker lacks" below). It mounts `kirocrew-work` the same way as the
   conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
   `work_brief`, `work_report`), so a worker bound to an item in its
-  Bot's ledger can read its brief and report on it (`worker.principles` tells
-  it to call `work_brief` first and to report on the item it names with
-  `work_report`); it is a base server,
+  Bot's ledger can read its brief and report on it (`worker.principles`
+  carries the same work protocol `kirocrew-worker` does, "The two workers stay
+  in step" below); it is a base server,
   so a Bot's file cannot replace its entry (a switch-off is still a
   restriction, below). Each server an edition contributes
   (`McpToolingProvider.extra_mcp_servers()`) that the worker mounts gets an
@@ -4587,17 +4690,24 @@ parts:
   names (`mate_worker.uncarried_tool_limits_of`). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
-**The two conductors stay in step.** `kirocrew-conductor` (conductor mode
-chats) and `kirocrew-mate-conductor` both conduct work through a work ledger, from
+**The two conductors stay in step.** `kirocrew-conductor` (plain and child
+conductors) and `kirocrew-mate-conductor` both conduct work through a work ledger, from
 different installers and different prompt files. A conductor change lands on
 both, or it lands on the parity allowlist with a reason. The rules both need
 (dispatch and bind before the seed, the `watch="work-ledger"` patrol, the
 interval band, the final report before the stop, acceptance by `accept_eval.py`, close,
-and reading the `goal-conductor` skill before acting on a goal) are written once,
+reading the `goal-conductor` skill before acting on a goal and again after a
+compaction, and the long-task and
+team rules every turn needs: the item budget, one owner per file and one
+integrator per output, merging two lines, the plan reviewer, the `pr_merged` bar,
+the hourly check on a quiet wake, routine incidents, reporting before a park, and
+the one-line reply on a patrol wake that has nothing the person must see) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
 each as a placeholder (`context_assembly.member.ledger_rules_block`).
-`test/test_mate_conductor_parity.py` compares the effective agents, not the spec
+`test/test_mate_conductor_parity.py` roots at `crew_mode.crew_mode_agent()`, the
+agent conductor mode runs, checks that every shared rule is in both installed
+prompts, and compares the effective agents, not the spec
 files alone: both installed specs put through the per-session projection
 (`acp.kas_agents.to_client_custom_agent`), which for a Bot's thread adds the
 session-level `kirocrew-dashboard` and `kirocrew-panel` with their grants. It fails on any root charter section,
@@ -4606,7 +4716,37 @@ lacks unless its `ALLOWLIST` names it with a one-line reason; on a Bot piece
 that copies root charter text instead of naming the rule; and on an allowlist
 entry that no longer names a difference. The check runs one way: what only the
 Bot's conductor has (cron, guide and Bot servers, the default built-ins, its
-front-desk wording) is not drift.
+front-desk wording) is not drift. Conductor mode chats run `kirocrew-conductor`
+by default, the root conductor compared above. `goal-conductor/SKILL.md` points
+at the shared rules ("your prompt's ... rule") instead of restating them, so a
+`kirocrew-team-lead` that `agent.crew_mode_agent` names carries every shared rule
+in its own prompt (`_SHARED_CONDUCTOR_RULES_BLOCK`, the same text). The same test
+fails when the team lead's installed prompt lacks a shared rule, and when the
+skill drops one of its pointers (`SKILL_POINTERS`).
+
+**The two workers stay in step.** `kirocrew-worker` and `kirocrew-mate-worker`
+both work one item for a conductor through `work_brief` and `work_report`, from
+different prompt sources. The work protocol both need (brief first, the plan as
+the first `progress` report, a false premise and a `budget:` as `question`, the
+statuses and `reason`, which reports wake the conductor and `progress` before
+parking, `done` as a claim, the `summary` bar, `decision` as the one instruction
+field, dependent calls in a later step) is written once, in
+`agent_parts/spec_prompts.py` `_LEDGER_WORKER_RULES`: `_WORKER_SYSTEM_PROMPT` is
+assembled from it (`_WORKER_PROMPT_SECTIONS`) and `worker.principles` names each
+as a placeholder (`mate_worker.mate_worker_prompt()`), after one line telling the
+Bot's worker that its Bot is the conductor those rules name. A rule that is not
+true as written for a Bot's worker stays a section of `kirocrew-worker`'s own: a
+Bot's worker's turn end also wakes its Bot with a `[Worker report]`, so it is
+never told that the report is the only wake or that a silent turn wakes nobody,
+and is told instead that its Bot reads its reply too while only what it reports
+reaches the ledger. `test/test_mate_worker_parity.py` fails on a worker section
+that is neither a shared rule rendered for the Bot's worker nor allowlisted with
+a reason, on a `worker.principles` placeholder that names no shared rule, on a
+Bot piece that copies worker text, and on a stale allowlist entry. The worker
+mount and grants are held by `test/test_mate_work_ledger_mount.py`. The ask core and worker tail
+(`context_assembly/output_contract.py` `ASK_CORE`, `WORKER_ASK_TAIL`) are not
+part of these rules: both workers append them after the coding rules (Ask cases
+and reroute).
 
 **A stale worker is released, not capped.** A Bot opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle
@@ -4743,7 +4883,10 @@ fallback answers no, and that worker's report is not delivered.
 Transcript metadata alone wakes nothing. A busy thread keeps one
 pending report per worker (`_mate_wakes`, counting turns) and its flush waits on
 the thread's own turn task, so a report is delivered once, never twice; pending
-reports live in memory. While the app is stopping
+reports live in memory. The same flush delivers the refs an installed app sent
+the Bot (`app_wakes`, written by `dashboard/app_bot_wake.py`, see
+[app-kit-platform](app-kit-platform.md) §32c) as one turn with crew-log actor
+`app`, after an owed upgrade notice and after the reports. While the app is stopping
 (`mate_welcome.app_is_stopping`) no hidden turn starts and reports stay pending.
 
 **Adding abilities to a Bot** (`kiro_crew.mate_worker_kit`, owner-only
@@ -4800,9 +4943,61 @@ the revoked approvals cannot be read. Each one
 left out is a `skipped` `toolsSettings` row
 ("Already has", id `<tool>.<key>`), so the worker behaves as the agent declares
 and no prompt appears or disappears. This runs at kit time only: the worker
-merge still refuses either key in a file, so a hand-edited one fails closed at
-session start. Owner decision:
+merge still refuses `web_fetch.trusted` in a file, so a hand-edited one fails
+closed at session start; a `subagent.trustedAgents` no allow covers is carried
+as written. Owner decision:
 `docs/decisions/2026-11-07-add-abilities-leaves-out-a-grant-the-worker-already-holds.md`.
+The worker carries the `toolsSettings` keys of
+`mate_spec_policy.CARRIED_TOOLS_SETTINGS`, the same ones an ordinary KAS session
+of that agent applies: shell `deniedCommands`, `allowedCommands`,
+`denyByDefault` and `autoAllowReadonly`, read and write `deniedPaths` and
+`allowedPaths`, `web_fetch.blocked`, and `subagent.availableAgents` and
+`trustedAgents` under the `subagent` spelling only. Crew's gate answers the
+shell keys and the `allowedPaths`; KAS turns `trustedAgents` into a `subagent`
+allow. Every other key (`fallbackAction`, `web_fetch.trusted` in a file, a key
+Crew does not know) is refused by name. A shell `allowedCommands` or a read or
+write `allowedPaths` is carried whole even when an entry of it is one Crew
+cannot read, since that entry grants nothing and the call asks. A
+`deniedCommands` list is carried whole too. When an entry of it is one neither
+KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
+can judge, such as a regex with `|` inside a group, the worker's projection
+records those entries under the Crew-only `_crewShellUnjudgedDenies` key
+(`kas_spec_denies.with_unjudged_denies`, set for `kirocrew-mate-worker` only),
+the session handle stamps them on its own agent's requests
+(`AcpEvent.spec_unjudged_denies`), and the gate's `spec-unjudged-denies` row,
+placed with the deny rows, refuses every shell call of that agent that is not
+read-only (`gate_tiers._command_is_read_only`). The row refuses rather than asks
+because a worker runs under its Bot's Permissions, and under Trust an ask is
+answered for the person; no gate result forces a person's answer
+(`hooks.confirm_tools` only withholds a grant). An ordinary session with the
+same spec keeps asking, as before. The preview and the kit view return those
+entries as `unenforced_denies`, and the pane names them as written, in code font,
+under one sentence saying this Bot refuses every command that is not read-only;
+the finished add adds where to see the list again (this section), and the
+section shows it while the file holds one. Owner decision:
+`docs/decisions/2026-11-13-a-bots-worker-carries-the-agents-tool-grants.md`
+(`test/test_mate_worker_carries_tools_settings.py`).
+Every gate-readable deny that KAS does not carry travels in the same worker
+record as an object containing `key`, the raw `entry`, `conditional`,
+`past_bound`, and `whole`. The same objects travel through the session handle
+and `AcpEvent.spec_unjudged_denies`; the existing Crew-only key is stripped from
+KAS's wire payload. Classification never comes from entry text. The session
+notice pipeline serializes these objects as JSON across its `list[str]` API,
+then formats them only in `spec_keys_notice`. Both gate rows use
+`platform.spec_denied_gate.shell_denies_match`: a match is refused by
+`spec-denies`, a definite no-match keeps the normal approval policy, and an
+unknown result holds a worker's non-read-only command at `spec-unjudged-denies`.
+Unknown includes redirects, chains containing `#` or `[[`, and non-ASCII commands
+against ASCII-only patterns. The preview and the kit view return these
+conditional entries as `conditional_denies`, apart from `unenforced_denies`
+(`mate_spec_policy.conditional_denies`), and the pane names them in a second
+group, "Blocked commands it can check only in simple form", under a sentence
+naming the command shapes the worker then refuses. Truly unjudged entries still
+hold every non-read-only command. Ordinary sessions continue to refuse only
+definite matches. On a Bot's worker (`kirocrew-mate-worker`) the session-start
+notice (`spec_keys_notice`) says the worker refuses those commands unless they
+are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
+session keeps the old wording.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
@@ -4877,12 +5072,120 @@ prompt, servers the base lacks with their approvals and selectors, skills, and
 its restrictions. Before any write, `plan_move` merges the planned file as a
 worker session would (`differences`; `dry_run` is the same as one sentence)
 and sorts what differs (`docs/decisions/2026-10-27-every-used-crewmate-moves-to-the-conductor.md`).
-A **loosening** keeps the Bot where it is: a grant the worker would gain
-or a switched-off server it would start. A `hooks` entry it would not run or a
-`permissions` / `toolsSettings` restriction it would not keep does not: the Bot
-moves as it is, no tool is withheld for it, and its one notice names each restriction
-that no longer applies (`dropped_restrictions`, `restrictions_notice`); the governance
-ceiling still governs the merged worker spec. The two loosenings are cured
+A **loosening** keeps the Bot where it is: a grant the worker would gain or a
+switched-off server it would start. A `hooks` entry, `permissions` rule (not
+allow-only) or `toolsSettings` entry the source adds to the base (except an entry made
+only of keys that grant, such as `allowedPaths` and `allowedCommands`, which is no limit;
+an entry that also limits, such as `denyByDefault`, keeps its grants as its exceptions) is never a reason
+to stay and is never dropped (`mate_restriction_carry.carry_restrictions`, `mate_held_rules.split_policy`):
+each one the worker keeps exactly is written into the Bot's file and runs on KAS
+(`mate_spec_policy.layer_policy`); each other one, and every one of a Bot whose
+worker backend applies none of them (`applies_restrictions`), is **held** instead,
+never written in a form that would stop the worker from starting. A held
+restriction is recorded with the capability it speaks about (`migrated.json`
+`held_rules.<name>`, with the Bot's `member_id`; the move records it once this
+start has written and proven the Bot's file, just before the repoint publishes,
+and the repair before it rewrites the file, refused while another instance keeps a
+Bot file of that name (`mate_config.refuse_foreign_file`); an unrecordable one
+keeps the Bot where it is), and on KAS an `ask` rule for that
+capability is carried in its place so KAS sends such calls to Crew. On claude, a
+Bot's worker session carries a `permissions.ask` rule for each built-in a held
+capability covers, and `mcp__<server>` for each of its servers under a held `mcp`
+limit, on every claude session attributed to that Bot, a helper it spawns
+included (`mate_held_rules.claude_ask_rules`, read off the event loop by
+`acp/client_claude_session._prepare_claude_held_asks` before each envelope and sent by
+`acp/client_claude_session._claude_session_meta`), since claude's `default` mode
+runs in-project Read, Grep and Glob without a permission request. Under a held `mcp`
+limit such a session also runs with `strictMcpConfig` (`mate_held_rules.claude_holds_mcp`),
+since its asks name only Crew's servers and a server from the user's own claude
+config would otherwise run unasked. A held hook on an
+event that sees no call before it runs (anything but `preToolUse`, read from an
+array-form entry's `trigger`) is recorded and
+named in the notice, but no call falls under it (`mate_held_rules.NO_CALL`). The
+`ask` rules the held restrictions need are written before any carried restriction,
+so a full policy holds a carried rule rather than drop a needed ask. A held
+capability also loses the Bot file's allow rules for it, which makes room; an ask
+that still cannot land leaves it with no ask and no allow, so KAS sends the call to
+Crew's gate. A held
+restriction applies to every identity the session is known by (its transcript
+record, the identity this process vouched for, the Bot its agent name resolves to),
+so a rewritten transcript cannot hide one. The worker spec a moved Bot's session
+runs on keeps no pre-approval (`allowedTools`, a server's `autoApprove`) of a
+capability its held limits cover, nor any blanket one (`*`, a glob, `@builtin`)
+that would cover it, nor a `permissions` allow rule for it from the Bot's file or the
+template, nor, under a held `subagent` limit, a `toolsSettings` `trustedAgents` list (`mate_held_rules.strip_held_approvals`, applied
+in `mate_worker.resolve_worker_spec` beside the owner's revocations), so on
+kiro-cli and KAS such a call sends a permission request that Crew's gate holds. On KAS
+a child the Bot starts under its identity, a named `spawn_run` agent or an
+`availableAgents` target, gets the same: its own spec loses those pre-approvals and
+gains an `ask` per held capability (`mate_held_rules.held_child_spec`, applied in
+`acp/harness/kas.KasHarness.session_extras` and
+`acp/kas_subagent_targets._project_target`). Each ask is added only while KAS
+still reads the child's `permissions` block (`agent_sdk.kas_tool_view.permissions_block_readable`,
+which counts rules after each long `match` is split), since KAS refuses an
+over-cap block whole, denies included; an ask left out still asks at Crew's gate. Kiro CLI reads a
+helper's spec from its own file, so nothing can narrow it there: while the Bot
+holds a limit, a helper it starts on Kiro CLI whose spec (the workspace's, else the
+user's; the user's is read only when the workspace holds no spec of that name)
+pre-approves a held capability, or cannot be read, is refused at `session/new`
+with a plain reason (`mate_held_rules.kiro_cli_helper_refusal`, run off the loop
+from `acp/harness/kiro.KiroHarness.session_extras`). A held read limit, or one of
+unknown capability, refuses every such helper, since Kiro CLI reads inside the
+session folder unasked. A helper that pre-approves nothing held starts as before,
+and its held calls ask at the gate.
+The Bot's worker, its other sessions and other Bots' helpers still start. While
+`migrated.json` cannot be parsed, only the Bots its text still names are held
+(`mate_held_rules._ledger_names`, by member id or, for an entry with none, by name); a file whose bytes cannot be read holds every
+Bot. Once a Bot's rules are read, an error matching a call against them holds
+that call (`held_for`). A Bot whose worker runs on Kiro CLI
+still reads files inside its own folder without a permission request, as any
+Kiro CLI agent does, so its notice says that when it holds a read limit
+(`mate_held_rules.held_sentence`, `kiro_cli`). A
+row
+this move gives a `member_id` has its held restrictions recorded under that id.
+Crew's
+approval gates then never approve a call it covers without a person
+(`mate_held_rules.held_for`): the dashboard decision treats it like a card's turn
+(no hook auto-approve, trusted pattern, trust-reads, session trust, scoped grant or
+YOLO; the card shows), and the unattended path (`llm_helpers_parts.tool_approval`)
+skips the hook auto-approve rung, asks the caller's approver inside `held_call` (an
+`auto` cron's `auto_job_approver` then falls back to its card) and refuses when the
+surface has no approver, a READ_ONLY turn (a Side Chat) included. The other approval ladders do the same: the native Slack
+ladder (`slack/handler_runtime/permission_ladder.py`), the channel transports'
+`messaging.driver.TurnDriver` (which asks its decider inside `held_call`), agent channels (`channel.py`), the shared ladder
+`tool_permission.settle` (sub-agents, the task runner) and the background approver
+(`slack/gateway_runtime/turn_approvals._interactive_approval`) skip every
+auto-approve rung for a held call and ask a person, or refuse with no one to ask. A
+call is placed under a capability by the tool the harness stamped on it
+(`toolName`, KAS's `toolId`, claude's built-in; a qualified id such as
+`claude#WebFetch` is read under the kiro-cli names `agent_sdk.spec_hooks.spec_hook_tool_names`
+gives it) and its ACP kind; a `fetch` call
+whose tool was not told falls under `web_search` as well as `web_fetch`. A
+call whose capability cannot be told falls under every
+held restriction; every other call behaves as before. The governance ceiling still
+governs the merged worker spec. A Bot an earlier release moved without its old
+agent's restrictions gets the same carry at startup
+(`mate_policy_repair.restore_dropped_policy`, run from `migrate_existing_crewmates`
+before the moves). It, the mount repair and the platform-server repair read
+and write each Bot file under the mate-dir `agents_spec_lock` that an owner's
+Abilities edit takes, so neither undoes the other. A Bot with a held restriction owes one notice in its own chat
+(`mate_upgrade_notice.mark_policy_owed`, `upgrade_notice_policy`, delivered after a
+moved notice still owed) and one bell note linking to its page
+(`mate_thread_wakes._notify_held`, `i18n` id `bot_limits_held`); both say which
+limits are held and that the Bot keeps asking. A held hook on an event that sees no
+call (`NO_CALL`) never makes the Bot ask, so the chat notice names it apart as one
+that no longer runs, and it alone owes no bell note (`mate_held_rules.held_sentence`,
+`asks_for`). Nothing clears a hold: a save of
+the Bot's approval mode does not, since an `auto` cron's approval does not depend
+on that mode (#37277 tracks Kiro Crew's own sub-agent tools; a control to review
+and release held rules is #37321). Every read-modify-write of
+`migrated.json` runs under `mate_ledger_lock.ledger_lock` (a thread lock plus a
+`migrated.json.lock` file lock, since two gateways with their own data homes can
+share one Kiro home), so one writer cannot erase a hold another records. A Bot whose repoint fails stays on its old agent, which still
+enforces its own limits, so the hold the move recorded for it is cleared again,
+only when the entry still carries the `member_id` it was recorded under
+(`mate_held_rules.drop_held`); the next start that moves it holds them again. A repaired Bot is
+checked once (`migrated.json` `policy_checked`). The two loosenings are cured
 first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
@@ -4923,9 +5226,8 @@ governed (its `file://` prompt does not resolve) still has its stated limits
 read raw, and the default template's file never loosens them
 (`_fallback_keeping_limits`): a server it switched off is written
 `{"disabled": true}`, a tool it excludes or disables goes into
-`excludedTools`, and a grant it never had is taken out. A hook or a
-`permissions` / `toolsSettings` restriction the file cannot carry moves with it
-and is named in its notice. Governance applies as before: the source is read
+`excludedTools`, and a grant it never had is taken out. Its hooks and
+`permissions` / `toolsSettings` restrictions are carried or held as above. Governance applies as before: the source is read
 governed, and the worker session still passes POLICY ∩ PROFILE. A Bot
 whose id is also a user-level agent's name is moved only when that agent is its
 own private copy (a fork whose lineage is private to it and that its binding runs,
@@ -4994,7 +5296,7 @@ waits for its next turn end, like a pending report
 a skill says so in its report; it has no request tool (its spec lists
 `@kirocrew-mate/request_capabilities` and `@kirocrew-mate/find_capabilities` in
 `excludedTools`, `mate_worker.MATE_WORKER_EXCLUDED_TOOLS`). Its source-defined
-prompt is the default prompt followed by `mate_worker.MATE_WORKER_PROMPT`
+prompt is the default prompt followed by `mate_worker.mate_worker_prompt()`
 (`service_agents._install_mate_worker_agent`): a task that needs a tool, server
 or skill it does not have is reported, not worked around, on a first line
 `MISSING CAPABILITY: <what> -- <why>` (`mate_worker.MISSING_CAPABILITY_PREFIX`).
@@ -5545,7 +5847,11 @@ refuses a name that is not a key of `config.agents` with `404 unknown_member`,
 and otherwise derives the member's execution (its store and template) through
 `derive_execution` → `resolve_member_execution` before the spawn reaches
 `subagent._validate_agent`. A crew name therefore never quietly runs the
-default agent under a stale name.
+default agent under a stale name. A caller with an app claim that names a Bot
+with a memory store or a chat of its own gets the same `404 unknown_member`,
+and one whose parent session is such a Bot's gets
+`409 member_identity_unavailable`; neither reaches the manager ("An app's
+session never runs as a Bot", above).
 
 ## Crew capability drafts
 
@@ -5589,6 +5895,47 @@ rows can be set, and model choices use the shared advertised-model query. Versio
 hashes live in a collapsed details section rather than in the main status banner.
 Parent-change and impact previews use the server's redacted projection.
 
+## Ask cases and reroute (all four kinds)
+
+One text says when a crew agent stops for a person. It lives in
+`src/kiro_crew/context_assembly/output_contract.py`:
+
+- `ASK_CORE`: reroute first, the five ask cases (a)-(e) stated once, what is
+  not an ask (own time or round caps, reruns inside an approved count,
+  rerunning runs the agent's own bug voided, a blocked step with an allowed
+  path such as a refused protected-branch push that a feature branch and pull
+  request can take, a clearly best option, a ruling already made, a done
+  report even when the next step is the person's), and the safety
+  holds (another spelling of a blocked effect is the same block; the reroute
+  path must not hit (a)-(e) itself; no bypassing an approval or review, no ask
+  to loosen a rule, sandbox or approval mode).
+- `CONDUCTOR_ASK_TAIL`: a worker's ask is a claim the conductor checks against
+  (a)-(e).
+- `WORKER_ASK_TAIL`: try an allowed path before `blocked` or `question`;
+  `needs_human` only for (a)-(e).
+
+Every critical-rules variant carries `ASK_CORE`. The four crew kinds carry it
+again at agent rank, through five seams:
+
+| kind | seam | text |
+|---|---|---|
+| Bot conductor (`kirocrew-mate-conductor`) | `context_assembly/agent_spec.py`, appended to `[AGENT SYSTEM PROMPT]` after the sub-agent span swap | core + conductor tail |
+| Bot worker (`kirocrew-mate-worker`) | `mate_worker.py` `mate_worker_prompt()` | core + worker tail |
+| Team lead (`kirocrew-team-lead`, conductor mode when `agent.crew_mode_agent` names it) | `agent_materialization/conductor_agents.py` `with_conductor_ask()`, appended at install by `service_agents._install_team_lead_agent` | core + conductor tail |
+| Conductor-mode conductor (`kirocrew-conductor`, `kirocrew-ledger-conductor`) | `with_conductor_ask()`, appended at install by `conductor_agents._conductor_spec` | core + conductor tail |
+| Conductor-mode worker (`kirocrew-worker`) | `agent_materialization/worker_agent.py` `worker_prompt()` | core + worker tail |
+
+Every other ask list (the `work_report` schema, the goal-conductor skill, the
+worker-debate guide, the Bot conductor and worker pieces, `config/prompt.md`)
+points at "(a)-(e)" instead of repeating it. The lesson headers say a lesson
+that forbids an action still binds, and a lesson that says to wait or ask adds
+no ask case. `deny_notice.POLICY_REROUTE_TEXT` is the one reroute line a
+policy block and the dashboard's refusal recovery prompt share.
+
+Known limit: a custom agent with `includeCrewContext: false` gets no CRITICAL
+RULES, so the `work_report` schema's "(a)-(e) in your CRITICAL RULES" points
+at nothing for it. None of the four kinds sets the flag.
+
 ## Boundaries
 
 - A crew's `triggers` is free text read by a model. It is not a matcher, and no
@@ -5623,7 +5970,8 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a Bot's conductor is dispatched like any caller's |
-| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught |
+| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught; the team lead's installed prompt carries every shared rule and `goal-conductor/SKILL.md` keeps a pointer to each one it no longer restates |
+| `test/test_mate_worker_parity.py` | Every section of `kirocrew-worker`'s prompt is a shared work-protocol rule the Bot's worker is told or allowlisted with a reason; `worker.principles` names only shared rules and copies no worker text; the Bot's worker is told its reply reaches its Bot and never that a silent turn wakes nobody; both workers carry the same coding rules; no allowlist entry is stale; a planted worker-only section and a reworded copy are caught |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
 | `test/test_mate_upgrade_notice.py` | A moved Bot's notice is posted once and never on a later start, never by a Bot created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by Bots the migration moved |
@@ -5677,25 +6025,37 @@ members** are the rows stamped `crew_root: <root key>`, the root carries
 and the live slot frame carries them all) and leaves crew members out of the
 person's lists on the client.
 
-**The dashboard's conductor mode is a feature preview, default off**
-(`PREVIEW_CREW_MODE` in `website/src/utils/previewFlags.ts`, the **Conductor mode** card
-in Settings > Developer > Feature Previews, a plain switch with no preview dialog). `crewModeEnabled()` in
-`website/src/lib/crewMode.ts` is the one read of it, and `useCrewMode()` subscribes
-to the same key for a component or memo that must redraw on a flip. Every rule in
-this section and in [Conductor mode](#conductor-mode)'s client half reads through it:
+**The dashboard's conductor mode is on in every build but LTS.** It left Feature
+Previews (`docs/decisions/2026-11-14-conductor-mode-graduates-from-feature-previews.md`):
+there is no switch, and a `crew_mode` key a person's `dashboard.feature_previews` or
+browser still holds is ignored. The LTS edition keeps it off by the maintainer's ruling, as it
+did while it was a preview there (RFC rfc-crew-lts-edition D12). `crewModeEnabled()` in
+`website/src/lib/crewMode.ts` is the one read of that: on only once the edition lock is
+known and is not LTS (`featurePreviewLockKnown() && !previewFlagsLocked()`). The lock
+is known from the `kc-locked-controls` cache (an oss gateway's answer is kept as `[]`)
+or once the config schema read answers, so an LTS dashboard opened with no cache never
+shows conductor mode, not even for one read. `useCrewMode()` subscribes to the same
+state for a component or memo that must redraw when the gateway's lock arrives. A one-shot
+action that is never redone waits for the lock through one helper
+(`whenFeaturePreviewLockKnown` / `useFeaturePreviewLockSettled` in
+`website/src/utils/editionLocks.ts`, bounded by `FEATURE_PREVIEW_LOCK_WAIT_MS`, 5 s)
+and goes ahead as if conductor mode were off when it lapses: the chat page's first
+pick (`useChatPageSessionController`) and a new chat's conductor mode default
+(`store/chat/lifecycle.ts`). A stored conductor mode filter is rewritten to off only in
+LTS, never while the lock is unknown. Every rule in this section and in
+[Conductor mode](#conductor-mode)'s client half reads through it:
 
-| Preview | What the client does |
+| Build | What the client does |
 |---|---|
-| on | Everything below, unchanged |
-| off | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without conductor mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a conductor mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no conductor mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored conductor mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
+| every build but LTS | Everything below |
+| LTS | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without conductor mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a conductor mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no conductor mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored conductor mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
 
-A chat already in conductor mode, read with the preview off, is an ordinary chat on its
+A chat already in conductor mode, read by an LTS dashboard, is an ordinary chat on its
 conductor agent: its transcript, composer and agent label as for any chat, and its
 crew members are rows of the list. Once it has a message it offers no agent switch,
 since the gateway keeps it on its conductor. Nothing is hidden or unreachable. The gateway
-does not read the flag: the conductor mode lock (`409 crew_mode_locked`), the unfiled
-crew members and the stamps all stay, so turning the preview back on shows the same
-conductor mode chat.
+does not read the edition lock for this: the conductor mode lock (`409 crew_mode_locked`),
+the unfiled crew members and the stamps all stay.
 
 | Rule | Where |
 |---|---|
@@ -5706,6 +6066,8 @@ conductor mode chat.
 | A PEER's crew members stay rows in the federated session list (`sessionSources.ts`): a local crew member leaves the list because its root's Crew panel lists it, but a peer's root opens in the crew window, which has no such panel, and the panel reads this gateway's slots and routes, so for a peer's crew member the list is the one way in. The rows keep their `crew_root` / `crew_mode_root` stamps for the marks | `website/src/pages/chat-sidebar/sessionSources.ts`, `website/src/hooks/useInstanceSessions.ts` |
 | What a hidden crew member (its root open) owes the person rides on its root. The Command Bar's Needs You lifts a conductor mode root whose workers wait on a tool approval with the Approve pill and the count (`crewWaitingApprovals` over the FULL slot set, the count the fleet page's command center uses); the root's own approval, when it has one, reads as any session's. The sessions view still lists no crew member | `website/src/components/commandBar/CommandBarOverlay.tsx`, `website/src/components/commandBar/CommandBarOverlayRootRows.tsx` |
 | Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`; an idle worker whose own bounded loop will wake it, `ledger_wake.worker_looping` sent as `looping`, is `working`, and so is its milestone, its goal-board card and, when every open item loops, its conductor's row: "N running", no new word), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
+| **The Status view cuts no text.** Every Status text wraps, a long word (a SHA, a path) included, with no ellipsis, line clamp or tooltip standing in for it. The Overview shows the goal's whole first sentence (`goalSentence`, parentheticals removed), the goal's whole own "Done when" sentence (`goalDoneWhen`, ending at a sentence end, never inside a number such as "0.63 s", or where `Plan:` starts) and, when the goal text has a `Changed:` part, its last entry as **Latest change** (`latestChange`): an entry starts with its time at the start of the part, a line or after a ";", and one that carries a date also says how long ago it was ("Latest change, 2d ago: ...", the entry's own stamp in the `title`), so a goal the main chat never re-planned reads as old. No `Changed:` entry, no line. The line reads only the goal text: nothing is stored for it and the conductor's prompts are unchanged. A milestone's right column is the time since its last report, a running turn's too (the spinner says it runs). The done fold reads only "N done", folded or open. The Recap's milestone sentence counts running milestones ("87 of 94 done; 7 running.") instead of naming them; waiting, stuck and quiet ones are still named | `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `website/capture/conductor-mode-board-long.tsx` |
+| **When a run is done.** The gateway sends the part only it holds as `run` on the root's `crew_work` (once its board has an item) and on `GET /api/crew-board` (`dashboard/conductor_mode_run.py`): with items and no active loop on the conductor's slot, `settled` is `done` when every item is closed and `stopped` when some are open, else `""`, and the board read also keeps a new goal that has created no item yet (the header's `goal_items_used` is 0) unsettled; `at_limit` marks a patrol that ended at its time or budget bound, and `patrol_on` whether the loop is on. Nothing is stored, so a new goal, a re-armed patrol or a new item leaves it on the next read. A stop the conductor made and one a person made both record `USER_STOP`, so no surface says who stopped a run. The Status view's Overview opens with one line (`conductorModeRunState`): **Paused**, **Waiting for you** (anything under Needs your input), **Working** (a turn or a milestone running, or an unsettled board with milestones whose patrol is on; a new goal waiting on its first milestone with no patrol and nothing running draws no line), then the verdict's **Done** or **Stopped**, each with one sentence and no numbers, and no control of its own: the panel's Back row stays the one way back to the main chat. No line says a final report exists: a stop at a limit or by a person sends none, and the board cannot tell them apart. No milestone and nothing running: no line. A rejected or abandoned milestone is `not_done` (a muted ✕, "Not done · failed its check" / "Not done · dropped"), stays among the open rows and is not counted in "X of Y". The Sessions row reads **Done** only when `run.settled` is `done` (a root with no ledger keeps the every-crew-member-done rule); a stopped run keeps the row's usual line. Known limit: the row's `run` comes from the work fold, which keeps no goal start, so a new goal with no item yet still shows the previous goal's Done on the row until its first item | `src/kiro_crew/dashboard/conductor_mode_run.py`, `dashboard/crew_work.py`, `dashboard/handlers/work_ledger_board.py`, `lib/conductorModeRun.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
 | While a crew member is on screen, the Crew tab opens with a **Back to main chat** row (`CrewPanelBack`, above both views); it reads **Open main chat** while the root is closed, and then reopens the root from its saved transcript before opening it. Desktop keeps the side panel open on the root; a phone lands on the chat. A failed reopen shows the inline notice under the row (`commandCenter.worker_reopen_failed`, with the agent hand-off). The row takes its label and action from `useCrewBack`, the one place a Back comes from; the worker view's breadcrumb (`CrewWorkerBreadcrumb`) uses the same `useCrewBack` on its root crumb, so clicking the main chat's name does what the row does, and its sub-team lead crumb opens that member the way its Crew tab row does (reopening a closed one first); the current member and its status stay plain text | `components/crew/useCrewBack.ts`, `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `components/crew/CrewWorkerBreadcrumb.tsx` |
 | While one of a root's crew members is the active chat, the sidebar marks the root's row as its parent: class `session-crew-parent`, `data-crew-parent`, and a screen-reader line (`components.crewMode.parent_row_hint`). `ChatSidebar` derives `crewParent` from the active slot's `crew_root`; `rowView` sets `isCrewParent` only when no crew window covers the pane, and the mark never makes the root the active row | `pages/ChatSidebar.tsx`, `pages/chat-sidebar/rows.ts`, `pages/chat-sidebar/SessionRow.tsx`, `styles/crew-mode.css` |
 | The List view draws the crew as ONE tree (`crewTree`): a finished member stays under its lead and is only styled (`data-done`, muted title). A top-level tree that is finished all through folds under one **Finished · N** row (N counts its members), folded by default. The open or folded choice is kept per browser in localStorage (`CREW_FINISHED_OPEN_KEY`, `mc-crew-workers-finished-open`). That fold hides its rows, the one on screen included; the Back row stays the way to the root | `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `pages/chat/command-center/CrewWorkerList.tsx` |

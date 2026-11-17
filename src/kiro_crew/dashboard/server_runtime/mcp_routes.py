@@ -518,8 +518,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     # prefix covers it.
     app.router.add_post("/api/notifications/agent/dismiss", handlers.api_notification_agent_dismiss)
     # Session control. Registered here so the headless --slack-only server
-    # serves the same MCP surface as the dashboard; all three are on
-    # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
+    # serves the same MCP surface as the dashboard; every one is on
+    # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict_internal
     # pins by deriving the route set from the router rather than a hand-copied list.
     app.router.add_post(
         "/api/session-control/create", _deferred("session_control", "api_session_control_create")
@@ -616,6 +616,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
     app.router.add_post(
         "/api/session-control/queue", _deferred("session_control", "api_session_control_queue")
+    )
+    # crew_list: the remote-dispatch crew roster (handlers/remote_crew_list.py).
+    app.router.add_get(
+        "/api/session-control/crews",
+        _deferred("remote_crew_list", "api_session_control_crews"),
     )
     # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
     # the engine's install state and connection, the install job, a bounded

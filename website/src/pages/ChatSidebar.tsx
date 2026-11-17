@@ -3,8 +3,8 @@ import { LayoutGroup, AnimatePresence } from 'framer-motion'
 import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useCrewMode, useMateSessionsHidden, usePreviewFlag } from '../hooks/usePreviewFlag'
-import { selectLiveMateThreads } from '../store/dashboardSlice'
+import { useCrewMode, usePreviewFlag } from '../hooks/usePreviewFlag'
+import { selectMateThreadsHidingSessions } from '../store/dashboardSlice'
 import { selectCloseNotice } from '../store/dashboard/closeWatch'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
 import { useStore } from 'react-redux'
@@ -152,12 +152,11 @@ function ChatSidebar({
   // other reader of this collection. The server keeps them in the slot frame
   // (`?crew=all`), so the one filter is here, at the sidebar's door.
   const crewMode = useCrewMode()
-  // A live mate thread's sessions leave it too with the mate sessions preview on;
-  // the mate threads are read off the full store, which this prop no longer holds.
-  const mateHidden = useMateSessionsHidden()
-  const mateThreads = useAppSelector(selectLiveMateThreads)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the previews crewModeView reads
-  const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads), [slotsProp, crewMode, mateHidden, mateThreads])
+  // A live mate thread's sessions leave it too, unless its Bot shows them in this
+  // list; the mate threads are read off the full store, which this prop no longer holds.
+  const mateThreads = useAppSelector(selectMateThreadsHidingSessions)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the read crewModeView makes
+  const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads, activeSlot), [slotsProp, crewMode, mateThreads, activeSlot])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the
@@ -915,7 +914,7 @@ function ChatSidebar({
   // What this render shows rows with. The row model reads the local-only members
   // for a local row alone.
   // A worker in the pane is not listed, so its root's row is marked as its parent.
-  // Through the preview-gated read (`crewMode` above re-renders on a flip).
+  // Through the conductor mode read (`crewMode` above re-renders on the edition lock).
   const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
   const rowScene: RowScene = {
     activeSlot, crewWindow, crewParent, shell: rowShell,

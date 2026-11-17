@@ -64,8 +64,8 @@ _ADF_BLOCK_CONTAINER_TYPES = frozenset(
 )
 
 # Block-level cards carry their URL in an attribute and have no content, so the
-# inline container fallthrough rendered them as the empty string -- the URL was
-# lost outright, which is the same unrecoverable loss this change exists to fix.
+# inline container fallthrough would render them as the empty string and lose
+# the URL. They are rendered as a link to that attribute instead.
 _ADF_BLOCK_CARD_TYPES = frozenset({"blockCard", "embedCard"})
 
 # List types, which follow their sibling block without a blank line so the
@@ -107,8 +107,8 @@ _MD_BLOCK_LEAD_RE = re.compile(r"^([ \t]*)(?:([-+#=])|(\d{1,9})([.)]))", re.MULT
 # genuinely ends a URL: the renderer's own autolinker stops there too, so text
 # after it is prose rather than part of a fetchable address. Encoding it would
 # treat the two as one URL and destroy benign content -- `see <url>?id=7
-# <40-char sha> for detail` would collapse to `see%20[REDACTED: suspicious URL
-# ...]`, losing every word after the URL.
+# <40-char sha> for detail` would read as one address, with every word after the
+# URL inside it.
 #
 # This table is a SHADOW of that scanner's terminator set and exists only while
 # the scanner truncates. Retire it once the scanner's own set is fixed rather
@@ -307,7 +307,11 @@ def _md_link_target(url: str) -> str | None:
     """
     if not url:
         return None
-    if _md_redact_untruncated(url, single_url=True) != url:
+    # The refusal every gate reads, over the form the scan can see whole (above).
+    from kiro_crew.security.exfil import refuses
+
+    scanned = re.sub(r"\s+", "%20", url).translate(_URL_SCAN_ESCAPES)
+    if refuses(scanned, lambda text: str(sanitize._redact_provider_data(text))):
         return None
     if not re.search(r"[\s()<>]", url):
         return url

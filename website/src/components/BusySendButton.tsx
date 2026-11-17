@@ -181,7 +181,7 @@ export default function BusySendButton({
   /** Why the fire half is disabled, shown as its tooltip in place of the mode's. */
   disabledReason?: string
   /**
-   * Whether `Auto (Jev)` may be offered: the gateway reports the Decisions seam
+   * Whether `Auto (decision model)` may be offered: the gateway reports the Decisions seam
    * as permitted by governance AND consented to. Only the host knows, and it
    * defaults to FALSE so a surface that never asks cannot offer a mode whose
    * answer the gateway would refuse to make.

@@ -6,8 +6,10 @@ are written (see below):
 
 * ``fact`` -- still true in a month, and not looked up somewhere else.
 * ``event`` -- something that happened, worth a dated record.
-* ``state`` -- the current status of a PR, issue, CI run, branch, round or SHA,
-  which GitHub, git or the work ledger already holds.
+* ``state`` -- the current status of tracked work (a code change under review by
+  any name, a ticket, a CI run, a branch or SHA, a next step, a count), which the
+  system tracking it already holds. An item mixing a lasting lesson with such a
+  status is ``state`` unless it still reads true with every work-item number removed.
 
 A missing or unknown ``kind`` reads as ``fact``, which is how every item was
 treated before the tag existed, so an older model answer routes exactly as today.
@@ -52,7 +54,7 @@ no new file. It is bounded by construction:
 * samples stop :data:`SHADOW_SAMPLE_WINDOW_SECS` after shadow mode first logged
   in the store (``memory_kind_log:shadow_started_at``); counters keep going;
 * ``memory_kind_log:rules_version`` names the :data:`RULES_VERSION` of the
-  candidate rules shadow trialled while the log was collected. When the code's version differs, the
+  rules shadow labelled with while the log was collected. When the code's version differs, the
   sample window restarts, so samples under the new rules are collected too and
   each sample's ``rules`` field tells the two apart.
 
@@ -107,8 +109,9 @@ COUNTER_DAYS_KEPT: Final = 400
 #: how shadow asks them. Bump it whenever either changes, so the log can tell
 #: samples taken under the old rules from the new ones. Version 3 asks them in the
 #: separate label call; samples of version 2 and before were tagged inside the
-#: consolidation prompt, which changed what that prompt extracted.
-RULES_VERSION: Final = 3
+#: consolidation prompt, which changed what that prompt extracted. Version 4 names
+#: tracked work in tracker-neutral words and adds the mixed-item rule.
+RULES_VERSION: Final = 4
 
 #: The label call's input bound, by :func:`label_prompt_tokens`. Every value is cut
 #: to :data:`SAMPLE_VALUE_CHARS` once encoded, so twenty items at the key and value
@@ -136,25 +139,33 @@ _KIND_RULES_HEAD: Final = (
     'kind "fact" = still true in a month and not looked up elsewhere '
     "(a decision, a root cause, how something works). "
     'kind "event" = something that happened, worth a dated record. '
-    'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
-    "which GitHub, git or the work ledger already holds. "
+    'kind "state" = the current status of any tracked work item -- a code change under '
+    "review (by any name or number), its revisions, a ticket or task, a CI or build run, "
+    "a branch or SHA, or which chat or session owns it -- because the system that tracks "
+    "it already holds that status. "
 )
 _KIND_RULES_TAIL: Final = "pref.* and user.* items are always facts. "
 
-#: The candidate widening of ``state`` that shadow mode trials (version
-#: :data:`RULES_VERSION`). ``enforce`` drops what is tagged ``state``, so it does
-#: not ask this until a separate promotion change adopts it, once the shadow
-#: samples back it; until then ``enforce`` writes exactly what it wrote before.
-CANDIDATE_STATE_RULES: Final = (
+#: The widening of ``state`` shadow trialled under version 3, adopted in version 4.
+WIDER_STATE_RULES: Final = (
     'kind "state" also covers a next step, a pending action, what something is blocked on, '
     "a count (tests, cycles, budgets), the local path of a worktree or scratch folder, "
     "and a value marked final or latest that will change again. "
 )
 
-#: The ``kind`` rules ``enforce`` asks: the adopted rules, unchanged.
-ENFORCE_KIND_RULES: Final = _KIND_RULES_HEAD + _KIND_RULES_TAIL
-#: The ``kind`` rules ``shadow`` asks: the adopted rules plus the candidate.
-SHADOW_KIND_RULES: Final = _KIND_RULES_HEAD + CANDIDATE_STATE_RULES + _KIND_RULES_TAIL
+#: One item that mixes a lasting lesson with a work-item status is stored whole, so
+#: tagging it ``fact`` keeps the status too.
+MIXED_ITEM_RULE: Final = (
+    'If one item mixes a lasting lesson with a status, the lesson is a "fact" only when '
+    'it still reads true with every work-item number removed; otherwise tag the item "state". '
+)
+
+#: The ``kind`` rules ``enforce`` asks.
+ENFORCE_KIND_RULES: Final = (
+    _KIND_RULES_HEAD + WIDER_STATE_RULES + MIXED_ITEM_RULE + _KIND_RULES_TAIL
+)
+#: The ``kind`` rules ``shadow`` asks: ``enforce``'s, so the log measures what it drops.
+SHADOW_KIND_RULES: Final = ENFORCE_KIND_RULES
 
 
 def kind_rules_for(mode: str) -> str:

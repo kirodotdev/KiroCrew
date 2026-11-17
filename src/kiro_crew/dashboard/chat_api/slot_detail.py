@@ -84,8 +84,9 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     # principal) sees ONLY the sessions it owns or created -- the same set the
     # folder tree read shows it -- so admitting the session list for its folder
     # tools to resolve its own slot does not turn the list into an enumeration
-    # of the person's and other agents' sessions. The person and app callers get
-    # the full, unchanged response (an app row is already app-scoped downstream).
+    # of the person's and other agents' sessions. An app token's list is the
+    # slots its ``/api/ws`` snapshot shows it (below); the person and an
+    # internal-secret caller get the full, unchanged response.
     from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 
     if folder_principal(state, request):
@@ -104,6 +105,25 @@ async def api_chat_slots(request: web.Request) -> web.Response:
             for p in payloads
             if member_owns_slot(state, state._slots.get(str(p.get("key") or "")), caller_key)
         ]
+    request_app = str(request.get("app") or "")
+    if request_app and not is_dashboard_user and request.get("internal_auth") is not True:
+        # A ``permissions.api`` grant on ``/api/chat`` is a prefix, so it admits
+        # this list too. Without this an app token would read every session's
+        # title, path and last message, which its own socket and the per-slot
+        # routes (``slot_ownership``) both withhold. Same filter, same declared
+        # ``slots:*`` scopes, as the WebSocket connect snapshot: a disabled app
+        # sees no slot, and an unreadable manifest grants no declared scope.
+        from kiro_crew.dashboard.ws_event_scope import (
+            filter_slots_for_app,
+            load_declared_events_for_connect,
+        )
+
+        try:
+            enabled, events = await asyncio.to_thread(load_declared_events_for_connect, request_app)
+        except Exception:
+            logger.debug("slot list: no scope for app %r", request_app, exc_info=True)
+            enabled, events = True, frozenset()
+        payloads = filter_slots_for_app(payloads, request_app, events, state) if enabled else []
     # A person's list leaves Crew Mode workers out; an agent's read keeps them
     # (``crew_mode.list_view``). Imported here: this body is re-bound into the
     # ``chat_handlers`` facade's namespace, so it may name only what it imports.
@@ -751,6 +771,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         page when it is not. See ``kiro_crew.dashboard.slot_detail_delta``.
         Either form routes to the paged read and cannot be combined with
         ``before``.
+      - ``page_bytes=1`` (with a cursor read): cut the page by the same byte
+        budget as a plain page, oldest rows first, with ``next_before`` and
+        ``cursor.from`` naming the first row sent. Only a reader that pages
+        older with ``before=next_before`` sends it (the dashboard store); the
+        app-sdk embed does not, so its window is not cut.
 
     Either param being a non-integer is a 400, not an uncaught 500 out of the
     handler.
@@ -1283,8 +1308,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # has been filled in the background, it is rendered without the memo.
     memo_scope = (slot_history_key(slot), before, limit_raw is None and before_raw is None)
     # A page (a limit or a cursor position) is also bounded by bytes; the whole-history
-    # read is not. A cursor read is cut inside the planner (``byte_floor``), which
-    # keeps its row-position contract.
+    # read is not. A cursor read is cut only on ``page_bytes=1`` (a reader that pages
+    # older), inside the planner (``byte_floor``), which keeps its row-position contract.
+    cursor_bytes = cursor_mode and request.query.get("page_bytes") == "1"
     paged = not cursor_mode and (limit_raw is not None or before_raw is not None)
     use_memo, fill = wire_render.plan_read(memo_scope)
 
@@ -1325,7 +1351,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     total=total,
                     window=limit,
                     cursor=delta_cursor,
-                    byte_floor=first + _oldest_over_byte_budget(fragments),
+                    byte_floor=(first + _oldest_over_byte_budget(fragments) if cursor_bytes else 0),
                 )
                 messages_json = "[" + ", ".join(plan.fragments) + "]"
             elif use_memo or paged:

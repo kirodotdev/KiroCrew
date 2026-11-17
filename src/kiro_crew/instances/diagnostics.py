@@ -583,9 +583,14 @@ async def _probe_task_exec_ready(
     whose in-task agent cannot reach ``ssmmessages``, surfaces here as the broken
     link rather than as a forward that just does not come up.
     """
-    readiness = await asyncio.to_thread(
-        cloud_ssm.task_exec_readiness, cluster, task_id, profile, region
-    )
+    try:
+        readiness = await asyncio.to_thread(
+            cloud_ssm.task_exec_readiness, cluster, task_id, profile, region
+        )
+    except OSError as e:
+        # run_aws turns only a missing binary into rc 127; any other start
+        # failure (not executable, bad interpreter, out of descriptors) raises.
+        return False, f"could not check task {task_id}: the aws CLI could not be started ({e})"
     return readiness.ready, readiness.reason
 
 

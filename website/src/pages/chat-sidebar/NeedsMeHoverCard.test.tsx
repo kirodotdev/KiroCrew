@@ -33,7 +33,6 @@ import { collectAsks, pickRecap } from './needsMeCard'
 import { store } from '../../store'
 import { sseSlots } from '../../store/dashboardSlice'
 import { clearQuestionCard, setQuestionCard } from '../../store/chatSlice'
-import { turnOnCrewModePreview } from '../../test/crewModePreview'
 import { sendRaceNoticeFor } from '../../api/sendRace'
 
 const LONG_COMMAND = "npx playwright test tests/auth --project=chromium --workers=2 --reporter=line --grep '@redirect' && git log --oneline -3"
@@ -342,7 +341,6 @@ describe('NeedsMeHoverCard', () => {
   })
 
   it('shows a Crew Mode worker approval without decision buttons', async () => {
-    turnOnCrewModePreview()
     mount()
     hover('worker')
     await screen.findByTestId('needs-me-command')

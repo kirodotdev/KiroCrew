@@ -43,7 +43,7 @@ from kiro_crew.agent_switch_command import (
 )
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
@@ -782,11 +782,6 @@ class TeamsDispatcher:
             decider=decider,
         )
 
-        # The turn skeleton lives once in messaging.dispatch; only the Teams pieces
-        # are injected. ChannelTurn.conversation_id is the SESSION-attribution id
-        # (``teams:{email}``), not ``inbound.conversation_id`` -- the platform id the
-        # renderer replies into. Passing the platform id would repoint every existing
-        # Teams session.
         # Surface a new channel session in the dashboard now rather than at the ~30s
         # reconciler. Imported lazily: dashboard boot imports channel packages.
         async def _surface_new_session() -> None:
@@ -810,6 +805,8 @@ class TeamsDispatcher:
             self._active_renderers[session_key] = renderer
             renderer.authorize_scratch_root(str(getattr(provider, "work_scratch_dir", None) or ""))
 
+        # The turn skeleton lives once in messaging.dispatch; only the Teams pieces
+        # are injected.
         try:
             await drive_turn(
                 ChannelTurn(
@@ -825,6 +822,9 @@ class TeamsDispatcher:
                     directive_consumer=build_directive_consumer(
                         session_key=session_key, sessions=self.sessions, dispatcher=self
                     ),
+                    # The SESSION-attribution id, not ``inbound.conversation_id``
+                    # (the platform id the renderer replies into), which would
+                    # repoint every existing Teams session.
                     conversation_id=f"teams:{email}",
                     agent=agent,
                     user_text=text,
@@ -865,10 +865,11 @@ class TeamsDispatcher:
             decider.discard_reservations()
             # A Trust click is granted by the decider the moment it resolves, so
             # the rest of THIS turn stops prompting. Nothing to promote here.
+            #
             # A renderer that posted [OPTIONS:] chips must OUTLIVE its turn: the chips
             # are tapped after on_done, and without the renderer every tap reads as
             # stale. Bounded: one renderer per session, replaced by the next turn.
-            # An approval card resolves while the turn still waits on the decider.
+            # (An approval card resolves while the turn still waits on the decider.)
             # Identity-checked: a second message admitted before this turn acquired
             # the session publishes its own renderer under the same key.
             if (
@@ -1832,7 +1833,10 @@ class TeamsDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "Teams"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "Teams"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(self, inbound: "TeamsInbound", session_key: str, provider: Any) -> None:

@@ -100,8 +100,18 @@ says WHICH sessions may share: the preview on, a backend in
 `ACP_BACKENDS_CHAT_RUNTIME_SHARING` (asked separately from the subagent
 `ACP_BACKENDS_SESSION_SHARING`, because it is the chat teardown this membership
 asserts is safe), on KAS an engine `kas_chat_sharing_ready` accepts, no session
-environment, persistent memory mode, a dashboard chat origin, and not a crew member.
-`ChatRuntimeKey` is the compatibility key they share ON, and `chat_runtime_cap`
+environment, persistent memory mode, a dashboard chat origin, and for a Bot (crew
+member) session a tree root that is the same member on the same memory store.
+`ChatRuntimeKey` is the compatibility key they share ON. It carries the session
+tree's root (`share_tree_root_of`, the top of the creator chain the slot list nests
+on, read once at the start) and the session's member and store, so sessions share
+only inside one tree and two Bots never share. On KAS it leaves out the agent, its
+spec generation, the model and the effort, which KAS takes per session. On claude it
+leaves out the same fields (`CLAUDE_PER_SESSION_FIELDS`): the spawn reads none of them,
+and each session writes its own settings seed and envelope from its own agent and
+model, after the spec freshness gate for its own agent (`ClaudeHarness.prepare_session`).
+Only a harness whose founder's spec decides the process's tool surface keys the spec
+for it (`keys_tool_surface`, KAS). `chat_runtime_cap`
 reads `agent.chat_runtime_sharing_max_sessions`, forced back to `CHAT_RUNTIME_CAP`
 whenever the preview is off. With the preview off the paragraph above is the
 shipped behaviour exactly.
@@ -120,7 +130,7 @@ the key cannot OBSERVE never compares equal to the same absence elsewhere: an
 empty era read becomes a token unique to that start, so it founds its own process.
 Such a provider carries `shared_runtime=True`, which selects a third teardown arm
 (`_shutdown_shared`): it releases, evicts its own session while keeping the resume
-record (kiro-cli's terminate with the transcript kept; KAS's `session/close` via
+record (KAS's `session/close` via
 `keep_record_on_teardown`), and kills only the runtime the release hands back.
 
 **A founding `spawn()` holds nothing.** The table's bookkeeping — entries, the
@@ -144,6 +154,20 @@ clears the marker and wakes its waiters; a runtime is published in the same
 synchronous stretch in which `spawn()` returns, so no cancellation point lies
 between a spawned runtime and its entry.
 
+**A chat's scratch tree is not part of the sharing key.** A resumed chat binds the
+scratch tree it was recorded in, and sessions of one tree recorded one directory
+per process they ran on, so keying the directory split a tree again after every
+restart. Sessions of one tree share by `tree_root` alone; a joiner runs in the
+directory the process it joins mounts, and that directory is what it records for
+its next restart. A joiner's earlier recorded directory is not mounted. `ChatSharePlacement.place`
+holds it for the sweep's grace window before the acquisition, and right after a join adds the
+joined process to its owner marker (`_keep_unmounted_scratch`, with a WARNING naming the
+session), so it stays on disk while that process runs and is then swept by the ordinary rules.
+Unless the owner marker then reads back naming the joined process, the join is given up, and the session
+founds its own process, which mounts the directory. The founding records the entry it published, and a woken waiter
+takes that entry (when it has room and is alive) before re-picking, so two
+restarts of one tree waiting on one launch still land on one process.
+
 On the **chat** registration path a lease means the same thing as registry
 membership, which is why it is taken there rather than at provider start:
 `session_allocation.SessionAllocationService._get_or_create_impl` calls
@@ -166,37 +190,54 @@ and a sub-agent mid-turn on that process adds a tenancy on top. Both are holders
 the gate refuses a kill for, which is why the reset path's "is this process still
 in use" question (`session_lifecycle_parts.teardown._pid_is_still_held`, asked only
 for a shared chat session) reads both tables, and why the RSS watchdog scales its
-ceiling by the leases on a pid (`SessionCleanup._rss_limit_for`).
+ceiling by the leases on a pid (`session_cleanup_spare.rss_limit_for`).
 
-### Chat turns are serialized on a shared kiro-cli process
+### Shared chats never wait for each other
 
-kiro-cli emits some session-control frames without a `sessionId`: a compaction, a
-`/clear` and an agent switch are `session/update` frames for the ONE session whose
-turn triggered them, but the frame does not say which. The reader loop delivers
-such a frame to every session queue, marked `fanout_no_owner`. On a chat-shared
-kiro-cli runtime, chat turns are therefore serialized per process:
-`AcpRuntime.chat_turn_gate` is a lock a shared chat session holds for the whole
-turn (`AcpSessionProvider.stream` / `stream_command`), so the frame's producer is
-unambiguous and an idle co-tenant discards it at its next pre-turn drain. A
-`/compact` holds the gate through its deferred receipt (`hold_chat_turn_gate`,
-entered by `chat_runner._run_chat` and `CompactionCoordinator`). The consumer
-also gates cross-session state on ownership: a fanned `/clear` this turn did not
-type is ignored, and a fanned agent switch is not recorded (its vetoes stay
-unconditional). This costs concurrency on kiro-cli and the spec states it: a long
-turn in one chat makes the other chats on that process wait.
+A chat must not wait for another chat's turn, so chat sharing is offered only
+where the engine itself runs the chats on one process in parallel, and Crew adds
+no turn lock of its own.
 
-The gate is a no-op on **KAS**. Its engine names the session on every
-`session/update` and keeps its own turn order (`@kiro/agent` 0.66.91, shipped in
-kiro-cli 3.1.0; `KAS_CHAT_SHARING_MIN_KIRO_CLI`): one turn per session (a second
-prompt to a busy session is steered into its running turn), and a Crew
-custom-agent turn waits in the engine's model queue while another session's turn
-runs. So shared KAS chats also take turns one after another, and the cost stated
-above applies to them too; what the engine removes is only the need for Crew's own
-lock. An older engine, or Crew's own pinned bundle, is not eligible to share.
+**kiro-cli is not a chat-sharing backend.** kiro-cli emits some session-control
+frames without a `sessionId`: a compaction, a `/clear` and an agent switch are
+`session/update` frames for the ONE session whose turn triggered them, but the
+frame does not say which. The reader loop delivers such a frame to every session
+queue, marked `fanout_no_owner`. Chats sharing a kiro-cli process would have to
+take turns for each frame's producer to be unambiguous, so a kiro-cli chat keeps
+its own process with the preview on (`backend_not_chat_shareable`).
 
-A **sub-agent** turn is kept OUT of the gate: it runs on its principal's process
-while the principal's turn is open, so contending for the same lock would deadlock
-the principal->sub-agent await.
+**KAS** names the session on every `session/update` and keeps its own turn order:
+one turn per session (a second prompt to a busy session is steered into its
+running turn, since `@kiro/agent` 0.66.91). From 0.66.104 (kiro-agent#3741) turns
+of different sessions also run in parallel: only a spec-generation turn waits for
+the engine's single model slot. Older engines (0.66.91 in kiro-cli 3.1.0, 0.66.102
+in kiro-cli 3.2.1) make every Crew custom-agent turn wait in that slot, so shared
+chats there would answer one at a time. `kas_chat_sharing_ready` therefore admits a
+KAS start only when the engine its route will run is at or above
+`KAS_CHAT_SHARING_MIN_ENGINE` (0.66.104): on the bundle route the installed pinned
+bundle's install record, on the relay the `@kiro/agent` manifest in kiro-cli's
+own `kas/<version>-<sha256>` extract for the kiro-cli version Crew spawns. The
+kiro-cli version alone does not count, and an engine version that cannot be read
+(no extract yet, no installed bundle) keeps one process per chat
+(`kas_engine_not_shareable`).
+
+**Each harness has its own switch under the preview.** The table is
+`agent_sdk.backends_sessions.CHAT_RUNTIME_SHARING_HARNESSES`: one row per harness
+that may share chats, with the default of its switch (KAS: on). The switch is
+`agent.chat_runtime_sharing_harnesses.<harness>`, shown under the preview's row in
+Settings > Developer > Feature previews only while the preview is on. A chat may
+share only when the preview is on AND its harness's switch is on AND every rule
+above holds; a harness switched off keeps one process per chat
+(`harness_switched_off`, checked before the KAS engine is read). Letting another
+harness share chats is one row in that table.
+
+The preview also moves KAS onto Crew's own pinned engine by itself
+(`kas_route.REASON_SHARING_PREVIEW`), so it works from the Feature previews row
+alone, without `agent.kas_bundle`. A stored Kiro CLI pick and the operator's
+`KIROCREW_KIRO_BIN` keep their route. The first chat installs the engine and keeps
+its own process; later chats share it. An engine that cannot be installed or
+started is logged and the spawn continues on the default route, unshared. With the
+preview off routing is unchanged.
 
 ### Tenancies
 
@@ -323,7 +364,7 @@ than blurred:
 | `runtime_reconcile.RuntimeReconciler.reclaim_untracked` (through the same `_authorize` seam) | convention |
 
 A convention site that drops its gate call is not caught: the primitive call it
-still makes stays counted, so `BYPASS_BASELINE` does not move and the suite stays
+still makes stays counted, so `BYPASS_SITES` does not move and the suite stays
 green. Adding a site to `ATTRIBUTED_KILL_PATHS` is what promotes it.
 
 Releasing before the signal is shared rather than re-implemented:
@@ -750,7 +791,7 @@ Both are counts of a pattern the refactor is removing. Each may fall in any chan
 and may never rise, and a change that lowers one records the new number in the same
 commit.
 
-- `test/test_kill_chokepoint_ratchet.py` — `BYPASS_BASELINE` counts src sites that
+- `test/test_kill_chokepoint_ratchet.py` — `BYPASS_SITES` counts, per module, src sites that
   call a kill primitive without going through the gate. It also pins what a falling
   count has to MEAN: `ATTRIBUTED_KILL_PATHS` must call the gate
   (`test_attributed_kill_paths_consult_the_gate`), pass both `reason` and `caller`
@@ -760,16 +801,18 @@ commit.
   as undiagnosable as before. A positive control
   (`test_the_needles_match_a_known_call_site`) stops an empty scan reading as total
   success.
-- `test/test_pid_reader_ratchet.py` — `_BASELINE_SITES` counts src sites that read
-  a runtime's pid, by AST rather than grep so reflective reads survive nesting and
-  wrapping. A site whose reading genuinely belongs to the module that owns the pid
-  carries an owner marker and is counted apart under `_BASELINE_OWNER_MARKED`, so
-  marking a site is a visible act rather than a silent exemption. The exact-match
-  test refuses a stale baseline in either direction: a baseline left above the real
-  count leaves room for a future reader to fill silently.
+- `test/test_pid_reader_ratchet.py` — `_BASELINE` counts, per file, src sites that
+  read a runtime's pid, by AST rather than grep so reflective reads survive nesting
+  and wrapping. A site whose reading genuinely belongs to the module that owns the
+  pid carries an owner marker and is counted apart, in the second number of its
+  file's entry, so marking a site is a visible act rather than a silent exemption.
+  The exact-match test refuses a stale entry in either direction: an entry left
+  above the real count leaves room for a future reader to fill silently.
 
-The baseline is an invariant of the tree, not of a branch. Whoever merges after
-someone else re-measures on their own tree.
+The baseline is an invariant of the tree, not of a branch. The kill-chokepoint
+baseline is one total, so whoever merges after someone else re-measures on their
+own tree. The pid-reader baseline is one line per file, so two changes to different
+files merge with the table right and two changes to one file conflict on its line.
 
 ### The leak and chaos gates
 
@@ -819,8 +862,24 @@ recover.
   reader ratchet still counts; each needs classifying as a session-level question,
   a runtime handle, or a reading whose owner is the module that holds the pid.
 - **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
-  by default, so a default install still serves one chat per runtime. codex is not
-  a chat-sharing member: its chat teardown's record preservation has no lane cover.
+  by default, so a default install still serves one chat per runtime. The members
+  are KAS (its switch on by default), codex (off by default), claude (off by
+  default, dashboard chats only), goose (off by default, dashboard chats only; a
+  goose Side Chat never shares, because its goose home is the process-wide
+  `GOOSE_PATH_ROOT`) and deepseek (off by default, dashboard chats only; a
+  deepseek Side Chat never shares, because its READ_ONLY proof is recorded per
+  process); kiro-cli is not,
+  because some of its session-control frames name no session. A shared codex
+  process takes no new chat once any chat leaves it and dies with its last chat
+  (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's
+  `session/close` leaves the departed session's MCP fleet running, so this bounds
+  the leftover fleets to cap-1 per process instead of one per chat turnover. goose
+  does not set it: its `session/close` drops that session's agent
+  (`AgentManager::remove_session_if_loaded`, goose v1.57.0
+  `crates/goose/src/execution/manager.rs`), and the agent's stdio MCP servers run
+  under rmcp's `TokioChildProcess`, whose drop kills the child (rmcp 3.4.1
+  `transport/child_process.rs`, `ChildWithCleanup`), so a departed goose chat
+  leaves no MCP server behind.
 - **Membership is narrower than the slice it is compared against.** The app
   backend table claims each spawned backend's root process, plus that root's direct
   children where the gateway's wrap inserted a forking sandbox launcher (so the

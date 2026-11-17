@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { useAppSelector } from '../store'
 import { selectSlotsWithLiveLastTs } from '../store/slotLastTs'
+import { selectSlotStreamState } from '../store/chatSlice'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import type { Result, ResourceProvider } from './commandPalette/types'
@@ -377,6 +378,11 @@ export default function CommandPalette({
   // the setting between two opens leaves a running row on its pre-toggle label until
   // the next status tick or staleTime expiry.
   const simplifiedToolNames = useSimplifiedToolNames()
+  // A running row says "Compacting…" from the slot's run state, which a compaction
+  // changes without touching the status detail, so the key has to carry it too.
+  const compactingKeys = useAppSelector((st) =>
+    slots.filter((s) => selectSlotStreamState(st, s.key) === 'compacting').map((s) => s.key).join(','),
+  )
   const liveFingerprint = useMemo(
     () =>
       activeProvider.id === 'recents'
@@ -391,9 +397,9 @@ export default function CommandPalette({
                 s.pinned ? 1 : 0
               }:${slotRecency(s).timestamp ?? ''}:${detail}`
             })
-            .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
+            .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}#${compactingKeys}`
         : '',
-    [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
+    [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames, compactingKeys],
   )
   // The Sessions and All tabs rank open tabs first from the server's `open`
   // flag, so a tab opening or closing must re-run their search too.

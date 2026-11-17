@@ -354,3 +354,132 @@ def test_chat_tool_call_renders(acp_gateway):
 
     reply = _await_assistant_reply(acp_gateway, slot)
     assert "pong from the fake ACP backend" in json.dumps(reply)
+
+
+def _write_ledger_item(home, cwd, slot: str, state: str) -> None:
+    """Write one work-ledger item for *slot* into the gateway's data home, as a worker report would."""
+    import subprocess
+    import sys
+
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    code = (
+        "import json,sys; from kiro_crew.work_ledger_store import conductor_dir, items_dir; "
+        "from kiro_crew.work_ledger_records import ConductorRecord; k=sys.argv[1]; "
+        "d=items_dir(k); d.mkdir(parents=True, exist_ok=True); "
+        "c=conductor_dir(k)/'conductor.json'; "
+        "c.exists() or c.write_text(json.dumps(ConductorRecord(slot_key=k, goal='e2e').to_dict())); "
+        "(d/'it_e2e00001.json').write_text(json.dumps({'item_id':'it_e2e00001','title':'e2e','state':sys.argv[2]}))"
+    )
+    env = dict(os.environ, KIROCREW_HOME=str(home))
+    subprocess.run(
+        [sys.executable, "-c", code, slot, state],
+        env=env,
+        cwd=cwd,
+        check=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+
+
+def test_headless_cli_conductor_until_done(acp_gateway, tmp_path):
+    """``kirocrew chat --headless --mode conductor --until-done`` runs end to end.
+
+    The CLI opens a conductor-mode chat on the agent ``agent.crew_mode_agent``
+    resolves, puts it in Trust, seeds it, and keeps polling past the idle turn while
+    the ledger still has an open item (its per-poll stderr line says so); it ends
+    with exit 0 only once every item is terminal, and its ``--json`` names the
+    resolved agent and the transcript.
+    """
+    import queue
+    import subprocess
+    import sys
+    import threading
+
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    env = dict(
+        os.environ,
+        KIROCREW_HOME=str(acp_gateway.home),
+        KIROCREW_PORT=str(acp_gateway.port),
+        KIROCREW_HEADLESS_POLL_SECS="1",
+    )
+
+    def _rows():
+        rows = _api_get(acp_gateway, "/api/chat/slots")
+        return rows.get("slots", []) if isinstance(rows, dict) else rows
+
+    before = {r["key"] for r in _rows()}
+    argv = [sys.executable, "-m", "kiro_crew", "chat", "--headless", "-m", "ping"]
+    argv += ["--mode", "conductor", "--approval-mode", "trust", "--until-done"]
+    argv += ["--idle-grace", "300", "--timeout", "240", "--json"]
+    proc = subprocess.Popen(
+        argv,
+        env=env,
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    lines: "queue.Queue[str]" = queue.Queue()
+    err_seen: list[str] = []
+    threading.Thread(target=lambda: [lines.put(line) for line in proc.stderr], daemon=True).start()
+
+    def _idle_poll_with_open_item():
+        # A poll that found the root idle and one item still open, after the reply.
+        while not lines.empty():
+            err_seen.append(lines.get())
+        return any("busy=0 items_open=1 items_total=1" in line for line in err_seen)
+
+    try:
+
+        def _new_slot():
+            new = [r for r in _rows() if r.get("key") not in before]
+            return new[0] if new and new[0].get("trust") else None
+
+        slot = wait_until(_new_slot, describe=lambda: "no trusted headless slot")
+        assert slot.get("crew_mode_agent")
+        _write_ledger_item(acp_gateway.home, tmp_path, slot["key"], "open")
+        _await_assistant_reply(acp_gateway, slot["key"])
+        # The seed turn opens with the gateway's own nobody-typed marker.
+        users = [
+            m
+            for m in _api_get(acp_gateway, f"/api/chat/slots/{slot['key']}").get("messages", [])
+            if m.get("role") == "user"
+        ]
+        assert str(users[0].get("content", "")).startswith("[headless run cli:")
+        wait_until(
+            _idle_poll_with_open_item,
+            describe=lambda: "no idle poll with an open item: " + "".join(err_seen[-5:]),
+        )
+        assert proc.poll() is None  # it saw the idle turn with an open item and kept going
+        _write_ledger_item(acp_gateway.home, tmp_path, slot["key"], "accepted")
+        out = proc.stdout.read() if proc.wait(timeout=FALLBACK_TIMEOUT_SECS) is not None else ""
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0, "".join(err_seen[-20:])
+    result = json.loads(out.strip().splitlines()[-1])
+    assert result["status"] == "done" and result["completed"] is True and result["asks"] == 0
+    assert result["mode"] == "conductor" and result["agent"]["name"] == slot["agent"]
+    assert result["agent"]["source"] in ("default", "config", "fallback")
+    assert result["items"] == {"total": 1, "terminal": 1, "open": 0}
+    assert result["transcript"].endswith(f"dashboard_{slot['key']}.jsonl")
+
+
+def test_a_typed_headless_marker_is_defanged(acp_gateway):
+    """A person's own send that types the headless opener does not read as nobody-typed."""
+    created = _api_post(acp_gateway, "/api/chat/slots", {})
+    slot = created["key"]
+    _api_post(
+        acp_gateway,
+        "/api/chat?ws=1",
+        {"message": "[headless run cli:x]\n\nping", "slot": slot, "agent": created["agent"]},
+    )
+    _await_assistant_reply(acp_gateway, slot)
+    users = [
+        m
+        for m in _api_get(acp_gateway, f"/api/chat/slots/{slot}").get("messages", [])
+        if m.get("role") == "user"
+    ]
+    assert str(users[0].get("content", "")).startswith("[quoted: headless run")

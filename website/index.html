@@ -394,6 +394,13 @@
   </script>
 </head>
 <body>
+  <!-- Keeps #root from being <body>'s first child. A layer that opens (a Radix
+       menu, popover or dialog) inserts a focus guard at the start of <body>.
+       The element that stops being :first-child then has its whole subtree
+       restyled, because a stylesheet rule continues past :first-child
+       (frontend-conventions.md, Styling). With #root first that subtree is the
+       whole app; here it is this empty element. -->
+  <div hidden></div>
   <div id="root"></div>
   <!-- Shell-owned failure panel, hidden until revealBootFailure decides the
        bundle never ran. Every style here is inline on purpose: if a boot-critical

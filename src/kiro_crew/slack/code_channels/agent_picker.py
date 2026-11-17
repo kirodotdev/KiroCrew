@@ -589,8 +589,12 @@ async def switch_channel_agent(
     # shared display sink before it leaves the host for Slack (as _announce).
     raw = str(body.get("error") or "the switch was refused")
     try:
+        from kiro_crew.security.redaction_switch import always_scan
+
         reason = surface.display_text(raw)
-        audited = surface.display_text(raw, mentions=False)  # the SEL row keeps plain text
+        # The SEL row keeps plain text, and stays redacted whatever the owner's setting.
+        with always_scan():
+            audited = surface.display_text(raw, mentions=False)
     except Exception:
         # A host whose redaction could not compose: say nothing of the error.
         logger.warning("code channel agent switch: refusal reason not shown", exc_info=True)

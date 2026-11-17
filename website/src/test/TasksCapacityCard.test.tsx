@@ -789,9 +789,11 @@ describe('TasksCapacityCard', () => {
     expect(li.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex-col', 'sm:flex-row']))
   })
 
-  // The notice's own text, without the agent hand-off button beside it.
-  const noticeText = () =>
-    screen.getByTestId('tasks-capacity-error').querySelector('div')!.textContent
+  // The notice's own text, without the action row that holds the agent hand-off.
+  const noticeText = () => {
+    const column = screen.getByTestId('tasks-capacity-error').querySelector('.min-w-0.flex-1')!
+    return [...column.children].filter((el) => !el.hasAttribute('data-notice-actions')).map((el) => el.textContent).join('').trim()
+  }
 
   it('renders the failure through ErrorNotice, not a bare div', async () => {
     tasksSummary.mockRejectedValue(new Error('503 task store unavailable'))

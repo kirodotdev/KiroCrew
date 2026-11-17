@@ -1115,3 +1115,223 @@ def test_the_walker_resolve_answers_the_element_size_for_screenshot_by_ref() -> 
     start = ops.WALKER_SOURCE.index("resolve: function")
     body = ops.WALKER_SOURCE[start : ops.WALKER_SOURCE.index("focus: function", start)]
     assert "w: r.width" in body and "h: r.height" in body
+
+
+# --- JavaScript dialogs: report one, answer it ---------------------------------
+
+
+def _pending(
+    fake: FakeBrowser, kind: str = "alert", message: str = "Saved!", default: str = ""
+) -> list[dict[str, Any]]:
+    """Script ``dialog`` as the worker answers it with one dialog open; returns its calls."""
+    calls: list[dict[str, Any]] = []
+
+    def answer(**kw: Any) -> dict[str, Any]:
+        calls.append(kw)
+        shown = {"type": kind, "message": message, "defaultPrompt": default, "url": "https://x/"}
+        if kw.get("action"):
+            return {"dialog": shown, "answered": kw["action"]}
+        return {"dialog": shown}
+
+    fake.helpers["dialog"] = answer
+    return calls
+
+
+def test_dialog_with_nothing_open_says_so_and_changes_nothing(fake: FakeBrowser) -> None:
+    fake.helpers["dialog"] = lambda **_kw: {"dialog": None}
+    out = run(ops.run_op("dialog", {}, fake.ctx()))
+    assert out == {"ok": True, "dialog": None}
+    assert _calls(fake, "dialog") == [{}]
+
+
+def test_dialog_without_an_action_reports_the_open_dialog_and_leaves_it_open(
+    fake: FakeBrowser,
+) -> None:
+    calls = _pending(fake, "prompt", "Your name?", default="Ada")
+    out = run(ops.run_op("dialog", {}, fake.ctx()))
+    assert out == {
+        "ok": True,
+        "dialog": {"type": "prompt", "message": "Your name?", "default": "Ada"},
+    }
+    assert calls == [{}]
+
+
+@pytest.mark.parametrize(("action", "answered"), [("accept", "accepted"), ("dismiss", "dismissed")])
+def test_dialog_accepts_or_dismisses_the_open_dialog(
+    fake: FakeBrowser, action: str, answered: str
+) -> None:
+    calls = _pending(fake, "confirm", "Delete it?")
+    out = run(ops.run_op("dialog", {"action": action}, fake.ctx()))
+    assert out == {
+        "ok": True,
+        "dialog": {"type": "confirm", "message": "Delete it?"},
+        "answered": answered,
+    }
+    assert calls == [{"action": action}]
+
+
+def test_dialog_accept_sends_the_answer_to_a_prompt(fake: FakeBrowser) -> None:
+    calls = _pending(fake, "prompt", "Your name?")
+    out = run(ops.run_op("dialog", {"action": "accept", "text": "Ada"}, fake.ctx()))
+    assert out["answered"] == "accepted" and "warning" not in out
+    assert calls == [{"action": "accept", "text": "Ada"}]
+    assert "Ada" not in json.dumps(out)
+
+
+@pytest.mark.parametrize(
+    ("args", "named", "sent"),
+    [
+        ({"action": "maybe"}, "`action` ignored", {}),
+        ({"action": 7}, "`action` ignored", {}),
+        ({"action": ["accept"]}, "`action` ignored", {}),
+        ({"action": {"accept": True}}, "`action` ignored", {}),
+        ({"text": "Ada"}, "`text` ignored: it is only used with action accept", {}),
+        (
+            {"action": "dismiss", "text": "Ada"},
+            "`text` ignored: it is only used with action accept",
+            {"action": "dismiss"},
+        ),
+        ({"action": "accept", "text": 5}, "`text` ignored", {"action": "accept"}),
+        (
+            {"action": "accept", "text": "x" * (ops.TEXT_CAP + 1)},
+            "`text` ignored",
+            {"action": "accept"},
+        ),
+    ],
+)
+def test_a_bad_or_conflicting_dialog_argument_is_dropped_with_a_warning(
+    fake: FakeBrowser, args: dict[str, Any], named: str, sent: dict[str, Any]
+) -> None:
+    """The dialog op never refuses an argument: what is left out is named in the
+    ``warning`` and the rest of the call runs as it would without it."""
+    calls = _pending(fake, "prompt", "Your name?")
+    out = run(ops.run_op("dialog", args, fake.ctx()))
+    assert out["ok"] is True and named in out["warning"]
+    assert calls == [sent]
+
+
+def test_dialog_text_for_a_dialog_that_is_not_a_prompt_is_noted_and_the_answer_stands(
+    fake: FakeBrowser,
+) -> None:
+    _pending(fake, "confirm", "Sure?")
+    out = run(ops.run_op("dialog", {"action": "accept", "text": "Ada"}, fake.ctx()))
+    assert out["ok"] is True and out["answered"] == "accepted"
+    assert "`text` ignored: the dialog is not a prompt" in out["warning"]
+
+
+def test_dialog_message_is_capped_and_the_page_address_is_not_passed_on(
+    fake: FakeBrowser,
+) -> None:
+    _pending(fake, "alert", "m" * (ops.DIALOG_MESSAGE_CAP + 50))
+    out = run(ops.run_op("dialog", {}, fake.ctx()))
+    assert len(out["dialog"]["message"]) == ops.DIALOG_MESSAGE_CAP
+    assert "url" not in out["dialog"]
+
+
+def test_dialog_reports_itself_on_the_live_card(fake: FakeBrowser) -> None:
+    _pending(fake)
+    run(ops.run_op("dialog", {"action": "accept"}, fake.ctx()))
+    assert fake.steps == ["Accept a dialog"]
+
+
+def _blocked_click(fake: FakeBrowser) -> None:
+    """A click whose helper timed out, as Harness's does while a dialog holds the page."""
+    from kiro_crew.browser_harness.supervisor import HelperError
+
+    def blocked(**_kw: Any) -> Any:
+        raise HelperError("Input.dispatchMouseEvent timed out after 5s waiting for the daemon")
+
+    fake.helpers["click"] = blocked
+
+
+def test_an_op_the_page_blocked_with_an_open_dialog_says_to_answer_it(
+    fake: FakeBrowser,
+) -> None:
+    _blocked_click(fake)
+    fake.helpers["page_info"] = lambda: {
+        "dialog": {"type": "alert", "message": "Saved!", "defaultPrompt": ""}
+    }
+    out = run(ops.run_op("click", {"x": 5, "y": 6}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "dialog_open"
+    assert "alert" in out["error"] and "Saved!" in out["error"]
+    assert "`dialog`" in out["error"] and "accept" in out["error"] and "dismiss" in out["error"]
+
+
+def test_an_op_the_page_blocked_with_no_dialog_open_fails_as_it_did(fake: FakeBrowser) -> None:
+    """Main's outcome is kept: with no dialog, the helper's own error reaches the route."""
+    from kiro_crew.browser_harness.supervisor import HelperError
+
+    _blocked_click(fake)
+    fake.helpers["page_info"] = lambda: {"url": "https://example.com/", "w": 800, "h": 600}
+    with pytest.raises(HelperError, match="timed out"):
+        run(ops.run_op("click", {"x": 5, "y": 6}, fake.ctx()))
+
+
+def test_an_unreadable_page_while_checking_for_a_dialog_keeps_the_original_error(
+    fake: FakeBrowser,
+) -> None:
+    from kiro_crew.browser_harness.supervisor import HelperError
+
+    _blocked_click(fake)
+
+    def gone() -> Any:
+        raise HelperError("daemon gone")
+
+    fake.helpers["page_info"] = gone
+    with pytest.raises(HelperError, match="timed out"):
+        run(ops.run_op("click", {"x": 5, "y": 6}, fake.ctx()))
+
+
+def test_a_failed_dialog_answer_is_not_rewritten_as_dialog_open(fake: FakeBrowser) -> None:
+    from kiro_crew.browser_harness.supervisor import HelperError
+
+    def refused(**_kw: Any) -> Any:
+        raise HelperError("No dialog is showing")
+
+    fake.helpers["dialog"] = refused
+    fake.helpers["page_info"] = lambda: {"dialog": {"type": "alert", "message": "x"}}
+    with pytest.raises(HelperError, match="No dialog"):
+        run(ops.run_op("dialog", {"action": "accept"}, fake.ctx()))
+
+
+def test_an_error_that_is_not_the_helpers_is_kept_even_with_a_dialog_open(
+    fake: FakeBrowser,
+) -> None:
+    """Only a helper's failure can mean the page is held; any other error is main's."""
+
+    def broken(**_kw: Any) -> Any:
+        raise ValueError("bad reply")
+
+    fake.helpers["click"] = broken
+    fake.helpers["page_info"] = lambda: {"dialog": {"type": "alert", "message": "x"}}
+    with pytest.raises(ValueError, match="bad reply"):
+        run(ops.run_op("click", {"x": 5, "y": 6}, fake.ctx()))
+
+
+def test_the_browser_tool_reports_and_answers_a_dialog(
+    fake: FakeBrowser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _pending(fake, "confirm", "Leave this page?")
+    monkeypatch.setattr(browser_tool.mcp_core, "_vet_browse_governance", lambda s: None)
+    monkeypatch.setattr(browser_tool.mcp_core, "_resolve_session_key", lambda: "")
+
+    def post(_key: str, op: str, args: dict, _header: str, _timeout: float) -> tuple[int, dict]:
+        result = run(ops.run_op(op, args, fake.ctx()))
+        return 200, ({"ok": True, "result": result} if result.get("ok") else result)
+
+    monkeypatch.setattr(browser_tool, "_post_command", post)
+    seen = browser_tool.browser("browser", {"op": "dialog", "args": {}})
+    assert seen.startswith("Browser dialog: ") and "Leave this page?" in seen
+    done = browser_tool.browser("browser", {"op": "dialog", "args": {"action": "dismiss"}})
+    assert '"answered": "dismissed"' in done
+    assert calls == [{}, {"action": "dismiss"}]
+    assert "dialog" in browser_tool.BROWSER_OPS
+
+
+def test_the_tool_text_names_the_dialog_op_and_its_arguments() -> None:
+    from kiro_crew.mcp_tools.catalog import browser as catalog
+
+    (schema,) = catalog.schemas()
+    text = schema["description"]
+    assert "dialog {action?: accept|dismiss, text?}" in text
+    assert "dialog" in schema["inputSchema"]["properties"]["op"]["enum"]

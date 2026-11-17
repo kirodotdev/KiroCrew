@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
-from redaction_structured_cases import synth
+from redaction_structured_cases import github_classic
 
 from kiro_crew import session_storage as session_storage_module
 from kiro_crew.dashboard.handlers import session_storage as handler
@@ -29,8 +29,9 @@ from kiro_crew.testing.wait import async_wait_until
 _DAY = 86400.0
 
 
-# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
-_SECRET = synth(40, seed=205)
+# A synthetic GitHub token the redactor removes; an AWS key ID and a bare 40-character
+# run stay visible.
+_SECRET = github_classic(seed=205)
 
 
 @pytest.fixture(autouse=True)

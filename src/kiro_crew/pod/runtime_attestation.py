@@ -43,10 +43,10 @@ from kiro_crew.pod.config import PodConfig
 # "this pod is up" therefore reports a crash-looping pod as healthy and points
 # the operator's browser at somebody else's instance.
 #
-# `instances/run_marker` states the rule this module was breaking: it
-# "deliberately does not offer a bare 'is something listening' helper, so no
-# caller can mistake reachability for identity". The pod probe is now held to it
-# — the reachability probe is private and every caller goes through `health`.
+# The same rule as `instances/run_marker`, which "deliberately does not offer a
+# bare 'is something listening' helper, so no caller can mistake reachability for
+# identity": the reachability probe is private and every caller goes through
+# `health`.
 # --------------------------------------------------------------------------- #
 #: Proven: the pod's own gateway process holds the port.
 OWNER_POD = "pod"

@@ -38,6 +38,7 @@ from kiro_crew.auth.login.endpoints import (
     oidc_url,
 )
 from kiro_crew.auth.store import KasToken
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ async def register_client(
         "clientType": "public",
         "scopes": list(scopes),
     }
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         if resp.status not in (200, 201):
             body = await resp.text()
             raise BuilderIdAuthError(f"RegisterClient failed: HTTP {resp.status} {body}")
@@ -210,7 +211,7 @@ async def start_device_authorization(
         "clientSecret": client.client_secret,
         "startUrl": start_url,
     }
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         if resp.status != 200:
             body = await resp.text()
             if resp.status == 400 and start_url != BUILDER_ID_START_URL:
@@ -259,7 +260,7 @@ async def poll_token_once(
         "grantType": _DEVICE_GRANT,
         "deviceCode": auth.device_code,
     }
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         try:
             data = await resp.json(content_type=None)
         except (aiohttp.ClientError, ValueError, asyncio.TimeoutError):
@@ -298,7 +299,9 @@ async def poll_token(
         "deviceCode": auth.device_code,
     }
     while datetime.now(timezone.utc) < auth.expires_at:
-        async with session.post(url, json=payload, headers=_HEADERS) as resp:
+        async with session.post(
+            url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)
+        ) as resp:
             data = await resp.json()
             if resp.status == 200:
                 return _token_from_create(data, client, region, identity, provider)

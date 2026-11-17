@@ -577,7 +577,46 @@ def _kiro_cli_version_row(kiro: str, issues: list[str], *, required: bool) -> st
     return "  kiro-cli:    ⚠  exits with error (optional backend)"
 
 
-def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
+def _reconcile_memory() -> None:
+    """``doctor --reconcile-memory``: the full metadata pass a start skips.
+
+    An explicit repair, the one write ``doctor`` makes besides ``--bundle``'s zip.
+    """
+    from kiro_crew import memory_record_metadata, memory_stores, sqlite_wal
+    from kiro_crew._sqlite_compat import sqlite3
+
+    path = memory_stores.resolve_store_path(memory_stores.DEFAULT_MEMORY_STORE)
+    if not path.is_file():
+        print(f"  ⏭ no memory database at {path}")
+        return
+    try:
+        db = sqlite3.connect(str(path), timeout=30)
+        # The gateway may be writing through this -wal: this close must not delete it.
+        kept = sqlite_wal.keep_wal_on_close(db)
+        try:
+            with db:
+                # One transaction with the pass, as a store's own open does it: a
+                # database from before the metadata tables gets them first.
+                db.execute("BEGIN IMMEDIATE")
+                if not memory_record_metadata.schema_is_current(db):
+                    memory_record_metadata.ensure_schema(db)
+                changed = memory_record_metadata.reconcile(db, full=True)
+        finally:
+            if kept:
+                db.close()
+            else:
+                sqlite_wal.close_keeping_wal(db)
+    except sqlite3.Error as exc:
+        print(f"  ❌ memory reconcile failed: {exc}")
+        sys.exit(1)
+    print(f"  ✅ memory reconcile: every row checked, {changed} journaled")
+
+
+def _doctor(
+    platform_boot_error: "Exception | None" = None,
+    bundle: bool = False,
+    reconcile_memory: bool = False,
+) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
     ``platform_boot_error`` carries a :class:`PlatformCompositionError` from
@@ -594,6 +633,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     """
     print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
+
+    if reconcile_memory:
+        _reconcile_memory()
+        return
 
     # ── Diagnostics bundle (--bundle) ──
     # Short-circuit: collect logs + crash reports into a redacted zip and print

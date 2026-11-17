@@ -109,6 +109,19 @@ class TestAForkPullRequestIntoANonDefaultBaseIsHeld:
 
 
 class TestOtherShapesAreUnchanged:
+    def test_a_fork_pr_into_a_release_branch_that_runs_ci_is_still_held(self, runner: Runner):
+        # The release branch's ci.yml lists `release/**`, so Fast Gate and the
+        # fork lanes run there now, but the lanes were only vetted on PRs to
+        # the default branch: the hold stays.
+        _into_release(runner, fast_gate_ran=True)
+        runner.env["CI_ON_RELEASE"] = "true"
+        _fork_check_runs(runner, {})
+        runner.env["SUPERSESSION_OK"] = "true"
+        proc, outputs = runner.evaluate(fork=True, disposition_ok="true")
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert outputs["description"] == HOLD
+
     def test_a_fork_pr_into_the_default_branch_reads_an_unevaluable_gate_as_unknown(
         self, runner: Runner
     ):

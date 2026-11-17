@@ -12,8 +12,8 @@ diverge, every auto-registered widget becomes invisible to the frontend (the
 probe 404s) and the star button silently creates a duplicate at the frontend's
 slug — the exact save-then-refresh duplication the deterministic scheme exists to
 prevent. ``test/test_widget_slug.py`` pins known input -> output vectors, and
-``website/src/test/widgetSlug.test.ts`` asserts the same vectors on the TS side;
-change one without the other and both suites fail.
+``website/src/test/widgetSlug.test.ts`` asserts a hand-kept copy of them on the TS
+side; no test compares the two copies, so a change must update both.
 
 The hash is two FNV-1a passes with the 32-bit prime (``0x01000193``) and two
 different offset bases, emitted as 16 lowercase hex chars. No crypto properties

@@ -5,6 +5,7 @@ import contextlib
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -385,27 +386,57 @@ def trivial_child():
         yield spawn
 
 
-def test_handshake_timeout_names_the_marker_and_quotes_the_child(tmp_path, trivial_child):
+def _print_then_sleep(line: str, printed: Path) -> str:
+    """A child body that prints *line*, then writes *printed*, then sleeps."""
+    return (
+        f"import pathlib, sys, time; print({line!r}); sys.stdout.flush(); "
+        f"pathlib.Path({str(printed)!r}).write_text('1'); time.sleep(30)"
+    )
+
+
+def _expire_marker_waits(monkeypatch, ready) -> list[float]:
+    """Record each timeout `_wait_for_marker` hands its poll, and expire the unmet ones.
+
+    A predicate already true returns at once. Otherwise the stand-in waits (lost-run
+    bound) for *ready* -- the child's own evidence that it got as far as the test
+    needs -- and then raises as an expired poll does, so no real budget is sat out
+    and a loaded host cannot expire the wait before the child has spoken.
+    """
+    budgets: list[float] = []
+    real_wait_until = wait_until
+
+    def expire(predicate, *, timeout=None, **kwargs):
+        budgets.append(timeout)
+        if predicate():
+            return True
+        real_wait_until(ready, describe=lambda: "the child never reached its pause point")
+        raise AssertionError(f"poll expired after its {timeout}s budget")
+
+    monkeypatch.setitem(globals(), "wait_until", expire)
+    return budgets
+
+
+def test_handshake_timeout_names_the_marker_and_quotes_the_child(
+    tmp_path, trivial_child, monkeypatch
+):
     """A timed-out handshake reports what it awaited and what the child said.
 
     Guards the reporting itself, not just the waiting: an unmessaged
     `assert time.monotonic() < deadline` also fails at the right moment, and tells
     a reader nothing about which handshake broke or why.
     """
-    process = trivial_child(
-        "import sys, time; print('mid-import'); sys.stdout.flush(); time.sleep(30)"
-    )
-    started = time.monotonic()
+    printed = tmp_path / "printed"
+    process = trivial_child(_print_then_sleep("mid-import", printed))
+    budgets = _expire_marker_waits(monkeypatch, printed.exists)
     with pytest.raises(AssertionError) as caught:
         _wait_for_marker(process, tmp_path, "child-ready", 1.0)
-    waited = time.monotonic() - started
     message = str(caught.value)
     assert "child-ready" in message, message
     assert "1.0s" in message, message
     assert "mid-import" in message, message
     # The budget is honoured, not merely quoted: a wait carrying its own hardcoded
-    # bound would render the same sentence while ignoring the one it was given.
-    assert waited < 5.0, f"waited {waited:.1f}s against a 1.0s budget"
+    # bound would render the same sentence while handing the poll another timeout.
+    assert budgets == [1.0], f"the poll was handed {budgets} for a 1.0s budget"
     assert process.poll() is not None, "a timed-out wait leaves no child behind"
 
 
@@ -422,15 +453,38 @@ def test_child_exiting_before_handshake_reports_its_code_and_output(tmp_path, tr
     assert "why" in message, message
 
 
-def test_handshake_already_written_does_not_wait(tmp_path, trivial_child):
+def test_handshake_already_written_does_not_wait(tmp_path, trivial_child, monkeypatch):
     """A budget is an upper bound on a failure, not a cost a passing run pays."""
+    import kiro_crew.testing.wait as wait_mod
+
     (tmp_path / "child-ready").write_text("ready", encoding="utf-8")
     process = trivial_child("import time; time.sleep(30)")
-    started = time.monotonic()
+    slept: list[float] = []
+    real_time = time
+
+    waiter = threading.get_ident()
+
+    def _refuse_sleep(secs: float) -> None:
+        if threading.get_ident() != waiter:
+            return real_time.sleep(secs)  # another thread's poll is not this wait
+        slept.append(secs)
+        raise AssertionError(f"waited {secs}s for a marker that was already written")
+
+    class _NoSleepTime:
+        """This module's ``time`` without ``sleep``, so a helper poll fails by name."""
+
+        sleep = staticmethod(_refuse_sleep)
+
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            return getattr(real_time, name)
+
+    # Any wait, however short, is a sleep: in wait_until's poll (its defining
+    # module's ``_sleep``) or in the helper itself. `< _STARTUP_CEILING` on a clock
+    # would also hold for a wait that sat out most of the budget.
+    monkeypatch.setattr(wait_mod, "_sleep", _refuse_sleep)
+    monkeypatch.setitem(globals(), "time", _NoSleepTime())
     _wait_for_marker(process, tmp_path, "child-ready", _STARTUP_CEILING)
-    # Tight on purpose: `< _STARTUP_CEILING` would also hold for a wait that sat
-    # out most of the budget, which is the thing this asserts does not happen.
-    assert time.monotonic() - started < 1.0
+    assert slept == [], f"the wait slept {slept} with the marker already written"
 
 
 def test_the_startup_leg_is_bounded_separately_from_the_handshake(tmp_path, trivial_child):
@@ -461,12 +515,11 @@ def test_the_handshake_leg_gets_the_tight_bound_not_the_ceiling(
     monkeypatch.setattr(module, "_HANDSHAKE_TIMEOUT", 0.3)
     (tmp_path / "child-started").write_text("started", encoding="utf-8")
     process = trivial_child("import time; time.sleep(30)")
-    started = time.monotonic()
+    budgets = _expire_marker_waits(monkeypatch, lambda: True)
     with pytest.raises(AssertionError) as caught:
         _wait_for_child_ready(process, tmp_path)
-    waited = time.monotonic() - started
     assert "child-ready" in str(caught.value), str(caught.value)
-    assert waited < 2.0, f"the handshake leg spent {waited:.1f}s, so it used the ceiling"
+    assert budgets == [3.0, 0.3], f"the legs were handed {budgets}: startup 3.0, handshake 0.3"
 
 
 def test_kill_and_reap_spares_a_child_that_already_exited(trivial_child):
@@ -489,15 +542,27 @@ def test_kill_and_reap_spares_a_child_that_already_exited(trivial_child):
     assert running.returncode is not None, "a running child is killed AND reaped"
 
 
-def test_communicate_timeout_reports_the_child_instead_of_raising_bare(trivial_child):
+def test_communicate_timeout_reports_the_child_instead_of_raising_bare(
+    tmp_path, trivial_child, monkeypatch
+):
     """A child that never exits fails as a sentence, not a bare TimeoutExpired."""
-    process = trivial_child("import sys, time; print('alive'); sys.stdout.flush(); time.sleep(30)")
-    started = time.monotonic()
+    printed = tmp_path / "printed"
+    process = trivial_child(_print_then_sleep("alive", printed))
+    real_communicate = process.communicate
+    timeouts: list[float | None] = []
+
+    def expire_first(payload=None, timeout=None):
+        if timeouts:  # the drain after the kill is real
+            return real_communicate(payload, timeout=timeout)
+        timeouts.append(timeout)
+        wait_until(printed.exists, describe=lambda: "the child never printed")
+        raise subprocess.TimeoutExpired(process.args, timeout)
+
+    monkeypatch.setattr(process, "communicate", expire_first)
     with pytest.raises(AssertionError) as caught:
         _communicate(process, "release\n", timeout=1.0)
-    waited = time.monotonic() - started
     message = str(caught.value)
     assert "did not exit within 1.0s" in message, message
     assert "alive" in message, message
-    assert waited < 5.0, f"waited {waited:.1f}s against a 1.0s budget"
+    assert timeouts == [1.0], f"communicate was handed {timeouts} for a 1.0s budget"
     assert process.poll() is not None, "a timed-out communicate leaves no child behind"

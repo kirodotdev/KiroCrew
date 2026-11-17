@@ -52,6 +52,7 @@ def test_round_trips_through_to_dict(tmp_path, monkeypatch):
     assert cfg.to_dict()["mcp"] == {
         "extra_path_dirs": ["/opt/a/bin"],
         "honour_auto_approve": True,
+        "protect_kiro_permission_rules": False,
     }
 
 
@@ -148,6 +149,13 @@ def test_a_real_false_opts_out(tmp_path, monkeypatch):
 def test_honour_auto_approve_parses_a_real_true(tmp_path, monkeypatch):
     cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": True}})
     assert cfg.mcp.honour_auto_approve is True
+
+
+def test_protect_kiro_permission_rules_is_off_through_the_real_load(tmp_path, monkeypatch):
+    """Absent, the write fence stays off, as on main; only a real ``true`` opts in."""
+    assert _load_from(tmp_path, monkeypatch, {"mcp": {}}).mcp.protect_kiro_permission_rules is False
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"protect_kiro_permission_rules": True}})
+    assert cfg.mcp.protect_kiro_permission_rules is True
 
 
 @pytest.mark.parametrize("raw", ["true", "yes", 1, ["x"], {}, None])

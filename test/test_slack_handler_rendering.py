@@ -498,8 +498,8 @@ class TestToSlackMrkdwnTruncation:
     def test_leading_newline_does_not_truncate_to_empty(self):
         from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
 
-        # Newline only at index 0 of the window: rfind -> 0, `0 or CAP` -> CAP
-        # pre-fix (accidentally correct), but the explicit check keeps it robust.
+        # Newline only at index 0 of the window: rfind -> 0. A bare `0 or CAP`
+        # also gives CAP here by accident; the explicit check is what holds it.
         text = "\n" + "y" * (SLACK_MAX_TEXT + 1000)
         out = to_slack_mrkdwn(text)
         assert len(out) < SLACK_MAX_TEXT + 200
@@ -675,7 +675,7 @@ class TestToSlackMrkdwnImages:
             # LINK, so a strict reader would convert it. This converter has no
             # backslash-unescaping layer, so honouring that in detection alone would
             # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
-            # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
+            # Passing it through raw also matches ``outbound_files.IMAGE_MD_RE``,
             # which registers ``\![x](p)`` as an image on the dashboard side.
             pytest.param(
                 r"\![x](p)", r"\![x](p)", id="test_escaped_bang_is_still_treated_as_an_image"
@@ -811,8 +811,8 @@ class TestStreamingTablePreservation:
         """When exfiltration URLs are detected in streaming mode,
         chat.update must fire with tables converted to bullets."""
         slack = self._streaming_client()
-        # URL with long query string triggers exfiltration redaction
-        exfil_url = "https://evil.com/steal?data=" + "A" * 200
+        # A credential parameter in a URL: its value is redacted, the link stays
+        exfil_url = "https://evil.com/steal?access_token=" + "A" * 200
         text = self.TABLE_RESPONSE + f"\n\nSee {exfil_url}"
         provider = FakeProvider([LLMEvent(kind="text_chunk", text=text)])
         sessions = FakeSessionManager(provider)

@@ -236,7 +236,7 @@ class TestAppend:
         blocked = tmp_path / "blocked"
         blocked.write_text("i am a file, not a directory", encoding="utf-8")
         monkeypatch.setattr(log_mod, "log_dir", lambda: blocked / "decisions")
-        append(_row())  # must not raise
+        assert append(_row()) is False  # must not raise, and must say it wrote nothing
 
     def test_an_unserialisable_value_is_survived(self, home):
         """``default=str`` keeps an odd value from losing the whole row."""

@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import inspect
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +26,7 @@ from kiro_crew.knowledge import ingestion as ingestion_mod
 from kiro_crew.knowledge import store as store_mod
 from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # The store binds ``pysqlite3`` when it is installed, so both the raw reads and
@@ -526,11 +526,37 @@ class TestSweepWaitsForIngestion:
         try:
             _insert_orphan_source(store, "orphan")
             worker = _kick_worker(store, timeout=0.2)
+            waits: list[float | None] = []
+            this_thread = threading.get_ident()
+
+            class _RecordedCondition(threading.Condition):
+                """Records the timeout each gate wait on this thread is handed and
+                reports it timed out without sleeping; other threads wait for real.
+                A loop that keeps waiting past its deadline fails here by name
+                instead of spinning until the run's timeout."""
+
+                def wait(self, timeout: float | None = None) -> bool:
+                    if threading.get_ident() != this_thread:
+                        return super().wait(timeout)
+                    waits.append(timeout)
+                    assert len(waits) <= 50, f"the maintenance window kept waiting: {waits[:5]}..."
+                    return False
+
             with store.ingestion_in_flight():
                 with caplog.at_level("WARNING", logger="kiro_crew.knowledge.store"):
-                    started = time.monotonic()
-                    worker()
-                assert time.monotonic() - started < 5
+                    with pytest.MonkeyPatch.context() as mp:
+                        # A frozen clock on the store facade: the deadline is 0.2 s away
+                        # on every read, so the window always reaches its wait however
+                        # long this host takes to get there.
+                        ManualClock().install(mp, store_mod)
+                        mp.setattr(store._ingestion_gate, "_cond", _RecordedCondition())
+                        worker()
+            # The sweep waited exactly its 0.2 s budget, never unbounded.
+            assert waits, "the maintenance window never waited for the in-flight ingest"
+            assert len(waits) <= 50, f"the maintenance window kept waiting: {waits[:5]}..."
+            assert waits == [pytest.approx(0.2)] * len(
+                waits
+            ), f"the maintenance window waited {waits}, not its 0.2 s budget"
             assert _source_exists(path, "orphan"), "a skipped sweep still deleted rows"
             assert any("maintenance skipped" in r.message for r in caplog.records)
         finally:
@@ -652,33 +678,48 @@ class TestSweepWaitsForIngestion:
         """The store gate holds new entrants off once a maintenance window is
         waiting for the current holders to drain; a caller that already holds
         the gate and enters again (the ingest call inside a handler's span)
-        must pass at once, not wait for the window's timeout."""
+        must pass at once, not wait for the window's timeout.
+
+        "At once" is asserted as no wait at all: once the window is waiting, any
+        entrant wait on the gate's condition other than the window's own is refused
+        on the spot, so a regression fails here instead of after the timeout."""
         store = KnowledgeStore(str(tmp_path / "k.db"))
         pipeline = IngestionPipeline.__new__(IngestionPipeline)
         pipeline.store = store
-        window_waiting = threading.Event()
+        gate = store._ingestion_gate
         window_result: list[bool] = []
+        window_thread: list[int] = []
+        entrant_waits: list[int] = []
+        real_wait = gate._cond.wait
+
+        def wait(timeout: float | None = None) -> bool:
+            if threading.get_ident() in window_thread:
+                return real_wait(timeout)
+            entrant_waits.append(threading.get_ident())
+            raise AssertionError("a nested hold waited behind the maintenance window")
+
+        gate._cond.wait = wait
 
         def open_window():
-            window_waiting.set()
-            with store.maintenance_window(timeout=2.0) as quiescent:
+            window_thread.append(threading.get_ident())
+            with store.maintenance_window(timeout=default_timeout()) as quiescent:
                 window_result.append(quiescent)
 
-        async def scenario() -> float:
+        async def scenario() -> None:
             async with pipeline.ingestion_in_flight():
                 th = threading.Thread(target=open_window)
                 th.start()
-                assert window_waiting.wait(2)
-                await asyncio.sleep(0.1)  # the window is now waiting on the holder
-                started = time.monotonic()
+                # The window has claimed its turn and is waiting on this holder.
+                await async_wait_until(lambda: gate._maintenance)
                 async with pipeline.ingestion_in_flight():
                     pass
-                elapsed = time.monotonic() - started
-                return elapsed
+            await asyncio.to_thread(th.join, default_timeout())
+            assert not th.is_alive(), "the window never closed"
 
         try:
-            elapsed = asyncio.run(scenario())
-            assert elapsed < 0.5, f"nested hold waited {elapsed:.2f}s behind the window"
+            asyncio.run(scenario())
+            assert entrant_waits == []
+            assert window_result == [True], "the window waited for the outer hold and ran"
         finally:
             store._close_all_for_tests()
 
@@ -762,7 +803,11 @@ class TestHandoffJoinsTheHoldersAdmission:
         waiting in between. Without the hand-off admission the three wait on
         each other until the window's timeout. With it the task's first hold
         joins the holder's admission at once, the handler releases, and the
-        window then gets its turn."""
+        window then gets its turn.
+
+        "At once" is asserted as the window's state when the task's hold is
+        taken: the window is still waiting, not finished. A task held behind
+        the window would get its hold only after the window gave up."""
         store = KnowledgeStore(str(tmp_path / "k.db"))
         pipeline = IngestionPipeline.__new__(IngestionPipeline)
         pipeline.store = store
@@ -774,15 +819,17 @@ class TestHandoffJoinsTheHoldersAdmission:
             with store.maintenance_window(timeout=5.0) as quiescent:
                 window_result.append(quiescent)
 
-        async def scenario() -> float:
+        window_when_taken: list[tuple[list[bool], bool]] = []
+
+        async def scenario() -> None:
             taken = asyncio.Event()
 
             async def child() -> None:
                 async with pipeline.ingestion_in_flight():
+                    window_when_taken.append((list(window_result), th.is_alive()))
                     taken.set()
                     await asyncio.sleep(0.05)
 
-            started = time.monotonic()
             async with pipeline.ingestion_in_flight():
                 th = threading.Thread(target=open_window)
                 th.start()
@@ -792,11 +839,13 @@ class TestHandoffJoinsTheHoldersAdmission:
                 await await_until(taken, what="taken event")
             await task
             th.join(timeout=10)
-            return time.monotonic() - started
 
         try:
-            elapsed = asyncio.run(scenario())
-            assert elapsed < 2.0, f"hand-off waited {elapsed:.2f}s behind the window"
+            asyncio.run(scenario())
+            assert window_when_taken == [([], True)], (
+                f"hand-off waited behind the window: {window_when_taken} "
+                "(window result, window still waiting) when the task took its hold"
+            )
             assert window_result == [True], "the window did not get its turn after the holds"
         finally:
             store._close_all_for_tests()

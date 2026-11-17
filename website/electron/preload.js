@@ -130,7 +130,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Windows custom titlebar: menu surfaces render in the dashboard so hover
   // can switch between them; command execution stays in the main process.
   getAppMenuItems: (id) => ipcRenderer.invoke("app-menu:items", id),
-  executeAppMenuItem: (id, index) => ipcRenderer.send("app-menu:execute", id, index),
+  // Answers whether the click DISPATCHED. `invoke`, not `send`, because the
+  // renderer acts on a refusal: a row can be painted enabled and still be
+  // refused by the per-action gate, and the refusal is the only moment the
+  // renderer can learn its rows are stale. It refetches on `false`, which
+  // greys the gated rows and renders the footer naming the reason.
+  executeAppMenuItem: (id, index) => ipcRenderer.invoke("app-menu:execute", id, index),
   // App-menu navigation: main.js sends an in-app path ("/settings",
   // "/settings/about") when the user picks Settings…/About from the
   // native application menu; the SPA routes to it (see App.tsx).
@@ -344,9 +349,11 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // access token and the Crew URL, so neither crosses this bridge, and no token
 // is ever returned. Resolves { ok: true } or { ok: false, error: "<code>" }.
 // Absent in plain browsers and in the PWA; the dashboard hides the relay list
-// when the bridge is missing.
+// when the bridge is missing. `closeAll()` takes nothing and can only close
+// every relay Crew window, after this dashboard's Sign out or Switch account.
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
+  closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
 });
 
 // Native folder chooser for the project picker's "Open system folder picker"

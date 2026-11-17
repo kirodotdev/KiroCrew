@@ -719,6 +719,7 @@ class SessionManager:
     first_turn_history_owed_pending = _turn_context.first_turn_history_owed_pending
     unlanded_marker_pending = _turn_context.unlanded_marker_pending
     consume_first_turn_history_owed = _turn_context.consume_first_turn_history_owed
+    note_session_head = _turn_context.note_session_head
     consume_replay_suppression = _turn_context.consume_replay_suppression
     _consume_persisted_replay_suppression = _turn_context._consume_persisted_replay_suppression
     suppress_replay_persistently = _turn_context.suppress_replay_persistently
@@ -873,20 +874,20 @@ class SessionManager:
         self._subagent_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
         # Installed by the dashboard once the Kiro prerequisite service exists
         # (its ``read_spawn_identity``); None means "no identity store to stamp
-        # from" -- CLI entry points and tests -- and every spawn stays unstamped,
-        # which is the pre-stamping status quo. When wired, each kiro-backed
+        # from" -- CLI entry points and tests -- and every spawn stays unstamped.
+        # When wired, each kiro-backed
         # provider records the account the store held as its process started,
         # so the turn gate can retire a child that provably spawned under a
         # different account than the live one even when no read ever observed
         # the interim (see ``flag_identity_stamp_mismatches``).
         self.spawn_identity_reader: "Callable[[], Awaitable[str]] | None" = None
         # Installed by the dashboard next to ``spawn_identity_reader``: the Kiro
-        # account check (``chat_runner._retire_sessions_on_identity_change``, as
-        # its unattended caller) that ``get_or_create``, ``open_task_session`` and
-        # ``try_acquire`` await before they hand out a session, so no acquire path
-        # can skip it.
+        # account check (``account_identity._retire_sessions_on_identity_change``
+        # in ``dashboard/chat_turn``, as its unattended caller) that
+        # ``get_or_create``, ``open_task_session`` and ``try_acquire`` await before
+        # they hand out a session, so no acquire path can skip it.
         # None means no identity store to check against -- CLI entry points and
-        # tests -- and acquires run unchecked, as they did before it existed.
+        # tests -- and acquires run unchecked.
         self.identity_check_before_acquire: "Callable[[], Awaitable[None]] | None" = None
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
@@ -1094,8 +1095,8 @@ class SessionManager:
 
         model = "auto"
         try:
-            # Use the SAME directory as the cache stamp and preserve the former
-            # native-order, first-match scan. The async caller hands this to a
+            # Use the SAME directory as the cache stamp and keep the native-order,
+            # first-match scan. The async caller hands this to a
             # thread (the walk and the reads are filesystem work), and a match
             # still stops all later spec reads rather than building a full map
             # on every cache miss / TTL expiry.
@@ -1116,6 +1117,7 @@ class SessionManager:
             if picked is not None:
                 model = spec_model(picked)
         except Exception:
+            # Any failure here leaves the "auto" default, cached like any other miss.
             pass
         cache[cache_key] = (model, dir_mtime, now)
         return model
@@ -1172,6 +1174,7 @@ class SessionManager:
             sid,
             provider=_provider_label(session.provider),
             cwd="" if session.cwd_retracted else session.provider.cwd,
+            kas_memory=getattr(session.provider, "kas_memory_mode", ""),
         )
         session.provider_switch_replay = False
         return True
@@ -1211,7 +1214,7 @@ class SessionManager:
         return True
 
 
-# The ``session_parts`` owners hold code that was this module's own. This module binds every
+# The ``session_parts`` owners hold ``SessionManager``'s code. This module binds every
 # name its own code reads and serves the other moved names from their owners; through
 # ``_facade_mirror`` a write of either reaches every owner binding the same object. No
 # owner imports this module. ``test/test_session_bindings.py`` pins the binding and reach.

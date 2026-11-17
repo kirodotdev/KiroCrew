@@ -76,10 +76,10 @@ def _kept_episodes(
 def get_context_preview(store: VectorMemoryStore, query_text: str = "") -> dict:
     """Preview what would be injected into context (for debugging).
 
-    Reports the UNSCOPED view. A ``project_dir`` parameter was offered here
-    briefly and removed: the only caller never passed one, so it could not
-    change any observed output, and a knob nobody turns still has to be read
-    and trusted by whoever comes next.
+    Reports the UNSCOPED view and takes no ``project_dir``: its callers, the
+    dashboard's context-preview and observability endpoints, have no project to
+    pass, and a knob nobody turns still has to be read and trusted by whoever
+    comes next.
     """
     if store.algorithm_version == "v2":
         return store.recall(query_text)
@@ -232,15 +232,12 @@ def recall_once(
     # terms so CJK question endings cannot suppress known facts.
     query_text = " ".join(sorted(memory_recall.recall_terms(query_text)))
     with recall_filters.as_of_scope(filters):
-        facts = (
-            []
-            if filters is not None and not filters.wants("fact")
-            else (
-                store._semantic_candidates_v2(query_text, recall_query=query)
-                if store.algorithm_version == "v2"
-                else store._semantic_candidates_v1(query_text, recall_query=query)
-            )
-        )
+        if filters is not None and not filters.wants("fact"):
+            facts = []
+        elif store.algorithm_version == "v2":
+            facts = store._semantic_candidates_v2(query_text, recall_query=query)
+        else:
+            facts = store._semantic_candidates_v1(query_text, recall_query=query)
         # A date filter narrows a ranked list, so look further down it first.
         episodic_limit = store._episodic_limit * (4 if filters is not None and filters.timed else 1)
         episodes = (
@@ -334,11 +331,11 @@ def recall_once(
     # is shortened behind an in-text marker rather than dropped: an empty block
     # reads the same as "no lesson matched", exactly when the best match is the
     # long one. That needs the share to hold the block's frame, the marker and
-    # one character of text: 161 characters for one in-scope lesson (a cap of
-    # 483), and from 217 once the counts line appears (a cap of 651), one more
+    # one character of text: 159 characters for one in-scope lesson (a cap of
+    # 477), and from 215 once the counts line appears (a cap of 645), one more
     # per extra digit in the counts. A query with no recall terms orders the
     # block "most recent" instead of "most relevant", two characters shorter,
-    # so that floor is 215 (a cap of 645). Below that the block is omitted.
+    # so that floor is 213 (a cap of 639). Below that the block is omitted.
     if len(lessons) > lessons_share:
         lessons = _lessons.truncate_explicit_lessons(lessons, lessons_share)
     remainder = cap - len(lessons)

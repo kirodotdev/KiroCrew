@@ -620,6 +620,7 @@ class ContinuationCoordinator(ManagerComponent):
                 if _rp.exists():
                     result_hint = f" Prior result still readable at: {_rp}"
             except Exception:
+                # The hint is optional; the follow-up is dispatched without it.
                 pass
             info = SubagentInfo(
                 id=self._manager._mint_agent_id(),
@@ -1000,6 +1001,10 @@ class ContinuationCoordinator(ManagerComponent):
             self._manager._arm_followup_watcher(info)
         self._record_crew_log_steer(info, "follow_up")
         self._pin_followup_crew_log_origin(info)
+        # A point span in the run's open turn; an interrupt gets its own from the provider.
+        from kiro_crew.tracing import steps as trace_steps
+
+        trace_steps.steered(trace_steps.STEER_FOLLOW_UP, subagent_id=info.id)
         try:
             sel().log_tool_invocation(
                 session_key=info.parent_session_key or "",

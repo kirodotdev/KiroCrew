@@ -189,7 +189,7 @@ def test_the_page_names_the_default_on_apps(doc_text: str) -> None:
 def test_the_page_names_the_hidden_apps(doc_text: str) -> None:
     """A hidden builtin is unreachable from the store while disabled, so the page says so."""
     hidden = sorted(str(m["displayName"]) for m in _manifests().values() if m.get("hidden") is True)
-    assert hidden == ["Channels", "Workflows"], (
+    assert hidden == ["Workflows"], (
         f"the set of hidden shipped apps changed to {hidden}; update the "
         "'hidden from Discover and Library' sentence in apps.md and this expectation"
     )

@@ -146,3 +146,10 @@ def _done_event(events: list[tuple[str, dict]]) -> dict:
     done = [e for k, e in events if k == "subagent_done"]
     assert len(done) == 1, events
     return done[0]
+
+
+#: The tool-stall evidence text a stalled turn's ``complete`` frame carries.
+_STALL_EVIDENCE = (
+    "verdict=unknown; idle_secs=5400; tool=execute_bash; "
+    "command=pytest -q; evidence=no result frame"
+)

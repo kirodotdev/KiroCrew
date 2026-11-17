@@ -71,6 +71,57 @@ Tool permission prompt (same keys as kiro-cli chat):
         "--model", help="Model to use (default: from config; `kirocrew models` lists the names)"
     )
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
+    # --headless (rfc-builtin-eval.md §12): one unattended run on the local gateway.
+    headless = chat_parser.add_argument_group("headless run (kirocrew chat --headless)")
+    headless.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run one unattended task on the running gateway of this data home and exit with "
+        "a result code; never reads the terminal. A request for a person ends the run (exit 3)",
+    )
+    headless.add_argument(
+        "--message-file", dest="message_file", metavar="PATH", help="Read the seed from a file"
+    )
+    headless.add_argument(
+        "--mode",
+        choices=["chat", "conductor"],
+        default=None,
+        help="chat (default) or conductor: open the chat in conductor mode, on the agent "
+        "agent.crew_mode_agent resolves to",
+    )
+    headless.add_argument(
+        "--approval-mode",
+        dest="approval_mode",
+        choices=["trust"],
+        default="",
+        help="trust: auto-approve tools on the chat this run opens (audited); workers it "
+        "creates inherit it. Unset: a tool approval ends the run as an ask",
+    )
+    headless.add_argument(
+        "--until-done",
+        dest="until_done",
+        action="store_true",
+        help="Stay through patrol, monitor and worker wakes until every work-ledger item is "
+        "finished (conductor) or nothing ran for --idle-grace",
+    )
+    headless.add_argument(
+        "--idle-grace",
+        dest="idle_grace",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="With --until-done, quiet seconds that count as done (default 900)",
+    )
+    headless.add_argument("--cwd", metavar="DIR", help="Project directory for the chat (absolute)")
+    headless.add_argument(
+        "--timeout", type=float, default=0, metavar="SECS", help="Wall-clock cap (exit 4)"
+    )
+    headless.add_argument(
+        "--budget", type=float, default=0, metavar="CREDITS", help="Kiro credit cap (exit 5)"
+    )
+    headless.add_argument(
+        "--json", action="store_true", help="Print the run's result as one JSON object"
+    )
 
 
 def register_models_parser(sub: _Commands) -> None:
@@ -1027,6 +1078,32 @@ def register_agent_parser(sub: _Commands) -> None:
         # resolver itself compares against in resolve_effective_model.
         default="kirocrew",
         help="Kiro agent spec to reset (default: kirocrew)",
+    )
+
+
+def register_trace_parser(sub: _Commands) -> None:
+    trace_parser = cli_help.add_command(
+        sub,
+        "trace",
+        epilog="""
+Examples:
+  kirocrew trace show 3f2a9c1e5b7d4a6c8e0f1a2b3c4d5e6f
+  kirocrew trace show <session key>
+""",
+        formatter_class=_fmt,
+    )
+    trace_sub = trace_parser.add_subparsers(dest="trace_action", required=True)
+    trace_show = trace_sub.add_parser(
+        "show",
+        help="Print one turn's spans as a waterfall",
+        description=(
+            "Read <data home>/traces/spans-*.jsonl (written while telemetry.traces_enabled "
+            "is on) and print the most recent trace holding KEY: its model calls, tool "
+            "calls, sub-agents and the gaps between them. Reads files only."
+        ),
+    )
+    trace_show.add_argument(
+        "key", help="A turn id, a session key or id, an ACP session id or a trace id"
     )
 
 

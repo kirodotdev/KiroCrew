@@ -24,6 +24,7 @@ from kiro_crew.acp.kas_permissions import (
     _SHELL_SETTINGS_KEYS,
     _WRITE_SETTINGS_KEYS,
     CREW_SPEC_DENIES_KEY,
+    CREW_UNJUDGED_DENIES_KEY,
     shell_denies_carried,
     shell_deny_carried,
     shell_deny_globs,
@@ -61,6 +62,23 @@ def _web_fetch_entries(settings: dict[str, Any], field: str, read: Any) -> tuple
     if len(readable) > _MAX_DENIES:
         return readable[:_MAX_DENIES], False
     return readable, complete
+
+
+def trusted_past_bound(tools_settings: Any) -> list[tuple[int, str]]:
+    """``(position as written, entry)`` of each distinct ``web_fetch.trusted`` entry
+    past the :data:`_MAX_DENIES` the gate reads, in order, when the bound is all that
+    keeps the list from being read whole: every entry is one :func:`url_literal`
+    reads. ``[]`` otherwise. An entry written twice keeps its first place."""
+    settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
+    entries = settings.get("trusted") if isinstance(settings, dict) else None
+    if not isinstance(entries, list):
+        return []
+    if not all(isinstance(r, str) and url_literal(r) is not None for r in entries):
+        return []
+    placed: dict[str, int] = {}
+    for at, raw in enumerate(entries, 1):
+        placed.setdefault(raw, at)
+    return [(at, raw) for raw, at in list(placed.items())[_MAX_DENIES:]]
 
 
 def _web_fetch_lists(tools_settings: Any) -> tuple[list[str], bool, list[str], bool]:
@@ -132,11 +150,14 @@ def web_fetch_carried(tools_settings: Any, authored_permissions: Any) -> frozens
     """The ``web_fetch.<key>`` paths Crew's gate applies for *tools_settings*, for the
     session-start notice: ``web_fetch.trusted`` when every blocked and trusted entry
     is readable, the spec's own block does not restrict ``web_fetch`` and the
-    ceiling lets the gate grant it. ``web_fetch.blocked`` is never dropped: a fetch
+    ceiling lets the gate grant it. A trusted list past the bound still counts: the
+    gate grants its first entries, and the notice names the rest
+    (:func:`trusted_past_bound`). ``web_fetch.blocked`` is never dropped: a fetch
     KAS's policy allows skips the gate, so an entry KAS cannot carry still may not
     apply.
     """
     _blocked, complete, trusted, trusted_complete = _web_fetch_lists(tools_settings)
+    trusted_complete = trusted_complete or bool(trusted_past_bound(tools_settings))
     if not (trusted and complete and trusted_complete):
         return frozenset()
     if _authored_web_fetch_restricted(authored_permissions):
@@ -220,16 +241,13 @@ def uncarried_denied_commands(tools_settings: Any, policy: Any) -> list[str]:
     return list(dict.fromkeys(out))[:_MAX_DENIES]
 
 
-def unread_denied_commands(tools_settings: Any, policy: Any = None) -> list[str]:
-    """Each ``deniedCommands`` entry neither KAS nor :func:`uncarried_denied_commands`
-    enforces, as ``<key>.deniedCommands: <entry>`` (JSON when not a printable
-    string), for the session-start notice: one :func:`_refusable_deny` refuses and
-    *policy* (the translated ``permissions``) does not carry
-    (``kas_permissions.shell_deny_carried``), or one past the
-    :data:`_MAX_DENIES` bound (marked so), or one the gate refuses only as a plain
-    command (:data:`GATE_JUDGED_MARK`). A value that is not a list is
-    ``<key>.deniedCommands``."""
-    out: list[str] = []
+def denied_command_items(tools_settings: Any, policy: Any = None) -> list[dict[str, Any]]:
+    """Uncarried denies with raw values and classification separate from display text.
+
+    ``whole`` names a malformed list; ``past_bound`` distinguishes a readable
+    entry beyond the record limit from one the gate can actually check.
+    """
+    out: list[dict[str, Any]] = []
     if not isinstance(tools_settings, dict):
         return out
     globs = shell_deny_globs(policy)
@@ -240,23 +258,58 @@ def unread_denied_commands(tools_settings: Any, policy: Any = None) -> list[str]
             continue
         entries = settings["deniedCommands"]
         if not isinstance(entries, list):
-            out.append(f"{key}.deniedCommands")
+            out.append(
+                dict(
+                    key=f"{key}.deniedCommands",
+                    entry=entries,
+                    conditional=False,
+                    past_bound=False,
+                    whole=True,
+                )
+            )
             continue
         for raw in entries:
-            shown = raw if isinstance(raw, str) and raw.isprintable() else json.dumps(raw)
-            # KAS refuses an entry it carries, so only the rest can go unenforced.
-            carried = isinstance(raw, str) and shell_deny_carried(raw, globs)
-            if not _refusable_deny(raw):
-                if not carried:
-                    out.append(f"{key}.deniedCommands: {shown}")
-            elif raw not in kept and len(kept) >= _MAX_DENIES:
-                if not carried:
-                    out.append(f"{key}.deniedCommands: {shown} (past the first {_MAX_DENIES})")
-            else:
+            readable = _refusable_deny(raw)
+            past = readable and raw not in kept and len(kept) >= _MAX_DENIES
+            if readable and not past:
                 kept.add(raw)
-                if not carried:
-                    out.append(f"{key}.deniedCommands: {shown}{GATE_JUDGED_MARK}")
+            if not (isinstance(raw, str) and shell_deny_carried(raw, globs)):
+                out.append(
+                    dict(
+                        key=f"{key}.deniedCommands",
+                        entry=raw,
+                        conditional=readable and not past,
+                        past_bound=past,
+                        whole=False,
+                    )
+                )
     return out
+
+
+def deny_entry_text(item: dict[str, Any]) -> str:
+    """The authored entry for display, or its key when the whole list is malformed."""
+    if item["whole"]:
+        return str(item["key"])
+    raw = item["entry"]
+    return raw if isinstance(raw, str) and raw.isprintable() else json.dumps(raw)
+
+
+def denied_command_notice(item: dict[str, Any]) -> str:
+    """Format one structured deny for display; callers never parse this text."""
+    if item["whole"]:
+        return str(item["key"])
+    if item["past_bound"]:
+        suffix = f" (past the first {_MAX_DENIES})"
+    elif item["conditional"]:
+        suffix = GATE_JUDGED_MARK
+    else:
+        suffix = ""
+    return f"{item['key']}: {deny_entry_text(item)}{suffix}"
+
+
+def unread_denied_commands(tools_settings: Any, policy: Any = None) -> list[str]:
+    """Display-only compatibility view of :func:`denied_command_items`."""
+    return [denied_command_notice(item) for item in denied_command_items(tools_settings, policy)]
 
 
 #: Marks a notice item the gate refuses, one command of a chain at a time; a
@@ -418,3 +471,68 @@ def switched_spec_denies(custom_agents: Any, mode_id: str, cwd: str) -> SpecDeni
     from kiro_crew.acp.kas_agents import _switched_entry
 
     return _entry_spec_denies(_switched_entry(custom_agents, mode_id), cwd)
+
+
+def unjudged_denied_commands(
+    tools_settings: Any, policy: Any = None, *, conditional: bool = False
+) -> list[str]:
+    """Authored denies the gate cannot check, for the Add-abilities notice.
+
+    With *conditional*, the gate-only entries instead: the gate checks those only
+    in a command ``spec_denied_gate.shell_denies_match`` can split, so a Bot's
+    worker holds every other command that is not read-only for them.
+    """
+    settings, _dropped = canonical_tools_settings(tools_settings)
+    return list(
+        dict.fromkeys(
+            deny_entry_text(item)
+            for item in denied_command_items(settings, policy)
+            if item["conditional"] is conditional
+        )
+    )
+
+
+def with_unjudged_denies(
+    custom_agents: list[dict[str, Any]], agent_id: str, spec: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Record structured denies for the Bot worker, never on the KAS wire.
+
+    Conditional entries use the refusal row's shared judge; other entries hold
+    every non-read-only command. Authored text never carries classification.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in custom_agents:
+        if isinstance(entry, dict) and entry.get("id") == agent_id:
+            settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
+            unjudged = denied_command_items(settings, entry.get("permissions"))
+            if unjudged:
+                entry = {**entry, CREW_UNJUDGED_DENIES_KEY: unjudged}
+        out.append(entry)
+    return out
+
+
+def _entry_unjudged_denies(entry: Any) -> tuple[dict[str, Any] | str, ...]:
+    """One projected entry's :data:`CREW_UNJUDGED_DENIES_KEY` list; a malformed one
+    is read as one unjudged entry, so the gate still holds the shell."""
+    if not isinstance(entry, dict) or CREW_UNJUDGED_DENIES_KEY not in entry:
+        return ()
+    from kiro_crew.agent_sdk.kas_tool_view import worker_deny_records
+
+    return worker_deny_records(entry[CREW_UNJUDGED_DENIES_KEY])
+
+
+def projected_unjudged_denies(
+    custom_agents: Any, agent_id: str
+) -> tuple[dict[str, Any] | str, ...]:
+    """*agent_id*'s registered entry's unjudged denies, matched like
+    :func:`projected_spec_denies`."""
+    from kiro_crew.acp.kas_agents import _registered_entry
+
+    return _entry_unjudged_denies(_registered_entry(custom_agents, agent_id))
+
+
+def switched_unjudged_denies(custom_agents: Any, mode_id: str) -> tuple[dict[str, Any] | str, ...]:
+    """Those once a KAS mode switch moves the session to *mode_id*."""
+    from kiro_crew.acp.kas_agents import _switched_entry
+
+    return _entry_unjudged_denies(_switched_entry(custom_agents, mode_id))

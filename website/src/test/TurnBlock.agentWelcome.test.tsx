@@ -54,6 +54,20 @@ describe('a collapsed turn', () => {
     expect(screen.getByTestId('row-notice').closest('[data-collapsed="true"]')).toBeNull()
   })
 
+  it('keeps the no-tools diagnosis visible beside the greeting after the answer completes', () => {
+    seq = 0
+    const diagnosis = 'This agent lists no tools. Choose its tools.'
+    const { container } = collapsedTurn([
+      { ...notice({ kind: 'agent_no_tools' }), content: diagnosis },
+      welcome(),
+      { role: 'assistant', content: ANSWER, ts: '90' },
+    ])
+    expect(screen.getByText(diagnosis).closest('[data-collapsed="true"]')).toBeNull()
+    expect(screen.getByText(GREETING).closest('[data-collapsed="true"]')).toBeNull()
+    expect(screen.getByText(ANSWER)).toBeTruthy()
+    expect(container.querySelectorAll('[data-collapsed="true"]')).toHaveLength(0)
+  })
+
   it('folds the same row when it carries no agent_welcome tag', () => {
     // The tag is the whole exemption: an untagged notice before the answer folds.
     seq = 0

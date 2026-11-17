@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
     from kiro_crew.dashboard.chat_turn.native_cards import (
         NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        _keep_background_open,
         _native_subagent_close_all,
     )
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
@@ -759,8 +760,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 )
     # Turn-end diagnostics. Read only from `event`, which nothing in
     # this arm mutates, so the position is free — kept below the
-    # consumption gate because that gate's adjacency to the arm's start
-    # is pinned by test_subagent_delivery_ttl_anchor.
+    # consumption gate, which must stay at the arm's start
+    # (test_subagent_delivery_ttl_anchor pins when consumption is reported).
     # `synthetic_completion` is readable ONLY here, and the
     # empty-response verdict that needs it runs in _turn_settle_answer.
     _saw_terminal_event = True
@@ -774,13 +775,17 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # unfinished at the cut may count toward timeout attribution
     # (terminal entries linger in the tracker for reconnect
     # replay and would corrupt the series).
-    _children_unfinished = any(not _i.get("done") for _i in _native_tracker.values())
+    _children_unfinished = any(
+        not _i.get("done") and not _i.get("background") for _i in _native_tracker.values()
+    )
     # Safety net: complete any native subagent cards still marked
     # running at turn end (in case a terminal status was missed),
     # so cards don't stay stuck "running". Only a raw end_turn counts
     # as a normal landing; a cancel, refusal or synthesized completion
     # cut its children off, so their cards close as interrupted.
     _landed_normally = event.stop_reason == STOP_REASON_END_TURN and not event.synthetic_completion
+    # A background card the harness still runs outlives any end Crew did not cut short.
+    _keep_background_open(turn, event.stop_reason or "")
     _native_subagent_close_all(
         state,
         slot,
@@ -1366,7 +1371,7 @@ async def _persist_abnormal_turn_usage(
             elapsed_ms=elapsed_ms,
             model_source=client,
             delivered=delivered,
-            # Abnormal-turn histogram sampling is out of this change's scope
+            # Abnormal-turn histogram sampling is out of scope here
             # (the usage ROW is the deliverable); opt the row's persist out of
             # the metric so it does not file a sample under slot.key, which for a
             # linked-channel turn would mis-attribute to session_source=dashboard.

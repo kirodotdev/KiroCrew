@@ -313,8 +313,9 @@ _UPDATE_BUSY_RETRY_SECS = 300.0
 #: How long the pre-restart drain waits for callbacks and refusal writes to
 #: become durable before deferring the restart. Named so a test about the
 #: fetch/reset/venv SEQUENCE can shorten it (the drain polls at 10ms to the
-#: deadline, 30s of sleeping per test otherwise); the value itself stays pinned
-#: by the test that IS about it (``test_restart_fences_then_closes_and_final_drains``).
+#: deadline, 30s of sleeping per test otherwise); the value itself is pinned by
+#: ``test_a_restart_gives_an_unsettled_callback_thirty_seconds_then_defers``
+#: (test_update_restart_respects_work.py).
 _UPDATE_DRAIN_TIMEOUT_SECS = 30.0
 
 

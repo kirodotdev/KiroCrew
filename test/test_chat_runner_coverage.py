@@ -55,6 +55,7 @@ from chat_runner_coverage_helpers import (  # noqa: F401
     _slot,
     _statusless_coding_tool_call,
 )
+from redaction_structured_cases import link_token
 
 from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
@@ -62,6 +63,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic, synth
 
 
 class TestPromptSubmitTranscriptRead:
@@ -895,22 +897,25 @@ class TestRunChatWakaTimeCodingAccounting:
         assert sent_beats == []
 
 
+#: Two distinct link tokens whose claims decode, the shape the plan redacts.
+_LINK_A = link_token(seed=150)
+_LINK_B = link_token(seed=151)
+
 #: Fixture tokens for the glued-credential cases (made up, not real keys).
 _AKIA_SAMPLE = "AKIA" + "5Q7XTR2M9LBC4WZN"
 _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 _PEM_END = "-----END " + "PRIVATE KEY-----"
-_GLUED_PAT_A = "ghp_" + "eG7e5uHyQp2Lw9Rk4Ts8Vb1Nx6Jm3Cd0Zf5"
-_GLUED_PAT_B = "ghp_" + "Kd8Wq2Hr6Tz0Lp4Ys9Mb3Vn7Xc1Jg5Rf2Pa"
-_GLUED_SK = (
-    "sk-ant-api03-" + "upB1YZZcv7k7Qw3Er5Ty8Ui0Op2As4Df6Gh8Jk1Lz3Xc5Vb7Nm9Qa2Ws4" + "-CaI4AA"
-)
+_GLUED_PAT_A = github_classic(seed=83)
+_GLUED_PAT_B = github_classic(seed=84)
+#: An Anthropic key in its published form: a body of 80 to 200 base64url characters.
+_GLUED_SK = "sk-ant-api03-" + synth(86, seed=85) + "-CaI4AA"
 
 
-class TestBlockedLinkCardRecords:
-    """What the dashboard's blocked-link card lists after a flush.
+class TestSegmentFlushRecords:
+    """What a segment flush saves, and the credential records it keeps.
 
-    Counts cannot tie a placeholder to a record (``BlockedLinkCard`` in
-    ``website/src/components/RedactionCards.tsx``), so these pin each record's own content.
+    A URL is never replaced whole: only a credential value in it is masked, so a
+    flush writes no blocked-link record.
     """
 
     H = "h.example-sink.net"
@@ -918,172 +923,30 @@ class TestBlockedLinkCardRecords:
 
     @staticmethod
     def _flush(deltas: list[str]) -> tuple[str, list[dict]]:
+        """``(saved text, credential records)`` for *deltas* streamed and flushed."""
         slot = _slot()
         text = ""
         for delta in deltas:
             safe, removed = chat_runner._redact_delta(delta)
             chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
             text += safe
-        redacted, links, _ = chat_runner._redact_segment(slot, text)
-        return redacted, links
+        return chat_runner._redact_segment(slot, text)
 
-    @staticmethod
-    def _flush_ordered(deltas: list[str]) -> tuple[str, list[dict], list[bool]]:
-        slot = _slot()
-        text = ""
-        for delta in deltas:
-            safe, removed = chat_runner._redact_delta(delta)
-            chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
-            text += safe
-        ordered: list[bool] = []
-        redacted, links, _ = chat_runner._redact_segment(slot, text, _ordered_out=ordered)
-        return redacted, links, ordered
+    @classmethod
+    def _assert_saves_nothing_a_delta_hid(cls, deltas: list[str], *values: str) -> None:
+        """The segment is withheld, or saved holding none of *values* and no run of
+        text the streamed redaction hid. A checksum decides a GitHub token, so two
+        glued ones are each read whole and the save usually needs no withholding."""
+        from kiro_crew.dashboard.chat_turn import segment_flush
 
-    def test_two_links_on_one_host_cut_across_deltas_are_vouched_in_order(self):
-        """The whole-text pass writes the records in reply order, so the row
-        vouches it and both addresses come back in place once the host is allowed."""
-        from kiro_crew.security.exfil import restore_allowed_links
-
-        first = f"https://{self.H}/first?q=" + "a" * 250
-        second = f"https://{self.H}/second?q=" + "b" * 250
-        content, links, ordered = self._flush_ordered(
-            ["one ", first[:40], first[40:], " two ", second[:30], second[30:], " end"]
-        )
-        assert [r["url"] for r in links] == [first, second]
-        assert ordered == [True]
-        meta = chat_runner._segment_row_meta(_slot(), links, links_ordered=True)
-        assert meta is not None and meta[chat_runner.BLOCKED_LINKS_ORDERED_KEY] is True
-        out, left = restore_allowed_links(content, links, frozenset({self.H}), ordered=True)
-        assert out == f"one {first} two {second} end"
-        assert left == []
-
-    def test_a_link_carrying_another_blocked_link_never_lands_in_its_place(self):
-        """``S B C C`` from review: B on the allowed host carries S (another host)
-        in its query. The allowed host must keep its placeholders: B, a redirect
-        carrying the sink address, must never be put back where a C stood."""
-        from kiro_crew.security.exfil import restore_allowed_links
-
-        allowed = "allowed.example"
-        sink = f"https://{self.H}/x?d=" + "s" * 260
-        redirect = f"https://{allowed}/r?next={sink}"
-        dash = f"https://{allowed}/c?q=" + "c" * 250
-        content, links, ordered = self._flush_ordered([f"{sink} {redirect} {dash} {dash}"])
-        assert [r["url"] for r in links if r["domain"] == allowed] == [redirect, dash]
-        out, _ = restore_allowed_links(
-            content, links, frozenset({allowed}), ordered=ordered == [True]
-        )
-        assert out == content
-        assert redirect not in out and sink not in out
-
-    def test_a_link_swallowed_by_a_credential_span_is_not_vouched_in_order(self):
-        """``A B B`` with A inside a PEM block: the link pass records A, then the
-        credential pass removes the block and A's placeholder with it. The host
-        holds records [A, B] and two placeholders, both B's, so pairing by order
-        would put A where the first B stood: the row must not vouch its order and
-        the host keeps its placeholders."""
-        from kiro_crew.security.exfil import restore_allowed_links
-
-        allowed = "allowed.example"
-        inner = f"https://{allowed}/a?q=" + "a" * 250
-        dash = f"https://{allowed}/b?q=" + "b" * 250
-        # The PEM markers are assembled so no literal key header sits in source.
-        label = "RSA " + "PRIVATE KEY"
-        pem = f"-----BEGIN {label}-----\nMIIE {inner} xyz\n-----END {label}-----"
-        redacted, links, ordered = self._flush_ordered([f"key:\n{pem}\nthen {dash} and {dash} end"])
-        assert [r["url"] for r in links] == [inner, dash]
-        assert redacted.count(f"[REDACTED: suspicious URL to {allowed}]") == 2
-        assert ordered == [False]
-        assert chat_runner.BLOCKED_LINKS_ORDERED_KEY not in (
-            chat_runner._segment_row_meta(_slot(), links) or {}
-        )
-        out, _ = restore_allowed_links(
-            redacted, links, frozenset({allowed}), ordered=ordered == [True]
-        )
-        assert out == redacted
-
-    def test_one_address_on_its_host_is_its_one_record(self):
-        url = f"https://{self.H}/only?q=" + "a" * 250
-        content, links = self._flush(["See ", url[:40], url[40:], " now."])
-        assert content.count(f"[REDACTED: suspicious URL to {self.H}]") == 1
-        assert [r["url"] for r in links] == [url]
-
-    @pytest.mark.parametrize(
-        "cut_before",
-        [
-            "?X-Amz-Algorithm",
-            "&X-Amz-Credential",
-            "IOSFODNN7",
-            "&X-Amz-Date",
-            "&X-Amz-Security-Token",
-            "&X-Amz-Signature",
-            "bbbb",
-        ],
-    )
-    def test_presigned_link_cut_by_a_delta_saves_as_one_placeholder(self, cut_before):
-        """Wherever a delta boundary cuts a blocked presigned link, the saved
-        reply (what a copy and a channel post read) holds one placeholder and
-        none of the link's query."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        url = (
-            f"https://{host}/report.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={self.KEY}"
-            "%2F20261008%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261008T000000Z"
-            "&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Security-Token="
-            + "T" * 300
-            + "&X-Amz-Signature="
-            + "b" * 64
-        )
-        cut = url.index(cut_before)
-        content, _ = self._flush(["Link: ", url[:cut], url[cut:], " . done"])
-        assert content == f"Link: [REDACTED: suspicious URL to {host}] . done"
-
-    def test_presigned_links_cut_anywhere_save_no_query(self):
-        """A sweep of delta cuts through three presigned layouts (every 7th single
-        cut and fixed sets of two to five cuts): no saved reply keeps the session
-        token, the signature or any other query text of the link."""
-        import random
-
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        cred = f"X-Amz-Credential={self.KEY}%2F20261008%2Fus-east-1%2Fs3%2Faws4_request"
-        layouts = [
-            f"https://{host}/r.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256&{cred}&X-Amz-Date=20261008T000000Z"
-            "&X-Amz-Expires=3600&X-Amz-Security-Token="
-            + "T" * 300
-            + "&X-Amz-Signature="
-            + "b" * 64,
-            f"https://{host}/r.csv?X-Amz-Security-Token="
-            + "T" * 300
-            + f"&{cred}&X-Amz-Signature="
-            + "b" * 64,
-            f"https://{host}/r.csv?{cred}&X-Amz-Signature=" + "b" * 64 + "&leak=1",
-        ]
-        rng = random.Random(20769)
-        for url in layouts:
-            cut_sets = [[c] for c in range(1, len(url), 7)]
-            cut_sets += [
-                sorted(rng.sample(range(1, len(url)), k)) for k in (2, 3, 5) for _ in range(10)
-            ]
-            for cuts in cut_sets:
-                bounds = [0, *cuts, len(url)]
-                pieces = [url[a:b] for a, b in zip(bounds, bounds[1:])]
-                content, _ = self._flush(["Link: ", *pieces, " . done"])
-                assert "TTTT" not in content and "bbbb" not in content, cuts
-                assert content == f"Link: [REDACTED: suspicious URL to {host}] . done", cuts
-
-    def test_an_echoed_same_host_placeholder_does_not_keep_a_cut_link_tail(self):
-        """The reply already quotes a placeholder for the host, then a blocked
-        link on it is cut before ``&k=<token>``: the saved reply keeps neither
-        the session token nor the signature."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        token = "ghp_" + "A1b2C3d4E5" * 3 + "f6G7h8"
-        url = (
-            f"https://{host}/r?X-Amz-Credential={self.KEY}%2Fx&k={token}"
-            "&X-Amz-Security-Token=" + "T" * 300 + "&X-Amz-Signature=" + "b" * 64
-        )
-        cut = url.index("&k=")
-        echoed = f"Earlier: [REDACTED: suspicious URL to {host}]. Now: "
-        content, _ = self._flush([echoed, url[:cut], url[cut:], " . done"])
-        assert "TTTT" not in content and "bbbb" not in content
-        assert content.endswith(f"[REDACTED: suspicious URL to {host}] . done")
+        content, records = cls._flush(deltas)
+        if content == chat_runner._SEGMENT_UNCHECKED_TEXT:
+            assert records == []
+            return
+        assert all(value not in content for value in values), content
+        shown = "".join(chat_runner._redact_delta(delta)[0] for delta in deltas)
+        per_delta, _ = segment_flush._redact_segment_text(_slot(), shown)
+        assert not segment_flush._saved_text_shows_more(content, per_delta), content
 
     def test_two_echoed_placeholders_do_not_shelter_a_cut_link_tail(self):
         """Two quoted same-host placeholders, then a presigned link cut before
@@ -1113,19 +976,6 @@ class TestBlockedLinkCardRecords:
         content, _ = self._flush(deltas)
         assert "TTTT" not in content and "bbbb" not in content
 
-    def test_a_nested_link_cut_inside_a_blocked_query_saves_no_tail(self):
-        """A blocked link whose query holds a nested ``https://`` address, cut
-        right before it and again inside its data: no query text is saved."""
-        url = (
-            "https://host.example/r?u=https://other.example/?d="
-            + "QUJD" * 60
-            + "XYZsession-"
-            + "Z" * 40
-        )
-        a, b = url.index("https://other"), url.index("XYZ")
-        content, _ = self._flush(["see ", url[:a], url[a:b], url[b:], " ok"])
-        assert "XYZ" not in content and "ZZZZ" not in content
-
     def test_a_nested_presigned_link_behind_a_long_outer_query_saves_no_tail(self):
         """An outer link ending at ``?pad=``, 210 filler characters and ``&u=``,
         a nested presigned link through its key, then its token and signature,
@@ -1148,54 +998,6 @@ class TestBlockedLinkCardRecords:
         content, _ = self._flush(deltas)
         assert "TTTT" not in content and "bbbb" not in content
 
-    def test_a_credential_pass_that_eats_the_address_head_saves_no_tail(self):
-        """``aws_secret_access_key=`` then a presigned link, cut right before its
-        ``?``: per delta the credential pass swallows the scheme and host with
-        the value; the saved copy is redacted whole, so no query is saved."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        url = (
-            f"https://{host}/r.csv?X-Amz-Credential={self.KEY}%2Fx&X-Amz-Security-Token="
-            + "T" * 300
-            + "&X-Amz-Signature="
-            + "b" * 64
-        )
-        q = url.index("?")
-        for label in ("aws_secret_access_key=", "aws_secret_access_key: "):
-            content, _ = self._flush([f"Set {label}{url[:q]}", url[q:], " done"])
-            assert "X-Amz" not in content and "TTTT" not in content and "bbbb" not in content
-            # The per-delta credential value holds the host, so the saved
-            # placeholder's host pieces touch a removed credential and nothing
-            # but main's own text may vouch for them: the segment is withheld.
-            assert content == chat_runner._SEGMENT_UNCHECKED_TEXT
-
-    def test_a_credential_label_that_damages_a_placeholder_saves_no_tail(self):
-        """``aws_secret_access_key: <presigned link>`` cut before
-        ``&X-Amz-Signature``: the label's credential pass eats the placeholder's
-        ``[REDACTED:`` head, and the signature after it is still not saved."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        url = f"https://{host}/r.csv?X-Amz-Credential={self.KEY}%2Fx&X-Amz-Signature=" + "b" * 64
-        cut = url.index("&X-Amz-Signature")
-        for label in ("aws_secret_access_key: ", "aws_secret_access_key "):
-            content, _ = self._flush([f"Set {label}{url[:cut]}", url[cut:], " done"])
-            assert "bbbb" not in content and "X-Amz" not in content, content
-
-    def test_a_damaged_nested_placeholder_inside_an_outer_link_saves_no_tail(self):
-        """An outer link's query holds ``aws_secret_access_key=`` and a nested
-        presigned link through its key, then the signature in its own delta:
-        the damaged nested placeholder is restored before the outer fold, and
-        the signature is not saved."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        nested = f"https://{host}/r?X-Amz-Credential={self.KEY}%2Fx"
-        for label in ("aws_secret_access_key=", "aws_secret_access_key: "):
-            deltas = [
-                "see https://outer.example/r?u=",
-                f"{label}{nested}",
-                "&X-Amz-Signature=" + "b" * 64,
-                " ok",
-            ]
-            content, _ = self._flush(deltas)
-            assert "bbbb" not in content and "X-Amz" not in content, content
-
     def test_an_unrelated_placeholder_glued_before_a_cut_link_shelters_nothing(self):
         """A placeholder for another host glued straight before a presigned
         link cut at ``&X-Amz-Security-Token``: no token or signature is saved."""
@@ -1215,7 +1017,7 @@ class TestBlockedLinkCardRecords:
         """With no blocked link on a placeholder's host, the folds change
         nothing: the saved text equals one pass of both removers over it, even
         with quoted placeholders and a blocked link on another host."""
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact_credentials
 
         host = "my-bucket.s3.us-east-1.amazonaws.com"
         ph = f"[REDACTED: suspicious URL to {host}]"
@@ -1225,8 +1027,7 @@ class TestBlockedLinkCardRecords:
             f"Quoted `{ph}`. Plain https://example.com/a?b=1 here.",
             "No links at all, just [REDACTED: credential] text.",
         ):
-            once, _ = redact_exfiltration_urls(text)
-            once, _ = redact_credentials(once)
+            once, _ = redact_credentials(text)
             content, _ = self._flush([text])
             assert content == once
 
@@ -1282,7 +1083,7 @@ class TestBlockedLinkCardRecords:
         """Quoted placeholders, a kept same-host link with a masked token and a
         cut blocked link in one segment: the saved text is the raw copy through
         both removers once, so nothing next to a placeholder is lost."""
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact_credentials
 
         host = "my-bucket.s3.us-east-1.amazonaws.com"
         ph = f"[REDACTED: suspicious URL to {host}]"
@@ -1296,7 +1097,7 @@ class TestBlockedLinkCardRecords:
             url[cut:],
             " end",
         ]
-        once = redact_credentials(redact_exfiltration_urls("".join(deltas))[0])[0]
+        once = redact_credentials("".join(deltas))[0]
         content, _ = self._flush(deltas)
         assert content == once
         assert content.startswith(f"Earlier {ph}was blocked; also {ph} stays.")
@@ -1334,7 +1135,7 @@ class TestBlockedLinkCardRecords:
         tag = "[REDACTED: credential]"
         chat_runner._accumulate_segment_raw(slot, "world", tag, [("world", tag)])
         result = chat_runner._redact_segment(slot, f"hello {tag}")
-        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [], [])
+        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
 
     def test_a_kept_removed_value_fails_closed(self):
         slot = _slot()
@@ -1342,7 +1143,7 @@ class TestBlockedLinkCardRecords:
         chat_runner._accumulate_segment_raw(slot, "world", tag, [("world", tag)])
         with patch.object(chat_runner, "_kept_removed_values", return_value=["world"]):
             result = chat_runner._redact_segment(slot, tag)
-        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [], [])
+        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
 
     def test_a_token_repeated_inside_a_blocked_link_is_never_saved(self):
         """Token A only a per-delta pass removes, then a
@@ -1350,8 +1151,8 @@ class TestBlockedLinkCardRecords:
         of A in the raw copy would put a space inside the link, cut it before
         its query and save B with no record. The raw copy is never masked, so
         the segment is withheld and neither token is saved anywhere."""
-        a = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
-        b = "eyJ" + "x-y_" * 25 + "." + "e" * 21 + "-" + "f" * 21
+        a = _LINK_A
+        b = _LINK_B
         deltas = [
             "prefix.",
             a,
@@ -1363,36 +1164,16 @@ class TestBlockedLinkCardRecords:
             assert all(token not in str(r) for r in links)
 
     def test_each_removed_value_is_checked_on_its_own(self):
-        """A token glued to the one before it is removed whole only by a
-        per-delta pass, and the same delta also redacts a PAT. The whole-text
-        pass's first match runs into the glued token and leaves its body in the
-        text, so the saved text shows more than the streamed redaction did: the
-        segment is withheld and neither value is saved."""
-        first = "ghp_" + "Ab1" * 12
-        token = "ghp_" + "Zq7" * 12
-        pat = "ghp_" + "A1b2C3d4E5" * 3 + "f6G7h8"
+        """A token glued to the one before it, and a PAT in the same delta: each
+        value a per-delta pass removed is checked on its own, so neither is saved."""
+        first = github_classic(seed=80)
+        token = github_classic(seed=81)
+        pat = github_classic(seed=82)
         deltas = [f"tokens: {first}", f"{token} and {pat}", " end"]
         shown, removed = chat_runner._redact_delta(deltas[1])
         assert token not in shown and pat not in shown
         assert token in [value for value, _ in removed]
-        content, _ = self._flush(deltas)
-        assert content == chat_runner._SEGMENT_UNCHECKED_TEXT
-        assert token not in content and pat not in content
-
-    def test_a_record_holding_a_value_only_a_per_delta_pass_removed_fails_closed(self):
-        """A link token glued to a word, which only a per-delta pass removes
-        (the whole-text pass reads the letter before ``eyJ`` as part of a word),
-        inside a blocked link's query, must not be saved in the link's record
-        (``meta.blocked_links[].url``) any more than in the text. Any record
-        string holding such a value fails the flush closed."""
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
-        deltas = [f"https://{self.H}/r?q=prefix", token, "&padding=" + "z" * 80]
-        shown, removed = chat_runner._redact_delta(deltas[1])
-        assert token not in shown and token in [value for value, _ in removed]
-        content, links = self._flush(deltas)
-        assert token not in content
-        assert all(token not in str(r) for r in links)
-        assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
+        self._assert_saves_nothing_a_delta_hid(deltas, first, token, pat)
 
     def test_a_link_token_in_a_blocked_link_query_is_saved_in_neither_text_nor_record(self):
         """A link token after ``.`` inside a blocked link's query, split across
@@ -1401,14 +1182,15 @@ class TestBlockedLinkCardRecords:
         segment saves the link's placeholder. The record check for a value only
         a per-delta pass removed is covered by the
         ``_records_hold_removed_credential`` tests below."""
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        token = _LINK_A
         deltas = [f"https://{self.H}/r?q=prefix.", token, "&padding=" + "z" * 80]
         shown, removed = chat_runner._redact_delta(deltas[1])
         assert token not in shown and token in [value for value, _ in removed]
         content, links = self._flush(deltas)
         assert token not in content
         assert all(token not in str(r) for r in links)
-        assert content == f"[REDACTED: suspicious URL to {self.H}]"
+        # Only the value is masked: the URL head stays readable.
+        assert content.startswith(f"https://{self.H}/r?q=prefix.")
 
     def test_a_check_past_the_work_ceiling_fails_closed_without_scanning(self):
         """Tens of thousands of removed values would cost seconds of substring
@@ -1422,29 +1204,20 @@ class TestBlockedLinkCardRecords:
             patch.object(chat_runner, "_kept_removed_values") as kept,
         ):
             result = chat_runner._redact_segment(slot, f"hello {tag}")
-        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [], [])
+        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
         kept.assert_not_called()
         removed = {"tok": tag}
         with patch.object(chat_runner, "_SEGMENT_CHECK_MAX_WORK", 3):
-            assert chat_runner._records_hold_removed_credential([{"url": "abcd"}], removed)
-            assert not chat_runner._records_hold_removed_credential([{"url": "abc"}], removed)
-
-    def test_a_record_check_reads_quoted_fields_and_standalone_credentials_only(self):
-        tag = chat_runner.REDACTED_CREDENTIAL_TAG
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
-        check = chat_runner._records_hold_removed_credential
-        link_tag = "[REDACTED: suspicious URL to x.test]"
-        assert not check([{"url": "https://x.test/a"}], {"https://x.test/a": link_tag})
-        for field in ("url", "path", "domain"):
-            assert check([{field: f"https://x.test/r?q=.{token}&z=1"}], {token: tag})
-        assert not check([{"rule": token}], {token: tag})
-        assert not check([{"url": token}], {token: link_tag})
+            assert chat_runner._records_hold_removed_credential(removed, [{"view_command": "abcd"}])
+            assert not chat_runner._records_hold_removed_credential(
+                removed, [{"view_command": "abc"}]
+            )
 
     def test_a_credential_record_quoting_a_removed_value_fails_closed(self):
         """A credential record's source command and view command quote a tool
         command; a removed credential there fails the flush closed too."""
         tag = chat_runner.REDACTED_CREDENTIAL_TAG
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        token = _LINK_A
         check = chat_runner._records_hold_removed_credential
         command = f"printf prefix.{token}"
         base = {"ordinal": 0, "rule": "github_pat", "label": "", "profile_command": None}
@@ -1454,26 +1227,20 @@ class TestBlockedLinkCardRecords:
             dict(base, source={"type": "file", "path": f"/x/{token}", "section": None}),
         ]
         for record in quoting:
-            assert check([], {token: tag}, [record])
+            assert check({token: tag}, [record])
         clean = dict(base, source={"type": "command", "command": "printenv A"}, view_command=None)
-        assert not check([], {token: tag}, [clean])
-        assert not check([], {token: tag}, [dict(base, rule=token, source=None, view_command=None)])
+        assert not check({token: tag}, [clean])
+        assert not check({token: tag}, [dict(base, rule=token, source=None, view_command=None)])
 
-    def test_a_credential_a_glued_neighbour_cut_into_withholds_the_segment(self):
-        """Two glued tokens cut between them: each delta removes its whole
-        token, but the whole-text match of the first swallows the second's
-        head. The rest of the second is not saved; the segment is withheld."""
-        first, second = "ghp_" + "Ab1" * 12, "ghp_" + "Zq7" * 12
-        content, links = self._flush(["tokens: " + first, second + " end"])
-        assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
+    def test_a_credential_a_glued_neighbour_cut_into_saves_no_part_of_it(self):
+        """Two glued tokens cut between them: each delta removes its whole token,
+        and no part of the second is saved."""
+        first, second = github_classic(seed=80), github_classic(seed=81)
+        self._assert_saves_nothing_a_delta_hid(["tokens: " + first, second + " end"], first, second)
 
     @pytest.mark.parametrize(
         "deltas",
         [
-            pytest.param(
-                [_GLUED_PAT_A[:9], _GLUED_PAT_A[9:] + _GLUED_SK + " done"],
-                id="head-swallowed-and-tail-masked",
-            ),
             pytest.param(
                 [
                     "x " + _GLUED_PAT_A,
@@ -1527,8 +1294,8 @@ class TestBlockedLinkCardRecords:
             ),
             pytest.param(
                 [
-                    "x [REDACTED: eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21,
-                    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end",
+                    "x [REDACTED: " + _LINK_A,
+                    f"{SAMPLE_AWS_SECRET} end",
                 ],
                 id="a-forged-placeholder-opener",
             ),
@@ -1543,19 +1310,17 @@ class TestBlockedLinkCardRecords:
             ),
         ],
     )
-    def test_text_a_delta_hid_and_a_glued_match_exposes_withholds_the_segment(self, deltas):
-        """A glued neighbour's whole-text match swallows one end of a credential
-        and another match the other end, or the tail also appears elsewhere:
-        no removed value is left whole, but its body is. The run check finds
-        text the streamed redaction hid, and the segment is withheld."""
-        content, links = self._flush(deltas)
-        assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
+    def test_text_a_delta_hid_and_a_glued_match_exposes_is_never_saved(self, deltas):
+        """A glued neighbour, a quoted tail or a forged placeholder around a
+        credential: the save holds no value a delta removed and no run the
+        streamed redaction hid, or the segment is withheld."""
+        self._assert_saves_nothing_a_delta_hid(deltas, _GLUED_PAT_A, _GLUED_PAT_B)
 
     def test_a_presigned_link_cut_anywhere_in_two_deltas_saves_no_key(self):
         """Every two-delta cut of a reply with a presigned link: the saved reply
         is either main's per-delta text redacted whole or the withheld notice,
-        and never holds the key or a run main's save hid."""
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        and never holds a run main's save hid."""
+        from kiro_crew.security import redact_credentials
 
         host = "my-bucket.s3.us-east-1.amazonaws.com"
         url = (
@@ -1567,10 +1332,11 @@ class TestBlockedLinkCardRecords:
         for cut in range(1, len(reply) - 1, 3):
             deltas = [reply[:cut], reply[cut:]]
             content, _ = self._flush(deltas)
-            assert self.KEY[4:] not in content, cut
+            # An AWS key ID is an Identifier with the structured detectors on, so
+            # the key itself may stay visible; no cut may show more than main's save.
             if content != chat_runner._SEGMENT_UNCHECKED_TEXT:
                 streamed = "".join(chat_runner._redact_delta(d)[0] for d in deltas)
-                main = redact_credentials(redact_exfiltration_urls(streamed)[0])[0]
+                main = redact_credentials(streamed)[0]
                 assert not chat_runner._saved_text_shows_more(content, main), cut
 
     def test_a_record_whose_placeholder_a_later_match_swallowed_is_dropped(self):
@@ -1637,33 +1403,8 @@ class TestBlockedLinkCardRecords:
         saved = [row["content"] for row in slot.messages if row["role"] == "assistant"]
         assert saved and chat_runner._SEGMENT_UNCHECKED_TEXT not in saved
         assert saved[-1].startswith("Here is the plan.") and saved[-1].endswith("Done.")
-        assert "eyJhIjoiYiJ9" not in saved[-1]
-        assert f"[REDACTED: suspicious URL to {self.H}]" in saved[-1]
-
-    @pytest.mark.asyncio
-    async def test_a_blocked_link_extended_into_a_token_form_in_a_later_delta_is_saved_redacted(
-        self, tmp_path
-    ):
-        """A real turn: a blocked link in one delta, then the same link with a
-        session token appended in the next. Each delta alone redacts both; the
-        saved reply must too, with no piece of the token's tail."""
-        from kiro_crew.acp.types import EVENT_TEXT_CHUNK
-
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-        short = f"https://{self.H}/v1/ingest?d=" + "eyJhIjoiYiJ9" * 30
-        longer = short + "&X-Amz-Security-Token=" + "T" * 200
-        chunks = ["See " + short + " and ", longer + " done."]
-        _set_stream(
-            client,
-            [LLMEvent(kind=EVENT_TEXT_CHUNK, text=chunk) for chunk in chunks] + [_complete()],
-        )
-
-        await _drive(state, slot, "hello")
-
-        saved = [row["content"] for row in slot.messages if row["role"] == "assistant"]
-        placeholder = f"[REDACTED: suspicious URL to {self.H}]"
-        assert saved[-1] == f"See {placeholder} and {placeholder} done."
+        # The link is never replaced whole: with no credential in it, it stays readable.
+        assert f"https://{self.H}/x?d=" in saved[-1]
 
     @pytest.mark.parametrize("with_blob", [False, True])
     def test_benign_replies_cut_anywhere_are_saved(self, with_blob):
@@ -1698,109 +1439,9 @@ class TestBlockedLinkCardRecords:
             safe, removed = chat_runner._redact_delta(delta)
             chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
             text += safe
-        with patch.object(
-            chat_runner,
-            "redact_exfiltration_urls_with_records",
-            side_effect=RuntimeError("boom"),
-        ):
+        with patch.object(chat_runner, "_redact_segment_text", side_effect=RuntimeError("boom")):
             result = chat_runner._redact_segment(slot, text)
-        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [], [])
-
-    def test_a_folded_address_leaves_credential_ordinals_on_the_saved_text(self):
-        """A key-cut address folded into its placeholder takes its credential
-        tag with it, so a later token's record points at that token's own tag,
-        not at a literal tag after it."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        url = f"https://{host}/r?X-Amz-Credential={self.KEY}%2Fx&leak=" + "b" * 64
-        k = url.index(self.KEY)
-        token = "ghp_" + "A1b2C3d4E5" * 3 + "f6G7h8"
-        deltas = [
-            "Link: ",
-            url[:k],
-            url[k:],
-            " then ",
-            token[:20],
-            token[20:],
-            " and [REDACTED: credential] end",
-        ]
-        slot = _slot()
-        text = ""
-        for delta in deltas:
-            safe, removed = chat_runner._redact_delta(delta)
-            chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
-            text += safe
-        content, _, redactions = chat_runner._redact_segment(slot, text)
-        assert content == (
-            f"Link: [REDACTED: suspicious URL to {host}] then [REDACTED: credential]"
-            " and [REDACTED: credential] end"
-        )
-        assert [r["ordinal"] for r in redactions] == [0]
-
-    def test_long_query_before_a_delta_cut_key_saves_as_one_placeholder(self):
-        """A query over the length rule streams before the key's own delta: the
-        saved pass blocks the address up to the key's tag, and the rest of the
-        tag and the address after it are still removed."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        url = (
-            f"https://{host}/r.csv?X-Amz-Security-Token="
-            + "T" * 300
-            + f"&X-Amz-Credential={self.KEY}%2F20261008%2Fus-east-1%2Fs3%2Faws4_request"
-            + "&X-Amz-Signature="
-            + "b" * 64
-        )
-        q, k = url.index("?"), url.index(self.KEY)
-        content, _ = self._flush(["Link: ", url[:q], url[q:k], url[k:], " . done"])
-        assert content == f"Link: [REDACTED: suspicious URL to {host}] . done"
-
-    def test_glued_pair_a_credential_tag_and_a_key_split_link_list_every_record(self):
-        # Two same-host long-query addresses glued across a delta, a
-        # credential tag, then a same-host address whose key a delta redacted.
-        g1 = f"https://{self.H}/g1?q=" + "a" * 250
-        g2 = f"https://{self.H}/g2?q=" + "b" * 250
-        deltas = [
-            "Two links: ",
-            g1,
-            g2,
-            " [REDACTED: credential] then ",
-            f"https://{self.H}/other?k=",
-            self.KEY + "&t=x",
-            " end.",
-        ]
-        content, links = self._flush(deltas)
-        assert content != chat_runner._SEGMENT_UNCHECKED_TEXT
-        # The glued pair saves as one address that no single delta blocked, so
-        # its record (which would quote it) is dropped; the placeholder stays.
-        assert content.count(f"[REDACTED: suspicious URL to {self.H}]") >= 1
-        assert links and all(r["path"] for r in links if r["domain"] == self.H)
-
-    @staticmethod
-    def _key_split_presigned_deltas() -> list[str]:
-        """Presigned S3 addresses split at ``&X-Amz-Date`` beside same-host
-        addresses whose key arrives in its own delta. A build that saved each
-        delta's redaction kept a placeholder with the query tail after it (the
-        rows ``website/src/test/fixtures/credInUrl.json`` and
-        ``blockedLinkOneOne.json`` still render)."""
-        host = "my-bucket.s3.us-east-1.amazonaws.com"
-        key = TestBlockedLinkCardRecords.KEY
-        deltas: list[str] = []
-        for i, name in enumerate(("report.csv", "invoice.pdf")):
-            url = (
-                f"https://{host}/{name}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={key}"
-                "%2F20261008%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261008T000000Z"
-                "&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=" + "a" * 64
-            )
-            cut = url.index("&X-Amz-Date")
-            deltas += [f"Link {i + 1}: ", url[:cut], url[cut:], " . "]
-        for name in ("other-a", "other-b"):
-            deltas += [" plain ", f"https://{host}/{name}?X-Amz-Credential=", key + "%2Fx", " . "]
-        return deltas
-
-    def test_key_split_links_are_withheld_not_saved_unredacted(self):
-        """A delta blocked each address's head, but the whole text keeps the
-        address (its key tagged): main's save never showed that address, so
-        under default refuse the segment is withheld, and no key is saved."""
-        content, links = self._flush(self._key_split_presigned_deltas())
-        assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
+        assert result == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
 
     def test_clearing_the_streamed_text_clears_its_raw_copy(self):
         """``_cleared_segment_text`` is how a turn drops its streamed text

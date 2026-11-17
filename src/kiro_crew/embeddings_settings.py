@@ -182,8 +182,21 @@ _INFER_STOP_TIMEOUT_SECS = 30.0
 # the GGUF mapping (~600 MB resident) plus llama.cpp's context buffers (~400 MB),
 # held for the process lifetime once anything embedded. After this many seconds
 # with no embed the model is unloaded; the next embed loads it again. 0 keeps it
-# resident forever. Overridable as memory.embedding_idle_evict_secs.
+# resident forever. Overridable as memory.embedding_idle_evict_secs; the shipped
+# value is "auto", which is this on a machine that is not small.
 _DEFAULT_IDLE_EVICT_SECS = 3600.0
+# A machine with this much physical memory or less is "small", and "auto" means
+# _SMALL_HOST_IDLE_EVICT_SECS there. The loaded model holds about 1.5 GB of a
+# gateway's resident memory, 9% of a 16 GiB machine and 18% of an 8 GiB one. 16 GiB
+# exactly, because a 16 GB machine reports at most 16,384 MiB on every platform
+# (macOS exactly that, Linux and Windows a little less) and the next common size
+# reports over 30,000. See docs/request-for-change/rfc-small-machine-embedding-release.md.
+_SMALL_HOST_MAX_MIB = 16 * 1024
+# Ten minutes, the idle release the resident speech model uses (stt.idle_evict_secs).
+# A person showing up loads the model back before their build needs it
+# (embeddings_shared.warm_embedder_for_person), so the shorter timer costs a reload in
+# the background, not a wait.
+_SMALL_HOST_IDLE_EVICT_SECS = 600.0
 # How many times a person's embed may stop one background text inside the model
 # (``kiro_crew.embeddings_preempt``). A stopped text starts over, so without a
 # bound a steady stream of people's embeds could keep a long text from ever
@@ -338,13 +351,38 @@ def embedding_idle_evict_secs() -> float:
     """Seconds without an embed before the model is unloaded; 0 means never.
 
     Raw ``memory`` section, like the thread counts: read by the evictor thread,
-    which must not pull in the config dataclass graph. A missing, negative or
-    non-numeric value is the default.
+    which must not pull in the config dataclass graph. A stored number of seconds
+    (``0`` and ``3600`` included) is the operator's and is returned as it is. The
+    shipped value ``"auto"``, a missing value and anything else that is not a
+    non-negative number pick by machine size: :data:`_SMALL_HOST_IDLE_EVICT_SECS`
+    on a :func:`small_memory_host`, :data:`_DEFAULT_IDLE_EVICT_SECS` elsewhere.
     """
     raw = _read_memory_config().get("embedding_idle_evict_secs")
     if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 0:
         return float(raw)
-    return _DEFAULT_IDLE_EVICT_SECS
+    return _SMALL_HOST_IDLE_EVICT_SECS if small_memory_host() else _DEFAULT_IDLE_EVICT_SECS
+
+
+_small_host_cache: "list[bool]" = []
+
+
+def small_memory_host() -> bool:
+    """Whether this machine has :data:`_SMALL_HOST_MAX_MIB` of physical memory or less.
+
+    Read once per process through ``platform_compat.host_total_mib`` (``sysconf``
+    on Linux and macOS, ``GlobalMemoryStatusEx`` on Windows): physical memory does
+    not change under a running process. A machine whose memory cannot be read is
+    not small, so it keeps the behaviour it had before this rule.
+    """
+    if not _small_host_cache:
+        from kiro_crew.platform_compat import host_total_mib
+
+        try:
+            total = host_total_mib()
+        except Exception:  # noqa: BLE001 - an unread size keeps the larger-machine default
+            total = 0
+        _small_host_cache.append(0 < total <= _SMALL_HOST_MAX_MIB)
+    return _small_host_cache[0]
 
 
 def embedding_weight_repack() -> bool:

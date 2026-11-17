@@ -40,8 +40,7 @@ class TestStripControlCommentsTailAnchoredFenceGuarded:
 
     def test_marker_case_insensitive(self) -> None:
         # The frontend recognizer is /i; the backend grammar must match, or
-        # a mirrored uppercase marker reaches channel users literally
-        # (round-8 GPT validation finding).
+        # a mirrored uppercase marker reaches channel users literally.
         assert strip_control_comments("done\n<!-- KEEP-VISIBLE -->").rstrip() == "done"
 
 

@@ -47,6 +47,31 @@ async def test_a_skills_only_hook_names_each_skill_by_its_last_segment(tmp_path:
     assert [r.stdout for r in results] == ["Load skills: $kirocrew-prepare-pr $b $plain"]
 
 
+@pytest.mark.asyncio
+async def test_a_skills_only_hook_drops_the_package_root_qualifier_from_the_token(
+    tmp_path: Path,
+) -> None:
+    store = ScriptHookStore(tmp_path)
+    store.create(
+        {
+            "name": "qualified",
+            "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
+            "command": "",
+            "matcher": "*deploy*",
+            "skills": [
+                "package/0123456789abcdef:shared-skill",
+                "package/x",
+                "package/0123456789ABCDEF:upper",
+                "package/abc:colon-dir",
+            ],
+        }
+    )
+    results = await store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, "please deploy this")
+    assert [r.stdout for r in results] == [
+        "Load skills: $shared-skill $x $0123456789ABCDEF:upper $abc:colon-dir"
+    ]
+
+
 def test_the_store_mutation_guard_reads_the_facade_globals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

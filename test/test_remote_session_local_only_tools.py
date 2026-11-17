@@ -177,8 +177,8 @@ def test_a_known_placement_answers_for_its_own_session_only(home, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_directive_replay_reads_placement_off_the_gateway_loop(home, monkeypatch):
-    # GPT 6.1 on 359b3eaa06: the gateway replays set_project on its event loop, and
-    # the remote-workspace guard read the choices store there, blocking every task.
+    # The gateway replays set_project on its event loop, so a remote-workspace guard
+    # that reads the choices store there blocks every task.
     import threading
     from unittest.mock import AsyncMock, MagicMock
 
@@ -472,9 +472,9 @@ artifact_delete artifact_delete_comment artifact_folder_create artifact_folder_d
 artifact_folder_list artifact_folder_move artifact_folder_rename artifact_get
 artifact_get_comments artifact_list artifact_mark_review artifact_move artifact_post_comment
 artifact_reply_comment artifact_revert artifact_save artifact_update artifact_versions
-ask_question autonudge_stop chat_tag code_channel_publish_plan_canvas code_channel_rename
-code_channel_set_context_bar code_channel_set_status code_channel_set_view code_channel_wrap_up
-delete_message deploy_artifact design_tweak_update_thread
+ask_question autonudge_stop chat_rename chat_tag code_channel_publish_plan_canvas
+code_channel_rename code_channel_set_context_bar code_channel_set_status code_channel_set_view
+code_channel_wrap_up delete_message deploy_artifact design_tweak_update_thread
 dismiss_notification get_chat_session issue_radar_crew_read issue_radar_crew_record
 issue_radar_record_investigation kiro_cli_logs knowledge_add_document knowledge_dedup
 knowledge_list_sources learn_add learn_list learn_remove learn_update list_sessions

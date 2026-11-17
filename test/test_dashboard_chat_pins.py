@@ -230,8 +230,8 @@ async def test_create_pin_quota_is_scoped_per_origin_app(tmp_path, monkeypatch):
                 "preview": "app-a pin",
             },
         )
-        # Before the fix the global slot count (2) hits the cap and returns 409;
-        # after the fix app-a has zero pins of its own so the pin is created.
+        # The cap counts app-a's own pins (zero), not the global slot count (2),
+        # so the pin is created instead of a 409.
         assert resp.status == 201, await resp.json()
         created = await resp.json()
         assert created["origin_app"] == "app-a"
@@ -567,7 +567,8 @@ async def test_create_pin_redacts_credential_straddling_truncation_boundary(tmp_
     """A credential straddling the 200-char truncation boundary must not
     survive as an unrecognized fragment: redaction runs BEFORE truncation."""
     secret = github_classic(seed=11)  # 40 chars
-    preview = "x" * 181 + secret + " trailing text beyond the cap"
+    # A blank before it: a token glued to a letter is no token by its format.
+    preview = "x" * 180 + " " + secret + " trailing text beyond the cap"
     async with _client(tmp_path) as client:
         state: DashboardState = client.app["state"]
         resp = await client.post(

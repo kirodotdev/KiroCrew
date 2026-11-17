@@ -62,7 +62,8 @@ name                                       value      attributes      source
 ``kirocrew.inventory.knowledge.documents`` count      —               ``knowledge.db``
 ``kirocrew.inventory.lessons``             count      —               ``lessons.jsonl``
 ``kirocrew.inventory.mcp.servers``         count      ``class``       MCP roster
-``kirocrew.inventory.config.toggle``       0/1        ``key``         config flags
+``kirocrew.inventory.config.toggle``       0/1        ``key``         config flags and
+                                                                      feature previews
 ``kirocrew.inventory.webhooks.registered`` count      —               ``hooks.json``
 ``kirocrew.inventory.members``             count      —               crew roster config
 ``kirocrew.inventory.voice.provider``      1          ``kind``,       ``stt`` /
@@ -289,6 +290,11 @@ CONFIG_TOGGLES: tuple[tuple[str, str, str], ...] = (
     ("instances", "instances", "enabled"),
     ("stt", "stt", "enabled"),
 )
+
+#: The ``key`` the ``chat_runtime_sharing`` feature preview reports under. Read
+#: through ``agent_sdk.chat_runtime_sharing.chat_runtime_sharing_enabled``, the one
+#: reader of that preview, so an LTS build reports 0 and an absent preview is a real 0.
+PREVIEW_CHAT_RUNTIME_SHARING_KEY = "preview_chat_runtime_sharing"
 
 #: TTL for the two probes that cannot be made cheap (a recursive skills walk and
 #: a SQLite connect). Five minutes rather than the 60s export interval: these
@@ -754,6 +760,9 @@ def read_config_toggles() -> Optional[dict[str, int]]:
         if not isinstance(value, bool):
             continue
         out[key] = int(value)
+    from kiro_crew.agent_sdk.chat_runtime_sharing import chat_runtime_sharing_enabled
+
+    out[PREVIEW_CHAT_RUNTIME_SHARING_KEY] = int(chat_runtime_sharing_enabled(cfg))
     return out or None
 
 

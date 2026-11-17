@@ -796,7 +796,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
                         "sessionId": "sub-3",
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "text": f"leaked {SAMPLE_AWS_SECRET} key",
+                            "text": f"leaked aws_secret_access_key={SAMPLE_AWS_SECRET} key",
                         },
                     },
                 }

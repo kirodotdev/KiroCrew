@@ -220,6 +220,18 @@ class TestCompactionFailureTurnBudget:
 
         return _read
 
+    def _silent_on_clock(self, clock: ManualClock, frames: list):
+        """_read_message double on ``clock``: drain `frames`, then each silent
+        read lasts exactly the timeout the loop hands it."""
+
+        async def _read(timeout: float = 0.0):
+            if frames:
+                return frames.pop(0)
+            clock.advance(timeout)
+            return None
+
+        return _read
+
     @pytest.mark.asyncio
     async def test_silent_turn_after_failure_ends_at_budget(self, tmp_path, monkeypatch):
         """Armed by the failed status, the loop stops reading at the budget and
@@ -232,27 +244,32 @@ class TestCompactionFailureTurnBudget:
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
         # Neither existing watchdog can save this turn: no text streamed and no
-        # tool dispatched, so only the 2h prompt ceiling applied before the fix.
+        # tool dispatched, so without this budget only the 2h prompt ceiling
+        # would apply.
         client._stale_eligible = False
         client._tool_dispatched = False
         client._is_process_alive = lambda: True
-        client._read_message = self._silent_after([self._failed_msg()])
+        # The budget, the turn deadline and the silent reads all run on one
+        # manual clock, so the turn's length is counted in reads, not host time.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
+        client._read_message = self._silent_on_clock(clock, [self._failed_msg()])
 
         actions = []
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         async for action, msg in client._prompt_loop(req_id=1, timeout=30.0):
             actions.append(action)
             if action == "compaction":
                 # What _dispatch_events does with the frame — the arming site.
                 client._handle_compaction_status(msg)
-        elapsed = time.monotonic() - t0
+        elapsed = clock.monotonic() - t0
 
         assert actions == ["compaction"]
         assert client._compaction_failed_turn is True
         assert client._turn_done.is_set()
-        # Prove the budget ended it, not the 30s outer deadline.
-        # flake-ok: a lost-run ceiling over a 0.5 s budget, far above any scheduling pause it must tolerate; a virtual clock is tracked for a de-flake pass
-        assert elapsed < 5.0, f"loop ran too long ({elapsed:.2f}s) — budget did not fire"
+        # The budget ended it within one read of 0.2 s of silence, not the 30 s
+        # outer deadline.
+        assert 0.2 < elapsed <= 0.2 + 0.02 + 1e-6, f"loop ended {elapsed:.3f}s in"
 
     @pytest.mark.asyncio
     async def test_failed_status_then_silence_completes_the_stream(self, tmp_path, monkeypatch):
@@ -274,21 +291,25 @@ class TestCompactionFailureTurnBudget:
         client.ensure_ready = AsyncMock()
         client._send_prompt = AsyncMock(return_value=1)
         client._is_process_alive = lambda: True
-        client._read_message = self._silent_after(
-            [self._failed_msg({"status": {"type": "failed", "error": "context too large"}})]
+        # One manual clock for the budget, the turn deadline and the silent reads.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
+        client._read_message = self._silent_on_clock(
+            clock, [self._failed_msg({"status": {"type": "failed", "error": "context too large"}})]
         )
 
         events: list[AcpEvent] = []
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         async for ev in client.stream_events("hello", timeout=30.0):
             events.append(ev)
-        elapsed = time.monotonic() - t0
+        elapsed = clock.monotonic() - t0
 
         assert [e.kind for e in events] == [EVENT_COMPACTION_STATUS, EVENT_COMPLETE]
         assert events[0].title == "context too large"
         assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED
-        # flake-ok: a lost-run ceiling over a 0.5 s budget, far above any scheduling pause it must tolerate; a virtual clock is tracked for a de-flake pass
-        assert elapsed < 5.0, f"turn ran too long ({elapsed:.2f}s) — the hang is back"
+        # The stream ended within one read of 0.2 s of silence, not at the 30 s
+        # turn ceiling.
+        assert 0.2 < elapsed <= 0.2 + 0.02 + 1e-6, f"turn ended {elapsed:.3f}s in"
 
     @pytest.mark.asyncio
     async def test_budget_is_disarmed_without_a_failure(self, tmp_path, monkeypatch):
@@ -554,13 +575,16 @@ class TestCompactionFailureTurnBudget:
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
         client._is_process_alive = lambda: True
+        # One manual clock for the budget, the turn deadline and the silent reads.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         # A failed status, then one more frame standing in for the tool's own
         # traffic — after which the backend goes silent for good.
-        client._read_message = self._silent_after(
-            [self._failed_msg(), JsonRpcMessage(method=METHOD_METADATA, params={})]
+        client._read_message = self._silent_on_clock(
+            clock, [self._failed_msg(), JsonRpcMessage(method=METHOD_METADATA, params={})]
         )
 
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         async for action, msg in client._prompt_loop(req_id=1, timeout=30.0):
             if action == "compaction":
                 client._handle_compaction_status(msg)
@@ -568,11 +592,12 @@ class TestCompactionFailureTurnBudget:
             elif action == "metadata":
                 # The tool resolved (what _dispatch_events does on its result).
                 client._tool_dispatched = False
-        elapsed = time.monotonic() - t0
+        elapsed = clock.monotonic() - t0
 
         assert client._compaction_failed_turn is True
-        # flake-ok: a lost-run ceiling over a 0.5 s budget, far above any scheduling pause it must tolerate; a virtual clock is tracked for a de-flake pass
-        assert elapsed < 5.0, f"loop ran {elapsed:.2f}s — the budget did not re-arm"
+        # Re-armed: the turn ended within one read of 0.1 s of silence after the
+        # tool resolved, not at the 30 s outer deadline.
+        assert 0.1 < elapsed <= 0.1 + 0.02 + 1e-6, f"loop ended {elapsed:.3f}s in"
 
 
 class TestCompactionVerdictReachesTheConsumer:

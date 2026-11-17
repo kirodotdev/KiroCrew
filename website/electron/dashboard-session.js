@@ -10,6 +10,8 @@
  * page's session rows and the app SDK build.
  */
 
+const { cancelPendingTrayHide } = require("./hide-to-tray");
+
 /**
  * True when *wc* currently hosts the dashboard itself.
  *
@@ -96,11 +98,15 @@ function showsForeignOrigin(wc, base) {
  * @param {object|null} win the dashboard window to use (main.js resolves it).
  * @param {string} base the backend URL.
  * @param {string} slotKey dashboard slot key, or "" when there is no session.
+ * @param {{ showApp?: () => void, focusApp?: () => void }} [surface] the same
+ *   hooks the summon hotkey takes: `showApp` runs before the window is shown so
+ *   macOS does not ignore `win.show()` for an app a fullscreen tray-close hid,
+ *   and `focusApp` runs after it to bring the app in front.
  * @returns {boolean} true when the dashboard was surfaced AND ready to show it;
  *   false when nothing could receive the request, so the caller can KEEP a
  *   notification it could not act on instead of dismissing it.
  */
-function openDashboardSession(win, base, slotKey) {
+function openDashboardSession(win, base, slotKey, { showApp, focusApp } = {}) {
   if (!win || win.isDestroyed()) return false;
   const view = win._mcView;
   const wc = view && view.webContents;
@@ -117,9 +123,14 @@ function openDashboardSession(win, base, slotKey) {
   const ready = hostsDashboard(wc, base);
   // A request that NAMES a session must fail whole, before the window moves.
   if (slotKey && !ready) return false;
+  // A user-intent show, like the tray's and the summon hotkey's: a close-to-tray
+  // hide still pending would hide the window again right after this show.
+  cancelPendingTrayHide(win);
+  if (typeof showApp === "function") showApp();
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+  if (typeof focusApp === "function") focusApp();
   // SURFACING and ACKNOWLEDGING are different answers, and the return value is
   // the second one. Raising a loading window is honest and useful; claiming the
   // session has somewhere to be acted on is not. So the window comes forward and

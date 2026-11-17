@@ -108,7 +108,6 @@ import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -555,13 +554,8 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
-  it('offers Start New Chats in Conductor Mode only with the conductor mode preview on, and persists it', async () => {
-    const label = 'Start New Chats in Conductor Mode'
-    const view = wrap('sessions')
-    await settledSwitch('Restore Sessions')
-    expect(screen.queryByRole('switch', { name: label })).not.toBeInTheDocument()
-    view.unmount()
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
+  it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {
+    const label = 'Start New Chats in conductor mode'
     wrap('sessions')
     const sw = await settledSwitch(label)
     expect(sw).toHaveAttribute('aria-checked', 'false')

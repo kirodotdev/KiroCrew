@@ -49,6 +49,10 @@ def test_every_listed_tool_carries_its_declared_title(server: str, monkeypatch) 
     monkeypatch.setattr(app_tools, "app_enabled_state", lambda _name: True)
     # Likewise the code-channel tools, listed only while slack.code_channels is on.
     monkeypatch.setattr(code_channel_tools, "_toggle_on", lambda: True)
+    # And crew_list, listed only while work_ledger.remote_dispatch is on.
+    from kiro_crew import remote_dispatch
+
+    monkeypatch.setattr(remote_dispatch, "remote_dispatch_enabled", lambda: True)
     listed = _SERVERS[server]._list_tools()
     assert {t["name"]: t.get("title") for t in listed} == _table()[server]
 

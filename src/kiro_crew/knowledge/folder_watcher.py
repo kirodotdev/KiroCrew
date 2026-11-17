@@ -1420,20 +1420,19 @@ class FolderWatcher:
         # Taking the ids from there, instead of reading them back afterwards, is
         # what makes two separate hazards unreachable:
         #
-        # * No query. The previous before/after diff read the source's ENTIRE
-        #   item-id set twice per file. `idx_items_source_id` keeps that an index
-        #   scan, but it still materializes one row per item in the SOURCE --
-        #   ~20k rows apiece on a large folder source, measured at >1s each --
-        #   synchronously on the event loop, which trips the loop-stall watchdog
-        #   and crash-loops the gateway.
+        # * No query. A before/after diff would read the source's ENTIRE item-id
+        #   set twice per file. `idx_items_source_id` keeps that an index scan,
+        #   but it still materializes one row per item in the SOURCE (~20k rows
+        #   on a large folder source, measured at >1s each) on the event loop,
+        #   which trips the loop-stall watchdog and crash-loops the gateway.
         # * No skippable await after the commit. An await between the pipeline's
         #   commit and this function's return that a cancellation can skip past
         #   is an orphan window: a shutdown cancelling there leaves committed
         #   items that no `folder_file_state` row names, so the next scan
         #   re-ingests the file and duplicates them while the first group stays
-        #   untracked and undeletable. Offloading the reads with a bare
-        #   `to_thread` would have introduced exactly that window; not needing
-        #   them removes it. The failure branches below DO await, but only
+        #   untracked and undeletable. Offloading those reads with a bare
+        #   `to_thread` would open that window; not needing them avoids it.
+        #   The failure branches below DO await, but only
         #   `_persist_state` (`run_to_completion`-backed, so the write drains
         #   under cancellation) and only where nothing was committed.
         #   `test_knowledge_ingest_scan_off_loop.py` ratchets both properties.

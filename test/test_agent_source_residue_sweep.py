@@ -332,7 +332,7 @@ class TestOtherSourcesAreNeverTouched:
         assert imported in _live_ids(kstore, sid)
 
     def test_an_active_group_shields_items_sharing_a_crashed_hash(self, kstore):
-        # F1 (GPT 6.1): a stale ingesting marker names a hash, and an item that
+        # A stale ingesting marker names a hash, and an item that
         # a healthy group OWNS shares that hash. The owned item is of course
         # never swept -- but neither is an UNOWNED copy of the same hash: once
         # the content is live-held by a healthy row, a bare hash match must not
@@ -460,7 +460,7 @@ class TestReplacePathAndNormalization:
 class TestHashAloneNeverAuthorizesDeletion:
     @pytest.mark.asyncio
     async def test_an_unowned_copy_of_live_held_content_survives(self, kstore, pipeline):
-        # F1 (GPT 6.1): a matching marker hash alone must not delete an item. If
+        # A matching marker hash alone must not delete an item. If
         # the SAME content is still held by a healthy ownership row anywhere, an
         # unowned copy of that hash is a reassigned/pre-existing item (left
         # unowned by _adopt_reassigned_item's ambiguous-hash refusal), not this
@@ -506,7 +506,7 @@ class TestHashAloneNeverAuthorizesDeletion:
 class TestMarkerRetirementAcrossChunks:
     @pytest.mark.asyncio
     async def test_a_crash_larger_than_one_delete_chunk_is_fully_reaped(self, kstore, pipeline):
-        # F2 (GPT 6.1 + Opus): a document's chunks all share one content_hash and
+        # A document's chunks all share one content_hash and
         # one interrupted ingest can exceed _RECLAIM_CHUNK. If the first batch
         # retired that hash's marker, later batches would miss it and
         # the rest of the document would survive as permanent duplicates.
@@ -676,7 +676,7 @@ class TestResidueIsScopedToTheAttempt:
 class TestLockedRecheckStatusGate:
     @pytest.mark.asyncio
     async def test_an_item_cleared_from_active_in_the_window_is_not_swept(self, kstore, pipeline):
-        # F2 (GPT 6.1 FLAG): the locked recheck filters status = 'active'. An
+        # The locked recheck filters status = 'active'. An
         # item flipped out of 'active' by any concurrent writer between the
         # candidate read and the writer lock must not be swept -- the sweep acts
         # only on rows it re-confirms are live residue. Model that end state
@@ -709,13 +709,12 @@ class TestLockedRecheckStatusGate:
 
 class TestEmptyGroupDedupRowShieldsItsHash:
     def test_a_deduped_row_with_an_empty_group_shields_the_reassigned_sole_copy(self, kstore):
-        # F1 (GPT 6.1, this round): the shield skipped rows whose item group is
-        # empty, so a `deduped` row left by a reassignment that could not
-        # establish ownership (_adopt_reassigned_item refuses an ambiguous hash)
-        # gave its hash NO protection. Its surviving copy is the ONLY one, and a
-        # same-content crash marker names its hash -> the sweep deleted it
-        # irreversibly. The row's EXISTENCE must shield its hash even with an
-        # empty group.
+        # A `deduped` row left by a reassignment that could not establish
+        # ownership (_adopt_reassigned_item refuses an ambiguous hash) has an
+        # empty item group. Its surviving copy is the ONLY one, and a
+        # same-content crash marker names its hash, so a shield that skips empty
+        # groups lets the sweep delete it irreversibly. The row's EXISTENCE must
+        # shield its hash even with an empty group.
         import hashlib
 
         sid, _ = ensure_agent_source(kstore)
@@ -752,13 +751,11 @@ class TestEmptyGroupDedupRowShieldsItsHash:
         assert sole in _live_ids(kstore, sid)
 
     def test_a_sole_copy_at_the_same_slug_as_its_marker_is_not_deleted(self, kstore):
-        # GPT 6.1 F1 + Opus 5.5: an exclusion once skipped a (slug, hash) pair
-        # that ALSO carried a crash marker from the shield, so a same-slug retry's
-        # orphan could be reaped. But when that slug's only
-        # surviving content is the single unowned copy -- no healthy row names a
-        # live item -- that "orphan" IS the sole copy, and the exclusion deleted
-        # it irreversibly. The exclusion is gone: a `deduped` row shields its
-        # hash even when a crash marker shares its exact slug.
+        # Excluding a (slug, hash) pair that ALSO carries a crash marker from the
+        # shield would let a same-slug retry's orphan be reaped. But when that
+        # slug's only surviving content is the single unowned copy -- no healthy
+        # row names a live item -- that "orphan" IS the sole copy. So a `deduped`
+        # row shields its hash even when a crash marker shares its exact slug.
         import hashlib
 
         sid, _ = ensure_agent_source(kstore)
@@ -794,10 +791,10 @@ class TestEmptyGroupDedupRowShieldsItsHash:
 
 class TestEarliestStartIsKeptAcrossRetries:
     def test_a_same_content_retry_keeps_the_earlier_attempts_start(self, kstore):
-        # F2 (GPT 6.1, this round): INSERT OR REPLACE overwrote started_at, so a
-        # same-content retry pushed the older orphan below the finalize's
-        # `created_at >= started_at` gate, dropping its marker and stranding it.
-        # _write_ingest_intent now keeps the EARLIEST start on conflict.
+        # _write_ingest_intent keeps the EARLIEST start on conflict. Overwriting
+        # started_at (plain INSERT OR REPLACE) would let a same-content retry push
+        # the first orphan below the finalize's `created_at >= started_at` gate,
+        # dropping its marker and stranding it.
         from kiro_crew.knowledge.agent_source import mark_ingesting
 
         sid, _ = ensure_agent_source(kstore)
@@ -835,10 +832,9 @@ class TestIngestionGateHeldAcrossIntent:
     async def test_the_add_holds_the_ingestion_gate_before_writing_the_intent(
         self, kstore, pipeline
     ):
-        # F3 (GPT 6.1 FLAG, this round): the intent marker was written BEFORE the
-        # ingest took the gate, so a maintenance sweep could begin in that gap
-        # and retire a live add's fresh marker. The add now holds
-        # ingestion_in_flight across the whole span. Prove the gate is held while
+        # The add holds ingestion_in_flight across the whole span. A marker
+        # written BEFORE the ingest takes the gate leaves a gap where a
+        # maintenance sweep can retire a live add's fresh marker. Prove the gate is held while
         # mark_ingesting runs: patch mark_ingesting to assert the gate depth is
         # non-zero at the moment the marker is written.
         import kiro_crew.knowledge.agent_source as agent_source

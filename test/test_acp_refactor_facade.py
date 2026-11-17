@@ -239,6 +239,7 @@ _MOVED: dict[str, dict[str, tuple[str, ...]]] = {
             "_resolve_claude_acp_bin",
             "_resolve_claude_code_executable",
             "_claude_adapter_installed_version",
+            "_claude_adapter_known_version",
         ),
         "kiro_crew.acp.harness.opencode": (
             "_OPENCODE_LAUNCH",
@@ -1768,6 +1769,10 @@ _THIS_FILE = Path(__file__).resolve().relative_to(_SRC.parents[2]).as_posix()
 _UNRESOLVED_FACADE_PATCHES: dict[tuple[str, str], int] = {
     ("test/acp_launch_capture.py", "_capture_runtime_served"): 2,
     ("test/acp_launch_capture.py", "_stub_common"): 4,
+    # The floor's loops over its binding tables; naming ``kiro_crew.acp.client`` in
+    # ``_KIRO_CLI_DIR_BINDINGS`` brings the whole file into this scan.
+    ("test/conftest_floor_home.py", "_hide_the_operators_kiro_cli"): 1,
+    ("test/conftest_floor_home.py", "_isolate_shared_kiro_paths"): 1,
     ("test/test_acp_pod_home_remap.py", "_remap_calls"): 1,
     ("test/test_facade_mirror_guards.py", "patch_reach_failures"): 2,
     ("test/test_harness_parity.py", "test_is_kiro_cli_is_positive"): 2,

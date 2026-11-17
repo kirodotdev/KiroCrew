@@ -106,7 +106,11 @@ and each error surface must receive the same safe text.
   (`dashboard/chat_turn/model_fallback.py`, which owns the dashboard's four swap and restore
   helpers named below) after its pre-activity transient branch; `_on_acp_transient_exhausted`
   (`chat_turn/acp_recovery.py`) persists a notice and requeues the same message as a synthetic
-  recovery item. The swap's condition excludes nested prompts. On exhaustion `_on_acp_error_card`
+  recovery item. The swap's condition excludes nested prompts and Kiro's per-user rate limit
+  (`AcpError.user_rate_limit`), which every model shares, so that turn ends on its own error
+  row. The notice is `model_server_error_fallback` when the selected model's ladder ended on a
+  provider 5xx (`slot._fallback_walk_server_error`, written at the walk's first swap) and
+  `model_throttled_fallback` otherwise. On exhaustion `_on_acp_error_card`
   (`chat_turn/turn_failures.py`) renders the slot-local walk in the terminal error.
 - `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry` follows the zero-activity branch,
   uses the shared candidate helper, and applies `annotate_model_fallback` to
@@ -216,7 +220,7 @@ families — a different model routinely accepts what another's filter declined
   would run its side effects twice. Because a verbatim replay is the
   user's own words, it cannot be
   recognized by the fixed synthetic-recovery texts — and not by text at
-  all: the drain redacts credentials and exfiltration URLs after the swap
+  all: the drain redacts credentials, inside URLs too, after the swap
   records the raw message, so string equality breaks for exactly the
   content most likely to draw a refusal. Recognition is the drained
   entry's queue id, matched by the drain (the entry must drain alone; a

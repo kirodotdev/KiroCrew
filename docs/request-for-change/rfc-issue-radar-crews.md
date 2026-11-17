@@ -19,7 +19,9 @@ Status: partial — the crew ledger and its agent surface are implemented in
 `src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py`,
 `src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py`, and the Issue
 Radar Crews UI under `website/src/apps/issue-radar/`; the two agent ledger tools
-live in `src/kiro_crew/mcp_tools/apps.py`. This audit did not re-classify every
+are declared in the app's `app.json` `agentTools` block and served by
+`src/kiro_crew/apps/builtins/issue_radar/backend/agent_tools.py` (moved out of
+the core `mcp_tools/apps.py` by #33156). This audit did not re-classify every
 later phase of the RFC. The body below remains the historical
 design record and differs from the shipped implementation where later safety
 work superseded a mechanism (for example, a scoped `SafetyOverride` replaces

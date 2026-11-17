@@ -21,6 +21,25 @@ class TableError(ValueError):
 
 # ── Rows ──────────────────────────────────────────────────────────────────────
 
+#: The JWT examples published on jwt.io (the current default and the two older
+#: samples) and in RFC 7519 section 3.1: documentation, signed with a published key, so
+#: they grant nothing. The ``jwt`` row and the Bearer header row both allow them.
+JOSE_EXAMPLES = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ"
+    ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9"
+    ".TJVA95OrM7E2cBab30RMHrHDcEfxjoYZgeFONFh7HgQ",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0"
+    ".KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30",
+    "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9"
+    ".eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ"
+    ".dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+)
+
+
 ROWS: tuple[Mapping[str, Any], ...] = (
     # Detector B: whole tokens by published format.
     {
@@ -51,6 +70,43 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "detector": "token_format",
         "prefixes": ["xoxa-", "xoxb-", "xoxp-", "xoxo-", "xoxs-", "xoxr-"],
         "body": [{"alphabet": "slack", "min": 10, "max": 250}],
+        "boundary": "word_dash",
+    },
+    {
+        "id": "slack.app_token",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["xapp-"],
+        "body": [{"alphabet": "slack", "min": 10, "max": 250}],
+        "boundary": "word_dash",
+    },
+    {
+        "id": "huggingface.token",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["hf_"],
+        "body": [{"alphabet": "base62", "length": 34}],
+        "boundary": "word",
+    },
+    {
+        "id": "docker.pat",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["dckr_pat_"],
+        "body": [{"alphabet": "b64url", "length": 27}],
+        "boundary": "word_dash",
+    },
+    {
+        # The older OpenAI key: 20 characters, a fixed marker, 20 characters.
+        "id": "openai.legacy_key",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["sk-"],
+        "body": [
+            {"alphabet": "base62", "length": 20},
+            {"literal": ["T3Blbk" + "FJ"]},
+            {"alphabet": "base62", "length": 20},
+        ],
         "boundary": "word_dash",
     },
     {
@@ -146,6 +202,64 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "body": [{"alphabet": "hex_lower", "length": 64}],
         "boundary": "word",
     },
+    {
+        "id": "openai.project_key",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["sk-proj-"],
+        "body": [{"alphabet": "b64url", "min": 16, "max": 256}],
+        # Read after a ``-`` too (a CSS custom property, ``--sk-proj-...``).
+        "left_boundary": "word",
+        "right_boundary": "word_dash",
+    },
+    {
+        "id": "npm.token",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["npm_"],
+        "body": [{"alphabet": "base62", "min": 24, "max": 64}],
+        "boundary": "word",
+    },
+    {
+        "id": "pypi.token",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["pypi-"],
+        "body": [{"alphabet": "b64url", "min": 16, "max": 1024}],
+        "boundary": "word_dash",
+    },
+    {
+        # A Discord bot token: base64 of the bot's id, whose first character is ``M``,
+        # ``N`` or ``O`` for every id in use, a 6-character timestamp and an HMAC.
+        "id": "discord.bot_token",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["M", "N", "O"],
+        "body": [
+            {"alphabet": "b64url", "min": 22, "max": 30},
+            {"literal": ["."]},
+            {"alphabet": "b64url", "length": 6},
+            {"literal": ["."]},
+            {"alphabet": "b64url", "min": 25, "max": 100},
+        ],
+        "boundary": "b64url",
+    },
+    {
+        # A Telegram bot token as Telegram issues it: an 8 to 10 digit bot id (its first
+        # digit is the prefix), ``:`` and 35 characters. Read after ``bot`` too, as the
+        # Bot API URL writes it, but not after the ``:`` or ``/`` of an ARN's fields.
+        "id": "telegram.bot_token",
+        "tier": SECRET,
+        "detector": "token_format",
+        "prefixes": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        "body": [
+            {"alphabet": "digits", "min": 7, "max": 9},
+            {"literal": [":"]},
+            {"alphabet": "b64url", "length": 35},
+        ],
+        "left_boundary": "telegram_left",
+        "right_boundary": "b64url",
+    },
     # Identifier-tier tokens: never replaced; the key ID anchors the pairing rule.
     {
         "id": "aws.access_key_id",
@@ -170,11 +284,16 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "tier": SECRET,
         "detector": "jose",
         "segments": 3,
-        "segment_lengths": [[4, 2000], [4, 2000], [1, 2000]],
+        "segment_lengths": [[4, 2000], [4, 12000], [1, 2000]],
         "eyj_segments": [0, 1],
         "header_keys": ["alg"],
         "payload_object": True,
-        "left_boundary": "b64url_dot",
+        # A token may follow a sentence's ``.`` (``Done.eyJ...``); the decoded header
+        # check, not the character before it, tells it from a property access.
+        "left_boundary": "b64url",
+        # The published examples (JOSE_EXAMPLES). Read by header and payload, so a
+        # reading that drops markup from the signature is the same example.
+        "allow_values": list(JOSE_EXAMPLES),
     },
     {
         "id": "jwe",
@@ -188,7 +307,7 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "eyj_segments": [0],
         "header_keys": ["alg", "enc"],
         "payload_object": False,
-        "left_boundary": "b64url_dot",
+        "left_boundary": "b64url",
     },
     {
         # Crew's own dashboard link token: base64url(JSON claims).HMAC-SHA256.
@@ -257,6 +376,65 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "inputs": ["json", "assignment", "cli_flag", "xml_element"],
         "gate": "b64_run",
     },
+    # Detector A, a written credential after a well-known credential name: an env file, a
+    # JSON or YAML config, a CLI flag, an XML element. The name is one of ``keys``, compared
+    # case-insensitively with ``_``, ``-``, ``.`` and blanks dropped (``DB_PASSWORD``,
+    # ``dbPassword`` and ``--db-password`` are one name); a name the list does not hold is
+    # not read (the known gaps: ``test_redaction_structured_names``). Only the value is
+    # replaced; a placeholder, a code expression or words after the name stay (gate
+    # ``secret_literal``).
+    {
+        "id": "labelled.secret",
+        "tier": SECRET,
+        "detector": "known_key",
+        "keys": [
+            # Generic names.
+            "password",
+            "passwd",
+            "secret",
+            "api_key",
+            "apikey",
+            "api_secret",
+            "api_secret_key",
+            "secret_key",
+            "client_secret",
+            "app_secret",
+            "jwt_secret",
+            "auth_token",
+            "access_token",
+            "refresh_token",
+            "private_token",
+            # Databases and mail.
+            "db_password",
+            "database_password",
+            "postgres_password",
+            "pgpassword",
+            "mysql_password",
+            "mysql_pwd",
+            "mysql_root_password",
+            "redis_password",
+            "admin_password",
+            "root_password",
+            "smtp_password",
+            "spring.datasource.password",
+            # Services.
+            "github_token",
+            "gh_token",
+            "npm_token",
+            "slack_bot_token",
+            "openai_api_key",
+            "anthropic_api_key",
+            "twilio_auth_token",
+            "sentry_auth_token",
+            # AWS ECR ``get-authorization-token`` output (``authorizationToken``).
+            "authorization_token",
+            # Azure storage connection-string fields.
+            "account_key",
+            "shared_access_key",
+        ],
+        "inputs": ["json", "assignment", "cli_flag", "xml_element"],
+        "gate": "secret_literal",
+    },
     # Detector A on parsed URLs: the owner's exact OAuth keys in a URL's query string
     # or fragment. Only the value is replaced; the key and the rest of the URL stay.
     {"id": "url.oauth_param.client_secret", "tier": SECRET, "detector": "url_param",
@@ -271,6 +449,126 @@ ROWS: tuple[Mapping[str, Any], ...] = (
      "key": "code_verifier"},  # fmt: skip
     {"id": "url.oauth_param.password", "tier": SECRET, "detector": "url_param",
      "key": "password"},  # fmt: skip
+    # Values that grant access by themselves wherever a URL carries them: a password, an
+    # API key, and the signature or session token of a signed (presigned, SAS) link.
+    {"id": "url.secret_param.passwd", "tier": SECRET, "detector": "url_param",
+     "key": "passwd"},  # fmt: skip
+    {"id": "url.secret_param.api_key", "tier": SECRET, "detector": "url_param",
+     "key": "api_key"},  # fmt: skip
+    {"id": "url.secret_param.apikey", "tier": SECRET, "detector": "url_param",
+     "key": "apikey"},  # fmt: skip
+    {"id": "url.secret_param.private_token", "tier": SECRET, "detector": "url_param",
+     "key": "private_token"},  # fmt: skip
+    {"id": "url.signature_param.sig", "tier": SECRET, "detector": "url_param",
+     "key": "sig"},  # fmt: skip
+    {"id": "url.signature_param.signature", "tier": SECRET, "detector": "url_param",
+     "key": "signature"},  # fmt: skip
+    {"id": "url.signature_param.x_amz_signature", "tier": SECRET, "detector": "url_param",
+     "key": "x-amz-signature"},  # fmt: skip
+    {"id": "url.signature_param.x_amz_security_token", "tier": SECRET, "detector": "url_param",
+     "key": "x-amz-security-token"},  # fmt: skip
+    {"id": "url.signature_param.x_goog_signature", "tier": SECRET, "detector": "url_param",
+     "key": "x-goog-signature"},  # fmt: skip
+    # A URL's ``token`` parameter: the bearer value of a link (a dashboard, a webhook, a
+    # signed download). An owner's exempt companion URL keeps its value
+    # (``redaction._exempt_token_values``).
+    {"id": "url.token_param.token", "tier": SECRET, "detector": "url_param",
+     "key": "token"},  # fmt: skip
+    # Detector H: HTTP header values, session cookies and the curl user password.
+    {
+        "id": "http.bearer_token",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "header",
+        "names": ["authorization"],
+        "scheme": "bearer",
+        "min_length": 8,
+        # A published JWT example after ``Bearer`` is documentation too.
+        "allow_values": list(JOSE_EXAMPLES),
+    },
+    {
+        "id": "http.basic_credentials",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "header",
+        "names": ["authorization"],
+        "scheme": "basic",
+        "min_length": 8,
+    },
+    {
+        "id": "http.api_key_header",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "header",
+        "names": ["x-api-key", "api-key", "x-auth-token", "private-token", "x-goog-api-key"],
+        "min_length": 8,
+    },
+    {
+        "id": "http.session_cookie",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "cookie",
+        "names": ["set-cookie", "cookie"],
+        "min_length": 8,
+    },
+    {
+        "id": "cli.curl_user_password",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "curl_user",
+        "min_length": 4,
+    },
+    {
+        # ``mysql -u root -p<password>`` (the password glued to ``-p``) and
+        # ``--password=<password>``, on a line where one of ``names`` is a command word.
+        "id": "cli.mysql_password",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "mysql_password",
+        "names": ["mysql", "mysqldump", "mysqladmin", "mariadb"],
+        "min_length": 4,
+    },
+    {
+        # ``docker login -u <user> -p <password>`` (also ``--password``), on a line where
+        # one of ``names`` is a command word, with its ``login`` subcommand.
+        "id": "cli.docker_login_password",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "docker_login",
+        "names": ["docker"],
+        "min_length": 4,
+    },
+    {
+        # A ``.netrc`` entry: ``machine <host> login <user> password <password>``, on one
+        # line or across lines.
+        "id": "netrc.password",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "netrc",
+        "min_length": 4,
+    },
+    # A webhook URL whose path carries its secret: only that path segment is replaced.
+    {
+        "id": "slack.webhook_url",
+        "tier": SECRET,
+        "detector": "url_path_secret",
+        "hosts": ["hooks.slack.com"],
+        "path_prefix": "/services/",
+        "segment": 3,
+    },
+    {
+        "id": "discord.webhook_url",
+        "tier": SECRET,
+        "detector": "url_path_secret",
+        "hosts": ["discord.com", "discordapp.com"],
+        "path_prefix": "/api/webhooks/",
+        "segment": 2,
+    },
+    # Detector E: a base64 run whose decoded text holds a credential another row reads.
+    {"id": "encoded_credential", "tier": SECRET, "detector": "encoded", "min_length": 24},
+    # The password in a URL's userinfo (``scheme://user:password@host``); the scheme,
+    # the user and the host stay.
+    {"id": "url.userinfo_password", "tier": SECRET, "detector": "url_userinfo"},
     # Structural Identifiers: never replaced; they protect text they fully contain
     # from label and pairing hits (resolve rule 1).
     {
@@ -286,15 +584,19 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "lengths": [40, 64],
         "max_length": 64,
     },
-    {"id": "arn", "tier": IDENTIFIER, "detector": "structure", "kind": "arn", "max_length": 2048},
+    {
+        "id": "arn",
+        "tier": IDENTIFIER,
+        "detector": "structure",
+        "kind": "arn",
+        "max_length": 2048,
+    },
     {
         "id": "url.structure",
         "tier": IDENTIFIER,
         "detector": "structure",
         "kind": "url",
         "max_length": 4096,
-        # A whole URL is a container, not a value: it is never masked.
-        "mask": "none",
     },
     {
         "id": "commit.permalink",
@@ -302,7 +604,6 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "detector": "structure",
         "kind": "commit_permalink",
         "max_length": 4096,
-        "mask": "sha_segment",
     },
     {
         "id": "oauth.public_param",
@@ -463,6 +764,8 @@ class JoseRow:
     payload_claims: frozenset[str]
     left: frozenset[str]
     right: frozenset[str]
+    # Header and payload of the documented examples (``allow_values`` without the signature).
+    allow_values: frozenset[str] = frozenset()
 
     @property
     def max_total(self) -> int:
@@ -520,7 +823,6 @@ class StructureRow:
     chars: str = ""
     min_length: int = 0
     pad: int = 0
-    mask: str = "value"
     lengths: frozenset[int] = frozenset()
 
 
@@ -532,6 +834,41 @@ class UrlParamRow:
 
 
 @dataclass(frozen=True, slots=True)
+class UrlUserinfoRow:
+    id: str
+    tier: str
+
+
+@dataclass(frozen=True, slots=True)
+class HeaderRow:
+    id: str
+    tier: str
+    reader: str
+    names: tuple[str, ...]
+    scheme: str
+    min_length: int
+    # Header and payload of the JOSE examples a value may be (``allow_values`` without
+    # the signature).
+    allow_values: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class UrlPathSecretRow:
+    id: str
+    tier: str
+    hosts: frozenset[str]
+    path_prefix: str
+    segment: int
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedRow:
+    id: str
+    tier: str
+    min_length: int
+
+
+@dataclass(frozen=True, slots=True)
 class Table:
     formats: tuple[FormatRow, ...]
     jose: tuple[JoseRow, ...]
@@ -540,6 +877,10 @@ class Table:
     known_keys: tuple[KnownKeyRow, ...]
     structures: tuple[StructureRow, ...]
     url_params: tuple[UrlParamRow, ...] = ()
+    userinfo: tuple[UrlUserinfoRow, ...] = ()
+    encoded: tuple[EncodedRow, ...] = ()
+    path_secrets: tuple[UrlPathSecretRow, ...] = ()
+    headers: tuple[HeaderRow, ...] = ()
 
     def rule_ids(self) -> list[tuple[str, str, str]]:
         """``(rule_id, detector, tier)`` for every rule the table can emit."""
@@ -551,6 +892,10 @@ class Table:
             out += [(a.id, "armour", a.tier), (a.unterminated_id, "armour", a.tier)]
         out += [(r.id, "known_key", r.tier) for r in self.known_keys]
         out += [(r.id, "url_param", r.tier) for r in self.url_params]
+        out += [(r.id, "url_userinfo", r.tier) for r in self.userinfo]
+        out += [(r.id, "encoded", r.tier) for r in self.encoded]
+        out += [(r.id, "url_path_secret", r.tier) for r in self.path_secrets]
+        out += [(r.id, "header", r.tier) for r in self.headers]
         out += [(r.id, "structure", r.tier) for r in self.structures]
         return out
 
@@ -571,6 +916,7 @@ _FIELDS: dict[str, frozenset[str]] = {
         "payload_claims",
         "left_boundary",
         "right_boundary",
+        "allow_values",
     },
     "key_id_pair": _COMMON
     | {
@@ -586,6 +932,10 @@ _FIELDS: dict[str, frozenset[str]] = {
     | {"unterminated_id", "begin", "type_alphabet", "type_max", "suffix", "end", "max_block"},
     "known_key": _COMMON | {"keys", "inputs", "gate"},
     "url_param": _COMMON | {"key"},
+    "url_userinfo": _COMMON,
+    "encoded": _COMMON | {"min_length"},
+    "url_path_secret": _COMMON | {"hosts", "path_prefix", "segment"},
+    "header": _COMMON | {"reader", "names", "scheme", "min_length", "allow_values"},
     "structure": _COMMON
     | {
         "kind",
@@ -596,29 +946,43 @@ _FIELDS: dict[str, frozenset[str]] = {
         "alphabet",
         "min_length",
         "pad",
-        "mask",
         "lengths",
     },
 }
-#: The URL query and fragment keys whose values are replaced (owner's choice). A
-#: ``url_param`` row may name only one of these; generic names such as ``token``,
-#: ``code``, ``sig``, ``key`` or ``secret`` are refused.
+#: The URL query and fragment keys whose values are replaced: each value grants access
+#: by itself (a secret, a token, a password, an API key, or the signature or session
+#: token of a signed link). A ``url_param`` row may name only one of these. Names whose
+#: value does not grant access alone stay readable and are refused here: ``code`` (an
+#: OAuth authorization code is single use and needs the client secret or the PKCE
+#: verifier), ``state``, ``client_id``, ``x-amz-credential`` (an access key ID and a
+#: scope); ``key`` and ``secret`` are too generic to judge by name.
 URL_PARAM_KEYS = frozenset(
-    {"client_secret", "access_token", "refresh_token", "id_token", "code_verifier", "password"}
+    {
+        "token",
+        "client_secret",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "code_verifier",
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "private_token",
+        "sig",
+        "signature",
+        "x-amz-signature",
+        "x-amz-security-token",
+        "x-goog-signature",
+    }
 )
-#: How much of an Identifier hit a caller may mask from a later pass:
-#: ``value`` the whole hit, ``none`` nothing (a container such as a whole URL), and
-#: ``sha_segment`` only the SHA segment of a commit permalink.
-MASKS = frozenset({"value", "none", "sha_segment"})
-#: Parameters whose values are credentials: a parameter row may never list them, so
-#: their values are never masked.
-NEVER_MASK_PARAMS = frozenset(
-    {"client_secret", "code", "access_token", "refresh_token", "id_token", "password"}
-)
+#: Parameters whose values are credentials (and ``code``): an Identifier parameter row
+#: may never list them.
+NEVER_MASK_PARAMS = URL_PARAM_KEYS | {"code"}
 _PART_FIELDS = frozenset({"alphabet", "length", "min", "max", "lengths", "literal"})
 _CHECKSUMS = frozenset({"github_crc32"})
 _CERTAINTIES = frozenset({"checksum", "fixed_format"})
-_GATES = frozenset({"aws_secret_40", "b64_run"})
+_GATES = frozenset({"aws_secret_40", "b64_run", "secret_literal"})
 _INPUTS = frozenset({"json", "assignment", "cli_flag", "xml_element"})
 _KINDS = frozenset({"arn", "url", "commit_permalink", "url_query", "object_name"})
 #: Fields each structural kind requires (beyond id, tier, detector, kind, max_length).
@@ -776,6 +1140,11 @@ def _build_jose(row: Mapping[str, Any]) -> JoseRow:
         payload_claims=frozenset(claims),
         left=_boundary(row, row.get("left_boundary", "b64url_dot")),
         right=_boundary(row, row.get("right_boundary", "b64url_dot")),
+        allow_values=(
+            frozenset(value.rsplit(".", 1)[0] for value in _strings(row, "allow_values"))
+            if "allow_values" in row
+            else frozenset()
+        ),
     )
 
 
@@ -837,11 +1206,6 @@ def _build_structure(row: Mapping[str, Any]) -> StructureRow:
     params = frozenset(_strings(row, "params")) if "params" in needs else frozenset()
     if params & NEVER_MASK_PARAMS:
         raise _fail(row, f"credential parameter(s) {sorted(params & NEVER_MASK_PARAMS)}")
-    mask = row.get("mask", "value")
-    if mask not in MASKS:
-        raise _fail(row, f"unknown mask {mask!r}")
-    if mask == "sha_segment" and kind != "commit_permalink":
-        raise _fail(row, "mask 'sha_segment' applies to kind 'commit_permalink' only")
     labels = _strings(row, "labels") if "labels" in needs else ()
     if kind == "labelled_value" and any(lab != lab.lower() for lab in labels):
         raise _fail(row, "labels are matched case-insensitively and must be lower case")
@@ -872,7 +1236,6 @@ def _build_structure(row: Mapping[str, Any]) -> StructureRow:
         chars=_alphabet(row, row.get("alphabet")) if "alphabet" in needs else "",
         min_length=min_length,
         pad=_int(row, "pad", 0) if "pad" in needs else 0,
-        mask=mask,
         lengths=lengths,
     )
 
@@ -880,10 +1243,78 @@ def _build_structure(row: Mapping[str, Any]) -> StructureRow:
 def _build_url_param(row: Mapping[str, Any]) -> UrlParamRow:
     key = row.get("key")
     if not isinstance(key, str) or key not in URL_PARAM_KEYS:
-        raise _fail(row, f"url_param key {key!r} is not one of the owner's OAuth keys")
+        raise _fail(
+            row, f"url_param key {key!r} is not in URL_PARAM_KEYS (a value that grants access)"
+        )
     if row["tier"] != SECRET:
         raise _fail(row, "a url_param row is Secret tier")
     return UrlParamRow(id=row["id"], tier=row["tier"], key=key)
+
+
+def _build_url_userinfo(row: Mapping[str, Any]) -> UrlUserinfoRow:
+    if row["tier"] != SECRET:
+        raise _fail(row, "a url_userinfo row is Secret tier")
+    return UrlUserinfoRow(id=row["id"], tier=row["tier"])
+
+
+_HEADER_READERS = frozenset(
+    {"header", "cookie", "curl_user", "mysql_password", "docker_login", "netrc"}
+)
+#: Readers that anchor on their own fixed flags or keyword and read no ``names``.
+_NAMELESS_READERS = frozenset({"curl_user", "netrc"})
+
+
+def _build_header(row: Mapping[str, Any]) -> HeaderRow:
+    if row["tier"] != SECRET:
+        raise _fail(row, "a header row is Secret tier")
+    reader = row.get("reader")
+    if reader not in _HEADER_READERS:
+        raise _fail(row, f"unknown reader {reader!r}")
+    if reader in _NAMELESS_READERS:
+        if "names" in row:
+            raise _fail(row, f"reader {reader!r} reads no names")
+        names: tuple[str, ...] = ()
+    else:
+        names = tuple(n.lower() for n in _strings(row, "names"))
+    scheme = row.get("scheme", "")
+    if not isinstance(scheme, str):
+        raise _fail(row, "scheme must be a string")
+    allow = (
+        frozenset(v.rsplit(".", 1)[0] for v in _strings(row, "allow_values"))
+        if "allow_values" in row
+        else frozenset()
+    )
+    return HeaderRow(
+        id=row["id"],
+        tier=row["tier"],
+        reader=reader,
+        names=names,
+        scheme=scheme.lower(),
+        min_length=_int(row, "min_length", 1),
+        allow_values=allow,
+    )
+
+
+def _build_url_path_secret(row: Mapping[str, Any]) -> UrlPathSecretRow:
+    if row["tier"] != SECRET:
+        raise _fail(row, "a url_path_secret row is Secret tier")
+    prefix = row.get("path_prefix")
+    if not isinstance(prefix, str) or not prefix.startswith("/") or not prefix.endswith("/"):
+        raise _fail(row, "path_prefix must start and end with '/'")
+    hosts = frozenset(h.lower() for h in _strings(row, "hosts"))
+    return UrlPathSecretRow(
+        id=row["id"],
+        tier=row["tier"],
+        hosts=hosts,
+        path_prefix=prefix,
+        segment=_int(row, "segment", 1),
+    )
+
+
+def _build_encoded(row: Mapping[str, Any]) -> EncodedRow:
+    if row["tier"] != SECRET:
+        raise _fail(row, "an encoded row is Secret tier")
+    return EncodedRow(id=row["id"], tier=row["tier"], min_length=_int(row, "min_length", 8))
 
 
 _BUILDERS = {
@@ -893,6 +1324,10 @@ _BUILDERS = {
     "armour": _build_armour,
     "known_key": _build_known_key,
     "url_param": _build_url_param,
+    "url_userinfo": _build_url_userinfo,
+    "encoded": _build_encoded,
+    "url_path_secret": _build_url_path_secret,
+    "header": _build_header,
     "structure": _build_structure,
 }
 
@@ -927,6 +1362,10 @@ def build_table(rows: Sequence[Mapping[str, Any]]) -> Table:
         known_keys=tuple(built["known_key"]),
         structures=tuple(built["structure"]),
         url_params=tuple(built["url_param"]),
+        userinfo=tuple(built["url_userinfo"]),
+        encoded=tuple(built["encoded"]),
+        path_secrets=tuple(built["url_path_secret"]),
+        headers=tuple(built["header"]),
     )
 
 

@@ -25,9 +25,10 @@ from __future__ import annotations
 import time
 
 import pytest
+from denied_commands_security_helpers import _interpreter_work
 from named_cases_helpers import named_cases
 
-from kiro_crew import mcp_cron
+from kiro_crew import mcp_cron, mcp_cron_shell_scan, mcp_cron_vet
 from kiro_crew.mcp_cron import (
     _CRON_MAX_COMMAND_SCAN,
     _EXTGLOB_MAX_EXPANSIONS,
@@ -1166,18 +1167,27 @@ def test_command_length_ceiling_refuses_before_allocating_scan_state():
     """
     over = "a" * (_CRON_MAX_COMMAND_SCAN + 1)
 
-    began = time.monotonic()
-    verdict = _vet_shell_command(over)
-    elapsed = time.monotonic() - began
+    def _never(name: str):
+        def scan(*args: object, **kwargs: object) -> object:
+            raise AssertionError(f"{name} ran before the length refusal")
+
+        return scan
+
+    with pytest.MonkeyPatch.context() as mp:
+        # The two per-character steps that follow the guard: the fold and the quote scan.
+        mp.setattr(mcp_cron_vet, "_fold_line_continuations", _never("the fold"))
+        mp.setattr(mcp_cron_shell_scan, "_quote_states", _never("_quote_states"))
+        verdict = _vet_shell_command(over)
+        # Deciding by length is a single comparison: the instructions it takes do not
+        # grow with the command, which they would if anything walked it first.
+        work = [_interpreter_work(lambda: _vet_shell_command(over * n)) for n in (1, 2, 3)]
 
     assert verdict is not None, "an unscannable command must not be reported clean"
     assert "ceiling this vet will scan" in verdict, verdict
     # No composition form is present, so anything that refuses this can only be the
     # length guard -- confirming the refusal is not an unrelated rule firing.
     assert str(_CRON_MAX_COMMAND_SCAN) in verdict, verdict
-    # Deciding by length is a single comparison. Allow generous headroom for a loaded
-    # box while still failing if the fold or the per-character scan ran first.
-    assert elapsed < 0.5, f"refusing by length took {elapsed:.3f}s, so something scanned first"
+    assert work[0] == work[1] == work[2], f"refusing by length grew with the command: {work}"
 
 
 def test_command_length_ceiling_sits_above_the_storable_maximum():

@@ -216,17 +216,46 @@ _LIVE_STATE_RULE = (
 )
 
 
-# Every variant carries this rule, so every Crew agent (conductor, worker, Bot,
-# Conductor mode, sub-agent) gets it from this one place.
-_ASK_ONLY_WHEN_NEEDED_RULE = (
-    "Ask a person only when human involvement is truly required. When you have a "
-    "clear recommendation, act on it and report what you did. Ask only when the "
-    "step (a) needs credentials, a sign-in or a permission only they can grant, "
-    "(b) spends money or meaningful quota, (c) cannot be undone or deletes or "
-    "overwrites someone else's work, (d) turns on a real preference you cannot "
-    "infer and a wrong guess is costly, or (e) the person explicitly asked to "
-    "decide it. Otherwise pick the default, state it as an assumption, and "
-    "continue. Never stop work just to confirm a plan that is already approved.\n"
+# The one ask policy. Every critical-rules variant carries it, and the agent
+# prompts of the four crew kinds (Bot conductor and worker, Conductor-mode lead,
+# conductor and worker) carry it again at agent rank, so a lesson or a session
+# line cannot outrank it. Every other ask-case list in the product points here
+# as "(a)-(e)"; do not copy the list.
+ASK_CORE = (
+    "**Reroute first; ask only when you must.** When a step is blocked or fails, "
+    "take another allowed path to the goal: a refused push to a protected branch "
+    "goes to a feature branch and a pull request. When one option is clearly "
+    "best, act on it and report what you did. Ask a person only when the step (a) "
+    "needs credentials, a sign-in or a permission only they can grant, (b) spends "
+    "money or credits past what they approved, (c) cannot be undone or deletes or "
+    "overwrites someone else's work, (d) turns on a costly preference you cannot "
+    "infer, or (e) is one they said they will decide. Your own time or round "
+    "caps, reruns inside an approved count, and rerunning runs your own bug "
+    "voided to replace them are not (b); only a budget larger than approved is. "
+    "Otherwise pick the default, state it, and go on; never stop to confirm an "
+    "approved plan. Act on a ruling already made (such as posting it on the PR) "
+    "before you report. A report of done work is a statement, even when the next "
+    "step is theirs (such as a merge): no [OPTIONS:] unless it carries an ask; "
+    "this outranks the [OPTIONS:] rule. Safety holds: the same effect by another "
+    "tool or spelling is the same blocked action, and your path must not hit "
+    "(a)-(e) itself. Never bypass an approval or a required review, or ask to "
+    "loosen a rule, sandbox or approval mode.\n"
+)
+
+# The conductor half (Bot conductor, Conductor-mode lead and conductor).
+CONDUCTOR_ASK_TAIL = (
+    "**A worker's ask is a claim.** Check its `question` or `needs_human` against "
+    "(a)-(e); if none applies, decide, record it, and tell the person in one "
+    "line. Never take a recommendation that loosens a setting or reaches a "
+    "blocked effect another way. A `human_approval` item is still asked.\n"
+)
+
+# The worker half (Bot worker, Conductor-mode worker).
+WORKER_ASK_TAIL = (
+    "**Before `blocked` or `question`, try an allowed path**, then name what you "
+    "tried and your recommendation. Set `needs_human` only for (a)-(e). A step no "
+    "allowed path can reach goes in your report as the exact command plus one "
+    "line of fact: what it does, from where.\n"
 )
 
 
@@ -277,13 +306,11 @@ _CRITICAL_RULES_TAIL = (
 
 # Every variant stays a fixed module constant, never templated: the
 # marker-neutralization prefix check matches _CRITICAL_RULES_VARIANTS exactly.
-_CRITICAL_RULES = (
-    _CRITICAL_RULES_HEAD + _ASK_ONLY_WHEN_NEEDED_RULE + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
-)
+_CRITICAL_RULES = _CRITICAL_RULES_HEAD + ASK_CORE + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
 
 
 _CRITICAL_RULES_CHANNEL = (
-    _CRITICAL_RULES_HEAD + _ASK_ONLY_WHEN_NEEDED_RULE + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+    _CRITICAL_RULES_HEAD + ASK_CORE + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
 )
 
 
@@ -294,7 +321,7 @@ _CRITICAL_RULES_CHANNEL = (
 # absolute paths, and the gender rule.
 _CRITICAL_RULES_SUBAGENT = (
     _CRITICAL_RULES_HEAD
-    + _ASK_ONLY_WHEN_NEEDED_RULE
+    + ASK_CORE
     + "Your reply goes to the agent that started you, not to a person in a chat "
     "UI. Do not add [OPTIONS: ...] lines, <!-- keep-visible --> markers or other "
     "UI markup.\n"

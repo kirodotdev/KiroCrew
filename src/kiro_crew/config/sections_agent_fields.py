@@ -99,7 +99,9 @@ def normalize_agent_model(model: object) -> str:
 # entitlement-safe on every subscription tier (the provider picks a served
 # model). An operator who deliberately wants a cheaper model for background /
 # sub-agent work pins it here without changing the interactive chat default.
-ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent")
+# ``subagent_light`` is the tier a spawn marked ``light`` takes while
+# ``agent.subagent_light_tier`` is on.
+ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent", "subagent_light")
 
 # The kiro agents that run the "background" role: auto-titles, memory
 # consolidation, heartbeat polls. Named here rather than inline at the one place

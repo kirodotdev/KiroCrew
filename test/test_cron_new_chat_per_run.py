@@ -130,6 +130,22 @@ async def test_a_run_whose_transcript_cannot_be_kept_opens_no_tab():
 
 
 @pytest.mark.asyncio
+async def test_the_no_tab_warning_keeps_the_job_name_on_one_line(caplog):
+    # The name is agent-authored: an embedded newline must not forge a log record.
+    state = _state()
+    state.conversation_log.update_metadata.side_effect = OSError("disk full")
+    forged = "ok\r\n2026-01-01 00:00:00 INFO kiro_crew: forged"
+
+    with caplog.at_level("WARNING", logger="kiro_crew.slack.gateway"):
+        await _deliver(state, _job(name=forged), f"cron:{JOB_ID}:11111111", "draft")
+
+    record = next(r for r in caplog.records if "no tab opened" in r.getMessage())
+    message = record.getMessage()
+    assert "\n" not in message and "\r" not in message
+    assert "ok\\x0a2026-01-01" in message
+
+
+@pytest.mark.asyncio
 async def test_a_job_without_the_switch_keeps_its_one_tab():
     state = _state()
     job = _job(persistent_session=True, new_chat_per_run=False)

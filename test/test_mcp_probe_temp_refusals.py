@@ -14,6 +14,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_discovery
 from kiro_crew.mcp_discovery import (
@@ -26,7 +27,7 @@ from kiro_crew.mcp_discovery import (
 )
 
 # A credential-shaped path segment: the payload must carry the redacted text.
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+_SECRET = github_classic(seed=37)
 _DECLARED = f"/data/run/{_SECRET}/tmp"
 _REDACTED = "/data/run/[REDACTED: credential]/tmp"
 

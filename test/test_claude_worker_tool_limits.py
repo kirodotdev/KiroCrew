@@ -318,17 +318,15 @@ class TestTheArrayIsHeldToTheSettingsInForce:
 
     def test_the_inline_settings_are_what_is_judged(self, tmp_path, pixel_worker):
         """With the project's file excluded, the inline settings are what ships."""
-        from kiro_crew.acp.client_mcp_array import _claude_worker_settings_lag
-
         client = self._seeded(tmp_path)
         spec = mate_worker.worker_session_spec(dict(BASE), KEY, mcp_tool_limits_carried=True)
         client._session_mcp_excludes_local = True
         client._session_mcp_inline_settings = {"permissions": {"deny": []}}
-        assert _claude_worker_settings_lag(client, spec) is True
+        assert client._worker_settings_lag(spec) is True
         client._session_mcp_inline_settings = {
             "permissions": {"deny": [*HIDDEN, "mcp__whole-probe"]}
         }
-        assert _claude_worker_settings_lag(client, spec) is False
+        assert client._worker_settings_lag(spec) is False
 
     def test_a_linked_settings_file_is_not_followed(self, tmp_path, pixel_worker):
         """A link at the settings path, or bytes that are not Crew's seed, carry no rules.
@@ -337,8 +335,6 @@ class TestTheArrayIsHeldToTheSettingsInForce:
         the read refuses the link (POSIX ``O_NOFOLLOW``) or follows it and finds bytes
         that are not the recorded seed (Windows has no ``O_NOFOLLOW``).
         """
-        from kiro_crew.acp.client_mcp_array import _claude_worker_settings_lag
-
         client = self._seeded(tmp_path)
         spec = mate_worker.worker_session_spec(dict(BASE), KEY, mcp_tool_limits_carried=True)
         path = tmp_path / ".claude" / "settings.local.json"
@@ -352,27 +348,23 @@ class TestTheArrayIsHeldToTheSettingsInForce:
             pytest.skip("this host cannot create a symlink")
         client._session_mcp_excludes_local = False
         client._session_mcp_inline_settings = None
-        assert _claude_worker_settings_lag(client, spec) is True
+        assert client._worker_settings_lag(spec) is True
         path.unlink()
         path.write_bytes(seed)
-        assert _claude_worker_settings_lag(client, spec) is False
+        assert client._worker_settings_lag(spec) is False
 
     def test_no_spec_reads_nothing(self, tmp_path, pixel_worker, monkeypatch):
-        from kiro_crew.acp.client_mcp_array import _claude_worker_settings_lag
-
         client = self._seeded(tmp_path)
 
         def _no_read(*_a, **_kw):
             raise AssertionError("the settings path was read")
 
         monkeypatch.setattr(client, "_settings_path_bytes", _no_read)
-        assert _claude_worker_settings_lag(client, None) is False
+        assert client._worker_settings_lag(None) is False
 
     def test_an_ordinary_session_is_never_held(self, tmp_path):
-        from kiro_crew.acp.client_mcp_array import _claude_worker_settings_lag
-
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
-        assert _claude_worker_settings_lag(client, {"excludedTools": ["@srv/t"]}) is False
+        assert client._worker_settings_lag({"excludedTools": ["@srv/t"]}) is False
 
 
 #: The built-ins a worker excluding ``shell`` and ``fs_write`` must not be offered.

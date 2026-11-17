@@ -22,7 +22,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew import kiro_cli
-from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict, kas_extract_held
+from kiro_crew.agent_sdk.kas_floor_wait import (
+    await_kas_floor_verdict,
+    note_warm_pool_start_failed,
+    warm_pool_start_held,
+)
 from kiro_crew.config.loader import resolve_agent_identity
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
@@ -439,10 +443,10 @@ class WarmSessionPool:
                         agent=self._pool_agent or None,
                         cwd=self._pool_cwd or None,
                     )
-                # A recorded broken kiro-cli KAS extract fails every KAS relay spawn
-                # the same way until it is moved, so a KAS pool stops here instead of
-                # respawning each sweep. Other backends never read that extract.
-                if await kas_extract_held(provider):
+                # A recorded broken kiro-cli KAS extract, or a start that failed
+                # because kiro-cli is signed out, fails every retry the same way until
+                # it is fixed, so the pool stops here instead of respawning each sweep.
+                if await warm_pool_start_held(provider):
                     provider = None  # built, never started: nothing to discard
                     break
                 async with self._owner._start_sem:
@@ -523,8 +527,9 @@ class WarmSessionPool:
                 # just re-reads the installed factory next iteration.
                 if stale_identity:
                     break
-            except Exception:
+            except Exception as exc:
                 self._deps.logger.warning("Warm pool: failed to spawn process", exc_info=True)
+                note_warm_pool_start_failed(exc, provider)
                 break
             finally:
                 if provider is not None:

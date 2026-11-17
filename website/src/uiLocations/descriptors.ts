@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -159,7 +159,6 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
   [PREVIEW_SESSION_ENVIRONMENTS]: 'developer.session-environments',
   [PREVIEW_EXPLORE]: 'developer.explore',
-  [PREVIEW_CREW_MODE]: 'developer.conductor-mode',
   [PREVIEW_DASHBOARD_STALE_FIELDS]: 'developer.mark-out-of-date-dashboard-fields',
 }
 
@@ -167,10 +166,15 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
  *  is not itself gated (e.g. Display > Explore). Keyed by setting id. */
 export const SETTING_PREVIEW: Record<string, string> = {
   'display.explore': PREVIEW_EXPLORE,
-  // Chat > Sessions draws Start New Chats in Conductor Mode only while the conductor mode preview is on.
-  'chat.start-new-chats-in-conductor-mode': PREVIEW_CREW_MODE,
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
   'developer.wake-bots-to-update-out-of-date-fields': PREVIEW_DASHBOARD_STALE_FIELDS,
+}
+
+/** Single settings a panel draws only while a `UI_CONDITIONS` condition holds.
+ *  Keyed by setting id. */
+export const SETTING_CONDITION: Record<string, string> = {
+  // Display > View draws Channels' switch only while Channels is turned on.
+  'display.show-channels': 'page_turned_on',
 }
 
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter).

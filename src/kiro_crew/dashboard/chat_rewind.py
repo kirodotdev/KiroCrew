@@ -42,6 +42,7 @@ from kiro_crew.dashboard.kiro_readiness import (
     refuse_rerun_after_signed_out_turn,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
+    turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
@@ -135,7 +136,19 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     kiro_turn = await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name))
     if kiro_turn:
-        blocked = await reject_if_kiro_unverified(request)
+        # The session the rerun's turn will run on names its harness; the slot
+        # is looked up again after the await, so this read only feeds the gate.
+        # A rewind either discards the live conversation (the turn cold-starts on
+        # the configured route) or, with sub-agents attached, swaps it on the live
+        # process, so the gate judges both.
+        harness_turn, turn_session = turn_gate_target(state, name)
+        blocked = await reject_if_kiro_unverified(
+            request,
+            harness_turn=harness_turn,
+            session_key=turn_session,
+            turn_reuses_session=False,
+            may_keep_live_process=True,
+        )
         if blocked is not None:
             return blocked
     slot = state._slots.get(name)
@@ -164,9 +177,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
 
     raw_index = body.get("at_message_index", body.get("index"))
     ts = body.get("ts")

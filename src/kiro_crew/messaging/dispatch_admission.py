@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
+from kiro_crew.embeddings_shared import warm_embedder_for_person_soon
 from kiro_crew.messaging.dispatch_contract import ChannelTurn
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.inbound_spool import (
@@ -81,6 +82,8 @@ async def admit_inbound_callback(
         reservation.release()
         raise RuntimeError("inbound callback has no owning asyncio task")
     task.add_done_callback(lambda _done: reservation.release())
+    if human_input and route is not None:  # a person's routed message, never a monitor's
+        warm_embedder_for_person_soon()
     return True
 
 
@@ -108,6 +111,8 @@ class _InboundCallbackAdmission:
             return True
         self._reservation = reserve()
         if self._reservation is not None:
+            if self._route is not None:  # a person's routed message
+                warm_embedder_for_person_soon()
             return True
         if not self._restricted:
             if getattr(self._sessions, "update_restart_fenced", False):

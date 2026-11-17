@@ -94,6 +94,18 @@ def test_a_send_or_close_to_its_own_child_is_granted(tool, caller, child) -> Non
     assert _conductor_own_child_call(state, state._slots[caller], _event(tool, child)) is True
 
 
+@pytest.mark.parametrize("tool", ["session_send", "session_close"])
+def test_conductor_modes_default_agent_sends_and_closes_its_own_child_unprompted(tool) -> None:
+    assert crew_mode.DEFAULT_CREW_MODE_AGENT == "kirocrew-conductor"
+    state = _state()
+    root = _slot("root", agent=crew_mode.DEFAULT_CREW_MODE_AGENT)
+    state._slots["root"] = root
+    state._slots["w-root"] = _slot("w-root", agent="kirocrew-worker", created_by="root")
+    assert _conductor_own_child_call(state, root, _event(tool, "w-root")) is True
+    # Another root's child still prompts.
+    assert _conductor_own_child_call(state, root, _event(tool, "w-cond")) is False
+
+
 def test_a_deferred_tool_call_reads_the_target_from_its_arguments() -> None:
     state = _state()
     wrapped = {"tool_id": "kirocrew-dashboard::session_send", "arguments": {"target": "w-cond"}}

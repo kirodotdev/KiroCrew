@@ -49,7 +49,7 @@ program = sandbox_launcher_program
 # launcher suites take the same route -- see ``test_sandbox_argv.py``.
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
+    reason="_build_launcher_script uses POSIX-only os.getuid",
 )
 
 #: The stages pin every target through ``O_PATH`` and mount it as ``/proc/self/fd/<n>``,

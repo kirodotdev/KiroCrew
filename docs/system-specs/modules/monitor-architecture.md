@@ -191,23 +191,25 @@ replacement starts its own cycle count. As a backstop, `work_ledger_read` flags 
 read included -- a loop watching something else reads no ledger, so it does not
 count. The Crew page board does not show the flag yet.
 
-A `work-ledger` watch waits longer for its quiet floor while no worker has
-reported. Every gated loop is delivered anyway after `_MAX_QUIET_STREAK` (10)
-quiet ticks, and for this kind that turn re-read a long conductor chat to find
-the board as the conductor left it. The probe publishes `WorkLedgerProbe.revision`,
+A `work-ledger` watch has its own quiet floor while no worker has reported.
+Every gated loop is delivered anyway after `_MAX_QUIET_STREAK` (10) quiet
+ticks. For this kind that turn is the goal-conductor skill's active check of
+each open item ("A wake with no news is a check"), so the idle floor equals the
+shipped one. The probe publishes `WorkLedgerProbe.revision`,
 a digest of each item's worker-owned report fields (`last_report_at`,
 `status`, `summary`; `no-reports` for a board read with none yet). The conductor's own writes -- a verdict, a new item -- do not
 move it, though they still move the kernel epoch. The gate keeps it on the
 monitor as `ledger_revision`, and every delivered turn copies it to
 `ledger_delivered_revision`. While the two match, the floor is
-`_IDLE_LEDGER_QUIET_FLOOR` (40) ticks instead of 10, and it still delivers
-there, which also bounds a stall the probe's rate limit folded forward without
-waking. A new worker report puts the floor back to 10 at once. Report and stall
+`_IDLE_LEDGER_QUIET_FLOOR` (10) ticks, about hourly at the 300 s patrol
+interval, and it still delivers there, which also bounds a stall the probe's
+rate limit folded forward without waking. A new worker report keeps the
+shipped floor. Report and stall
 wakes are untouched: they are `WAKE` verdicts and never reach the floor branch.
-The longer floor never applies while the loop's recent turns failed to start or
+The idle floor never applies while the loop's recent turns failed to start or
 errored (`consecutive_start_failures`, `consecutive_failed_cycles`), or when the
-revision is unknown (empty, or unreadable on load). A `gh-pr` watch gets the
-same 40-tick floor while its whole reading only waits on a reviewer: open, not a
+revision is unknown (empty, or unreadable on load). A `gh-pr` watch waits
+`_REVIEW_WAIT_QUIET_FLOOR` (40) ticks while its whole reading only waits on a reviewer: open, not a
 draft, `MERGEABLE`, every check finished with none failed, and
 `REVIEW_REQUIRED` (`gate._pr_waits_only_on_review`). An unchanged reading then
 still skips the judge, because `_unchanged_reading_skips_judge` compares the
@@ -215,21 +217,34 @@ judge's knob with the shipped floor, not with this loop's. Other cases keep
 the shipped floor.
 
 A worker report whose status repeats the event right before it raises no wake
-and no pull-forward (`ledger_wake.repeats_status`). A `progress` or a
-conductor `decision` between two equal reports makes the second one news.
-Only `blocked` and `done` repeats are suppressed: every `question` or `reply`
-is a new ask and wakes.
+and no pull-forward (`ledger_wake.repeats_status`). A `progress` between two
+equal reports makes the second one news. A `blocked` or `question` that repeats
+the worker's previous report raises no wake even across the conductor's own
+writes (a `decision`, a `verdict`, an `ask`; `ledger_wake.repeats_wait`): the
+same status, the same `reason` as the cause last delivered for the item
+(`ledger_wake.cause_token`, kept in the seen set), and for a `question` the same
+summary. A new reason or a re-worded question is news. A `done` repeat is
+suppressed only back to back; every `reply` is a new ask and wakes.
 
 The work-ledger probe is the one kernel-path probe that wakes once per token for
 the item's life rather than re-asserting after the re-alert window. It re-reads
 the same report events and the same silence on every tick while an item is open,
 so the kernel's expiring mask would re-wake the conductor every
 `DEFAULT_REALERT_SECS` about a report it already read. Each report event id and
-each stall token (`stall:<last_report_at>`) is kept in a seen set in the
+each stall token (`stall:<episode>`, `ledger_wake.stall_episode`: the item's
+status, the newest worker report of another status, a `decide` the worker has
+not answered, its `wake_at`, and whether its session is gone) is kept in a seen
+set in the
 `ledger_wake` rate file: per item, per polling driver (the `irq` job id, so the
 gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
+So a worker that reports `progress` and stops, again and again, is one stall, not
+one per report; the item's `stale` flag still shows on every read and on the
+patrol's floor turn. The stall's observation key carries the episode too, so the
+kernel's `realert_secs` mask does not hide a re-armed stall. An item with an open
+`ask` record waits on a person, so the probe raises no stall for it while its
+worker session is open; the board's `stale` flag is unchanged.
 A token is marked seen when the probe emits it, not when the turn lands. A woken
 turn that fails, a recovery it queued for itself that fails, or the turn that
 carries a steered wake (the running turn that took it, or the steer's own requeued
@@ -460,8 +475,13 @@ nothing, a turn's end arms it toward its deadline, and the reconciler skips it.
 A pull request that merged or closed during a gated loop's hold settles the
 loop as `monitor_terminal`, records the outcome on its monitor and sends the
 expiry notice. An ungated loop is never settled by a held read, because
-`gate=False` promises a terminal reading never ends it. A channel loop settles
-there too, because a held loop delivers no turn to carry the news.
+`gate=False` promises a terminal reading never ends it. A held loop settles
+there on any surface, because a held loop delivers no turn to carry the news.
+Outside a hold, a gated loop whose pull request merged or closed owes the
+session one final turn (`MonitorState.terminal_pending`, its opening line
+`terminal_note`, rendered by `terminal_wake_line`) on every surface, and settles
+once that turn is delivered; `monitor_update` on a loop that ended this way is
+refused (`_finished_watch`).
 
 A tool's “requested” response proves receipt only. The gateway's applied notice
 and a subsequent `monitor_inspect` prove activation. For crew/member sessions,

@@ -114,7 +114,11 @@ for (const theme of ['light', 'dark']) {
     window.kirocrew = { isElectron: true, platform: 'win32' }
     window.electronAPI = {
       getAppMenuItems: async (id) => (id === 'file-menu' ? menuRows : []),
-      executeAppMenuItem: () => {},
+      // Answers the dispatch outcome, matching the preload's `invoke`. This
+      // capture only opens the menu, but a stub that answered nothing would
+      // model a bridge that no longer exists — and the comment above is about
+      // exactly that failure mode.
+      executeAppMenuItem: async () => true,
       onNavigate: () => () => {},
       getGlobalHotkey: async () => ({ accelerator: 'Alt+Shift+K', default: 'Alt+Shift+K' }),
       setDevMode: () => {},

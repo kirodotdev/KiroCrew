@@ -1033,6 +1033,7 @@ class CCWorker(Worker):
                 if event is not None:
                     await self._event_queue.put(event)
         except Exception:
+            # A read error ends the reader the same way the end of the stream does.
             pass
         finally:
             await self._event_queue.put(None)
@@ -1328,6 +1329,7 @@ class LLMPool:
                     try:
                         await w.shutdown()
                     except Exception:
+                        # One worker's failed shutdown must not stop the others' cleanup.
                         pass
                 self._workers.clear()
                 self._available = asyncio.Queue()
@@ -1402,6 +1404,7 @@ class LLMPool:
                 try:
                     await worker.shutdown()
                 except Exception:
+                    # A replacement is created below whatever the dead worker's shutdown does.
                     pass
                 try:
                     new_worker = await self._create_worker()
@@ -1422,6 +1425,7 @@ class LLMPool:
                     try:
                         await new_worker.shutdown()
                     except Exception:
+                        # The fresh worker is discarded either way.
                         pass
                     continue
 

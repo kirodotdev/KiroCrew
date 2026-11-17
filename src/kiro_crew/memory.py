@@ -80,6 +80,24 @@ _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
 # staying fresh; the cache key includes the day so the decay window shifting at
 # midnight invalidates naturally, and append/prune invalidate explicitly.
 _HISTORY_CACHE_TTL_SECS = 5.0
+# How long a recent-history window may be reused past that TTL, and only while the
+# history directory's ``lstat`` signature is unchanged. Long enough to carry the
+# read a new chat's pre-warm makes to that chat's first message, which a person
+# usually sends seconds to a minute later. The bound is on what a read can miss
+# that no file stat shows: the sensitive-path policy the hardened read applies
+# (a protected directory added, a home symlink repointed) is re-applied no later
+# than this.
+_HISTORY_REUSE_MAX_SECS = 60.0
+# Reuse needs the signature, and the signature is POSIX-only. On Windows,
+# ``DirEntry.stat`` reports 0 for inode and link count, so a gained hard link
+# would not show; and an ``lstat`` through a linked ancestor is itself the SMB
+# probe that ``LocalMemoryFiles._read_root_guard`` exists to refuse, so no
+# probe may run ahead of that guard. Windows keeps the plain TTL and no reuse.
+HISTORY_REUSE_SUPPORTED = os.name != "nt"
+# Most history-directory entries a signature holds. Pruning keeps a year of
+# dated files; a directory past this cap gets no signature (no reuse, no
+# prefetch match) rather than one that grows with whatever was planted there.
+_HISTORY_SIGNATURE_MAX_ENTRIES = 2048
 
 # How long a sqlite connection waits out 'database is locked' contention before
 # giving up. Applied both as connect(timeout=) and PRAGMA busy_timeout so a
@@ -288,6 +306,10 @@ class MemoryStore:
         # different windows (context build=14, suggestions=2, dashboard=30) don't
         # evict each other. Value: (monotonic_deadline, day_iso, result).
         self._history_cache: dict[int, tuple[float, str, str]] = {}
+        # Past that TTL, a window read within ``_HISTORY_REUSE_MAX_SECS`` is
+        # reused while no entry of the history directory moved (see
+        # ``_history_signature``). Value: (signature, day_iso, read_at, result).
+        self._history_reuse: dict[int, tuple[tuple, str, float, str]] = {}
         self._files_cache: "MemoryFiles | None" = None
 
     @property
@@ -661,6 +683,10 @@ class MemoryStore:
 
         TTL-cached (keyed on ``days`` + today's date) for explicit readers.
         ``append_history``/``prune_history`` invalidate the cache on write.
+        A window :meth:`warm_recent_history` read in the last
+        ``_HISTORY_REUSE_MAX_SECS`` is handed to the next read once, and only
+        while no entry of the history directory moved since that read
+        (:meth:`_history_signature`); anything else reads every file again.
         """
         require_memory_ready(self._memory_store_name)
         if days <= 0:
@@ -671,22 +697,105 @@ class MemoryStore:
                 for entry in reversed(self.read_history_entries())
                 if entry["content"].strip()
             )
+        return self._read_recent_history_v1(days, warm=False)
+
+    @named_store_operation
+    def warm_recent_history(self, days: int = 14) -> None:
+        """Read the window now, for the next :meth:`read_recent_history` to reuse once.
+
+        Kept apart from the plain TTL cache: a TTL hit checks nothing, and the
+        read this warms must see a day file another process changed in between.
+        Other readers never reuse it past their TTL. Nothing to warm where there
+        is no reuse (Windows) or no V1 history.
+        """
+        require_memory_ready(self._memory_store_name)
+        if not HISTORY_REUSE_SUPPORTED or days <= 0 or self._memory_version == 2:
+            return
+        self._read_recent_history_v1(days, warm=True)
+
+    def _read_recent_history_v1(self, days: int, *, warm: bool) -> str:
         today = datetime.now().date()
         today_iso = today.strftime("%Y-%m-%d")
-        cached = self._history_cache.get(days)
-        if cached is not None and time.monotonic() < cached[0] and cached[1] == today_iso:
-            return cached[2]
+        if not warm:
+            cached = self._history_cache.get(days)
+            if cached is not None and time.monotonic() < cached[0] and cached[1] == today_iso:
+                return cached[2]
+        # One use per warm: whatever this read does, the warmed text is spent.
+        kept = self._history_reuse.pop(days, None)
+        if not warm and kept is not None:
+            now = self._history_signature()
+            if (
+                now is not None
+                and kept[0] == now
+                and kept[1] == today_iso
+                and time.monotonic() - kept[2] < _HISTORY_REUSE_MAX_SECS
+            ):
+                return kept[3]
+        before = self._history_signature() if warm else None
+        read_at = time.monotonic()
         result = self._read_recent_history_uncached(days, today)
-        self._history_cache[days] = (
-            time.monotonic() + _HISTORY_CACHE_TTL_SECS,
-            today_iso,
-            result,
-        )
+        if not warm:
+            self._history_cache[days] = (
+                time.monotonic() + _HISTORY_CACHE_TTL_SECS,
+                today_iso,
+                result,
+            )
+        # Kept for reuse only when nothing moved across the whole read, so the
+        # text is the one the signature describes.
+        elif before is not None and self._history_signature() == before:
+            self._history_reuse[days] = (before, today_iso, read_at, result)
         return result
+
+    def _history_signature(self) -> tuple | None:
+        """What the history directory holds, by ``lstat``: one row per entry.
+
+        Name, type and mode, inode, size, mtime, ctime and link count, plus the
+        directory's own inode, mtime and ctime. A rewritten, added, removed,
+        renamed or relinked file -- a file swapped for a symlink included --
+        changes it. ``None`` when the directory cannot be listed, holds more
+        than ``_HISTORY_SIGNATURE_MAX_ENTRIES`` entries, or the store's files
+        are not on the local disk. The one signature of this directory: the
+        recent-history reuse and the session memory prefetch
+        (``store_admission._admitted_file_stats``) both compare it. On Windows
+        it is taken only behind the file seam's root guard, which the reuse
+        does not run, so the reuse is off there (:data:`HISTORY_REUSE_SUPPORTED`).
+        """
+        from kiro_crew.memory_files import LocalMemoryFiles
+
+        if not isinstance(self._files, LocalMemoryFiles):
+            return None
+        try:
+            try:
+                folder = os.lstat(self._history_dir)
+            except FileNotFoundError:
+                return ("absent",)  # no history yet: unchanged until one is written
+            if not _stat.S_ISDIR(folder.st_mode):
+                return None
+            rows: list[tuple[str, int, int, int, int, int, int]] = []
+            with os.scandir(self._history_dir) as entries:
+                for entry in entries:
+                    if len(rows) >= _HISTORY_SIGNATURE_MAX_ENTRIES:
+                        return None
+                    st = entry.stat(follow_symlinks=False)
+                    rows.append(
+                        (
+                            entry.name,
+                            st.st_mode,
+                            st.st_ino,
+                            st.st_size,
+                            st.st_mtime_ns,
+                            st.st_ctime_ns,
+                            st.st_nlink,
+                        )
+                    )
+        except OSError:
+            return None
+        return (folder.st_ino, folder.st_mtime_ns, folder.st_ctime_ns, tuple(sorted(rows)))
 
     def _invalidate_history_cache(self) -> None:
         """Drop all cached recent-history windows (after append/prune)."""
         self._history_cache.clear()
+        self._history_reuse.clear()
 
     def _read_recent_history_uncached(
         self, days: int, today: _date, *, lookback_days: int = 181

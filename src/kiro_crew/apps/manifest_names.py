@@ -55,7 +55,9 @@ RESERVED_ROUTE_APP_NAMES = frozenset({"library"})
 # in this module, tightening a name is a one-way door — it invalidates an app
 # already published under that name — so this affects only names not yet
 # admitted; the carve-out is what constrains an already-published app so named.
-RESERVED_APP_PATH_SEGMENTS = frozenset({"registry", "registries", "blob", "install", "register"})
+RESERVED_APP_PATH_SEGMENTS = frozenset(
+    {"registry", "registries", "blob", "install", "register", "market"}
+)
 
 #: Wire code for a reserved-name refusal. Callers that turn ``app_name_error``
 #: into a JSON error response set this as ``AppResult.error_code`` (serialized

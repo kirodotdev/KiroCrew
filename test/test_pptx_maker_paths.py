@@ -20,14 +20,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.apps.builtins.pptx_maker.backend import paths
 
 
 class _DeckRootFixture(unittest.TestCase):
     """Base fixture: a temp deck root with one deck in it, pinned via the env override."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.root = self.tmp / "decks"
         self.deck = self.root / "20260101-demo"
         (self.deck / "specs").mkdir(parents=True)
@@ -41,7 +48,6 @@ class _DeckRootFixture(unittest.TestCase):
             os.environ.pop(paths.DECK_ROOT_ENV, None)
         else:
             os.environ[paths.DECK_ROOT_ENV] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 class TestSegmentGrammar(unittest.TestCase):
@@ -142,13 +148,15 @@ class TestResolveLibraryFile(unittest.TestCase):
     """Shared by every style/template read AND write, so a bad name can never
     reach a filesystem call regardless of which verb the request used."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.lib = self.tmp / "styles"
         self.lib.mkdir(parents=True)
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_resolves_a_name_to_a_suffixed_path(self) -> None:
         resolved = paths.resolve_library_file(self.lib, "my-style", ".html")

@@ -63,8 +63,8 @@ FALLBACK_TIMEOUT_SECS = 60.0
 DEFAULT_INTERVAL_SECS = 0.01
 
 #: How long :func:`drained_progress` lets a counter stand still before it calls
-#: the producer stuck: ``_NO_PROGRESS_SECONDS`` in
-#: ``test/test_crew_log_edge_concurrency.py``.
+#: the producer stuck. The same role as ``NO_PROGRESS_SECONDS`` in
+#: ``test/crew_log_drain.py``, which keeps its own, longer window.
 DEFAULT_PROGRESS_WINDOW_SECS = 10.0
 
 #: Share of a wait's timeout that one evaluation still gets once the deadline has

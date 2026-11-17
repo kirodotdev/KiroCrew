@@ -72,8 +72,8 @@ def test_rendered_row_yields_no_image_block_even_when_file_is_readable(screensho
     row = {"ts": "2026-09-29T05:12:00", "role": "tool", "content": f"see {screenshot}"}
     blocks = build_prompt_blocks(_fmt_message(row), allow_image=True)
     assert [b["type"] for b in blocks] == ["text"]
-    # Control: the unstripped row WOULD have carried the picture, which is the
-    # behaviour this change removes from the consolidation path.
+    # Control: the unstripped row WOULD carry the picture, which the
+    # consolidation path must not do.
     control = build_prompt_blocks(row["content"], allow_image=True)
     assert [b["type"] for b in control] == ["text", "image"]
 

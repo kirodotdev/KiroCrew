@@ -13,7 +13,7 @@ const confidence = (p: number) => fmtNumber(p, { minimumFractionDigits: 2, maxim
 /**
  * The transcript's receipt for one mid-turn handling decision.
  *
- * A sender who picked `Auto (Jev)` did not choose between steering the running
+ * A sender who picked `Auto (decision model)` did not choose between steering the running
  * turn and queueing for the next one, so the row has to say which one happened and
  * who decided it -- otherwise the only visible difference between the two is a
  * badge the sender has no reason to read as a decision.

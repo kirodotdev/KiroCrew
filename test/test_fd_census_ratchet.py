@@ -12,13 +12,14 @@ the descriptors that point at the directory under test does neither.
 
 testing-conventions.md ("A process-wide descriptor census is not a leak check")
 names the shapes to use instead: spy the primitive the code opens and closes, or
-count descriptors resolved to the object under test. The count is exact, so a
-removed site records the new number in the same commit.
+count descriptors resolved to the object under test. The record is exact per
+file, so a removed site records its file's new number in the same commit.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -38,8 +39,13 @@ _CENSUS = re.compile(
 # test quotes these shapes as string data for its own needle, not as a census.
 _EXCLUDED_PREFIXES = ("test_platform_compat", "test_macos_platform_tests_gate")
 
-# test_issue_radar_crew_store_unit_order.py::test_a_directory_at_the_order_files_name_leaks_no_descriptor
-_BASELINE_SITES = 1
+#: Census sites by test file. Exact per file, one line per file rather than one
+#: total, so two changes to different files stay green merged
+#: (testing-conventions.md § Merge-safe ratchets and counts).
+_BASELINE_SITES: dict[str, int] = {
+    # ::test_a_directory_at_the_order_files_name_leaks_no_descriptor
+    "test_issue_radar_crew_store_unit_order.py": 1,
+}
 
 
 def _sites() -> list[str]:
@@ -51,7 +57,7 @@ def _sites() -> list[str]:
             path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
         ):
             if _CENSUS.search(line):
-                found.append(f"{path.relative_to(_TEST_ROOT)}:{number}: {line.strip()}")
+                found.append(f"{path.relative_to(_TEST_ROOT).as_posix()}:{number}: {line.strip()}")
     return found
 
 
@@ -72,13 +78,27 @@ def test_the_needle_matches_every_shipped_shape() -> None:
     assert not any(_CENSUS.search(line) for line in legit)
 
 
+def _drift(sites: list[str]) -> list[str]:
+    """The ``_BASELINE_SITES`` line to write for every file whose count moved."""
+    counts = Counter(site.split(":", 1)[0] for site in sites)
+    return [
+        f'    "{rel}": {counts.get(rel, 0)},  # was {_BASELINE_SITES.get(rel, 0)}'
+        for rel in sorted(set(counts) | set(_BASELINE_SITES))
+        if counts.get(rel, 0) != _BASELINE_SITES.get(rel, 0)
+    ]
+
+
 def test_process_wide_descriptor_census_sites_match_the_recorded_count() -> None:
     sites = _sites()
-    assert len(sites) == _BASELINE_SITES, (
-        f"{len(sites)} test site(s) judge a descriptor leak by a process-wide census "
-        f"(recorded: {_BASELINE_SITES}). A whole-process count drifts under xdist and "
-        "needs /proc, which macOS lacks. Count descriptors resolved to the object under "
-        "test, or spy the primitive the code opens and closes (testing-conventions.md, "
-        "'A process-wide descriptor census is not a leak check'). If you REMOVED a site, "
-        "set _BASELINE_SITES to the new number.\n" + "\n".join(sites)
+    drift = _drift(sites)
+    assert not drift, (
+        "test site(s) judging a descriptor leak by a process-wide census moved. A "
+        "whole-process count drifts under xdist and needs /proc, which macOS lacks. "
+        "Count descriptors resolved to the object under test, or spy the primitive the "
+        "code opens and closes (testing-conventions.md, 'A process-wide descriptor "
+        "census is not a leak check'). If you REMOVED a site, write these "
+        "_BASELINE_SITES lines (a zero means delete the line):\n"
+        + "\n".join(drift)
+        + "\nsites:\n"
+        + "\n".join(sites)
     )

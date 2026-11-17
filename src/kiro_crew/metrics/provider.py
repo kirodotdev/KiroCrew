@@ -52,7 +52,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
-from kiro_crew.metrics import otlp_endpoints, otlp_governance, otlp_session
+from kiro_crew.metrics import kiro_export, otlp_endpoints, otlp_governance, otlp_session
 from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
 
 # The env-var pins and the export opt-in live in ``consent_pins`` (this module's
@@ -84,29 +84,22 @@ if TYPE_CHECKING:  # real types for annotations; never imported at runtime
     from kiro_crew.config.loader import TelemetryConfig
     from kiro_crew.platform.interfaces import OtlpDestination
 
-# KiroCrew declares opentelemetry-sdk as a required dependency, so
-# the availability probe below is defense-in-depth — not for a genuinely
-# optional dep, but for a partial / --no-deps / broken env-closure install where
-# the SDK is absent. This module is on the eager boot chain (cli.py -> dashboard
-# -> ... -> history.py -> skills.py -> get_recorder), so an unconditional
-# top-level import here would brick the ENTIRE gateway (and `kirocrew
-# --version`) even though telemetry defaults off. Degrade to the existing no-op
-# MetricsRecorder(None) path instead of crashing at import time.
+# opentelemetry-sdk is a required dependency; the probe below covers a broken
+# install (partial, --no-deps) where it is missing. This module is on the eager
+# boot chain (cli.py -> dashboard -> ... -> skills.py -> get_recorder), so a hard
+# import would break the whole gateway (and `kirocrew --version`) though
+# telemetry defaults off. Instead it degrades to the no-op MetricsRecorder(None).
 #
-# The SDK is NOT imported at module scope: executing
-# ``opentelemetry.sdk.metrics`` + ``.export`` + ``.view`` + ``.resources`` costs
-# ~57ms and ~120 extra modules on EVERY entry point (CLI invocations, MCP stdio
-# subprocesses, `kirocrew --version`) while telemetry is off by default and the
-# SDK is never used. ``importlib.util.find_spec`` answers the availability
-# question for ~0.9ms without executing the package, so the eager cost is paid
-# only by hosts that actually opt in. The real imports happen in ``_load_otel``,
-# called from ``_build_recorder`` after the consent gate.
+# The SDK is NOT imported at module scope: its metrics, export, view and
+# resources modules cost ~57ms and ~120 modules on EVERY entry point (CLI, MCP
+# stdio subprocesses). ``importlib.util.find_spec`` checks availability in
+# ~0.9ms without running the package; the real imports happen in ``_load_otel``,
+# called from ``_build_recorder`` after the consent gate, so only opted-in hosts
+# pay.
 #
-# local_exporter is loaded in the same lazy step: its JsonlMetricExporter
-# subclasses the OTel SDK's MetricExporter base class, so the module itself
-# cannot load without opentelemetry. It is only used on the enabled path, so
-# deferring it preserves the degrade contract. recorder.py is annotation-only on
-# OTel symbols (TYPE_CHECKING import) and stays loadable either way.
+# local_exporter loads in the same lazy step: its JsonlMetricExporter subclasses
+# the SDK's MetricExporter. recorder.py uses OTel names only under TYPE_CHECKING,
+# so it loads either way.
 
 
 def _otel_importable() -> bool:
@@ -418,14 +411,10 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.tool.call.duration": _TOOL_CALL_BUCKETS_MS,
     "kirocrew.session.duration": _SESSION_BUCKETS_MS,
     "kirocrew.watchdog.idle.duration": _WATCHDOG_IDLE_BUCKETS_MS,
-    # Embedding queue wait + inference time. Both are ms and both predate this
-    # map; neither name ends in `.duration`, which is precisely why the guard
-    # test's old name-suffix scan could not see them and they have been running
-    # on OTEL's default 0..10000 boundaries. The guard now finds histograms by
-    # reading their emit calls, so they are registered here. _FAST_BUCKETS_MS
-    # because they behave like the other sub-ms-to-seconds work: a warm local
-    # embed is single-digit ms, a cold model load or a long batch reaches
-    # seconds.
+    # Embedding queue wait + inference time, both ms. Neither name ends in
+    # `.duration`; the guard test finds histograms by their emit calls, not by
+    # name. _FAST_BUCKETS_MS because a warm local embed is single-digit ms and
+    # a cold model load or a long batch reaches seconds.
     "kirocrew.embed.queue_wait": _FAST_BUCKETS_MS,
     "kirocrew.embed.inference": _FAST_BUCKETS_MS,
     # Event-loop lag per adaptive-controller sample. Healthy is sub-millisecond
@@ -807,13 +796,14 @@ def _resource_attributes(harness: str) -> "dict[str, str | int]":
 _READ_NOW = object()
 
 
-def _endpoints_key(tel: object, ceiling: object = _READ_NOW) -> object:
+def _endpoints_key(tel: object, ceiling: object = _READ_NOW, full_cfg: object = None) -> object:
     """A fingerprint of the endpoint settings the OTLP readers are built from.
 
     A sha256 over ``telemetry.otlp_endpoint`` and ``telemetry.otlp_endpoints``,
     so module state keeps no second copy of a header value. Compared as-is by the
     consent worker: a changed fingerprint means a reader may point at an entry
-    that is gone or turned off. ``None`` when the values cannot be read.
+    that is gone or turned off. ``None`` when the values cannot be read. It also
+    covers whether the Kiro notice was shown, read from *full_cfg*, the build's load.
 
     An LTS build adds the policy's ``capabilities.telemetry.otlp_endpoint``
     under *ceiling* (a build passes the snapshot its destinations came from), so a
@@ -821,6 +811,7 @@ def _endpoints_key(tel: object, ceiling: object = _READ_NOW) -> object:
     """
     try:
         raw = [getattr(tel, "otlp_endpoint", None), getattr(tel, "otlp_endpoints", None)]
+        raw.append(kiro_export.notice_shown(full_cfg))  # same snapshot as the build's
         if edition.is_lts():
             if ceiling is _READ_NOW:
                 # A process with no context reads an already-composed provider
@@ -857,7 +848,7 @@ def _build_recorder() -> _Build:
 
     consent = _held_consent(full_cfg, _consent_enabled(cfg))
     agent_key = _agent_key(full_cfg)
-    endpoints_key = _endpoints_key(cfg)
+    endpoints_key = _endpoints_key(cfg, full_cfg=full_cfg)
     if not consent:
         return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
@@ -873,6 +864,20 @@ def _build_recorder() -> _Build:
         logger.warning("opentelemetry not importable; telemetry disabled")
         return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
+    # Mint the persisted install id HERE, so the resource is labelled from the
+    # first export, and so the built-in Kiro destination resolved below already
+    # carries its hash as the ``machineId`` point attribute (``kiro_export``).
+    # The one write on this path (mkdir + mkstemp + link, race-safe per
+    # ``beacon.install_id``), once per install, and only with consent: a
+    # disabled build returns earlier and creates nothing. Its cost is noise
+    # beside this path's config load and ~57ms SDK import
+    # (docs/system-specs/modules/metrics.md); a failed mint loses only the
+    # attribute, never the recorder.
+    try:
+        beacon.install_id(create=True)
+    except Exception:
+        logger.debug("install id mint failed", exc_info=True)
+
     # Resolve egress destinations BEFORE any reader is started. Two reasons:
     # the seam belongs to the edition and a PlatformCompositionError from it must
     # not be folded into "telemetry init failed" below, and resolving first means
@@ -881,28 +886,23 @@ def _build_recorder() -> _Build:
     # landing mid-build moves the key the next recheck compares.
     ceiling = _policy_ceiling() if edition.is_lts() else _READ_NOW
     destinations = _otlp_destinations(cfg, ceiling)
-    endpoints_key = _endpoints_key(cfg, ceiling)
-    # Recording on is not consent to export (a policy collector included);
-    # checked only when a destination exists.
+    endpoints_key = _endpoints_key(cfg, ceiling, full_cfg)
+    # Recording on alone exports only to the built-in Kiro destination (kiro_export).
     outbound: Optional[bool] = None
     if destinations:
         outbound = outbound_consented(full_cfg)
-    if destinations and not outbound:
+    if destinations and not outbound and not all(map(kiro_export.is_builtin, destinations)):
         logger.info(
-            "telemetry export waits for an explicit opt-in to recording "
-            "(telemetry.enabled: true in config.json, or KIROCREW_TELEMETRY=1); "
-            "local only"
+            "telemetry export to configured destinations waits for an explicit opt-in "
+            "to recording (telemetry.enabled: true in config.json, or KIROCREW_TELEMETRY=1)"
         )
-        destinations = ()
+    destinations = kiro_export.exported(destinations, full_cfg, outbound)
 
-    # PeriodicExportingMetricReader starts its daemon ticker thread inside
-    # __init__, so if any later step (MeterProvider construction, etc.) raises,
-    # the reader is already ticking. This list is bound BEFORE the try — binding
-    # it inside would leave it unbound when the first reader's constructor
-    # raises, and the except would then fail on the reap instead of degrading —
-    # and each reader joins it once constructed, so the except reaps every one.
-    # Otherwise an orphaned thread keeps running and spamming export WARNINGs for
-    # the life of the process even though metrics are "disabled".
+    # PeriodicExportingMetricReader starts its ticker thread in __init__, so a
+    # later raise (e.g. in MeterProvider) leaves it running and logging export
+    # WARNINGs forever while metrics read as "disabled". Each reader joins this
+    # list once built, and the except reaps them all. Bound BEFORE the try so
+    # the except can still read it when the first constructor raises.
     started_readers: list = []
     try:
         directory = Path(cfg.local_dir).expanduser() if cfg.local_dir else _default_metrics_dir()
@@ -928,20 +928,6 @@ def _build_recorder() -> _Build:
                 started_readers.append(reader)
                 otlp_names.append(dest.name)
         otlp_active = bool(otlp_names)
-        # Mint the persisted install id HERE, in the live branch, so the
-        # resource below is labelled from the very first export instead of
-        # acquiring its identity mid-life. This is the one write on this path:
-        # mkdir + mkstemp + link, race-safe per ``beacon.install_id``, once per
-        # install ever, and only ever under consent True (a disabled build
-        # returns before reaching this branch, so turning telemetry OFF still
-        # creates nothing). It is noise against what this same path already
-        # pays synchronously -- ~14ms for a changed-config load plus ~57ms of
-        # SDK import, both documented in docs/system-specs/modules/metrics.md
-        # -- and a failed mint costs only the attribute, never the recorder.
-        try:
-            beacon.install_id(create=True)
-        except Exception:
-            logger.debug("install id mint failed", exc_info=True)
         # Read from the SAME load as the telemetry section, so a rebuild after a
         # config change labels the new resource with the new harness. Also
         # records the Claude Code seam for the per-session ``harness`` point
@@ -1036,16 +1022,15 @@ def _build_recorder() -> _Build:
             register_session_tree_gauge(meter)
         except Exception:
             logger.warning("session-tree gauge unavailable", exc_info=True)
-        # MCP gateway pool gauges: same consent gate and callback contract, in
-        # their OWN try for the same reason as the sets above. They observe only
-        # in the process that bound a pool (gatewayd); everywhere else the
-        # callbacks return before reading anything, so no series is published.
+        # Gauges over processes several sessions share (the MCP gateway pool, chat
+        # runtime sharing): same consent gate and callback contract, each set in
+        # its own try inside ``metrics/shared_process_gauges.py``.
         try:
-            from kiro_crew.metrics.mcp_gateway_gauges import register_mcp_gateway_gauges
+            from kiro_crew.metrics.shared_process_gauges import register_shared_process_gauges
 
-            register_mcp_gateway_gauges(meter)
+            register_shared_process_gauges(meter)
         except Exception:
-            logger.warning("mcp gateway gauges unavailable", exc_info=True)
+            logger.warning("shared process gauges unavailable", exc_info=True)
         # Behavioral metrics get their own scope, so a downstream analytics
         # collector can admit them without taking the inventory gauges above.
         behavioral_meter = provider.get_meter(BEHAVIORAL_SCOPE)
@@ -1085,7 +1070,8 @@ def _egress_degraded() -> tuple:
 
 def live_recorder_state() -> "tuple[bool, bool]":
     """(recording, exporting) of this process's live recorder right now."""
-    return _built_consent is True, _built_outbound is True
+    live = _built_consent is True
+    return live, live and (_built_outbound is True or kiro_export.last_build_kept())
 
 
 def otlp_egress_active(cfg: "TelemetryConfig") -> bool:
@@ -1297,7 +1283,8 @@ def _otlp_destinations(
     the views, batching); an edition owns only WHERE it goes, which it declares
     through ``TelemetryProvider.otlp_destinations``. The public default turns
     ``telemetry.otlp_endpoint`` into exactly one destination, so a standalone
-    build behaves as it did when this module constructed that exporter itself.
+    build behaves as it did when this module constructed that exporter itself
+    (then each list entry, then ``metrics/kiro_export.py``'s destination).
 
     Lenient by design, unlike :func:`otlp_egress_active`: on this path an
     unresolvable provider must not export, so it contributes nothing and
@@ -1426,8 +1413,8 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     """Build one OTLP/HTTP metric reader for *dest*, or None when unavailable.
 
     Egress is OFF by default: reaching here at all means an edition named a
-    destination (the public default does so only when ``telemetry.otlp_endpoint``
-    is a non-empty string). The OTLP exporter lives in the separate
+    destination AND recording was explicitly opted in (``outbound_consented``).
+    The OTLP exporter lives in the separate
     ``otlp`` package extra (install its exporter directly -- see
     :mod:`kiro_crew.extras`), not the hard dependency set. If a host opts in without
     installing it, we log a warning and degrade to local-only rather than
@@ -1621,7 +1608,7 @@ def _consent_worker(generation: int) -> None:
             full_cfg = KiroCrewConfig.load()
             consent: Optional[bool] = _held_consent(full_cfg, _consent_enabled(full_cfg.telemetry))
             agent_key = _agent_key(full_cfg)
-            endpoints_key = _endpoints_key(full_cfg.telemetry)
+            endpoints_key = _endpoints_key(full_cfg.telemetry, full_cfg=full_cfg)
             # Re-ask about export only when the live build had a destination to
             # gate; a local-only host reads nothing extra here.
             if consent and _built_outbound is not None:

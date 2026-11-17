@@ -81,24 +81,20 @@ def test_reads_and_redacts_every_secret_shape(tmp_path, monkeypatch):
 
 
 def test_redaction_is_load_bearing(tmp_path, monkeypatch):
-    """Mutation guard: disable the extra-redaction stack and the secrets leak.
+    """The core credential plan reads every shape here without the extra stack.
 
-    A redaction test that still passes with redaction disabled proves nothing.
-    Here we empty ``_EXTRA_REDACTIONS`` (the stack that covers the bearer /
-    Authorization / mc_token shapes) and assert the SAME secrets now appear —
-    so the green assertion in ``test_reads_and_redacts_every_secret_shape`` is
-    attributable to that stack, not to the secrets never being there.
+    ``_EXTRA_REDACTIONS`` once was the only cover for the bearer, Basic and
+    cookie headers; the rule table now reads them itself. Empty the extra stack
+    and the SAME secrets must still be gone, so the green assertion in
+    ``test_reads_and_redacts_every_secret_shape`` does not rest on it alone.
     """
     _source(monkeypatch, tmp_path, _LOG)
     monkeypatch.setattr(diagnostics, "_EXTRA_REDACTIONS", ())
 
     out = diagnostics.read_kiro_cli_logs()
 
-    # With the extra stack gone, the header/bearer/cookie shapes leak verbatim
-    # (redact_credentials / redact_exfiltration_urls do not cover them — that is
-    # exactly why _EXTRA_REDACTIONS exists).
     leaked = [s for s in _SECRETS if s in out]
-    assert leaked, "no secret leaked with _EXTRA_REDACTIONS disabled — the test is vacuous"
+    assert not leaked, f"the core plan left these shapes visible: {leaked}"
 
 
 def test_chat_log_is_not_a_source(tmp_path, monkeypatch):

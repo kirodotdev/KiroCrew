@@ -34,6 +34,11 @@ def register_doctor_parser(sub: _Commands) -> None:
         action="store_true",
         help="Collect logs + crash reports into a redacted diagnostics zip",
     )
+    _doctor_parser.add_argument(
+        "--reconcile-memory",
+        action="store_true",
+        help="Re-check every memory row's record metadata now (the full pass a start skips)",
+    )
 
 
 def register_tmp_parser(sub: _Commands) -> None:

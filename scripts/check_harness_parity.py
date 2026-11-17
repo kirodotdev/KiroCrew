@@ -446,6 +446,10 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # inside session/prompt.
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
     "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
+    # claude-agent-acp 0.94.0: session/new with _meta.claudeCode.emitRawSDKMessages, then
+    # the _claude/sdkMessage task_* frames of a background shell and a Workflow run
+    # (acp_frames/claude/raw-sdk-tasks-live.jsonl).
+    "ACP_BACKENDS_RAW_SDK_TASKS": None,
     # claude's compaction frame is the standard ACP ``compaction_update``, not an X frame.
     "ACP_BACKENDS_SENT_IMAGE_RECORD": frozenset({"codex", "kas", "kiro"}),
     # The set above under the name of what it means; the same three captures.
@@ -478,11 +482,13 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_POD_HOME_REMAP": "off the wire: pod HOME relocation",
     "ACP_BACKENDS_SESSION_SHARING": "standard ACP: session/load after teardown",
     "ACP_BACKENDS_CHAT_RUNTIME_SHARING": "Crew-side: which chats Crew places on one AcpRuntime process",
+    "ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS": "routing-only: AcpRuntime only for a shared dashboard chat",
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": "standard ACP: session/load by id",
     "ACP_BACKENDS_RESUME_WITHOUT_LOAD": "standard ACP: session/resume capability",
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
     "ACP_BACKENDS_CWD_BOUND_SESSIONS": "standard ACP: whether session/load is sent for a moved cwd",
     "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
+    "ACP_BACKENDS_NO_MCP_INIT_FRAMES": "Crew-side: how long Crew drains after session/new",
     "ACP_BACKENDS_REMOTE_MCP_OAUTH": "off the wire: the agent file's remote-server oauth block",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_MODEL_AT_LAUNCH": "off the wire: the model is a launch argument",
@@ -490,13 +496,26 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": "standard ACP: advertised model list",
+    "ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL": "standard ACP: advertised configOptions model select",
     "ACP_BACKENDS_DEFAULT_PSEUDO_MODEL": "standard ACP: advertised model list and config options",
     "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": "standard ACP: advertised config options",
+    "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": "standard ACP: advertised model id values",
     "ACP_BACKENDS_MODEL_SELECT_UNCHECKED": "standard ACP: session/set_config_option result",
     "ACP_BACKENDS_UNASKED_NATIVE_TOOLS": "standard ACP: tool_call with no request_permission",
     "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
+    "ACP_BACKENDS_PLAN_CHECKLIST": "standard ACP: legacy plan session update entries",
+    "ACP_BACKENDS_HARNESS_NOTICES": "standard ACP: session.notices, notice and current_mode_update",
+    "ACP_BACKENDS_READ_PATH_ARG": "standard ACP: a read tool_call's kind and rawInput",
+    "ACP_BACKENDS_SUMMARIZED_THINKING": "off the wire: adapter process environment at spawn",
+    "ACP_BACKENDS_NATIVE_CHILD_CANCEL": (
+        "standard ACP: session/cancel naming a subagents-form child that granted cancel"
+    ),
+    "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": "standard ACP: a tool_call_update's title",
+    "ACP_BACKENDS_COMPACTION_SUMMARY": (
+        "standard ACP: compaction_summary_chunk and a completed compaction_update's summary"
+    ),
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": "standard ACP timing; changes only error text",
     "ACP_BACKENDS_EFFORT_OVERLAY": "off the wire: workspace cli.json at spawn",
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": "off the wire: workspace cli.json at spawn",

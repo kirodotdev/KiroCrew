@@ -881,7 +881,7 @@ class TestDiscoverInstall:
         from kiro_crew.dashboard.handlers import mcp_discover as mod
         from kiro_crew.platform.interfaces import CapabilityResult
 
-        token = "ghp_" + "a1B2c3D4e5" * 3 + "F6g7H8"
+        token = github_classic(seed=75)
 
         class _FailingManager:
             async def install_mcp(self, server_id):

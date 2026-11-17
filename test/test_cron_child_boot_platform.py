@@ -199,8 +199,8 @@ class TestNonStandaloneFailsAtLaunchNotMidScript:
         assert result["status"] == "error"
         assert not sentinel.exists(), (
             "user code ran before the platform was composed -- the child reached "
-            "the script body and only then failed closed, which is the "
-            "misattributed-failure shape #6431 describes"
+            "the script body and only then failed closed, so the failure is "
+            "blamed on the script instead of the missing platform"
         )
         assert expected in result["error"], (
             "expected the preamble's fail-closed traceback; the class name only "

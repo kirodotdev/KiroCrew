@@ -66,7 +66,7 @@ async def _on_cancelled(turn: _ChatTurn) -> None:
     # ``cancelled`` — or an involuntary cancel (tab close, idle-slot sweep,
     # shutdown, or the turn ceiling, which `_bounded_turn` converts to a
     # TimeoutError one frame above _run_chat). The involuntary cases share a neutral
-    # ``error: cancelled``: recording the credits is this change's goal,
+    # ``error: cancelled``: recording the credits is what matters here,
     # and telling the ceiling apart from the other involuntary
     # cancels is a separate concern no row consumer here needs.
     if _stop_pressed(turn):
@@ -530,6 +530,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         slot._fallback_candidate_idx = 0
         slot._fallback_walked = []
         slot._fallback_walk_refused = False
+        slot._fallback_walk_server_error = False
 
 
 async def _on_session_closing(turn: _ChatTurn) -> None:

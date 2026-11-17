@@ -3,7 +3,7 @@ import type { SendReceiptStatus } from '../../chat-core/transport/sendTurn'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { AlarmClock, CalendarDays, CalendarRange, Check, ChevronLeft, ChevronRight, Clock, FileText, Flag, Goal, MessageCircle, Pencil, Plus, Sun, Trash2, Undo2, type LucideIcon } from 'lucide-react'
+import { AlarmClock, CalendarDays, CalendarRange, Check, ChevronLeft, ChevronRight, Clock, Coins, FileText, Flag, Goal, MessageCircle, Pencil, Plus, Sun, Trash2, Undo2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api, type GoalKeyResult, type GoalSchedules, type MemberGoal, type MemberGoals } from '../../api/client'
 import { Btn, Input, Toggle } from '../../components/ui'
@@ -11,7 +11,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
 import { MEMBER_GOALS_QUERY_PREFIX } from '../../api/membersQuery'
-import { fmtRelative, fmtUnit, fmtWeekday } from '../../i18n/format'
+import { fmtCredits, fmtRelative, fmtUnit, fmtWeekday } from '../../i18n/format'
 import { cn } from '../../lib/utils'
 import { ProfilePagePushContext } from './CrewProfilePanel'
 
@@ -204,6 +204,21 @@ function CheckInTile({ icon: Icon, tone, label, status, on, testId }: { icon: Lu
   )
 }
 
+/** The credits the Bot's work used, as the gateway summed them from what was
+ *  metered. Never a zero for "nobody measured": that reads Not reported. */
+function SpendCard({ spend, name }: { spend: NonNullable<MemberGoals['spend']>; name: string }) {
+  const { t } = useTranslation()
+  const value = spend.status === 'pending' ? t('pages.membersPage.goals_spend_pending')
+    : spend.status === 'not_reported' ? t('pages.membersPage.goals_spend_not_reported')
+      : t(spend.partial ? 'pages.membersPage.goals_spend_at_least' : 'pages.membersPage.goals_spend_value', { credits: fmtCredits(spend.credits) })
+  return (
+    <Section title={t('pages.membersPage.goals_spend')} icon={Coins} tone="quiet" testId="crew-goals-spend">
+      <span className={cn('block text-[15px] font-semibold leading-snug tabular-nums', spend.status === 'reported' ? 'text-text' : 'text-muted')} data-testid="crew-goals-spend-value">{value}</span>
+      <span className="block mt-0.5 text-[12px] text-muted leading-snug">{t('pages.membersPage.goals_spend_hint', { name })}</span>
+    </Section>
+  )
+}
+
 function Reports({ goals, limit }: { goals: MemberGoals; limit: number }) {
   const { t } = useTranslation()
   if (!goals.reports.length) return <p className="px-3.5 py-3 text-[13px] text-muted">{t('pages.membersPage.goals_reports_none')}</p>
@@ -293,7 +308,8 @@ export default function CrewGoalsPane({ slug, member, name, onSendToChat, onSent
   const busyRef = useRef(false)
   const save = useMutation({
     mutationFn: (fn: () => Promise<MemberGoals>) => fn(),
-    onSuccess: data => { qc.setQueryData(memberGoalsKey(slug, member), data) },
+    // A write answers without the spend line (only the GET reads it): keep the one shown.
+    onSuccess: data => { qc.setQueryData<MemberGoals>(memberGoalsKey(slug, member), prev => ({ ...data, spend: data.spend ?? prev?.spend })) },
     // A failed save keeps the draft and its original compare-and-set baseline.
     onError: () => { void qc.invalidateQueries({ queryKey: memberGoalsKey(slug, member) }) },
     onSettled: () => { busyRef.current = false },
@@ -708,6 +724,8 @@ export default function CrewGoalsPane({ slug, member, name, onSendToChat, onSent
         </ul>
       </Section>
       {newGoalModal}
+
+      {goals.spend && <SpendCard spend={goals.spend} name={name} />}
 
       <Section
         flush

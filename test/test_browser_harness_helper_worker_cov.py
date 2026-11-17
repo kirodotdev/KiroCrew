@@ -285,3 +285,68 @@ def test_screenshot_clip_with_no_image_is_an_error_reply_and_writes_nothing(
     reply = helper_worker._handle(_ClipHelpers(data=""), _clip_request(tmp_path))
     assert reply["ok"] is False and "no image" in reply["error"]
     assert not (tmp_path / "c.png").exists()
+
+
+class _DialogHelpers:
+    """A ``helpers`` stand-in whose page has at most one JavaScript dialog open."""
+
+    def __init__(self, dialog: dict[str, Any] | None) -> None:
+        self.dialog = dialog
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def page_info(self) -> dict[str, Any]:
+        if self.dialog:
+            return {"dialog": self.dialog}
+        return {"url": "https://example.com/", "title": "t", "w": 800, "h": 600}
+
+    def cdp(self, method: str, **params: Any) -> dict[str, Any]:
+        self.calls.append((method, params))
+        return {}
+
+
+def _dialog_request(**kwargs: Any) -> dict[str, Any]:
+    return {"id": 9, "helper": "dialog", "kwargs": kwargs}
+
+
+_PROMPT = {"type": "prompt", "message": "Name?", "defaultPrompt": "", "url": "https://x/"}
+
+
+def test_dialog_with_none_open_answers_none_and_sends_nothing() -> None:
+    helpers = _DialogHelpers(None)
+    reply = helper_worker._handle(helpers, _dialog_request(action="accept"))
+    assert reply == {"id": 9, "ok": True, "result": {"dialog": None}}
+    assert helpers.calls == []
+
+
+def test_dialog_without_an_action_reads_the_open_dialog_and_leaves_it() -> None:
+    helpers = _DialogHelpers(_PROMPT)
+    reply = helper_worker._handle(helpers, _dialog_request())
+    assert reply["ok"] is True and reply["result"] == {"dialog": _PROMPT}
+    assert helpers.calls == []
+
+
+def test_dialog_accept_hands_a_prompt_its_text() -> None:
+    helpers = _DialogHelpers(_PROMPT)
+    reply = helper_worker._handle(helpers, _dialog_request(action="accept", text="Ada"))
+    assert reply["result"] == {"dialog": _PROMPT, "answered": "accept"}
+    assert helpers.calls == [("Page.handleJavaScriptDialog", {"accept": True, "promptText": "Ada"})]
+
+
+def test_dialog_accept_without_text_sends_no_prompt_text() -> None:
+    helpers = _DialogHelpers(_PROMPT)
+    helper_worker._handle(helpers, _dialog_request(action="accept"))
+    assert helpers.calls == [("Page.handleJavaScriptDialog", {"accept": True})]
+
+
+def test_dialog_dismiss_never_sends_text() -> None:
+    helpers = _DialogHelpers(_PROMPT)
+    reply = helper_worker._handle(helpers, _dialog_request(action="dismiss", text="Ada"))
+    assert reply["result"]["answered"] == "dismiss"
+    assert helpers.calls == [("Page.handleJavaScriptDialog", {"accept": False})]
+
+
+def test_dialog_refuses_an_action_it_does_not_know() -> None:
+    helpers = _DialogHelpers(_PROMPT)
+    reply = helper_worker._handle(helpers, _dialog_request(action="explode"))
+    assert reply["ok"] is False and "action" in reply["error"]
+    assert helpers.calls == []

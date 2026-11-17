@@ -36,6 +36,7 @@ from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.control_parts.directive import (
+    chat_rename,
     chat_tag,
     nothing_to_do,
     reset_conversation,
@@ -646,6 +647,7 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "set_project": set_project,
     "reset_conversation": reset_conversation,
     "chat_tag": chat_tag,
+    "chat_rename": chat_rename,
     "suggest_followup": suggest_followup,
 }
 
@@ -697,6 +699,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_tools.control_parts.monitor import (  # noqa: F401
         _arming_preflight_refusal,
         _compact_monitor_inspection,
+        _finished_watch,
         _monitor_context_refusal,
         _parsed_pull_request_target,
     )
@@ -744,6 +747,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.session_directive import MAX_DIRECTIVE_CHARS  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         AUTONUDGE_STOP_SCHEMA,
+        CHAT_RENAME_SCHEMA,
         CHAT_TAG_SCHEMA,
         MCP_SERVER_WAIT_SCHEMA,
         MONITOR_INSPECT_SCHEMA,

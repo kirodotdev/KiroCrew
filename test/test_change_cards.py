@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 from change_cards_helpers import (
-    _FAKE_TOKEN,
     REPO,
     SECRET_VALUE,
     SLOT,
@@ -25,6 +24,7 @@ from change_cards_helpers import (
     _reload,
 )
 from named_cases_helpers import named_cases
+from redaction_structured_cases import github_classic
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.context_blocks import render_change_card_results, split_blocks
@@ -32,6 +32,11 @@ from kiro_crew.dashboard import change_cards as cards
 from kiro_crew.dashboard.change_cards import CardError, CardStore
 
 # ── catalog ──
+
+
+#: A GitHub token with a valid checksum. The shared helper's literal fails its
+#: checksum, so it is no token and the redactor keeps it.
+_FAKE_TOKEN = github_classic(seed=115)
 
 
 def test_unknown_kind_and_unknown_fields_are_refused():
@@ -557,6 +562,17 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_a_reset_is_remembered_as_a_reset_not_as_a_null_value():
+    """Settings -> Advanced resets with ``unset``; the key reads its default again."""
+    text = catalog.describe_manual_change(
+        ("PATCH", "/api/config/kirocrew"),
+        {},
+        {"path": "agent.log_level", "unset": True},
+        "DEBUG",
+    )
+    assert text == "reset config agent.log_level to its default"
+
+
 def test_memory_line_says_a_deny_rule_was_edited_not_disabled():
     # The PATCH also edits pattern and note; a body without ``enabled`` must not
     # read as "disabled" in the operator's history.
@@ -992,7 +1008,7 @@ def test_a_card_reason_carrying_a_credential_is_refused():
         cards.clean_reason(f"I used {_FAKE_TOKEN} to check")
     assert (exc.value.status, exc.value.code) == (400, "invalid_text")
     with pytest.raises(CardError):
-        cards.clean_reason("see https://attacker.example/c?d=" + "QUJD" * 40)
+        cards.clean_reason("see https://attacker.example/c?access_token=" + "QUJD" * 40)
 
 
 def test_guide_text_carrying_a_credential_is_refused():

@@ -97,6 +97,18 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   // answer never clears a newer request.
   const revealRequestRef = useRef(revealRequest)
   revealRequestRef.current = revealRequest
+  // A closed sidebar or drawer keeps this list mounted but out of the
+  // document (SessionsSidebarChrome). A request that arrives then waits for
+  // the list to come back, as it waited for the mount when closing unmounted
+  // it: `shownTick` re-runs the reveal effects when the root is back.
+  const [shownTick, setShownTick] = useState(0)
+  useEffect(() => {
+    const el = sidebarRootRef.current
+    if (!el || !revealRequest || el.isConnected || typeof ResizeObserver !== 'function') return
+    const ro = new ResizeObserver(() => { if (el.isConnected) setShownTick(t => t + 1) })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [revealRequest, sidebarRootRef])
   // Serial + pending timer for the in-flight reveal: a newer reveal cancels
   // the older retry loop, and unmount stops the pending timer outright.
   const revealRunRef = useRef<{ seq: number; timer: number | null }>({ seq: 0, timer: null })
@@ -218,6 +230,8 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   }, [sidebarRootRef])
   useEffect(() => {
     if (!revealRequest) return
+    // Off screen: wait for the list to come back (see `shownTick`).
+    if (sidebarRootRef.current?.isConnected === false) return
     // One field carries both kinds, so each effect answers for its own and leaves
     // the other's request alone. Two pending requests can no longer exist, which is
     // what removes the ordering hazard the old field pair had.
@@ -328,7 +342,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // session could scroll to the peer's row instead. `slot` above is resolved
     // from the LOCAL `slots` prop, so its identity is the right target.
     runReveal('session', key, sessionRowIdentity(slot))
-  }, [revealRequest, dispatch, queryClient, localSlots, folders, foldersSettled, revealBlockingFilters, expandFolderAncestors, expandConductorAncestors, runReveal, isStaleExempt, slotFolders, staleCollapseMs, sortKey, setStaleExpanded])
+  }, [revealRequest, shownTick, sidebarRootRef, dispatch, queryClient, localSlots, folders, foldersSettled, revealBlockingFilters, expandFolderAncestors, expandConductorAncestors, runReveal, isStaleExempt, slotFolders, staleCollapseMs, sortKey, setStaleExpanded])
   // ── Reveal a FOLDER row ───────────────────────────────────────────────────
   // The folder twin of the session reveal above, driven by the command launcher's
   // Folders group and the palette's Folders tab ("search a folder, land on it").
@@ -341,6 +355,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   useEffect(() => {
     if (!revealRequest) return
     if (revealRequest.kind !== 'folder') return
+    if (sidebarRootRef.current?.isConnected === false) return
     const folderId = revealRequest.target
     // Consume immediately: the request must not survive to a later remount.
     dispatch(clearSlotReveal())
@@ -391,6 +406,6 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // their preference comes back on reload.
     setFlatView(false)
     runReveal('folder', folderId, folderId)
-  }, [revealRequest, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible])
+  }, [revealRequest, shownTick, sidebarRootRef, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible])
   return { revealFlash }
 }

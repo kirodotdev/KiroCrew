@@ -181,7 +181,7 @@ def _count_transcript(path: Path, kas: bool) -> tuple[str | None, int, int] | No
             for line in bounded_records(fh, path, label="usage.sessions"):
                 try:
                     obj = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(obj, dict):
                     continue

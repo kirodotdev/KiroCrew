@@ -11,7 +11,6 @@ import dashboardReducer, { addSlotOptimistic, setSidebarOrder } from '../store/d
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import type { ChatSlot } from '../types'
-import { crewModePreviewOn } from './crewModePreview'
 
 const apiMock = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
@@ -79,5 +78,21 @@ describe('closing a Crew Mode conductor', () => {
   })
 })
 
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()
+describe('closing the open session with the Slack list setting off', () => {
+  it('does not land on a Slack conversation the setting leaves out, by order or recency', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    const chat = (key: string, extra: Partial<ChatSlot> = {}) => slotRow(key, { mode: '', surface: '', ...extra })
+    store.dispatch(addSlotOptimistic(chat('plain')))
+    store.dispatch(addSlotOptimistic(chat('open')))
+    store.dispatch(addSlotOptimistic(chat('slack_1.1', { slack_list_hidden: true })))
+    store.dispatch(setSidebarOrder(['open', 'slack_1.1', 'plain']))
+    await store.dispatch(switchSlot('plain'))
+    await store.dispatch(switchSlot('slack_1.1'))
+    await store.dispatch(switchSlot('open'))
+
+    await store.dispatch(deleteSlot('open'))
+    expect(store.getState().chat.activeSlot).toBe('plain')
+  })
+})

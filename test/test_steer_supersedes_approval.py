@@ -194,10 +194,12 @@ class TestRejectHelper:
         reject_approvals_superseded_by_steer(state, slot)
         state.push_slots_update.assert_not_called()
 
-        _open_approval(slot, "a")
-        _open_approval(slot, "b")
+        open_a = _open_approval(slot, "a")
+        open_b = _open_approval(slot, "b")
         reject_approvals_superseded_by_steer(state, slot)
         state.push_slots_update.assert_called_once_with()
+        # The push must follow a real settlement: both cards are rejected, not left open.
+        assert (open_a.result(), open_b.result()) == ("rejected", "rejected")
 
 
 def _open_elicitation(slot, request_id="ask-1"):

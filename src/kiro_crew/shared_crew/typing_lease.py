@@ -390,6 +390,7 @@ def arm_idle_timer(state: Any, registry: TypingLeaseRegistry) -> None:
         try:
             handle.cancel()
         except Exception:
+            # A handle that fails to cancel is still dropped below.
             pass
         state._shared_crew_typing_lease_timer = None
     at = registry.next_expiry()

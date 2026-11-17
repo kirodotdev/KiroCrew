@@ -1,10 +1,10 @@
 ---
 title: Slack Code — agent sessions and code channels for Kiro Crew
-status: in-progress
+status: partial
 author: kseam
 created: 2026-10-16
-last-audited: 2026-11-12
-audited-at: 6ded84fc02
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [21425, 21410, 22001]
 tracking-issues: [15175]
@@ -14,11 +14,11 @@ superseded-by: []
 
 # RFC: Slack Code — agent sessions and code channels for Kiro Crew
 
-- Status: in-progress. Phase 1 (the switch registry, the manifest built from the
+- Status: partial. Phase 1 (the switch registry, the manifest built from the
   switches, the update flow, the capability latch and the scope probe, plus the
   Agent sessions switch and its runtime, first opened as
-  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) is in the pull
-  request that carries this document. Phase 2 (code channels: their switch, their
+  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) shipped in
+  [#21425](https://github.com/kirodotdev/KiroCrew/pull/21425). Phase 2 (code channels: their switch, their
   defaults and their runtime) shipped in
   [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410), with helper-agent
   dispatch and restart resume in
@@ -176,7 +176,7 @@ registers:
 | Switch | Feature block | Bot scopes | Bot events |
 |---|---|---|---|
 | `agent_sessions` | `agent_view` (`agent_description`) | `assistant:write` | `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
-| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites` | `agent_session_stopped` |
+| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` | `agent_session_stopped` |
 
 `channels:read`, `groups:read`, `groups:history` and `message.groups` are already
 in the base manifest. No `slash_command_url` is set: Socket Mode delivers channel
@@ -507,7 +507,7 @@ is private to the security package.
   before any write, so a refused field changes nothing.
 * **Code channels (Phase 2) widen the bot's scopes** (`code_channels:manage`,
   `chat:write.customize`, `canvases:write`, `channels:write.invites`,
-  `groups:write.invites`), visible on Slack's consent screen and
+  `groups:write.invites`, `pins:write`), visible on Slack's consent screen and
   listed before the user reinstalls. The scope-ratchet test pins the exact set
   per switch.
 * **Phase 2 authorization** is the origin conversation's, never the new channel's

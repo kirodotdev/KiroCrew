@@ -656,10 +656,30 @@ def test_ungated_permission_does_not_wait(monkeypatch):
     """The pre-existing fire-and-forget path must stay non-blocking."""
     monkeypatch.setattr(fake, "PERMISSION_WAIT_SECS", 30.0)
     buf = _capture(monkeypatch)
-    started = time.monotonic()
+
+    # Refuse every way the fake can wait for an answer: the bounded inbox poll
+    # and the sleep it polls with (a namespace proxy, so no other thread loses
+    # ``time.sleep``). Reaching either is the regression, named.
+    def _no_wait(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the ungated permission path waited for an answer")
+
+    monkeypatch.setattr(fake, "_await_inbox", _no_wait)
+    monkeypatch.setattr(
+        fake,
+        "time",
+        type("_NoSleepTime", (), {"monotonic": staticmethod(time.monotonic), "sleep": _no_wait}),
+    )
     fake._handle(_prompt(fake.PERMISSION_TRIGGER))
-    assert time.monotonic() - started < 1.0
-    assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
+    msgs = _messages(buf)
+    assert any(m.get("method") == "session/request_permission" for m in msgs)
+    tool_update = next(
+        m
+        for m in msgs
+        if m.get("method") == "session/update"
+        and m["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    )
+    assert tool_update["params"]["update"]["status"] == "completed"
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
 
 
 def test_poll_inbox_puts_back_non_matching_messages():

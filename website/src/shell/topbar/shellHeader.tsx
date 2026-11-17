@@ -546,7 +546,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             segments.push(
               <button
                 key="conn"
-                className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
+                className="tb-capsule-keep flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 title={capsuleActionMsg}
                 aria-label={capsuleActionMsg}

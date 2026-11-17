@@ -1842,8 +1842,14 @@ among the people a sharing path admitted by its own check
 (`routes_identity._tailnet_person`: the direct listener after checking the access
 set, or the SSM listener on a live invite), and the owner. The People,
 sessions and mode reads also admit a team Crew teammate the Kiro relay verified
-(`routes_identity._relay_teammate`), as does a narrowed Bots roster read
-(`GET /api/members`, see member-event-log); the name-and-picture edit does not. A
+(`routes_identity._relay_teammate`), as do a narrowed Bots roster read
+(`GET /api/members`) and the Bot routes a teammate may use as they use a session
+(chat, greeting, fresh start and the reads; see member-event-log for the list). A
+teammate uses a roster Bot with the same approvals, sub-agents and delegation as
+a session, regardless of the Bot's approval mode or the owner's live grants.
+This follows the Shared Crew trust boundary: every admitted relay teammate has
+the owner's access to run work. Standing setup writes remain owner-only, as they
+do for sessions. The name-and-picture edit does not admit a teammate. A
 non-owner dashboard link session (a Telegram, Teams or Webex allowlist link) goes through `require_owner_for_dashboard_caller` and is refused,
 as it is for the read. The record is keyed by stable Tailscale user id in the invite store's
 `display` map, so it follows a renamed login and works for a person who was never

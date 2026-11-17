@@ -94,7 +94,7 @@ def row_bytes(row: dict[str, object]) -> int:
     """What one scoring row is charged against the set's byte budget.
 
     Strings and blobs are the user-data payload; the fixed margin accounts for
-    the four dict entries and Python object headers.
+    the five dict entries and Python object headers.
     """
     total = 256
     for value in row.values():
@@ -961,16 +961,11 @@ def semantic_candidates_v1(
         with store._db_lock:
             store._check_recall_query(recall_query)
             all_rows = [
-                dict(row)
-                for row in store._fetch_all_locked(
-                    "SELECT key, value_json, updated_at, embedding, source FROM semantic_memory "
-                    "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
-                    scan="semantic",
-                )
+                dict(row) for row in store._fetch_all_locked(_SCORING_SELECT, scan="semantic")
             ]
 
     # Stored write-time vectors only — one embed per request (the query),
-    # same as the lessons path. Re-embedding every row here was an
+    # same as the lessons path. Re-embedding every row here would be an
     # unbounded O(table) loop of blocking embeds per context build. Rows
     # the write path or backfill has not embedded yet contribute 0.0 on
     # the vector term of the same weighted scale (see _hybrid_score).
@@ -1533,11 +1528,10 @@ def publish_committed_write(
     # (called outside the lock — _retire_stale_episodic does a blocking embed
     # first, then takes _db_lock itself for its db writes).
     #
-    # Best-effort: the semantic row is already committed at this point, so a
-    # failure here must not propagate. Callers batch many keys per call
-    # (history consolidation writes N semantic + M episodic items in one
-    # thread), and an exception raised after a successful commit discarded
-    # every remaining item in the batch.
+    # Best-effort: the semantic row is already committed, so a failure here
+    # must not propagate. Callers batch many keys per call (history
+    # consolidation writes N semantic + M episodic items in one thread), and a
+    # raise after the commit would discard every remaining item in the batch.
     #
     # A rewrite that changes nothing supersedes nothing, on EITHER algorithm:
     # the episodes it would retire restate the still-current value. Value-level

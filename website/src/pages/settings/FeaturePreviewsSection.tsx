@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -21,6 +21,7 @@ import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
 import { EditionPreviewRows } from './EditionPreviewRows'
 import { ReplyThreadsRow } from './ReplyThreadsRow'
+import { ChatRuntimeSharingHarnessRows } from './ChatRuntimeSharingHarnessRows'
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
@@ -127,18 +128,17 @@ function previewFlagLabel(flag: string): string {
   switch (flag) {
     case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
-    case PREVIEW_CREW_MODE: return i18nT('pages.developer.featurePreviewsTab.crew_mode')
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_CREW_OAUTH: return i18nT('pages.developer.featurePreviewsTab.crew_oauth')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
-    case PREVIEW_MATE_SESSIONS: return i18nT('pages.developer.featurePreviewsTab.mate_sessions')
     case PREVIEW_DASHBOARD_STALE_FIELDS: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_fields')
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
     case PREVIEW_SECRETS_VAULT: return i18nT('pages.developer.featurePreviewsTab.secrets_vault')
+    case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
@@ -192,15 +192,14 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
-  const mateSessions = usePreviewFlag(PREVIEW_MATE_SESSIONS)
   const dashboardStaleFields = usePreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
   const secretsVault = usePreviewFlag(PREVIEW_SECRETS_VAULT)
+  const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
-  const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const writeError = usePreviewFlagWriteError()
@@ -294,19 +293,6 @@ export function FeaturePreviewsSection() {
       )}
 
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_crew_and_bots')}>
-        {/* Conductor mode (flag key `mc-preview-crew-mode`): every Crew Mode surface
-            reads this one flag through `lib/crewMode.ts`. A plain switch only,
-            with no preview dialog and no ingress link. Off, a chat already in
-            Crew Mode stays an ordinary chat on its agent. */}
-        {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.crew_mode')}
-            description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
-            checked={crewMode}
-            onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
-          />
-        )}
         {/* Shared Crew (People, invites, shared sessions). Unlike the flags here, the
             switch is not a browser setting: it is the owner's stored choice behind
             `/api/shared-crew/preview` (a keystone file), which the gateway reads at
@@ -394,15 +380,16 @@ export function FeaturePreviewsSection() {
             onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
           />
         )}
-        {/* A crewmate's sessions leave the person's lists for the mate's Sessions
-            tab. NO ingress button: the change is to lists the reader already sees. */}
+        {/* Worker grill (`worker_grill`): a gateway switch read per conductor turn
+            (`worker_grill_preview.py`). NO ingress button: the offer appears in a
+            conductor's reply, with no page to open. */}
         {!previewsOff && (
           <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.mate_sessions')}
-            description={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc')}
-            checked={mateSessions}
-            onChange={v => setPreviewFlag(PREVIEW_MATE_SESSIONS, v)}
+            label={i18nT('pages.developer.featurePreviewsTab.worker_grill')}
+            description={i18nT('pages.developer.featurePreviewsTab.worker_grill_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.worker_grill_desc')}
+            checked={workerGrill}
+            onChange={v => setPreviewFlag(PREVIEW_WORKER_GRILL, v)}
           />
         )}
         {/* Reply threads on Bot chat messages (`dashboard.crewmate_threads`): a
@@ -414,7 +401,7 @@ export function FeaturePreviewsSection() {
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_chats_and_dashboards')}>
         {/* Explore (flag key `mc-preview-explore`): the top-bar pill, its sheet,
             the milestone notice, the Try today card and Display > Explore. A
-            plain switch, like conductor mode's; on, Display > Explore is the inner
+            plain switch with no preview dialog; on, Display > Explore is the inner
             switch. */}
         {!previewsOff && (
           <SettingsToggle
@@ -490,15 +477,20 @@ export function FeaturePreviewsSection() {
         )}
         {/* Chat runtime sharing (`chat_runtime_sharing`): a gateway switch read at
             each session start (`acp.chat_runtime_sharing.chat_runtime_sharing_enabled`).
-            NO ingress button: there is no new page, only fewer processes. */}
+            NO ingress button: there is no new page, only fewer processes. Its
+            per-harness switches show only while it is on, inside the same row;
+            the gateway checks both. */}
         {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')}
-            description={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc')}
-            checked={chatRuntimeSharing}
-            onChange={v => setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, v)}
-          />
+          <div>
+            <SettingsToggle
+              label={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')}
+              description={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc_summary')}
+              hint={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc')}
+              checked={chatRuntimeSharing}
+              onChange={v => setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, v)}
+            />
+            {chatRuntimeSharing && <ChatRuntimeSharingHarnessRows />}
+          </div>
         )}
         {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
             and the Install button for the pinned engine. It lives here, not on the

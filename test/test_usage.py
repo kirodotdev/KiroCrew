@@ -145,6 +145,31 @@ class TestParseSessions:
             assert r["total_sessions"] == 0
             assert r["all_time_sessions"] == 0
 
+    def test_a_line_nested_past_the_decoder_costs_only_that_line(self, tmp_path):
+        """One line nested past the recursion limit is skipped like any bad line.
+
+        ``json.loads`` raises ``RecursionError`` there, which is not a
+        ``ValueError``; left uncaught it escapes the reader and the whole
+        usage page fails over one stray line in a transcript.
+        """
+        from stray_line_helpers import too_deep_line
+
+        d = tmp_path / "cli"
+        d.mkdir()
+        rows = [{"kind": "Prompt"}, {"kind": "AssistantMessage"}]
+        body = (
+            json.dumps(rows[0]).encode()
+            + b"\n"
+            + too_deep_line()
+            + json.dumps(rows[1]).encode()
+            + b"\n"
+        )
+        (d / "s1.jsonl").write_bytes(body)
+        with patch.object(usage_mod, "_SESSIONS_DIR", d):
+            r = _parse_sessions()
+        assert r["total_sessions"] == 1
+        assert r["total_messages"] == 2
+
     def test_skips_invalid_path(self, tmp_path):
         d = tmp_path / "cli"
         d.mkdir()

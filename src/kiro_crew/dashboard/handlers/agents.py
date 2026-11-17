@@ -66,6 +66,7 @@ from kiro_crew.agent import (  # noqa: F401
     _spec_path_is_safe,
     agents_spec_lock,
     clear_model_pin,
+    dashboard_author_ownership_digest,
     emission_eligible_mcp_servers,
     get_shipped_tools,
     install_agent,
@@ -227,6 +228,7 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _eager_copy_mate_config,
     _mark_first_greeting_owed,
     _refresh_session_defaults,
+    _teammate_create_refusal,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agents_create,
 )
@@ -339,9 +341,7 @@ from kiro_crew.dashboard.handlers.models_kas_bundle import (
     api_models_kas_bundle,
     api_models_kas_crew_relay,
 )
-from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
-    owner_view_for_request,
-)
+from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request  # noqa: F401
 from kiro_crew.dashboard.kas_local_commands import local_harness_menu
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
@@ -380,6 +380,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import refuses  # noqa: F401
 from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
@@ -486,6 +487,7 @@ def _supply_live_enum(entry: dict) -> None:
 
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
+    from kiro_crew.dashboard.handlers.config_all_settings import attach_descriptor
     from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
 
     entries = SCHEMA_REGISTRY
@@ -501,8 +503,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
     if dep_param == "false":
         entries = [e for e in entries if not e.deprecated]
 
-    # Serialize, masking sensitive defaultValues and converting dataclass
-    # defaults to None (they aren't JSON-serializable).
+    # Serialize; a sensitive or dataclass default (not JSON-serializable) is sent as None.
     result = []
     for entry in entries:
         d = config_entry_to_dict(entry)
@@ -512,7 +513,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         # An LTS build ignores this local value (RFC D3, kiro_crew.edition_locks).
         if config_path_locked(entry.path):
             d["lockedByPolicy"] = LOCKED_BY_POLICY
-        result.append(d)
+        result.append(attach_descriptor(d, entry))
 
     return web.json_response({"entries": result})
 
@@ -620,7 +621,7 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
             continue
         try:
             advertised = getter()
-        except Exception:
+        except Exception:  # A provider whose list fails gives no evidence; ask the next one.
             continue
         rows = model_registry.live_advertised_model_rows(advertised) if advertised else []
         if rows:
@@ -700,7 +701,7 @@ async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> lis
             continue
         try:
             ids = advertised_model_ids(getter())
-        except Exception:
+        except Exception:  # A provider whose list fails gives no evidence; ask the next one.
             continue
         if not ids:
             continue
@@ -1928,10 +1929,16 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
     from the bytes served, so a replaced picture invalidates even when size
     and second-granularity mtime coincide.
     """
-    denied = await _require_owner(request, "agent.avatar_get")
-    if denied is not None:
-        return denied
-    if (name := agent_route_name(request)) is None:
+    name = agent_route_name(request)
+    # A team Crew teammate sees a person-created Bot's picture: their roster
+    # already names it, and the image is the same value.
+    from kiro_crew.dashboard.handlers.members import _teammate_admitted
+
+    if name is None or not await _teammate_admitted(request, "agent.avatar_get", name=name):
+        denied = await _require_owner(request, "agent.avatar_get")
+        if denied is not None:
+            return denied
+    if name is None:
         return invalid_agent_name_response()
     # The file is served only while the crew's config actually selects it —
     # a leftover file after an out-of-band config edit or a failed cleanup

@@ -1,0 +1,109 @@
+{
+ "pi": {
+  "_meta": {
+   "backend": "pi",
+   "recorded": "live",
+   "date": "2026-11-14",
+   "agent_version": "0.0.34 (pi 1.4.0)",
+   "note": "Recorded 2026-11-14 by Kiro Crew's in-product frame recorder (KIROCREW_ACP_RECORD_FRAMES) while an AcpClient(acp_backend='pi') session ran pi-acp 0.0.34 over pi 1.4.0 (the Real Adapter lane's lockfile, test/real_adapters) against a loopback stub model that answered the first prompt with one tool call named work_report, a name pi does not offer. No provider credential. Only the session/update payloads for that call are kept, verbatim."
+  },
+  "updates": [
+   {
+    "kind": "other",
+    "rawInput": {
+     "status": "progress",
+     "summary": "probe"
+    },
+    "sessionUpdate": "tool_call",
+    "status": "pending",
+    "title": "work_report",
+    "toolCallId": "call_wr_1"
+   },
+   {
+    "rawInput": {
+     "status": "progress",
+     "summary": "probe"
+    },
+    "sessionUpdate": "tool_call_update",
+    "status": "in_progress",
+    "toolCallId": "call_wr_1"
+   },
+   {
+    "content": [
+     {
+      "content": {
+       "text": "Tool work_report not found",
+       "type": "text"
+      },
+      "type": "content"
+     }
+    ],
+    "rawOutput": {
+     "content": [
+      {
+       "text": "Tool work_report not found",
+       "type": "text"
+      }
+     ],
+     "details": {}
+    },
+    "sessionUpdate": "tool_call_update",
+    "status": "failed",
+    "toolCallId": "call_wr_1"
+   }
+  ]
+ },
+ "opencode": {
+  "_meta": {
+   "backend": "opencode",
+   "recorded": "live",
+   "date": "2026-11-14",
+   "agent_version": "1.19.1",
+   "note": "Recorded 2026-11-14 by Kiro Crew's in-product frame recorder (KIROCREW_ACP_RECORD_FRAMES) while an AcpClient(acp_backend='opencode') session ran opencode acp 1.19.1 (the Real Adapter lane's lockfile, test/real_adapters) against a loopback stub model that answered the first prompt with one tool call named work_report, a name opencode does not offer. No provider credential. Only the session/update payloads for that call are kept, verbatim; the answer's tool list is the recording session's own (Crew's kirocrew-core and kirocrew-cron servers, the probe and decoy servers, opencode's built-ins)."
+  },
+  "updates": [
+   {
+    "kind": "other",
+    "locations": [],
+    "rawInput": {},
+    "sessionUpdate": "tool_call",
+    "status": "pending",
+    "title": "work_report",
+    "toolCallId": "call_wr_1"
+   },
+   {
+    "kind": "other",
+    "locations": [],
+    "rawInput": {
+     "error": "Model tried to call unavailable tool 'work_report'. Available tools: bash, decoy-opencode-project_decoy_opencode_project_ok, decoy-opencode-user_decoy_opencode_user_ok, edit, glob, grep, invalid, kirocrew-core_artifact_delete, kirocrew-core_artifact_delete_comment, kirocrew-core_artifact_folder_create, kirocrew-core_artifact_folder_delete, kirocrew-core_artifact_folder_list, kirocrew-core_artifact_folder_move, kirocrew-core_artifact_folder_rename, kirocrew-core_artifact_get, kirocrew-core_artifact_get_comments, kirocrew-core_artifact_list, kirocrew-core_artifact_mark_review, kirocrew-core_artifact_move, kirocrew-core_artifact_post_comment, kirocrew-core_artifact_reply_comment, kirocrew-core_artifact_revert, kirocrew-core_artifact_save, kirocrew-core_artifact_update, kirocrew-core_artifact_versions, kirocrew-core_ask_question, kirocrew-core_autonudge_stop, kirocrew-core_browser, kirocrew-core_chat_tag, kirocrew-core_delete_message, kirocrew-core_deploy_artifact, kirocrew-core_dismiss_notification, kirocrew-core_file_send, kirocrew-core_get_chat_session, kirocrew-core_kiro_cli_logs, kirocrew-core_knowledge_add_document, kirocrew-core_knowledge_dedup, kirocrew-core_knowledge_list_sources, kirocrew-core_learn_add, kirocrew-core_learn_list, kirocrew-core_learn_remove, kirocrew-core_learn_update, kirocrew-core_list_sessions, kirocrew-core_local_knowledge_search, kirocrew-core_mcp_server_wait, kirocrew-core_memory_recall, kirocrew-core_monitor_inspect, kirocrew-core_monitor_start, kirocrew-core_monitor_stop, kirocrew-core_monitor_update, kirocrew-core_monitor_watch, kirocrew-core_nothing_to_do, kirocrew-core_read_slack_history, kirocrew-core_read_slack_profile, kirocrew-core_register_hook, kirocrew-core_request_server, kirocrew-core_reset_conversation, kirocrew-core_resource_status, kirocrew-core_route_crew, kirocrew-core_search_chat_history, kirocrew-core_select_crew, kirocrew-core_send_message, kirocrew-core_send_notification, kirocrew-core_session_ledger_read, kirocrew-core_session_ledger_record, kirocrew-core_set_project, kirocrew-core_skill_discover, kirocrew-core_skill_fetch, kirocrew-core_skill_search, kirocrew-core_spawn_continue, kirocrew-core_spawn_list, kirocrew-core_spawn_release, kirocrew-core_spawn_run, kirocrew-core_spawn_status, kirocrew-core_spawn_steer, kirocrew-core_spawn_sub_agents, kirocrew-core_suggest_followup, kirocrew-core_task_run, kirocrew-core_update_message, kirocrew-core_wait, kirocrew-core_workflow_author, kirocrew-core_workflow_cancel, kirocrew-core_workflow_library_list, kirocrew-core_workflow_list, kirocrew-core_workflow_rerun_subtree, kirocrew-core_workflow_result, kirocrew-core_workflow_run, kirocrew-core_workflow_status, kirocrew-cron_cron_add, kirocrew-cron_cron_list, kirocrew-cron_cron_pause, kirocrew-cron_cron_remove, kirocrew-cron_cron_remove_all, kirocrew-cron_cron_resume, kirocrew-cron_cron_secret_request, kirocrew-cron_cron_trigger, kirocrew-cron_cron_update, p-dollar_p_dollar_ok, p-envprefix_p_envprefix_ok, p-literal_p_literal_ok, read, skill, task, todowrite, webfetch, write.",
+     "tool": "work_report"
+    },
+    "sessionUpdate": "tool_call_update",
+    "status": "in_progress",
+    "title": "invalid",
+    "toolCallId": "call_wr_1"
+   },
+   {
+    "content": [
+     {
+      "content": {
+       "text": "The arguments provided to the tool are invalid: Model tried to call unavailable tool 'work_report'. Available tools: bash, decoy-opencode-project_decoy_opencode_project_ok, decoy-opencode-user_decoy_opencode_user_ok, edit, glob, grep, invalid, kirocrew-core_artifact_delete, kirocrew-core_artifact_delete_comment, kirocrew-core_artifact_folder_create, kirocrew-core_artifact_folder_delete, kirocrew-core_artifact_folder_list, kirocrew-core_artifact_folder_move, kirocrew-core_artifact_folder_rename, kirocrew-core_artifact_get, kirocrew-core_artifact_get_comments, kirocrew-core_artifact_list, kirocrew-core_artifact_mark_review, kirocrew-core_artifact_move, kirocrew-core_artifact_post_comment, kirocrew-core_artifact_reply_comment, kirocrew-core_artifact_revert, kirocrew-core_artifact_save, kirocrew-core_artifact_update, kirocrew-core_artifact_versions, kirocrew-core_ask_question, kirocrew-core_autonudge_stop, kirocrew-core_browser, kirocrew-core_chat_tag, kirocrew-core_delete_message, kirocrew-core_deploy_artifact, kirocrew-core_dismiss_notification, kirocrew-core_file_send, kirocrew-core_get_chat_session, kirocrew-core_kiro_cli_logs, kirocrew-core_knowledge_add_document, kirocrew-core_knowledge_dedup, kirocrew-core_knowledge_list_sources, kirocrew-core_learn_add, kirocrew-core_learn_list, kirocrew-core_learn_remove, kirocrew-core_learn_update, kirocrew-core_list_sessions, kirocrew-core_local_knowledge_search, kirocrew-core_mcp_server_wait, kirocrew-core_memory_recall, kirocrew-core_monitor_inspect, kirocrew-core_monitor_start, kirocrew-core_monitor_stop, kirocrew-core_monitor_update, kirocrew-core_monitor_watch, kirocrew-core_nothing_to_do, kirocrew-core_read_slack_history, kirocrew-core_read_slack_profile, kirocrew-core_register_hook, kirocrew-core_request_server, kirocrew-core_reset_conversation, kirocrew-core_resource_status, kirocrew-core_route_crew, kirocrew-core_search_chat_history, kirocrew-core_select_crew, kirocrew-core_send_message, kirocrew-core_send_notification, kirocrew-core_session_ledger_read, kirocrew-core_session_ledger_record, kirocrew-core_set_project, kirocrew-core_skill_discover, kirocrew-core_skill_fetch, kirocrew-core_skill_search, kirocrew-core_spawn_continue, kirocrew-core_spawn_list, kirocrew-core_spawn_release, kirocrew-core_spawn_run, kirocrew-core_spawn_status, kirocrew-core_spawn_steer, kirocrew-core_spawn_sub_agents, kirocrew-core_suggest_followup, kirocrew-core_task_run, kirocrew-core_update_message, kirocrew-core_wait, kirocrew-core_workflow_author, kirocrew-core_workflow_cancel, kirocrew-core_workflow_library_list, kirocrew-core_workflow_list, kirocrew-core_workflow_rerun_subtree, kirocrew-core_workflow_result, kirocrew-core_workflow_run, kirocrew-core_workflow_status, kirocrew-cron_cron_add, kirocrew-cron_cron_list, kirocrew-cron_cron_pause, kirocrew-cron_cron_remove, kirocrew-cron_cron_remove_all, kirocrew-cron_cron_resume, kirocrew-cron_cron_secret_request, kirocrew-cron_cron_trigger, kirocrew-cron_cron_update, p-dollar_p_dollar_ok, p-envprefix_p_envprefix_ok, p-literal_p_literal_ok, read, skill, task, todowrite, webfetch, write.",
+       "type": "text"
+      },
+      "type": "content"
+     }
+    ],
+    "rawOutput": {
+     "metadata": {
+      "truncated": false
+     },
+     "output": "The arguments provided to the tool are invalid: Model tried to call unavailable tool 'work_report'. Available tools: bash, decoy-opencode-project_decoy_opencode_project_ok, decoy-opencode-user_decoy_opencode_user_ok, edit, glob, grep, invalid, kirocrew-core_artifact_delete, kirocrew-core_artifact_delete_comment, kirocrew-core_artifact_folder_create, kirocrew-core_artifact_folder_delete, kirocrew-core_artifact_folder_list, kirocrew-core_artifact_folder_move, kirocrew-core_artifact_folder_rename, kirocrew-core_artifact_get, kirocrew-core_artifact_get_comments, kirocrew-core_artifact_list, kirocrew-core_artifact_mark_review, kirocrew-core_artifact_move, kirocrew-core_artifact_post_comment, kirocrew-core_artifact_reply_comment, kirocrew-core_artifact_revert, kirocrew-core_artifact_save, kirocrew-core_artifact_update, kirocrew-core_artifact_versions, kirocrew-core_ask_question, kirocrew-core_autonudge_stop, kirocrew-core_browser, kirocrew-core_chat_tag, kirocrew-core_delete_message, kirocrew-core_deploy_artifact, kirocrew-core_dismiss_notification, kirocrew-core_file_send, kirocrew-core_get_chat_session, kirocrew-core_kiro_cli_logs, kirocrew-core_knowledge_add_document, kirocrew-core_knowledge_dedup, kirocrew-core_knowledge_list_sources, kirocrew-core_learn_add, kirocrew-core_learn_list, kirocrew-core_learn_remove, kirocrew-core_learn_update, kirocrew-core_list_sessions, kirocrew-core_local_knowledge_search, kirocrew-core_mcp_server_wait, kirocrew-core_memory_recall, kirocrew-core_monitor_inspect, kirocrew-core_monitor_start, kirocrew-core_monitor_stop, kirocrew-core_monitor_update, kirocrew-core_monitor_watch, kirocrew-core_nothing_to_do, kirocrew-core_read_slack_history, kirocrew-core_read_slack_profile, kirocrew-core_register_hook, kirocrew-core_request_server, kirocrew-core_reset_conversation, kirocrew-core_resource_status, kirocrew-core_route_crew, kirocrew-core_search_chat_history, kirocrew-core_select_crew, kirocrew-core_send_message, kirocrew-core_send_notification, kirocrew-core_session_ledger_read, kirocrew-core_session_ledger_record, kirocrew-core_set_project, kirocrew-core_skill_discover, kirocrew-core_skill_fetch, kirocrew-core_skill_search, kirocrew-core_spawn_continue, kirocrew-core_spawn_list, kirocrew-core_spawn_release, kirocrew-core_spawn_run, kirocrew-core_spawn_status, kirocrew-core_spawn_steer, kirocrew-core_spawn_sub_agents, kirocrew-core_suggest_followup, kirocrew-core_task_run, kirocrew-core_update_message, kirocrew-core_wait, kirocrew-core_workflow_author, kirocrew-core_workflow_cancel, kirocrew-core_workflow_library_list, kirocrew-core_workflow_list, kirocrew-core_workflow_rerun_subtree, kirocrew-core_workflow_result, kirocrew-core_workflow_run, kirocrew-core_workflow_status, kirocrew-cron_cron_add, kirocrew-cron_cron_list, kirocrew-cron_cron_pause, kirocrew-cron_cron_remove, kirocrew-cron_cron_remove_all, kirocrew-cron_cron_resume, kirocrew-cron_cron_secret_request, kirocrew-cron_cron_trigger, kirocrew-cron_cron_update, p-dollar_p_dollar_ok, p-envprefix_p_envprefix_ok, p-literal_p_literal_ok, read, skill, task, todowrite, webfetch, write."
+    },
+    "sessionUpdate": "tool_call_update",
+    "status": "completed",
+    "title": "Invalid Tool",
+    "toolCallId": "call_wr_1"
+   }
+  ]
+ }
+}

@@ -11,9 +11,10 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_client``, ``_cloud_governance_scope``,
 ``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_shared_scratch``,
-``startup_notice``.
+``kas_memory_mode``, ``kas_memory_new_mode``, ``startup_notice``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
+``background_qos``,
 ``_harness_pin``, ``_keepalive_routed``, ``_on_gate_acquired``, ``_on_gate_queued``,
 ``_tool_search``, ``focus_resume``, ``member_context``, ``memory_mode``, ``owning_app``,
 ``start_priority``.
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_scope, turn_timing
+from kiro_crew.acp import kiro_signin_hold
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -55,7 +57,10 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import model_registry_namespace
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
+    model_registry_namespace,
+)
 from kiro_crew.agent_sdk.tool_gate import (
     ADAPTER_EXPOSED_CREDENTIAL_LEAVES,
     adapter_expose_files,
@@ -281,6 +286,10 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
     try:
         await self._start_kiro_runtime_impl(phases, meta)
         outcome = "ready"
+        # A session was created, so this backend is signed in: its warm pool may fill.
+        backend = meta.get("backend")
+        if isinstance(backend, str):
+            kiro_signin_hold.note_signed_in(backend)
     except AcpAuthRequired:
         outcome = "auth_required"
         raise
@@ -462,6 +471,53 @@ def _member_session_key(self: AcpProvider) -> str:
     return ""
 
 
+def _harness_session_options(provider: AcpProvider) -> dict[str, Any]:
+    """The chat's own choices a per-session harness reads at each session start.
+
+    A per-chat client takes them at construction (``AcpClient`` keeps them on the
+    placeholder this start replaces); on the shared runtime they travel with each
+    session start instead (``HarnessAdapter.prepare_session``). A harness without
+    per-session state reads none of them.
+    """
+    client = getattr(provider, "_client", None)
+    return {
+        "permission_mode": getattr(client, "_permission_mode", None),
+        "side_read_only": bool(getattr(client, "_side_read_only", False)),
+        "include_memory": bool(getattr(client, "_include_memory", True)),
+        # This chat's own model, which the session's settings seed names: on a
+        # process another session of its tree founded, the runtime's is that one's.
+        "model": getattr(client, "_model", None) or "",
+    }
+
+
+async def resolve_prejoined_chat_share(provider: AcpProvider) -> bool:
+    """Resolve this start's chat-sharing placement ahead of the arm choice.
+
+    For a harness shared only for chats (``ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS``):
+    the same placement ``_start_kiro_runtime_impl`` resolves, from the same inputs,
+    kept on the provider for that start to use. False keeps the per-chat client.
+    """
+    from kiro_crew.providers.chat_share import resolve_chat_share
+
+    client = provider._client
+    share = await resolve_chat_share(
+        provider,
+        work_dir=client._work_dir,
+        agent=getattr(client, "_agent", None) or "kirocrew",
+        sandbox_mode=getattr(client, "_sandbox_mode", "auto"),
+        extra_env=getattr(client, "_extra_env", None) or {},
+        mcp_gateway_overlay=getattr(client, "_mcp_gateway_overlay", None),
+        mcp_gateway_socket=getattr(client, "_mcp_gateway_socket", None),
+        configured_model=getattr(client, "_model", "") or "",
+        launch_agent=_launch_agent(provider),
+        remote_workspace=False,
+    )
+    if share is None:
+        return False
+    provider._prejoined_chat_share = share
+    return True
+
+
 async def _load_session_with_retry(
     self: AcpProvider,
     runtime: AcpRuntime,
@@ -472,6 +528,7 @@ async def _load_session_with_retry(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    kas_memory_mode: str | None = None,
     require_replay: bool = False,
     crew_agent: str | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
@@ -507,10 +564,12 @@ async def _load_session_with_retry(
             member_session_key=member_session_key,
             session_key=session_key,
             channel_id=channel_id,
+            kas_memory_mode=kas_memory_mode,
             require_replay=require_replay,
             crew_agent=crew_agent,
             start_priority=start_priority,
             focus_resume=focus_resume,
+            harness_options=_harness_session_options(self),
         )
 
     swept = False
@@ -657,6 +716,7 @@ async def _start_kiro_runtime_impl(
         # The session this provider serves and the app it runs under, read for
         # the profiles its KAS projection meets.
         governance_scope=(self._owning_session_key(), getattr(self, "owning_app", "") or ""),
+        background_qos=self.background_qos,
     )
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
@@ -694,6 +754,10 @@ async def _start_kiro_runtime_impl(
         )
         else None
     )
+    if isinstance(remote, PreparedCloudSession):
+        # The cloud relay does not carry native memory policy; this preview is local.
+        self.kas_memory_mode = ""
+        self.kas_memory_new_mode = ""
     if isinstance(remote, PreparedCloudSession) and self.memory_mode != "persistent":
         # Before any sandbox exists: a private chat never reopens its session, so
         # each start would mint a new sandbox and strand the last one's files.
@@ -819,21 +883,33 @@ async def _start_kiro_runtime_impl(
             raise
 
     # Chat runtime sharing (the ``chat_runtime_sharing`` feature preview, off by
-    # default): ``None`` means this start spawns its own process as before.
-    from kiro_crew.providers.chat_share import resolve_chat_share
+    # default): ``None`` means this start spawns its own process as before. A harness
+    # shared only for chats had its placement resolved before this arm was chosen.
+    from kiro_crew.providers.chat_share import ChatSharePlacement, resolve_chat_share
 
-    share = await resolve_chat_share(
-        self,
-        work_dir=work_dir,
-        agent=agent or "kirocrew",
-        sandbox_mode=sandbox_mode,
-        extra_env=extra_env,
-        mcp_gateway_overlay=mcp_gateway_overlay,
-        mcp_gateway_socket=mcp_gateway_socket,
-        configured_model=configured_model,
-        launch_agent=_launch_agent(self),
-        remote_workspace=remote is not None,
-    )
+    # Only a placement this provider's arm choice resolved is taken.
+    prejoined = self._prejoined_chat_share
+    share = prejoined if isinstance(prejoined, ChatSharePlacement) else None
+    self._prejoined_chat_share = None
+    if share is None:
+        share = await resolve_chat_share(
+            self,
+            work_dir=work_dir,
+            agent=agent or "kirocrew",
+            sandbox_mode=sandbox_mode,
+            extra_env=extra_env,
+            mcp_gateway_overlay=mcp_gateway_overlay,
+            mcp_gateway_socket=mcp_gateway_socket,
+            configured_model=configured_model,
+            launch_agent=_launch_agent(self),
+            remote_workspace=remote is not None,
+        )
+    if share is None and self._client.backend in ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS:
+        # Never a process of its own on this arm: that is the per-chat client's.
+        raise AcpRuntimeError(
+            f"the {self._client.backend!r} chat lost its shared placement before it "
+            "started; start it again"
+        )
 
     async def _found_shared_runtime() -> AcpRuntime:
         """The registry's miss path for a shared placement: one fresh process."""
@@ -871,7 +947,9 @@ async def _start_kiro_runtime_impl(
     _t_spawn = time.monotonic()
     try:
         if share is not None:
-            runtime = await share.place(_found_shared_runtime)
+            # A resumed chat's recorded tree is held before the placement and
+            # kept on disk when the process it joins does not mount it.
+            runtime = await share.place(_found_shared_runtime, self._shared_scratch)
             meta["chat_runtime_shared"] = True
             meta["chat_runtime_joined"] = share.joined
             meta["chat_runtime_leases"] = share.leases_on_runtime
@@ -956,6 +1034,7 @@ async def _start_kiro_runtime_impl(
                         member_session_key=self._member_session_key(),
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        kas_memory_mode=self.kas_memory_mode,
                         require_replay=self.is_kas_backend,
                         crew_agent=self._crew_agent,
                         start_priority=start_priority,
@@ -978,6 +1057,7 @@ async def _start_kiro_runtime_impl(
         _t_sess = time.monotonic()
 
         if handle is None:
+            self.kas_memory_mode = self.kas_memory_new_mode
             # ── Fix B: respawn if runtime died during resume attempt ──
             # The orphan sweep may have killed the runtime's PID during the
             # session/load window (race condition). Calling create_session on
@@ -994,13 +1074,14 @@ async def _start_kiro_runtime_impl(
                     # own, so this only labels the genuinely-deliberate case.
                     await runtime.kill(expected=True, reason="reap before resume respawn")
                 except Exception:
+                    # The runtime is dead; the respawn below runs whether or not this reap worked.
                     pass
             if not runtime.is_alive() and share is not None:
                 # A shared placement: the dead runtime's tree is what the
                 # replacement joins, and the replacement is placed (and
                 # confirmed) through the same registry as the cold start.
                 self._shared_scratch = self._shared_scratch or runtime.work_scratch_dir
-                runtime = await share.replace_dead(_found_shared_runtime)
+                runtime = await share.replace_dead(_found_shared_runtime, self._shared_scratch)
                 meta["chat_runtime_recovered"] = True
                 meta["chat_runtime_joined"] = share.joined
             elif not runtime.is_alive():
@@ -1028,6 +1109,7 @@ async def _start_kiro_runtime_impl(
                         self._owning_session_key(),
                         getattr(self, "owning_app", "") or "",
                     ),
+                    background_qos=self.background_qos,
                 )
                 if remote is not None:
                     await attach_remote_workspace(runtime)
@@ -1076,11 +1158,16 @@ async def _start_kiro_runtime_impl(
                 handle = await runtime.create_session(
                     cwd=session_cwd,
                     agent=agent or None,
+                    harness_options=_harness_session_options(self),
                     member_session_key=self._member_session_key(),
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,
+                    # Per session for the same reason: the member projection
+                    # follows this chat, not the process's founder.
+                    member_context=self.member_context,
                     memory_mode=self.memory_mode,
+                    kas_memory_mode=self.kas_memory_mode,
                     session_key=self._owning_session_key(),
                     channel_id=self._owning_channel_id() or "",
                     on_gate_acquired=self._on_gate_acquired,
@@ -1175,16 +1262,14 @@ async def _start_kiro_runtime_impl(
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
         if configured_model and configured_model != DEFAULT_MODEL:
-            # Withhold a model this account cannot run rather than sending
-            # it. session/new has already reported what is on offer, and
-            # this model was NOT picked for this turn — it comes from the
-            # agent spec, the config default, or a slot value persisted
-            # before entitlements were known. Sending it anyway is what put
-            # a raw "-32603 ... model is not available" in the transcript on
-            # every turn: kiro-cli ACCEPTS the id here (so the except below
-            # never fires) and only the service rejects it, mid-prompt.
-            # Leaving it unset keeps the session on the backend's own
-            # default, so the turn succeeds.
+            # Withhold a model this account cannot run. session/new already
+            # reported what is on offer, and this model was NOT picked for
+            # this turn (it comes from the agent spec, the config default, or
+            # a slot value saved before entitlements were known). kiro-cli
+            # ACCEPTS the id here, so the except below never fires; the
+            # service then rejects it mid-prompt with a raw "-32603 ... model
+            # is not available" on every turn. Left unset, the session uses the
+            # backend's default and the turn succeeds.
             _advertised = advertised_model_ids(handle.available_models)
             _send_model = configured_model
             _namespace = model_registry_namespace(self._client.backend)
@@ -1271,6 +1356,8 @@ async def _start_kiro_runtime_impl(
                     phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
                     turn_timing.phase("set_model", phases["set_model"])
 
+        # A live reload re-sends exactly the policy this SID stated.
+        self.kas_memory_mode = handle.kas_memory_mode
         # Replace the placeholder AcpClient with the real AcpSessionProvider
         provider = AcpSessionProvider(
             handle,
@@ -1288,8 +1375,18 @@ async def _start_kiro_runtime_impl(
             # pushes a keyless claim gatewayd throws away.
             session_key=self._owning_session_key(),
             channel_id=self._owning_channel_id(),
+            # The values this session's cold create_session ran with, so a fresh
+            # conversation (Edit & Resend) on a shared process keeps them rather
+            # than the founder's.
+            agent=agent or "",
+            crew_agent=self._crew_agent,
+            member_context=self.member_context,
+            kas_memory_mode=self.kas_memory_mode,
         )
         provider.kas_default_model_notice = _default_model_notice
+        # The chat's own choices, for the session starts this provider makes later
+        # (a fresh conversation, a projection re-send) on a host that reads them.
+        provider._harness_options = _harness_session_options(self)
         provider.memory_mode = self.memory_mode
         if resumed:
             provider.resumed = True

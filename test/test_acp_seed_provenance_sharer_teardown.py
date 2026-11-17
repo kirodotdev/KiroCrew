@@ -32,7 +32,7 @@ from acp_seed_provenance_helpers import (
 from kiro_crew import model_registry as mr
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.wait import default_timeout
 
@@ -254,7 +254,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
             return None
 
         monkeypatch.setattr(
-            AcpClient, "_claim_pathname_if_ours", staticmethod(_user_replaces_in_the_gap)
+            ClaudeAcpClient, "_claim_pathname_if_ours", staticmethod(_user_replaces_in_the_gap)
         )
         real_forget = sp.forget
         monkeypatch.setattr(sp, "forget", lambda _path, _owner: False)
@@ -383,8 +383,8 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         def _no_settle(*_args, **_kwargs):
             raise AssertionError("a foreign file must not enter the move/unlink settle")
 
-        monkeypatch.setattr(AcpClient, "_claim_pathname_if_ours", staticmethod(_no_settle))
-        monkeypatch.setattr(AcpClient, "_settle_claude_settings_seed", _no_settle)
+        monkeypatch.setattr(ClaudeAcpClient, "_claim_pathname_if_ours", staticmethod(_no_settle))
+        monkeypatch.setattr(ClaudeAcpClient, "_settle_claude_settings_seed", _no_settle)
         _teardown(owner)
 
         assert forgets == [owner._seed_owner]
@@ -614,7 +614,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         path = _settings(tmp_path)
         before = path.read_text(encoding="utf-8")
 
-        real = AcpClient._claim_pathname_if_ours
+        real = ClaudeAcpClient._claim_pathname_if_ours
 
         def move_then_sharer_appears(p, expectation):
             aside = real(p, expectation)
@@ -622,7 +622,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
             return aside
 
         monkeypatch.setattr(
-            AcpClient, "_claim_pathname_if_ours", staticmethod(move_then_sharer_appears)
+            ClaudeAcpClient, "_claim_pathname_if_ours", staticmethod(move_then_sharer_appears)
         )
         _teardown(owner)
 
@@ -877,7 +877,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         path = _settings(tmp_path)
         users_file = json.dumps({"permissions": {"allow": ["Bash(ls)"]}}, indent=2)
 
-        real = AcpClient._claim_pathname_if_ours
+        real = ClaudeAcpClient._claim_pathname_if_ours
 
         def move_then_sharer_and_user_race_in(p, expectation):
             aside = real(p, expectation)
@@ -886,7 +886,9 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
             return aside
 
         monkeypatch.setattr(
-            AcpClient, "_claim_pathname_if_ours", staticmethod(move_then_sharer_and_user_race_in)
+            ClaudeAcpClient,
+            "_claim_pathname_if_ours",
+            staticmethod(move_then_sharer_and_user_race_in),
         )
         _teardown(owner)
 
@@ -908,7 +910,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         aside.symlink_to(secret)
         path = tmp_path / "settings.local.json"
 
-        assert AcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
+        assert ClaudeAcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
         assert path.is_symlink()
         assert path.resolve() == secret.resolve()
         assert not aside.exists() and not aside.is_symlink()
@@ -931,7 +933,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         os.link(secret, aside)
         path = tmp_path / "settings.local.json"
 
-        assert AcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
+        assert ClaudeAcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
         assert os.lstat(path).st_ino == os.lstat(secret).st_ino
         assert not aside.exists()
 
@@ -944,7 +946,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
 
         moved = os.lstat(aside)
         moved_ident = (moved.st_dev, moved.st_ino)
-        assert AcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
+        assert ClaudeAcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
         assert path.read_text(encoding="utf-8") == prior
         assert not aside.exists()
         # The staging temp is consumed too -- no .crew-gc litter survives success.
@@ -972,7 +974,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
 
         monkeypatch.setattr(acp_client.pinned_fs, "put_back_no_clobber", publish_then_replace)
 
-        assert AcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
+        assert ClaudeAcpClient._restore_aside_without_clobber(aside, path, moved_ident) is True
         assert path.read_bytes() == prior
         if acp_client.platform_compat.IS_WINDOWS:
             assert fired == []
@@ -991,7 +993,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
 
         moved = os.lstat(aside)
         moved_ident = (moved.st_dev, moved.st_ino)
-        assert AcpClient._restore_aside_without_clobber(aside, path, moved_ident) is False
+        assert ClaudeAcpClient._restore_aside_without_clobber(aside, path, moved_ident) is False
         assert path.read_text(encoding="utf-8") == users_file
         assert aside.exists()
 
@@ -1053,7 +1055,7 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         assert payload is not None
         expectation = owner._expected_settings_fingerprint()
 
-        real_claim = AcpClient._claim_pathname_if_ours
+        real_claim = ClaudeAcpClient._claim_pathname_if_ours
 
         def claim_then_replacement_races_in(p, exp):
             claimed = real_claim(p, exp)
@@ -1062,10 +1064,12 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
             return claimed
 
         monkeypatch.setattr(
-            AcpClient, "_claim_pathname_if_ours", staticmethod(claim_then_replacement_races_in)
+            ClaudeAcpClient,
+            "_claim_pathname_if_ours",
+            staticmethod(claim_then_replacement_races_in),
         )
         owner._settle_claude_settings_seed(path, owner._seed_owner, payload, expectation)
-        monkeypatch.setattr(AcpClient, "_claim_pathname_if_ours", staticmethod(real_claim))
+        monkeypatch.setattr(ClaudeAcpClient, "_claim_pathname_if_ours", staticmethod(real_claim))
 
         sibling = _client(tmp_path, permission_mode="default")
         assert sibling._share_settings_seed_if_identical(path, payload) is False

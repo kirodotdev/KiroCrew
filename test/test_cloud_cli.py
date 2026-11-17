@@ -31,6 +31,16 @@ class TestDispatch:
         assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
         assert "kirocrew cloud" in capsys.readouterr().out
 
+    def test_no_action_lists_each_dispatched_verb_once(self, capsys):
+        """`tunnel` and `connect` run the same handler, so the verb list names
+        that command once, with the other spelling as its alias."""
+        assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
+        rows = [line.split() for line in capsys.readouterr().out.splitlines()]
+        verbs = [row[0] for row in rows if row and row[0].split("|")[0] in cli_cloud._DISPATCH]
+        assert len(verbs) == len(set(verbs))
+        tunnel_rows = [" ".join(row) for row in rows if "tunnel" in row or "connect" in row]
+        assert tunnel_rows == ["connect Open the dashboard over an SSM tunnel (alias: tunnel)"]
+
     def test_iam_policy(self, capsys):
         assert cli_cloud.handle_cloud(_args(cloud_action="iam-policy")) == 0
         out = capsys.readouterr().out

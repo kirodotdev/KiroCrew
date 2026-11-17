@@ -257,15 +257,20 @@ installed web app shows nothing new.
 
 ### Turning it on
 
-Two settings, both on the gateway the desktop app runs:
+Three settings, all on the gateway the desktop app runs:
 
 ```bash
 kirocrew config set tunnel.relay_viewer_enabled true
 kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
+kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
 ```
 
+The desktop app opens a Crew, and sends its access token, only at exactly
+`https://<endpoint ID>.<relay domain>`. Without the relay domain the list still
+shows Crews, but opening one says Team Crews over the relay aren't set up.
+
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads
-both settings on every request, so the change takes effect at the next request with
+these settings on every request, so the change takes effect at the next request with
 no restart. The settings page can't change them: the dashboard's config route
 refuses `tunnel.relay_viewer_enabled` as not editable.
 
@@ -298,6 +303,13 @@ the group says why, with the request ID as plain text when there is one. The lis
 is read again about once a minute while the dashboard is open, and it never
 carries an access token. The group appears only once your account has at least
 one Team Crew, or when it has a sign-in or load problem to show.
+
+**Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
+from the same request, so the two can't disagree. Unlike the switcher group, it
+shows every Crew in the list and says so when there are none. Choosing an online
+row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
+under it links to the AWS Management Console, where an admin creates Shared
+Crews. Both cards are hidden while the feature is off or outside the desktop app.
 
 ### What opening a Crew does
 
@@ -337,8 +349,9 @@ show it again.
   token and reloads.
 - If your Kiro sign-in has ended, main stops every renewal and closes every relay
   Crew window when a renewal or opening a Crew from its row gets the signed-out
-  answer. Main doesn't watch for a sign-out between renewals, so windows can stay
-  open until then.
+  answer. Sign out and Switch account in the desktop dashboard now close every
+  relay Crew window at once; a sign-out made anywhere else is still caught at the
+  next renewal or when a Crew is opened from its row.
 - If the control plane can't be reached or answers with an error, main retries
   with a growing wait. When it asks to slow down, main waits as asked once.
 

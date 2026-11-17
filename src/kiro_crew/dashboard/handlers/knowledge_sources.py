@@ -54,6 +54,7 @@ from kiro_crew.knowledge.folder_watcher import (
     walk_filters,
 )
 from kiro_crew.knowledge.ingestion import _redact
+from kiro_crew.knowledge.kiroignore import MAX_RULES
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import AUTO_REGISTRATION_RETIRED_PROP
@@ -70,6 +71,22 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
 
 # Max length for a user-editable source display name (rename endpoint).
 _MAX_SOURCE_NAME_LEN = 200
+
+# Ceilings on a folder source's ``ignore_patterns`` at write time. Every scan
+# matches every pattern against every file, so an unbounded list costs each
+# sweep. The count matches ``.kiroignore``'s rule cap. A stored list over
+# either cap still loads; only new writes are refused.
+_MAX_IGNORE_PATTERNS = MAX_RULES
+_MAX_IGNORE_PATTERN_LEN = 1024
+
+
+def _ignore_patterns_limit_error(patterns: list[str]) -> str | None:
+    """The limit a list of ignore patterns breaks, else None."""
+    if len(patterns) > _MAX_IGNORE_PATTERNS:
+        return f"ignore_patterns can hold at most {_MAX_IGNORE_PATTERNS} patterns"
+    if any(len(p) > _MAX_IGNORE_PATTERN_LEN for p in patterns):
+        return f"each ignore pattern must be {_MAX_IGNORE_PATTERN_LEN} characters or fewer"
+    return None
 
 
 def _create_source_audited(store, source_type: str, **kwargs) -> tuple[str, bool]:
@@ -120,6 +137,25 @@ def _source_exists_response(source_type: str, source_id: str) -> web.Response:
             "it and add it again."
         )
     return web.json_response({"error": error, "id": source_id, "code": "source_exists"}, status=409)
+
+
+def _folder_spellings(plain: str, sep: str, altsep: str | None) -> list[str]:
+    """Spellings that name the folder ``plain`` (``str(Path(uri))``) lexically.
+
+    ``<dir>``, ``<dir><sep>`` and ``<dir><sep>.``, once with each separator the
+    platform accepts, so on Windows ``C:/x/`` matches a later ``C:\\x``. Shortcut:
+    a path mixing both separators in its body is not matched; it would need a
+    normalized-uri column to cover every mix. A bare Windows drive (``C:``) is a
+    drive-relative path, so it gets no separator: ``C:\\`` is the drive root.
+    """
+    if sep == "\\" and plain.endswith(":") and PureWindowsPath(plain).drive == plain:
+        return [plain]
+    out: list[str] = []
+    for s in (sep, altsep):
+        if s:
+            base = plain.replace(sep, s)
+            out += [base, base + s, base + s + "."]
+    return list(dict.fromkeys(out))
 
 
 def _set_file_state(store, source_id: str, file_path: str, status: str) -> None:
@@ -437,6 +473,11 @@ def _add_source_shape_error(body: dict) -> str | None:
         nested = properties.get("namespace")
         if nested is not None and not isinstance(nested, str):
             return "namespace must be a string"
+        patterns = properties.get("ignore_patterns")
+        if patterns is not None:
+            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+                return "ignore_patterns must be a list of strings"
+            return _ignore_patterns_limit_error(patterns)
     return None
 
 
@@ -815,8 +856,7 @@ async def add_source(request: web.Request) -> web.Response:
     # is never collapsed, since that can change which directory a symlinked
     # path names.
     if source_type in ("local_folder", "obsidian_vault") and probe is not None and probe.is_dir:
-        plain = str(Path(uri))
-        for spelling in dict.fromkeys((plain, plain + os.sep, plain + os.sep + ".")):
+        for spelling in _folder_spellings(str(Path(uri)), os.sep, os.altsep):
             if spelling == uri:
                 continue
             same = await asyncio.to_thread(store.get_source_by_uri, spelling)
@@ -1100,6 +1140,11 @@ async def rename_source(request: web.Request) -> web.Response:
                     "code": "ignore_patterns_invalid",
                 },
                 status=400,
+            )
+        limit_error = _ignore_patterns_limit_error(patterns)
+        if limit_error is not None:
+            return web.json_response(
+                {"error": limit_error, "code": "ignore_patterns_too_large"}, status=400
             )
         patterns = [p.strip() for p in patterns if p.strip()]
     result: dict = {"ok": True}

@@ -97,26 +97,6 @@ def test_pdf_extractor_failure_is_an_error(tmp_path, monkeypatch):
     assert "PDF extraction failed: too big" in text and meta["format"] == "error"
 
 
-def test_pptx_without_python_pptx_is_a_missing_dependency(tmp_path, monkeypatch):
-    doc = tmp_path / "deck.pptx"
-    doc.write_bytes(b"PK")
-    monkeypatch.setattr(readers, "Presentation", None)
-    text, meta = FileReader().read(str(doc))
-    assert "python-pptx" in text and meta["format"] == "error"
-
-
-def test_pptx_parse_failure_is_an_error(tmp_path, monkeypatch):
-    doc = tmp_path / "deck.pptx"
-    doc.write_bytes(b"PK")
-
-    def broken(path):
-        raise ValueError("corrupt deck")
-
-    monkeypatch.setattr(readers, "Presentation", broken)
-    text, meta = FileReader()._read_pptx(str(doc))
-    assert text == "Error reading file: corrupt deck" and meta["format"] == "error"
-
-
 def test_docx_without_python_docx_is_a_missing_dependency(tmp_path, monkeypatch):
     doc = tmp_path / "a.docx"
     doc.write_bytes(b"PK")

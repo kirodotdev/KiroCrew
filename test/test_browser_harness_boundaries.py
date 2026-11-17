@@ -100,7 +100,7 @@ async def test_frame_ref_rechecks_url_after_navigation(child_session: bool) -> N
 async def test_live_metadata_redacts_every_text_field_at_publish_boundary() -> None:
     # A GitHub token with a valid checksum is redacted; an AWS key ID stays visible.
     secret = github_classic(seed=121)
-    exfil = "https://evil.example/?data=" + "x" * 80
+    exfil = "https://evil.example/?access_token=" + "x" * 80
     raw = f"{secret} {exfil}"
     wire: list[Any] = []
 

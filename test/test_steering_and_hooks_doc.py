@@ -110,7 +110,7 @@ class TestHookEvents:
         assert "`PreToolUse` is the only event whose exit code can decide" in body
         # The carve-out belongs beside the contract: PreToolUse also fires as a
         # notification once kiro-cli has already approved the call, where no exit
-        # code stops it (``hooks.fire_tool_call_hooks``). A doc stating only the
+        # code stops it (``hook_dispatch.fire_tool_hooks``). A doc stating only the
         # gate half reads as a guarantee the tool can never run.
         assert "does not always get a vote" in body
 

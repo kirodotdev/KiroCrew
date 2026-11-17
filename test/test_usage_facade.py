@@ -42,8 +42,14 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.usage_history",
     "kiro_crew.dashboard.handlers.usage_sessions",
 )
-#: ``usage_series`` is a sibling handler that reads the facade by attribute, not an owner.
-_NOT_OWNERS = frozenset({"kiro_crew.dashboard.handlers.usage_series"})
+#: ``usage_series`` and ``usage_outcome`` are sibling handlers that read the facade by
+#: attribute, not owners.
+_NOT_OWNERS = frozenset(
+    {
+        "kiro_crew.dashboard.handlers.usage_series",
+        "kiro_crew.dashboard.handlers.usage_outcome",
+    }
+)
 
 
 def _index() -> _facade_mirror.MirrorIndex:

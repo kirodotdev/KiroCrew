@@ -180,6 +180,7 @@ def _materialise_slot_from_history(
     disk_meta_observed: bool = True,
     broadcast_rows: bool = True,
     mint_missing_mids: bool = False,
+    keeps_mode: bool = True,
 ) -> _ChatSlot:
     """Build and hydrate a slot from a persisted history snapshot, UNPUBLISHED.
 
@@ -325,6 +326,7 @@ def _materialise_slot_from_history(
             disk_meta_observed=disk_meta_observed,
             broadcast_rows=broadcast_rows,
             mint_missing_mids=mint_missing_mids,
+            keeps_mode=keeps_mode,
         )
     except BaseException:
         # ``slot`` is None if ``get_or_create_slot`` itself raised (nothing was
@@ -366,6 +368,7 @@ def _hydrate_slot_from_history(
     disk_meta_observed: bool = True,
     broadcast_rows: bool = True,
     mint_missing_mids: bool = False,
+    keeps_mode: bool = True,
 ) -> None:
     """Apply persisted metadata to *slot* and hydrate its message window.
 
@@ -398,6 +401,7 @@ def _hydrate_slot_from_history(
             folder_checked_id=folder_checked_id,
             disk_meta_observed=disk_meta_observed,
             history_key=slot_history_key(slot),
+            keeps_mode=keeps_mode,
         ),
     )
     disk_total = len(all_messages)
@@ -1098,11 +1102,18 @@ async def _resume_slot_from_history_noted(
         _restored_agent_name, _resume_session_identity(state, history_key), meta
     )
     # The model restore needs the provider (config.json) and the effort marker
-    # (a file under the config dir). Both are disk reads, so they are taken here,
-    # off the loop, before the synchronous construction below.
+    # (a file under the config dir), and whether the saved mode is kept reads the
+    # app's install record. All are disk reads, so they are taken here, off the
+    # loop, before the synchronous construction below.
     _prefetched_effort = meta.get("reasoning_effort")
-    restore_cfg, effort_marker = await asyncio.to_thread(
-        lambda: (_load_restore_cfg(), _has_validated_effort_marker(_prefetched_effort))
+    from kiro_crew.apps.hidden_sessions import resume_keeps_mode
+
+    restore_cfg, effort_marker, keeps_mode = await asyncio.to_thread(
+        lambda: (
+            _load_restore_cfg(),
+            _has_validated_effort_marker(_prefetched_effort),
+            resume_keeps_mode(meta.get("mode")),
+        )
     )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
@@ -1474,6 +1485,7 @@ async def _resume_slot_from_history_noted(
         # passed: a refused build is discarded, and frames already pushed for it
         # would describe a session that never appears.
         broadcast_rows=not reserved,
+        keeps_mode=keeps_mode,
     )
     if _member_binding is None:
         # Restore the protected choice read before construction, not the
@@ -1832,8 +1844,8 @@ async def _resume_slot_from_history_noted(
                     return ResumeOutcome(refusal=(await _discard()) or refusal)
             # The delete-and-recreate signature after the last await, SYNCHRONOUS
             # and lock-free, where nothing can run between it and the publish. A
-            # file read here would reopen the Windows transient this change moved
-            # off the loop (a just-rewritten file is briefly unopenable), so two
+            # file read here would reintroduce a Windows transient on the loop (a
+            # just-rewritten file is briefly unopenable), so two
             # in-memory witnesses stand in for it. A COMPLETED delete bumps the
             # invalidation generation under the file lock (``delete_session`` ->
             # ``_invalidate_cache`` after the unlink), while a transient file lock

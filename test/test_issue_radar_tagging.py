@@ -10,18 +10,17 @@ apply serialization. The queue's own surfaces are in ``test_issue_radar_tagging_
 """
 import contextlib
 import json
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # The route helpers are provider-dispatched now, so they take a repo key
 # rather than a loose owner/repo pair. GitHub is used throughout here, so
@@ -38,13 +37,15 @@ class TestSuggestionRedaction(unittest.IsolatedAsyncioTestCase):
 
     LABELS = [{"name": "bug", "color": "ee0000", "description": ""}]
     BATCH = [{"number": 7, "title": "t", "body": "b"}]
-    # Assembled at runtime so the fixture is not itself a greppable secret.
-    FAKE_TOKEN = "ghp" + "_" + ("z4Kq" * 9)
+    # Built at runtime so the fixture is not itself a greppable secret.
+    FAKE_TOKEN = github_classic(seed=118)
     # A credential-BEARING URL. A plain link is deliberately not redacted — that
     # would flag every legitimate URL — so the exfil pass is asserted against the
-    # case it actually exists for: a secret smuggled out in the query string.
+    # case it actually exists for: a secret smuggled out in the query string. The
+    # value goes and the link stays.
+    EXFIL_SECRET = "A1b2C3d4" * 5
     EXFIL_URL = (
-        "https://attacker.example.com/collect?aws_secret_access_key=" + ("A1b2C3d4" * 5)
+        "https://attacker.example.com/collect?aws_secret_access_key=" + EXFIL_SECRET
     )
 
     async def test_reason_is_redacted_before_it_reaches_the_dashboard(self):
@@ -61,7 +62,7 @@ class TestSuggestionRedaction(unittest.IsolatedAsyncioTestCase):
             )
         reason = got["7"][0]["reason"]
         self.assertNotIn(self.FAKE_TOKEN, reason)
-        self.assertNotIn("aws_secret_access_key", reason)
+        self.assertNotIn(self.EXFIL_SECRET, reason)
         # The label itself still survives — redaction must not eat the signal.
         self.assertEqual(got["7"][0]["name"], "bug")
 
@@ -150,11 +151,17 @@ class TestIssuesCacheLockSerializesWriters(unittest.TestCase):
     labelled); both paths take the same lock, asserted below.
     """
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     def test_refresh_and_patch_share_one_lock_file(self):
         # The whole point is that the two writers contend on the SAME lock; if
@@ -411,12 +418,18 @@ class TestAddSettingLabel(unittest.TestCase):
     label. No amount of client-side chaining fixes that — the read and the write
     have to be one critical section for every caller."""
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        store.add_connected_repo("o", "r", root=self.tmp)
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
+        store.add_connected_repo("o", "r", root=self.tmp)
 
     def test_appends_without_touching_other_roles(self):
         store.write_repo_settings("o", "r", {
@@ -511,12 +524,18 @@ class TestSettingsRevisionConflict(unittest.TestCase):
     and permanently deleting the appended label. Locking cannot detect that,
     because the PUT is a legitimate single write; only a revision check can."""
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        store.add_connected_repo("o", "r", root=self.tmp)
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
+        store.add_connected_repo("o", "r", root=self.tmp)
 
     def test_append_then_stale_put_is_refused(self):
         read = store.read_repo_settings("o", "r", self.tmp)
@@ -604,12 +623,18 @@ class TestLabelsCacheLock(unittest.TestCase):
     cannot help across tabs (separate processes). A lost append leaves a label that
     exists on GitHub invisible in every picker until a manual refresh."""
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        store.write_labels_cache("o", "r", [], root=self.tmp)
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
+        store.write_labels_cache("o", "r", [], root=self.tmp)
 
     def test_concurrent_appends_all_survive(self):
         import threading
@@ -689,11 +714,17 @@ class TestLabelsRefreshIsAtomic(unittest.TestCase):
     replaces the cache with the pre-create snapshot — so a label that exists on
     GitHub is invisible in every picker until someone refreshes again."""
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     def test_lock_is_held_while_fetching(self):
         store.write_labels_cache("o", "r", [], root=self.tmp)
@@ -886,15 +917,21 @@ class TestStateChangeCacheLock(unittest.TestCase):
     undone and a closed issue reappears as open. The existing concurrency test
     covers LABEL patches only, so this path was unguarded by tests."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         store.write_issues_cache(
             "o", "r", [{"number": n, "labels": [], "state": "open"} for n in range(1, 41)],
             root=self.tmp, state="open",
         )
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_concurrent_disjoint_state_changes_both_stick(self):
         import threading
@@ -938,11 +975,17 @@ class TestSameIssueApplyIsSerialized(unittest.TestCase):
     be written first, leaving the cache missing whatever the later mutation added
     until the next refresh."""
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     def test_the_lock_is_held_across_the_write_and_the_patch(self):
         import threading
@@ -1010,11 +1053,17 @@ class TestNoOpRemovalRepairsTheCache(unittest.TestCase):
 
     LABELS = [{"name": "bug", "color": "ee0000", "description": ""}]
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     def test_authoritative_labels_are_read_and_cached_under_the_lock(self):
         patched: list[list[dict]] = []
@@ -1069,11 +1118,17 @@ class TestFallbackRereadRepairsTheCache(unittest.IsolatedAsyncioTestCase):
 
     LABELS = [{"name": "bug", "color": "d73a4a"}]
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     async def test_the_retry_patches_the_cache_it_read_for(self):
         patched: list[list[dict]] = []

@@ -180,6 +180,12 @@ def _status(args: argparse.Namespace) -> None:
     except Exception:
         print("Kiro Crew gateway is running but returned an unexpected response.")
         return
+    if not isinstance(data, dict):
+        # Valid JSON that is not an object (``[]``, ``null``, a string) parses
+        # without raising, so the handler above never sees it; the reads below
+        # would then raise on it. The owner fallback can return one too.
+        print("Kiro Crew gateway is running but returned an unexpected response.")
+        return
 
     print(f"Kiro Crew v{__version__} 👻\n")
     print(f"  Uptime:      {data.get('uptime', '—')}")
@@ -395,7 +401,7 @@ async def _gateway(
     # is a frozen facade inventory.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg)
+    usage_notice.print_notice_in_background(cfg, headless=no_dashboard)
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
@@ -426,7 +432,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     cfg = KiroCrewConfig.load()
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg)
+    usage_notice.print_notice_in_background(cfg, headless=True)
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 

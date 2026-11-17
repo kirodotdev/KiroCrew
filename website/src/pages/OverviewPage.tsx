@@ -27,7 +27,7 @@ import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber, fmtPercent } from '../i18n/format'
+import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber, fmtPercentFloor } from '../i18n/format'
 import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
@@ -143,7 +143,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
                   <div className="flex-1 h-1.5 rounded-full bg-bg-elevated overflow-hidden max-w-[220px]">
                     <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.max(0, b.percentUsed))}%` }} />
                   </div>
-                  <span>{fmtPercent(b.percentUsed / 100, { maximumFractionDigits: 0 })}</span>
+                  <span>{fmtPercentFloor(b.percentUsed / 100)}</span>
                 </>
               )}
             </div>
@@ -255,6 +255,9 @@ export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  // Moves on every turn end: the Memory view re-reads its store list on it, and
+  // the rest of the view when that list changed.
+  const liveRefreshTrigger = useAppSelector(s => s.dashboard.liveRefreshTrigger)
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
@@ -269,7 +272,7 @@ export default function OverviewPage() {
   if (view === 'memory') {
     const selectedStore = params.get('store') || ''
     return <DrillIn title={i18nT('pages.overviewPage.memory')} hideTitle={!!selectedStore && selectedStore !== 'default'} onBack={() => setView(null)}>
-      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} onStoreNavigate={store => setParams(previous => {
+      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} liveRefreshTrigger={liveRefreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} onStoreNavigate={store => setParams(previous => {
         const next = new URLSearchParams(previous)
         if (store) next.set('store', store)
         else next.delete('store')

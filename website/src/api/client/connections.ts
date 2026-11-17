@@ -52,6 +52,21 @@ export interface ConnectionStatus {
   /** True for a pre-registered provider whose operator has not entered a usable
    *  OAuth client; present only when true and never alongside a held grant. */
   needsClientConfig?: boolean
+  /** True for a provider whose client never leaves the vault (Slack) while Crew's
+   *  own sign-in is not serving chats. Present only when true and never alongside
+   *  a held grant. The card shows an instruction with a link to the setting. */
+  needsCrewSignIn?: boolean
+  /** True for such a provider while Crew's sign-in is on but does not serve its
+   *  configured entry (own credential header, or another url), so the mint
+   *  refuses it. Present only when true and never alongside a held grant. The
+   *  card hides Connect and shows no step to turn that sign-in on. */
+  crewSignInNotOwned?: boolean
+  /** Why the mint refuses this provider (409 `crew_sign_in_required`), whether or
+   *  not a grant is held: `sign_in_off` (the case behind `needsCrewSignIn`) or
+   *  `not_owned` (behind `crewSignInNotOwned`). Present only when it refuses. The
+   *  card offers no Connect or Reconnect; a held grant keeps Connected and
+   *  Disconnect. */
+  crewMintRefused?: 'sign_in_off' | 'not_owned'
   /** True for every pre-registered provider while dashboard chats run on a
    *  backend that drops a remote MCP entry's `oauth` block (KAS today). Present
    *  only when true. A caveat only: Connect stays, the mint runs on Kiro CLI. */

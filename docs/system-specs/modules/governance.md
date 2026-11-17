@@ -2021,6 +2021,12 @@ documented design choice — so the shell route rests on the OS sandbox, which s
 the agents dir. The registry leaf gets no seal, by maintainer decision (#14837): an
 `autoApprove` written there is honoured whoever wrote it, until the owner turns
 `mcp.honour_auto_approve` off ([security](security.md), "kiro-cli's MCP registry").
+kiro-cli's permission rule files (`permissions.yaml` / `permissions.json` under
+`~/.kiro/settings` and `~/.kiro/workspace-roots`) join the same tier only when the owner
+turns `mcp.protect_kiro_permission_rules` on; it is off by default ([security](security.md),
+"kiro-cli's tool auto-approve rules"). The owner changes both keys in Settings → Security →
+Safety switches, whose owner-gated route audits each change before it is written
+([security](security.md), "Owner's MCP safety switches").
 
 **The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
@@ -2613,9 +2619,11 @@ read-your-writes should add it deliberately, with its own tests.
   blocks the tool, and a listed hook still meets the shell deny list and the
   sandbox; `hook_event_governance.hook_refusal`); inbound
   webhook sources in `webhook_sources.source_refusal` (the `webhooks` scope,
-  members `agent` for `POST /api/hooks/agent` and `ops-mission-control` for that
-  app's signal webhook; policy layer only, asked before the token or signature is
-  checked; with no policy each source keeps its own switch);
+  members `agent` for `POST /api/hooks/agent` and, through
+  `webhook_sources.app_source_refusal`, the name of each app whose manifest
+  declares `permissions.webhookSource` for that app's own route
+  (`app-kit-platform.md` section 42); policy layer only, asked before the token or
+  signature is checked; with no policy each source keeps its own switch);
   app activation in `apps.manager._app_activation_denied` (at `enable_app`).
 
 Plane A carries **no live ordinal clamp**. The computer-use governance model —
@@ -2975,7 +2983,10 @@ switched off. Two fields keep that honest:
   rule content, so the POSTURE-only boundary is unchanged. `_reload` substitutes
   that built-in at three sites — a present-but-unreadable file, a file whose JSON
   or schema does not parse, and a file that parses but `extends` a parent that is
-  missing or chained — and enforcement is correct in all three. What is NOT correct
+  missing or chained — and enforcement is correct in all three. A profile that
+  `extends` a parent substituted at the first two sites is composed over that
+  substitute, so it is listed here too (a child of a parent substituted at the
+  third site is itself substituted there). What is NOT correct
   without this field is the *display*: the substitute reports `source: "profile"`,
   so an unusable file renders identically to a deliberate operator lockdown, and an
   operator has to read server logs to tell them apart.
@@ -3241,16 +3252,29 @@ denial of this capability refuses even on an otherwise ungoverned host, and
 an unreadable ceiling or profile fails closed. Every grant, denial and evaluation
 error is emitted through `sel().log_governance_decision`, including the session,
 agent, capability and reason; audit failures never change the permission result),
-and `capabilities.credential_redaction_off` (opt-in, `capability_default=False`:
-on a host whose policy governs any scope, only a policy that names this row
-`enabled: true` lets the owner turn credential redaction off in the Files view.
+and `capabilities.credential_redaction_off` (opt-in, `capability_default=False`; it is the one
+credential-redaction row, whatever path the setting reaches: on a host whose policy governs any
+scope, credential redaction is ON, whatever the owner stored and whatever the default, unless the
+TOP policy tier names this row `enabled: true`.
 `security.redaction_switch.owner_may_disable` reads it at the policy layer only
-(`policy_level_control`, so an LTS build reads the baseline's off; a
-profile does not take part), and an unreadable ceiling keeps redaction on. A
-folded ceiling (`lower_tier_folded`) also keeps it on, even when the top tier
-named the row itself, because the fold does not say which tier did. What
-the switch then does is in [security](security.md), "Owner's credential-redaction
-switch").
+(`policy_level_control`, so an LTS build reads the baseline's off; a profile does not take
+part), an unreadable ceiling keeps redaction on, and a folded ceiling (`lower_tier_folded`)
+also keeps it on, even when the top tier named the row itself, because the fold does not say
+which tier named it. Every reader and writer returns the state in force under this rule; the
+PUT refuses OFF with 403 `credential_redaction_locked_by_policy` and a `governance_decision`
+row naming the row. What the setting then does is in [security](security.md), "Owner's
+credential-redaction setting"). The row governs the one setting on every path: it once let the
+owner read only the Files view raw, and the maintainer widened it on purpose, so a policy that
+already grants it now lets the owner turn all credential redaction off.
+`capabilities.credential_redaction_seams_off`, the row of the output-seams switch that setting
+absorbed, is retired (`governance_parts.catalog.RETIRED_SCOPES`): a policy or profile that still
+names it, nested under `capabilities` or as one flat dotted key, loads with a warning; a grant of it grants nothing, and any other value of it is read as
+a deny of `capabilities.credential_redaction_off`, so retiring the row never loosens a ceiling.
+An administrator's explicit deny of the retired row is never dropped: it denies the setting even
+beside a grant of `capabilities.credential_redaction_off`, in either order (tightest wins). The
+widening applies to grants only. A policy that names only retired rows still governs the host
+(`GovernanceCeiling.retired_rows`): their grant grants nothing, so the setting reads as ON until
+the policy grants `capabilities.credential_redaction_off`.
 Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -4252,7 +4276,11 @@ rule alone, in memory with no file read: a governance profile does not narrow th
 two modes, and one (or a policy `fallback`) that denies either is refused at load
 (`ScopeSpec.profile_always_permitted`), as before this scope governed them. While a ceiling is being installed and when the rule
 cannot be read, both are denied only if the installed ceiling
-has a rule refusing one of them; with no such rule they stay permitted. Set sites
+has a rule refusing one of them; with no such rule they stay permitted. Before any
+ceiling is installed, a read whose context cannot be composed
+(`PlatformCompositionError` on a non-standalone profile, or any other error) denies
+both, since the rule cannot be read; the failure is not cached, so the next read
+tries again. Set sites
 refuse a denied mode before any mutation: `api_chat_mode` and `apply_approval_mode`
 (every dashboard, cron `set_session_mode`, crewmate Profile and workflow write), the
 approval card's Trust and Trust-reads actions (`api_chat_slot_approve`), the crewmate
@@ -4440,7 +4468,11 @@ operation / item / reason are ALSO redacted via `redact_via_context` **before**
 `kirocrew policy {show | validate | explain <scope> <item> [--json] | explain --batch FILE | profile <name> | source | fetch [--force]}` —
 operator diagnostics; `source` and `fetch` are the central-distribution verbs. `show` reports the ceiling's **proven** provenance
 (`signed and verified` / `signed but UNVERIFIED` / `unsigned`) rather than a bare
-issuer string. `explain` traces the rule/layer/reason of `resolve(ceiling, profile, scope, item)` —
+issuer string. `validate` reads the profile store's unrecoverable set before it walks the
+profiles directory: a directory it could not list (a file at that path, or `EACCES`, recorded as a
+`<dir:...>` entry) prints INVALID and exits 1 under a policy ceiling, as the boot gate
+(`assert_profiles_within_ceiling`) would refuse it, and only warns on a standalone host; a missing
+directory still prints `(no profiles directory)`. `explain` traces the rule/layer/reason of `resolve(ceiling, profile, scope, item)` —
 the question `gate_decision`'s main loop asks of each pair, though its alias groups, deny-only
 aliases and `own_scopes` off-scope pairs refuse on an allow-mode miss less often (an explicit deny
 binds in all of them) — and, as `gate verdict`, `gate_decision` over the item read as a display
@@ -4549,9 +4581,10 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `apply_selectable_denials`.
 - `dashboard/handlers/acp_backend_status.py` — `GET /api/acp-backends`
   (selectability ∩ install state, owner-only).
-- `hooks.py` — the computer-use read-only auto-approve (`_cu_read_only_auto_approve`,
-  which reads the action-class table rather than a governance row); the Plane A gate
-  threading is the tool gate's `governance` tier in `hook_runtime/gate_tiers.py`.
+- `hook_runtime/tool_identity.py` — the computer-use read-only auto-approve
+  (`_cu_read_only_auto_approve`, which reads the action-class table rather than a
+  governance row); the Plane A gate threading is the tool gate's `governance` tier in
+  `hook_runtime/gate_tiers.py`.
 - `sel.py` — `log_governance_decision`.
 - `messaging/identity.py` — `channel_inbound_permitted` (the per-message inbound
   `channels` gate) + its SEL audit disposition.

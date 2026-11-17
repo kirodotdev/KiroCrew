@@ -195,8 +195,9 @@ export interface KasBundleStatus {
   error: string
   /**
    * The route the last KAS spawn in this gateway took, or null before the first.
-   * `automatic` is true when Crew's own engine was chosen because kiro-cli's relay
-   * cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'). Optional:
+   * `automatic` is true when Crew's own engine was chosen without `agent.kas_bundle`:
+   * kiro-cli's relay cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'),
+   * or the ACP runtime sharing preview picked it ('chat_runtime_sharing'). Optional:
    * an older gateway sends no such key.
    */
   route?: {
@@ -240,6 +241,43 @@ export interface KasLoginStatus {
    * login behind their back.
    */
   usable: boolean
+  /**
+   * What the Company SSO form starts filled in with when this browser has
+   * submitted none: the saved `agent.kas_sso_start_url` / `agent.kas_sso_region`,
+   * else the edition's default. Both '' when nothing supplies one; absent on an
+   * older gateway.
+   */
+  company_sign_in?: { start_url: string; region: string }
+}
+
+/** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */
+export interface KasLoginSourceAccount {
+  /** Whether a sign-in is stored; `null` when the store could not be read. */
+  stored: boolean | null
+  /** kiro-cli only: a session could run on the stored sign-in (LTS: its access token has not expired). */
+  usable?: boolean
+  /** The kind of account, in `kiro-cli whoami`'s spelling ('BuilderId', 'IamIdentityCenter', 'SocialGoogle'). */
+  account_type?: string
+  /** Host of the sign-in portal, for an organisation sign-in that recorded one. */
+  portal_host?: string
+  /** kiro-cli only, and only for the dashboard owner. */
+  email?: string
+}
+
+/** Which stored Kiro sign-in sessions run as (`GET /api/kas-login/sources`). */
+export interface KasLoginSources {
+  /** The sign-in a new session uses: this app's own, kiro-cli's, none, or not known. */
+  active: 'kiro_crew' | 'kiro_cli' | 'none' | 'unknown'
+  kiro_crew: KasLoginSourceAccount
+  kiro_cli: KasLoginSourceAccount
+  /** kiro-cli's account name is still being read; ask again shortly. */
+  name_pending: boolean
+  /** The read of kiro-cli's account name failed: the name is unknown, the sign-in is not. */
+  name_unreadable: boolean
+  /** Whether the two stored sign-ins are one account; `null` when that cannot be told. */
+  same_account: boolean | null
+  /** Removing this app's own sign-in would put sessions on kiro-cli's. */
+  can_use_kiro_cli: boolean
 }
 
 export interface KasLoginDeviceSession {
@@ -378,6 +416,8 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
     // CSRF/audit reasons as the spec repair above. Error responses carry a
     // machine-readable `code` field alongside the human message.
     kasLoginStatus: () => get('/api/kas-login').then(j) as Promise<KasLoginStatus>,
+    // Read-only: which stored sign-in sessions run as, and what each account is called.
+    kasLoginSources: () => get('/api/kas-login/sources').then(j) as Promise<KasLoginSources>,
     // `replaces` names the vault slot (`KasLoginStatus.identity`) a signed-in
     // user is switching away from; the gateway removes it only once THIS login's
     // credential has landed, so a failed switch leaves the old account intact

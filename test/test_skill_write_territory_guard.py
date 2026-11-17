@@ -158,7 +158,7 @@ class TestReadOnlySkillWriteGuard:
         assert json.loads(resp.body)["code"] == "reserved_skill_prefix"
         assert not recorder.called("create_skill")
 
-    # ── regression: the guard is scoped to the two prefixes; plain names still write ──
+    # ── The guard is scoped to the two prefixes; plain names still write ──
 
     @pytest.mark.asyncio
     async def test_put_plain_name_still_updates(self, recorder):
@@ -182,7 +182,7 @@ class TestReadOnlySkillWriteGuard:
         assert resp.status == 200
         assert recorder.called("create_skill")
 
-    # ── regression: a GET for a read-only prefix is NOT caught by the mutating-verb guard ──
+    # ── A GET for a read-only prefix is NOT caught by the mutating-verb guard ──
 
     @pytest.mark.asyncio
     async def test_get_read_only_prefix_is_not_short_circuited_by_the_guard(

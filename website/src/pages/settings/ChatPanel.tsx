@@ -325,9 +325,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The conductor mode default is shown only while its preview is on: off, no chat
-  // offers conductor mode, so the setting would change nothing.
-  const crewModePreview = useCrewMode()
+  // The conductor mode default is shown wherever conductor mode is: in an LTS build
+  // no chat offers it, so the setting would change nothing.
+  const crewModeOffered = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
   // is what the pane shows by default. Every setting the old single scroll held
@@ -1131,7 +1131,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={dashDisabled || defaultModeMut.isPending}
             configKey="dashboard.default_memory_mode"
           />
-          {crewModePreview && (
+          {crewModeOffered && (
             <SettingsToggle label={i18nT('pages.settings.chatPanel.new_chat_crew_mode')} description={i18nT('pages.settings.chatPanel.new_chat_crew_mode_description')} hint={i18nT('pages.settings.chatPanel.new_chat_crew_mode_hint')} configKey="dashboard.new_chat_crew_mode" checked={dashCfg.new_chat_crew_mode ?? false} onChange={v => setDash({ new_chat_crew_mode: v })} disabled={dashDisabled} />
           )}
           <SettingsInput
@@ -1190,7 +1190,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} hint={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.project_tags')} description={i18nT('pages.settings.chatPanel.project_tags_desc')} configKey="dashboard.project_tags_enabled" checked={dashCfg.project_tags_enabled ?? true} onChange={v => setDash({ project_tags_enabled: v })} disabled={dashDisabled} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} configKey="dashboard.topic_tags_enabled" checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>
           )
 

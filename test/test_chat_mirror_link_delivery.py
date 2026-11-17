@@ -431,10 +431,11 @@ class TestMirrorBackfillFidelity:
     async def test_credentials_are_redacted(self, tmp_path, monkeypatch):
         state, transport = self._linked(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
-        # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+        # A 40-char AWS secret after its label; an AWS key ID is kept visible and a
+        # bare 40-character run is no credential, so neither can stand in.
         secret = SAMPLE_AWS_SECRET
         slot.append("user", "creds")
-        slot.append("assistant", f"key is {secret}")
+        slot.append("assistant", f"aws_secret_access_key={secret}")
         slot.drain()
 
         await self._link(state)

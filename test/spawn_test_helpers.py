@@ -10,6 +10,7 @@ rather than hard-coding the prefix, which varies with the resource profile.
 from __future__ import annotations
 
 import contextlib
+import shutil
 import signal
 import sys
 from collections.abc import Iterator, Sequence
@@ -88,8 +89,32 @@ def kill_leftovers(pids: Sequence[int]) -> None:
                 kill_pid(pid, SIGKILL)
 
 
-#: The signals a test interrupts its child with; a terminal hands both over at default.
-_INTERRUPT_SIGNALS = ("SIGINT", "SIGTERM")
+def plain_sleeper_argv(seconds: int) -> list[str]:
+    """A sleeping child's argv that the kernel reports back unchanged.
+
+    For a test that reads a live process's argv or name back. ``sleep`` is a plain
+    binary on macOS and most Linux hosts, but coreutils-single (Amazon Linux 2023,
+    Fedora minimal images) installs it as a
+    ``#!/usr/bin/coreutils --coreutils-prog-shebang=sleep`` script, and for a script
+    the kernel shows the interpreter's argv. This interpreter stands in there: it
+    does not re-exec on Linux. A macOS framework build does, so ``sleep`` stays the
+    choice wherever it is not a script.
+    """
+    found = shutil.which("sleep") or "/bin/sleep"
+    try:
+        with open(found, "rb") as handle:
+            script = handle.read(2) == b"#!"
+    except OSError:
+        script = True
+    if not script:
+        return [found, str(seconds)]
+    return [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+
+
+#: The signals a test interrupts its child with; a terminal hands each over at default.
+#: SIGHUP is the one a run started under ``nohup`` ignores, and a POSIX shell cannot
+#: even trap a signal it was started with ignored. Windows has no SIGHUP.
+_INTERRUPT_SIGNALS = ("SIGINT", "SIGTERM", "SIGHUP")
 
 
 @contextlib.contextmanager
@@ -98,15 +123,17 @@ def unblocked_signals() -> Iterator[None]:
 
     A child inherits the spawning thread's signal mask and keeps it across
     exec, so a signal blocked in this thread never reaches a child the test
-    means to interrupt (POSIX only). An ignored SIGINT or SIGTERM survives exec
-    the same way (a handler does not), and a child that keeps an inherited
+    means to interrupt (POSIX only). An ignored SIGINT, SIGTERM or SIGHUP survives
+    exec the same way (a handler does not), and a child that keeps an inherited
     ignore on purpose -- push_guard.py does, as ``nohup`` expects -- then never
-    takes the interrupt at all. Both are put back right after the spawn.
+    takes the interrupt at all. A suite started under ``nohup`` has SIGHUP ignored
+    in every worker, so a test that hangs a child up spawns it in here too. The
+    mask and every ignore are put back right after the spawn.
     """
     ignored = []
     for name in _INTERRUPT_SIGNALS:
-        number = getattr(signal, name)
-        if signal.getsignal(number) is signal.SIG_IGN:
+        number = getattr(signal, name, None)
+        if number is not None and signal.getsignal(number) is signal.SIG_IGN:
             ignored.append(number)
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, [])
     try:

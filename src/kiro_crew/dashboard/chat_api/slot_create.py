@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         _CREATABLE_MODES,
         _DEFERRED_PLAIN_CREATE_KNOWN_KEYS,
         ARTIFACT_SLUG_RE,
+        BOT_IDENTITY_DENIED,
         DashboardState,
         KiroCrewConfig,
         MemoryStartupUnavailable,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _workspace_name_for_dir,
+        audit_app_slot_denial,
         create_session_folder,
         cron_creator_admission,
         cron_slot_creator,
@@ -66,6 +68,7 @@ if TYPE_CHECKING:
         restore_agent_selection,
         save_slot_off_loop,
         schedule_eager_spawn,
+        selects_bot_identity,
         slot_history_key,
         slot_not_found,
         tags_write_lock,
@@ -215,6 +218,22 @@ async def _check_new_slot_assignment(
             app="",
             validate_memory_files=False,
         )
+
+
+async def _app_hides_own_mode(request: web.Request, body: dict[str, Any], mode: Any) -> bool:
+    """Whether *mode* is the creating app's own id and that app may hide its chats.
+
+    The creating app is the app token's (``request["app"]``), else, on the owner's
+    own request, the app whose page asks (``embed_app``). Either way the mode must
+    be that app's id, so no app can hide another app's chat or the person's.
+    """
+    request_app = request.get("app", "")
+    creator = request_app or (body.get("embed_app") if is_owner_dashboard_request(request) else "")
+    if not isinstance(mode, str) or not mode or mode != creator:
+        return False
+    from kiro_crew.apps.hidden_sessions import may_hide_sessions
+
+    return await asyncio.to_thread(may_hide_sessions, mode)
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
@@ -376,7 +395,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     if memory_mode not in ("persistent", "incognito", "temporary"):
         return web.json_response({"error": "invalid memory_mode"}, status=400)
     _mode = _coerce_requested_mode(body.get("mode", ""))
-    if _mode not in _CREATABLE_MODES:
+    if _mode not in _CREATABLE_MODES and not await _app_hides_own_mode(request, body, _mode):
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
     # A member-* name is RESERVED for DM threads (born only through the member
     # thread endpoint); `get_or_create_slot` below rejects it with a ValueError
@@ -530,6 +549,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     selection_kind=agent_kind,
                 )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+            if request_app and selects_bot_identity(bindings):
+                # Owning a session is not being given a Bot (``app_names_bot``): an
+                # app names an agent of its own. Refused before the slot is made.
+                audit_app_slot_denial(
+                    request_app, "chat_slot_create", str(name or ""), BOT_IDENTITY_DENIED
+                )
+                return slot_not_found()
             if agent_kind and not bindings.requested_resolved:
                 # A stated namespace never falls back to whoever answers by
                 # default -- and it is refused HERE, before get_or_create_slot,
@@ -1288,7 +1314,26 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             getattr(state, "_terminal_sessions", None),
         )
     if slot.executor != "remote" and not bound_remote:
-        schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+        # The owner's own new chat starts its session at once, with no debounce:
+        # they are about to type, and the 1.5 s debounce comes straight off the
+        # start that their first message would otherwise wait for. Not when a
+        # binding change follows this create: the client sets the project right
+        # after it (``no_session_folder``, sent by every create that does), or
+        # the owner's new chats open in Crew Mode, where the client switches the
+        # agent to the conductor right after it. That change would cancel a
+        # start already reserving the key (and, for the project, owe a reset
+        # nothing else needs), so the debounce absorbs it as before.
+        binding_follows = (
+            body.get("no_session_folder") is True
+            or cfg is None
+            or getattr(cfg.dashboard, "new_chat_crew_mode", False) is True
+        )
+        schedule_eager_spawn(
+            state,
+            slot,
+            start_priority=owner_start_priority(request),
+            debounce=(0.0 if is_owner_dashboard_request(request) and not binding_follows else None),
+        )
     # The greeting the welcome page shows before the first message, since an
     # unstarted chat writes no row. Read after the spawn is armed, so the two
     # overlap, and before the answer is built, so the answer carries it.

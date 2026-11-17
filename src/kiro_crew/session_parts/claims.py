@@ -388,7 +388,7 @@ async def get_or_create(
                 # failed boot start on any other: through the same path the boot
                 # uses, so it keeps its start stamping.
                 await self._ensure_background(start_priority=start_priority)
-        return await self._allocation_boundary().get_or_create(
+        provider, is_new, resumed = await self._allocation_boundary().get_or_create(
             key,
             agent=agent,
             channel_id=channel_id,
@@ -404,6 +404,8 @@ async def get_or_create(
             focus_resume=focus_resume,
             **extra_factory_kwargs,
         )
+    self.note_session_head(key, provider, is_new=is_new, resumed=resumed)
+    return provider, is_new, resumed
 
 
 @contextmanager

@@ -235,7 +235,8 @@ _CAPACITY_ERROR_CODE = -32001
 #: matching is the only classifier available for it. Only the stable leading
 #: clause is matched -- the remedy clause after it names an env prefix that HAS
 #: already changed across versions (``MC_MCP_TARGET_`` -> ``KIROCREW_MCP_TARGET_``).
-#: A test pins this against the live gatewayd string so the two cannot drift.
+#: A test builds the error from a copy of gatewayd's message, not from its raise
+#: site, so a change to that wording must update this fragment by hand.
 TARGET_UNKNOWN_REASON = "no target mapping for server"
 
 

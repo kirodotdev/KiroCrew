@@ -437,9 +437,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // quiet column stays empty.
   const noticeLines: Array<[boolean, ReactNode]> = [
     // No hand-off: the composer below may hold an unsent draft. The capability read retries in place.
-    [picker.effortCapsFailed, <ErrorNotice key="effort" variant="inline" message={i18nT('pages.chatPage.effort_options_unavailable')} />],
+    [picker.effortCapsFailed, <ErrorNotice key="effort" variant="inline" impact="partial" message={i18nT('pages.chatPage.effort_options_unavailable')} />],
     [agentMode.readFailed.agents, <ErrorNotice key="roster" variant="inline" message={i18nT('components.agentSelector.roster_load_failed')} />],
-    [agentMode.readFailed.mode, <ErrorNotice key="mode" variant="inline" message={i18nT('pages.chat.crewWindow.mode_unknown', { name })} />],
+    [agentMode.readFailed.mode, <ErrorNotice key="mode" variant="inline" impact="partial" message={i18nT('pages.chat.crewWindow.mode_unknown', { name })} />],
     [!connected, <div key="offline" className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>],
     [!!rewindTs, (
       <div key="rewind" className="flex items-center gap-2 text-muted">

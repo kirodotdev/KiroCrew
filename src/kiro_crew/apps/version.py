@@ -49,6 +49,11 @@ def versions_compatible(local: str, peer: str) -> bool:
         return peer == local
 
 
+#: The ``code`` the install route's refusal carries when the app's
+#: ``minKiroCrewVersion`` is newer than the Kiro Crew that checked it.
+MIN_VERSION_REFUSAL_CODE = "kirocrew_version_too_old"
+
+
 def check_min_version(min_version: str) -> str | None:
     """Return an error string if the current KiroCrew version is too old.
 
@@ -65,10 +70,12 @@ def check_min_version(min_version: str) -> str | None:
         from kiro_crew import __version__ as current
 
         if parse_version(current) < parse_version(min_version):
+            # "this Kiro Crew": on a forwarded install it is the serving gateway,
+            # which can be older than the CLI until it restarts.
             return (
                 f"App requires Kiro Crew >= {min_version}, "
-                f"but current version is {current}. "
-                f"Please update Kiro Crew first."
+                f"but this Kiro Crew is version {current}. "
+                f"Update Kiro Crew, then restart its gateway."
             )
     except (ValueError, AttributeError, ImportError):
         pass

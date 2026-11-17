@@ -347,23 +347,44 @@ async def test_drain_does_not_wait_turn_done_on_normal_cancel(cfg):
 
 
 @pytest.mark.asyncio
-async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg):
+async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg, monkeypatch):
     """With a small drain_timeout the drain+kill complete well inside a caller's
-    tight outer deadline (Slack wraps close_all in wait_for 5s)."""
+    tight outer deadline (Slack wraps close_all in wait_for 5s).
+
+    Proved without a clock: every timer armed while close_all runs is recorded
+    when it is ARMED, and none may be a sleep (``asyncio.sleep`` arms
+    ``futures._set_result_unless_cancelled``). A wait_for budget is armed too, but
+    on a provider that acks at once it never runs out, and whether it would on a
+    stalled host is not asked: arming is decided by the code, firing by the clock.
+    The drain budget is an hour, so a close_all that waited it out would hang
+    until ``await_until``'s lost-run bound and fail by name.
+    """
+    drain_budget = 3600.0
     mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
     p = _FakeProvider(active=True, cancel_mode="ack")
     _inject(mgr, "s1", p)
 
-    t0 = time.monotonic()
-    await await_until(
-        asyncio.ensure_future(mgr.close_all(drain_timeout=0.2)), what="close_all completed"
-    )
-    elapsed = time.monotonic() - t0
+    loop = asyncio.get_running_loop()
+    real_call_at = loop.call_at
+    sleeps: list[float] = []
 
-    assert p.cancel_calls == [0.2]  # drain used the passed budget
+    def _recording_call_at(when, callback, *args, context=None):
+        if getattr(callback, "__name__", "") == "_set_result_unless_cancelled":
+            sleeps.append(when - loop.time())
+        return real_call_at(when, callback, *args, context=context)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(loop, "call_at", _recording_call_at)
+        await await_until(
+            asyncio.ensure_future(mgr.close_all(drain_timeout=drain_budget)),
+            what="close_all completed",
+        )
+
+    assert p.cancel_calls == [drain_budget]  # drain used the passed budget
     assert p.shutdown_called is True  # kill path ran
     assert mgr.count == 0
-    assert elapsed < 1.0  # fit inside the tight deadline
+    # fit inside the tight deadline: nothing on the way slept
+    assert sleeps == [], f"close_all slept: {sleeps}"
 
 
 @pytest.mark.asyncio

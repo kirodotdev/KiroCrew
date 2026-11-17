@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type {
   AgentImportApplyResponse,
@@ -964,5 +965,123 @@ describe('AgentImportFlow', () => {
       expect(within(dialog).getByRole('checkbox', { name: /Claude Code/ })).toBeChecked()
     })
     expect(within(dialog).queryByText('Exotic Agent')).not.toBeInTheDocument()
+  })
+
+  describe('Ask the agent hands the user to chat', () => {
+    const scanFailure = () =>
+      new ApiError(500, 'request failed', '{"error":"request failed","code":"scan_failed"}')
+
+    it('closes the scan-failed dialog and tells the host', async () => {
+      vi.mocked(api.onboardingImportScan).mockRejectedValue(scanFailure())
+      const onDismiss = vi.fn()
+      const onComplete = vi.fn()
+      renderWithProviders(<AgentImportFlow initialOpen onComplete={onComplete} onDismiss={onDismiss} />)
+      await screen.findByRole('heading', { name: 'We could not scan agent setup' })
+
+      await userEvent.click(within(screen.getByTestId('agent-import-scan-error')).getByText('Ask the agent'))
+
+      expect(onDismiss).toHaveBeenCalledOnce()
+      // Leaving to chat finishes nothing: the chapter is neither done nor skipped.
+      expect(onComplete).not.toHaveBeenCalled()
+      expect(screen.queryByRole('heading', { name: 'We could not scan agent setup' })).not.toBeInTheDocument()
+    })
+
+    it('does the same from the notice shown after an import whose completed flag failed to save', async () => {
+      mockSuccessfulRequests()
+      vi.mocked(api.onboardingImportState).mockRejectedValue(
+        new ApiError(500, 'request failed', '{"error":"request failed","code":"state_failed"}'),
+      )
+      const onDismiss = vi.fn()
+      const onComplete = vi.fn()
+      renderWithProviders(<AgentImportFlow initialOpen onComplete={onComplete} onDismiss={onDismiss} />)
+      await startImport()
+      await screen.findByText('Import complete')
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+      await userEvent.click(within(await screen.findByTestId('agent-import-completion-error')).getByText('Ask the agent'))
+
+      expect(onDismiss).toHaveBeenCalledOnce()
+      expect(onComplete).not.toHaveBeenCalled()
+      expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    })
+
+    it('can be opened again afterwards, which needs the host to drop its open signal', async () => {
+      vi.mocked(api.onboardingImportScan).mockRejectedValue(scanFailure())
+      function Host() {
+        // The shape of the first-run host: it owns the open signal and the flow
+        // opens only when that signal goes from false to true.
+        const [show, setShow] = useState(true)
+        return (
+          <>
+            <AgentImportFlow initialOpen={show} onComplete={vi.fn()} onDismiss={() => setShow(false)} />
+            <button type="button" onClick={() => setShow(true)}>Import setup</button>
+          </>
+        )
+      }
+      renderWithProviders(<Host />)
+      await screen.findByRole('heading', { name: 'We could not scan agent setup' })
+      await userEvent.click(within(screen.getByTestId('agent-import-scan-error')).getByText('Ask the agent'))
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: 'We could not scan agent setup' })).not.toBeInTheDocument()
+      })
+
+      await userEvent.click(screen.getByRole('button', { name: 'Import setup' }))
+
+      expect(await screen.findByRole('heading', { name: 'We could not scan agent setup' })).toBeInTheDocument()
+    })
+
+    const NOTHING_FOUND: AgentImportScanResponse = {
+      sources: [{ id: 'codex', name: 'Codex', detected: false, categories: [] }],
+      skipped: [],
+      merge_only: true,
+    }
+
+    const UNREADABLE_ONLY: AgentImportScanResponse = {
+      sources: [{ id: 'codex', name: 'Codex', detected: false, categories: [] }],
+      skipped: [{ source: 'Codex', category: '', reason: 'source_unreadable' }],
+      merge_only: true,
+    }
+
+    it('does the same from the notice on the unreadable-source panel', async () => {
+      mockSuccessfulRequests(UNREADABLE_ONLY)
+      const onDismiss = vi.fn()
+      renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} onDismiss={onDismiss} />)
+
+      await userEvent.click(
+        within(await screen.findByTestId('agent-import-unreadable-error')).getByText('Ask the agent'),
+      )
+
+      expect(onDismiss).toHaveBeenCalledOnce()
+      expect(screen.queryByTestId('agent-import-unreadable-error')).not.toBeInTheDocument()
+    })
+
+    it.each([
+      ['unreadable-source panel', UNREADABLE_ONLY, false],
+      ['nothing-found panel', NOTHING_FOUND, true],
+    ])('does the same from the save-failed notice on the %s', async (_name, scan, keepOpen) => {
+      mockSuccessfulRequests(scan)
+      vi.mocked(api.onboardingImportState).mockRejectedValue(
+        new ApiError(500, 'request failed', '{"error":"request failed","code":"state_failed"}'),
+      )
+      const onDismiss = vi.fn()
+      const onComplete = vi.fn()
+      renderWithProviders(
+        <AgentImportFlow
+          initialOpen
+          keepOpenWhenEmpty={keepOpen}
+          onComplete={onComplete}
+          onDismiss={onDismiss}
+        />,
+      )
+      await userEvent.click(await screen.findByRole('button', { name: 'Skip import' }))
+
+      await userEvent.click(
+        within(await screen.findByTestId('agent-import-completion-error')).getByText('Ask the agent'),
+      )
+
+      expect(onDismiss).toHaveBeenCalledOnce()
+      expect(onComplete).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('agent-import-completion-error')).not.toBeInTheDocument()
+    })
   })
 })

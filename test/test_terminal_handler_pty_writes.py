@@ -77,7 +77,7 @@ class TestWriteAll:
         fake_write, received, _fds = self._short_write_stub(64)
         monkeypatch.setattr(terminal.os, "write", fake_write)
 
-        # Exactly the old code shape: one write, return value ignored.
+        # The naive caller shape: one write, return value ignored.
         terminal.os.write(7, payload)
 
         assert bytes(received) == payload[:64]

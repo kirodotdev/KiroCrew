@@ -142,6 +142,10 @@ class SessionTreeProjection:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: dict[str, OpenedRecord] = {}
+        #: Answers the unit ids of the sessions live right now, or None when no caller
+        #: registered one. Asked at eviction time, so the pins follow the roster as it is
+        #: and not as it was when the seed ran.
+        self._live_roster: Any = None
         #: The newest DECISION per slot -- an adoption, or a release. Keyed by slot
         #: because that is the tree's key, while ``_records`` is keyed by unit id: one
         #: slot can write several logs, and every one of them speaks for the same
@@ -482,7 +486,10 @@ class SessionTreeProjection:
         """Fold ONE newly-committed record in. Pure with respect to the disk.
 
         Called by the emitter right after the ``session/opened`` append succeeded, so
-        the memory never runs ahead of durability. Idempotent by identity: a record
+        the memory never runs ahead of durability. Admitting a unit not held before reads
+        that unit's own ``session/spawned`` entries, the one disk read this method makes.
+
+        Idempotent by identity: a record
         equal to the one already held is not a change, so it neither invalidates the
         cached fold nor dirties the checkpoint -- which is what keeps a re-attach in
         the same process from costing a rewrite.
@@ -522,9 +529,17 @@ class SessionTreeProjection:
             if held == record:
                 return
             self._records[record.sid] = record
-            self._evict_to_cap_locked()
+            # The admitted record is held back from eviction: its own spawns are read
+            # just below, and a top-level session that has not spawned yet has none to
+            # protect it.
+            self._evict_to_cap_locked(keep=record.sid)
             self._nodes = None
             self._dirty = True
+            admitted = held is None and record.sid in self._records
+        if admitted and record.slot:
+            # A unit admitted now may have recorded spawns before this process held it
+            # (a seed drops the spawns of a unit it holds no record for).
+            self._reconcile_spawned(record.sid, record.slot, force=True)
         self._changed()
 
     def apply_edge(self, edge: EdgeRecord) -> None:
@@ -678,13 +693,38 @@ class SessionTreeProjection:
         self._over_cap = True
         self._prune_faults_locked()
 
-    def _evict_to_cap_locked(self) -> None:
+    def set_live_roster(self, roster: Any) -> None:
+        """Register the callable that names the live sessions' unit ids (or clear it)."""
+        self._live_roster = roster
+
+    def _live_now(self) -> frozenset[str]:
+        """The live sessions' unit ids at this moment; empty when there is no roster or
+        it fails. A fault costs the pins, never the eviction."""
+        roster = self._live_roster
+        if roster is None:
+            return frozenset()
+        try:
+            return frozenset(roster())
+        except Exception:
+            log_exception_text(
+                logger, logging.DEBUG, "session tree projection could not read the live roster"
+            )
+            return frozenset()
+
+    def _evict_to_cap_locked(self, keep: str = "") -> None:
         """Bring the records back within :data:`TREE_UNIT_CAP`. Caller holds the lock.
 
-        Evicts oldest-first by ``(created_at, sid)``. The ``sid`` tiebreak is what makes
-        the eviction deterministic: records sharing a timestamp are common (a burst of
-        sessions opened in the same second), and without it which one goes would depend
-        on dictionary order.
+        *keep* (the record just admitted) and the live sessions' units go last: when the
+        other units run out, the oldest of the held-back tiers goes before they do.
+
+        Evicts oldest-first by ``(created_at, sid)``, keeping the units that hold spawns,
+        the units of spawn-cited children, and the units whose own opening names a
+        parent, until every other unit is gone: a long-lived creator is the unit whose
+        loss floats the most children to the top level, and a child's unit is what keeps
+        its release or adoption from being undone by the creator's spawn. The ``sid``
+        tiebreak is what makes the eviction deterministic: records sharing a timestamp are
+        common (a burst of sessions opened in the same second), and without it which one
+        goes would depend on dictionary order.
 
         Sets ``incomplete`` AND ``over_cap`` when it evicts. Both, because both
         questions now have the same answer: a reader deciding on an edge must know the
@@ -695,7 +735,20 @@ class SessionTreeProjection:
         surplus = len(self._records) - TREE_UNIT_CAP
         if surplus <= 0:
             return
-        doomed = sorted(self._records.values(), key=lambda r: (r.created_at, r.sid))
+        creators = {spawn.sid for spawn in self._spawned.values()}
+        live = self._live_now()
+        # A spawn-cited child's own unit is what stops a retained spawn from placing it
+        # under its creator again, so it is held back from eviction like a creator is.
+        cited = {spawn.slot for spawn in self._spawned.values()}
+        doomed = sorted(
+            self._records.values(),
+            key=lambda r: (
+                r.sid == keep or r.sid in live,
+                r.sid in creators or r.slot in cited or bool(r.parent_slot),
+                r.created_at,
+                r.sid,
+            ),
+        )
         for record in doomed[:surplus]:
             self._records.pop(record.sid, None)
             self._marks.pop(record.sid, None)
@@ -835,7 +888,7 @@ class SessionTreeProjection:
             self._dirty = True
         self._changed()
 
-    def _reconcile_spawned(self, sid: str, slot: str) -> None:
+    def _reconcile_spawned(self, sid: str, slot: str, *, force: bool = False) -> None:
         """Re-read creator unit *sid*'s spawns after a partial removal. The disk
         decides: a complete read replaces what is held, a read that raises leaves it
         and marks the reading incomplete. No I/O when nothing is held for the unit."""
@@ -843,7 +896,7 @@ class SessionTreeProjection:
         from kiro_crew.crew_log.store import _checked_crew_log_root, find_spawned_entries
 
         with self._lock:
-            if not any(spawn.sid == sid for spawn in self._spawned.values()):
+            if not force and not any(spawn.sid == sid for spawn in self._spawned.values()):
                 return
             # Children whose own log already names a parent: the fold applies that over
             # any spawn, so dropping such a spawn past the cap costs nothing and must
@@ -853,6 +906,9 @@ class SessionTreeProjection:
             }
         try:
             root = _checked_crew_log_root(KIND_SESSION)
+            if force and not (root / _store_name(sid)).is_dir():
+                # A unit admitted with no log on disk has no spawns to read.
+                return
             entries, cut, _hit_cap = find_spawned_entries(
                 root / _store_name(sid), SPAWNED_PER_UNIT_CAP, self_parented
             )

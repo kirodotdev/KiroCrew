@@ -275,9 +275,9 @@ class TestOverCapRecordDoesNotLoseData:
 
     @pytest.fixture(autouse=True)
     def _small_cap(self, monkeypatch):
-        # raising=False so this file also RUNS against a pre-fix source, where
-        # the attribute does not exist: the test then fails on behaviour (the
-        # record compaction deleted) rather than erroring on a missing name.
+        # raising=False so this file also RUNS against a source without the
+        # attribute: the test then fails on behaviour (the record compaction
+        # deleted) rather than erroring on a missing name.
         monkeypatch.setattr(sc, "_RECORD_CAP", 200, raising=False)
 
     def test_compaction_refuses_to_run_on_an_incomplete_read(self, cost_log):

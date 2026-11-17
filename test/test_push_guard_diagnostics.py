@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import push_guard_helpers
@@ -31,6 +32,7 @@ from push_guard_helpers import (
     _run_push_guard,
     _run_push_guard_inprocess,
 )
+from spawn_test_helpers import unblocked_signals
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout, wait_until
@@ -1027,14 +1029,17 @@ class TestPushGuardChildren:
     def test_the_child_dies_with_the_guard(self, repo_pair, tmp_path, how):
         clone_dir, _ = repo_pair
         env, pid_file = self._sleeping_fetch(tmp_path)
-        proc = subprocess.Popen(
-            [sys.executable, PUSH_GUARD, "--base", "main"],
-            cwd=clone_dir,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        # The guard keeps an inherited SIGHUP ignore, as nohup expects, so a worker
+        # started under nohup must not hand it one.
+        with unblocked_signals():
+            proc = subprocess.Popen(
+                [sys.executable, PUSH_GUARD, "--base", "main"],
+                cwd=clone_dir,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         child = 0
         try:
             child = int(
@@ -1062,6 +1067,76 @@ class TestPushGuardChildren:
             finally:
                 if child and platform_compat.pid_exists(child):
                     os.kill(child, getattr(signal, "SIGKILL"))  # only the sleeper this test planted
+
+    def test_a_signal_inside_popen_wait_still_reaps_the_child(self, monkeypatch):
+        """SIGHUP landing just after Popen.wait takes its waitpid lock must not wedge _stop.
+
+        The handler's raise leaves the lock taken; unless _stop frees it, its final
+        proc.wait() blocks forever (the CI hang of the SIGHUP case above).
+        """
+        pg = _load_push_guard()
+        fired = threading.Event()
+        released = threading.Event()
+        main_ident = threading.get_ident()
+        spawned: list[subprocess.Popen] = []
+
+        class _RaisingLock:
+            """Popen's lock, sending SIGHUP to the main thread right after the first acquire."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def acquire(self, *a, **kw):
+                got = self._inner.acquire(*a, **kw)
+                if got and not fired.is_set():
+                    fired.set()
+                    # Thread-directed: the guard is single-threaded, so a process-directed
+                    # SIGHUP lands on its main thread; here the watchdog thread exists too.
+                    signal.pthread_kill(main_ident, getattr(signal, "SIGHUP"))
+                return got
+
+            def release(self):
+                self._inner.release()
+
+            def locked(self):
+                return self._inner.locked()
+
+            __enter__ = acquire
+
+            def __exit__(self, *exc):
+                self.release()
+
+        class _Popen(subprocess.Popen):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                setattr(self, "_waitpid_lock", _RaisingLock(getattr(self, "_waitpid_lock")))
+                spawned.append(self)
+
+        monkeypatch.setattr(pg.subprocess, "Popen", _Popen)
+
+        def _unwedge():
+            # Only when the lock was left taken: free it so the test fails instead of hanging.
+            if not released.wait(default_timeout()):
+                getattr(spawned[-1], "_waitpid_lock")._inner.release()
+
+        watchdog = threading.Thread(target=_unwedge, daemon=True)
+        previous = pg.install_termination_handlers()
+        try:
+            watchdog.start()
+            with pytest.raises(pg._Terminated):
+                pg.run_child(
+                    # flake-ok: the sleeping child is what _stop must reap; the test stops it
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    dict(os.environ),
+                    timeout=60,
+                )
+            wedged = not released.is_set() and not watchdog.is_alive()
+            released.set()
+        finally:
+            pg.restore_handlers(previous)
+        assert fired.is_set()
+        assert not wedged, "_stop blocked on the waitpid lock the signal left taken"
+        assert spawned[-1].returncode is not None, "the child was not reaped"
 
     def test_an_exit_code_of_124_is_not_a_timeout(self, repo_pair, tmp_path, monkeypatch):
         clone_dir, _ = repo_pair

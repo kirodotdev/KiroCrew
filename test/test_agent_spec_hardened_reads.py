@@ -1154,8 +1154,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/dashboard/agent_admin/fork_publish.py": [
         # Fork/publish create closures re-read the SOURCE inside the lock too —
-        # the pre-lock snapshot can miss a concurrent refresh's writes (GPT
-        # round-10 stale-copy finding).
+        # the pre-lock snapshot can miss a concurrent refresh's writes.
         ("api_agent_fork", "dashboard"),
         ("api_agent_publish", "dashboard"),
     ],
@@ -1313,6 +1312,7 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # lookup is a hit -- names the surface a denial during that first parse belongs
 # to. The channel is ``unknown``: the background session serves several.
 _EXPECTED_WARM_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/cli_commands_eval.py": [("eval_agent", "cli")],
     "kiro_crew/session_background.py": [("ensure_background", "unknown")],
 }
 
@@ -1428,6 +1428,8 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     # The one-time list of agent files that keep KAS's own mcp.json behaviour.
     "kiro_crew/acp/kas_mcp_json_legacy.py": [("kas_mcp_json_legacy", "unknown")],
+    # The KAS session-start notice reads each agent the backend may skip.
+    "kiro_crew/acp/kas_subagent_targets.py": [("kas_subagent_notice", "unknown")],
     "kiro_crew/acp/managed_agent_shadow.py": [("managed_agent_shadow", "unknown")],
     "kiro_crew/agent_materialization/conductor_agents.py": [
         ("conductor_spec_regeneration", "unknown"),
@@ -1447,6 +1449,7 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("session_tool_policy", "dashboard"),
     ],
     "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
+    "kiro_crew/execution_context.py": [("repair_session_execution", "unknown")],
     # The crewmate half of the same overlay pass reads each crewmate file.
     "kiro_crew/mcp_gateway/mate_overlays.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],

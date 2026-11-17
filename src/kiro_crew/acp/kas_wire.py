@@ -85,9 +85,13 @@ KIND_USER_MESSAGE_ID_ASSIGNED = "user_message_id_assigned"
 # The engine's own turn boundaries on a session. A turn the client prompted ends
 # on its ``session/prompt`` response; a turn the ENGINE started on its own (a
 # workflow run waking its parent chat) has no request to answer, so these frames
-# are the only start and end it has (``AcpSessionHandle.observe_turn``).
+# are the only start and end it has (parsed by :func:`turn_boundary`).
 KIND_TURN_START = "turn_start"
 KIND_TURN_END = "turn_end"
+# A prompt parked behind another session's turn, waiting for the engine's one
+# active model slot (``AgentExecutionWaitingForActiveSlot``; carries
+# ``activeSessionId``). From 0.66.104 only a spec-generation turn waits there.
+KIND_QUEUED = "queued"
 
 # Summarization maps to Crew's compaction status; steering to mid-turn steer.
 SUMMARIZATION_KINDS = frozenset(
@@ -406,10 +410,10 @@ def normalize_script_hook(hook: Any) -> NormalizedHook | None:
         command=command,
         matcher=matcher,
         timeout=timeout,
-        # The literal boolean, not truthiness. The store persists this field
-        # uncoerced -- ``ScriptHook.from_dict`` takes ``data.get("enabled", True)``
-        # as written -- so a hand-edited ``"enabled": "false"`` arrives as that
-        # string, and a truthiness test would read the operator's "off" as "on".
+        # The literal boolean, not truthiness. ``ScriptHook.from_dict`` coerces a
+        # hand-edited value on load (``"false"`` loads off, an unrecognised value
+        # loads on with a warning), so a loaded hook holds a real bool; the
+        # identity test stays as a guard for any hook object built another way.
         # Anything that is not ``True`` is treated as off, which is the direction
         # that cannot list a hook its owner switched off.
         enabled=getattr(hook, "enabled", True) is True,

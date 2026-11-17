@@ -125,7 +125,7 @@ RETENTION_UNCLAIMED_STATE_KEY = "retention_unclaimed"
 #: type.
 #:
 #: Nothing acts on this number. The sweep counts these keys and then skips them
-#: exactly as before -- they never enter ``by_key``, never hold a ``keep`` slot, and
+#: -- they never enter ``by_key``, never hold a ``keep`` slot, and
 #: are never deleted. It is reported because an operator who enables a keep count to
 #: bound their bill needs to see the bytes that count will not touch, and because
 #: :data:`RETENTION_UNCLAIMED_STATE_KEY` deliberately reads 0 for them: that pair is

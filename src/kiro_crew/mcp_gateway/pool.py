@@ -579,8 +579,7 @@ class BackendPool:
                         "server": b.pool_key.server_name,
                         # No agent key. The agent is not a pool dimension, so a
                         # row describes a process one or several agents share and
-                        # there is no single agent to name. Dropped rather than
-                        # replaced by a list: nothing read the old key.
+                        # there is no single agent to name.
                         "pid": b.pid,
                         "stubs": b.refcount,
                         "idle_s": round(max(0.0, now - b.last_used_at), 1),

@@ -1187,6 +1187,14 @@ def test_every_tombstone_cause_has_a_terminal_state() -> None:
     assert unmapped == [], f"tombstone causes with no terminal task state: {unmapped}"
 
 
+def test_a_gateway_restart_tombstone_proves_no_terminal_state() -> None:
+    """``gateway_restart`` alone says only that the gateway went down, not how the run
+    ended, so it must stay unmapped and leave the row to the boot reconcile."""
+    from kiro_crew.subagent_manager.admission.types import tombstone_terminal_state
+
+    assert tombstone_terminal_state("gateway_restart") is None
+
+
 def test_every_recorded_outcome_and_neutral_stop_has_its_task_state() -> None:
     """The outcome vocabulary is spelled once (``SubagentInfo.outcome``, the
     panel's ``_PANEL_OUTCOMES``) and the task-state tables read it: an outcome

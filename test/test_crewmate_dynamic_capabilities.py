@@ -314,7 +314,7 @@ def test_the_worker_is_asked_for_the_missing_capability_line_either_way(off, mon
         service_agents, "_write_mate_service_spec", lambda f, c, w: written.update(c)
     )
     service_agents._install_mate_worker_agent()
-    assert written["prompt"] == f"Base.\n\n{mate_worker.MATE_WORKER_PROMPT}"
+    assert written["prompt"] == f"Base.\n\n{mate_worker.mate_worker_prompt()}"
     assert mate_worker.MISSING_CAPABILITY_PREFIX in written["prompt"]
 
 

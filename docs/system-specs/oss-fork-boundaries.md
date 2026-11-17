@@ -61,8 +61,10 @@ STT extras.
 
 ## Fork UX divergences
 
-- The **Channels** app is hidden from the App Store, and the **Board** app is removed.
-  An upstream sync must not restore either.
+- **Channels** stays out of sight until someone turns it on: it was a hidden app, and
+  is now a core page behind `dashboard.channels_enabled` (default off) whose Settings
+  row is drawn only while it is on. The **Board** app is removed. An upstream sync must
+  not restore either, nor offer Channels where it was not offered.
 - **The built-in app set is closed, and it is being emptied.** Kiro Crew accepts no
   new built-in app: every app, first-party included, lives in a dedicated GitHub
   repository listed in the official registry (`kirodotdev/KiroCrewApps`). The
@@ -74,7 +76,7 @@ STT extras.
 
 ## Keep the generic security controls
 
-The scrub removes internal *identity*, never protection. AKIA/ASIA credential
+The scrub removes internal *identity*, never protection. Credential
 redaction, the destructive-command deny rules, `~/.aws` and `~/.ssh` path blocking, and
 the SEL audit log are all generic and all stay. The legacy `~/.kirocrew` spelling stays
 in the sensitive-path deny lists for the reason given in

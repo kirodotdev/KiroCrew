@@ -1,15 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../../utils/previewFlags'
+import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 
 describe('CrewPausedNoticeCard', () => {
-  beforeEach(() => setPreviewFlag(PREVIEW_CREW_MODE, true))
-  afterEach(() => localStorage.removeItem(PREVIEW_CREW_MODE))
-
-  it('renders nothing while the conductor mode preview is OFF', () => {
-    setPreviewFlag(PREVIEW_CREW_MODE, false)
+  it('renders nothing in a build without conductor mode (LTS)', () => {
+    turnOffCrewModeAsLts()
     const { container } = render(<CrewPausedNoticeCard stopped={2} />)
     expect(container).toBeEmptyDOMElement()
   })

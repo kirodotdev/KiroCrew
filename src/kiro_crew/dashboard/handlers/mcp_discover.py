@@ -407,9 +407,11 @@ async def api_mcp_discover_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        return web.json_response({"error": "Invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "Request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "Request body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     provider_name = body.get("provider")
     server_id = body.get("id")
     if not isinstance(provider_name, str) or not isinstance(server_id, str):

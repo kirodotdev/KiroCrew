@@ -87,6 +87,10 @@ export const crewCapabilitiesKey = (member: string) => ['crew-capabilities', mem
 export interface WorkerKitView {
   member: string
   revision: string
+  /** The file's blocked commands nobody can check, as written; the worker refuses its non-read-only commands while any is left. */
+  unenforced_denies?: string[]
+  /** The file's blocked commands only the gate checks, in a simple command or plain chain; the worker refuses any other non-read-only command while one is left. */
+  conditional_denies?: string[]
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
@@ -102,6 +106,10 @@ export interface WorkerKitPreview {
   template: string
   revision: string
   runs_unasked: boolean
+  /** The blocked commands nobody can check once the add lands, as written. */
+  unenforced_denies?: string[]
+  /** The blocked commands only the gate checks, in a simple command or plain chain, once the add lands. */
+  conditional_denies?: string[]
   /** The behaviour directions the add writes; `""` when the agent has none. */
   directions?: string
   /** The directions the slot holds now, which a `replaced` row overwrites; `""` when empty. */

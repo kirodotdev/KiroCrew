@@ -32,10 +32,10 @@ from pathlib import Path
 from types import ModuleType as _ModuleType
 from typing import Any
 
-from kiro_crew import md_notebook_state as _md_notebook_state
 from kiro_crew import platform_compat
 from kiro_crew.apps import builtin_host_grants as _host_grants
 from kiro_crew.apps import deps_boot as _deps_boot_module
+from kiro_crew.apps import legacy_state_moves as _legacy_state_moves
 from kiro_crew.apps.execution import (
     app_execution_denied,
     is_builtin_app,
@@ -62,7 +62,6 @@ from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
-    _md_notebook_degraded_mask_dirs,
     app_backend_visible_targets,
     app_declared_mask_targets,
     app_declared_readonly_targets,
@@ -85,11 +84,15 @@ if "_PART_MODULES" in globals():
         _importlib.reload(_sys.modules[_reloaded])
     del _reloaded
 
-from kiro_crew.apps.backend_runtime.pidfile import _proc_start_time, _record_app_pid  # noqa: E402
+from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: E402
+    _proc_start_time,
+    _record_app_pid,
+)
 from kiro_crew.apps.backend_runtime.ports import (  # noqa: E402
     _MAX_PORT,
     _MIN_PORT,
     PortUnavailableError,
+    _adoption_allowed,
     _allocated_ports,
     _capture_adopted_owners,
     _claim_port,
@@ -601,13 +604,25 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             healthy = _probe_adoption_health(port, manifest.backend.healthCheck)
 
             if healthy:
+                # With apps_never_adopt_backend_listener on, a listener this run did not
+                # start is never adopted.
+                allowed = _adoption_allowed()
                 try:
                     sel().log_api_access(
                         caller="gateway", operation="app_backend_adopt",
-                        outcome="adopted", resources=f"{app_name} port={port}",
+                        outcome="adopted" if allowed else "refused_not_spawned_this_run",
+                        resources=f"{app_name} port={port}",
                     )
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
+                if not allowed:
+                    logger.warning(
+                        "App %s: not adopting the instance on port %d: "
+                        "apps_never_adopt_backend_listener is on, so a listener this run did "
+                        "not start is not adopted. Stop that process, or free the port.",
+                        app_name, port,
+                    )
+                    return None
                 # Record owning PIDs at adoption time, scoped to the listener
                 # the health probe actually reached. The probe above only ever
                 # talks to 127.0.0.1:<port>; loopback_owner_pids mirrors the
@@ -1195,8 +1210,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # control available. What still bounds a forged cache there is provenance rather than
     # permissions: with ``require_policy_signature`` set in the admission policy, a document
     # nobody trusted is refused however it got onto disk.
-    # The app's OWN hidden state leaves (e.g. md-notebook's vault registry, PAT, and
-    # sync settings) are unmasked for exactly this spawn: the mask fences agent
+    # The app's OWN hidden state leaves core names in ``_APP_BACKEND_OWNED_LEAVES`` (none
+    # today: Notes declares its state in its manifest) are unmasked for exactly this
+    # spawn: the mask fences agent
     # subprocesses, but this backend is each leaf's only legitimate reader/writer, and
     # leaving the mask on breaks the app outright. Unlike the governance cache
     # these are the app's own read-write state, so the blanket "visible" meaning is the
@@ -1219,37 +1235,16 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # other spawn; its backend is their writer, so their exact spellings lift those seals
     # for this spawn only, on the same provenance.
     _visible = _visible + app_declared_readonly_targets(app_name, builtin=_admitted_builtin)
-    if _shipped_md_notebook:
-        # Move legacy Notes state into the state directory before the backend reads it.
-        # Spawn prep runs the same move on sandboxed hosts; this call covers a host with no
-        # sandbox wrap (Windows). Marker-gated, so a second call is one stat. Until it is
-        # sealed the backend does not start, so no backend write can race the move.
-        if not _md_notebook_state.sealed_default_legacy_state():
-            logger.error(
-                "App %s: not starting until its one-time state move finishes (see the "
-                "warning above); the next start retries it",
-                app_name,
-            )
-            return None
-        _active_home = str(config_dir())
-
-        def _under_active_home(path: str) -> bool:
-            try:
-                return os.path.commonpath([_active_home, path]) == _active_home
-            except ValueError:  # another drive on Windows: not under this home
-                return False
-
-        if any(_under_active_home(d) for d in _md_notebook_degraded_mask_dirs()):
-            # A link under ``workspace/md-notebook`` makes every spawn mask that whole
-            # directory with a writable, namespace-only stand-in, and without its carve-out
-            # the state directory is one too. Any attach, clone or PAT save would then
-            # succeed and vanish on restart, so the backend does not start at all.
-            logger.error(
-                "App %s: not starting: workspace/md-notebook is reached through a link, so "
-                "its writes would be lost on restart; replace the link with a real directory",
-                app_name,
-            )
-            return None
+    # A former built-in whose state core still moves out of a layout core owned (a row
+    # in ``legacy_state_moves``) does not start until that move has sealed, nor while its
+    # legacy layout would swallow its writes. Asked for the shipped built-in (the
+    # provenance the carve-outs above use) and for a record adopted from the wheel's pin;
+    # every other app starts as before. Marker-gated, so once sealed it is a stat and one
+    # directory sync.
+    _legacy_refusal = _legacy_state_moves.backend_start_refusal(app_name, builtin=_admitted_builtin)
+    if _legacy_refusal is not None:
+        logger.error("App %s: %s", app_name, _legacy_refusal)
+        return None
     if _cache_visible:
         # SECURITY: refuse rather than carve when the cache sits beneath an
         # independently masked directory (a data home relocated under a credential
@@ -1667,6 +1662,7 @@ if _typing.TYPE_CHECKING:
         _DEPS_STAMP_NAME,
         REQUIREMENTS_TXT_MAX_BYTES,
         _audit_provision_failure,
+        _bundled_pip_wheel,
         _capped_spill,
         _default_marker_environment,
         _deps_abi_tag,

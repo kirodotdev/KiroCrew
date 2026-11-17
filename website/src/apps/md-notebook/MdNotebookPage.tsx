@@ -450,6 +450,7 @@ export default function MdNotebookPage() {
                 type="button"
                 onClick={() => setSortOpen(o => !o)}
                 aria-label={i18nT('apps.mdNotebook.panel.sortAndView')}
+                aria-expanded={sortOpen}
                 style={{
                   ...iconBtn,
                   width: '30px',

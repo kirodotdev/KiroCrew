@@ -5,32 +5,76 @@ import { useSlotDeferredValue } from '../../../hooks/useSlotDeferredValue'
 import { mcpAppKey } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from '../ChatPageMessageContent'
-import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn } from '../groupDisplayItems'
+import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn, opensRunTurn } from '../groupDisplayItems'
 import type { DisplayItem, TurnItem } from '../types'
 import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
 
 /**
- * True when `next` is `prev` with only its LAST message and LAST display item
- * replaced: a streaming flush growing the reply in place, cheap enough to
- * render at urgent priority. Anything else (a new row, a landed page, a
- * regroup) stays deferred.
+ * True when `next` is `prev` changed only at its tail, which is cheap enough to
+ * render at urgent priority:
+ *
+ *  - the LAST message and LAST display item replaced in place (a streaming
+ *    flush growing the reply), or
+ *  - rows added after them (the sent prompt, the reply's first chunk, a tool
+ *    row), whatever happened to the last row meanwhile.
+ *
+ * Anything that reaches an earlier row (a landed page of history, an edit, a
+ * regroup of earlier rows) stays deferred, and so does the first content of an
+ * empty transcript, which is a page landing.
+ *
+ * Added rows must not wait for the deferral while a reply streams. Every
+ * flush re-renders the page at urgent priority, and each of those renders
+ * restarts the background render the new rows are waiting for. On a device
+ * that cannot finish that render between two flushes it never commits, so the
+ * prompt and the whole reply stay off screen until the stream goes quiet.
  */
 export function grewOnlyAtTail(
   prev: { messages: ChatMessage[]; displayItems: DisplayItem[] },
   next: { messages: ChatMessage[]; displayItems: DisplayItem[] },
 ): boolean {
   const pm = prev.messages, nm = next.messages, pd = prev.displayItems, nd = next.displayItems
-  if (pm.length !== nm.length || pd.length !== nd.length || nm.length === 0) return false
-  const a = pm[pm.length - 1], b = nm[nm.length - 1]
-  if (a.ts !== b.ts || a.role !== b.role) return false
-  for (let i = 0; i < nm.length - 1; i++) if (pm[i] !== nm[i]) return false
-  for (let i = 0; i < nd.length - 1; i++) if (pd[i] !== nd[i]) return false
+  if (pm.length === 0 || nm.length < pm.length) return false
+  if (nm.length === pm.length) {
+    // No row was added: the last row must be the same row, grown in place.
+    if (pd.length !== nd.length) return false
+    const a = pm[pm.length - 1], b = nm[nm.length - 1]
+    if (a.ts !== b.ts || a.role !== b.role) return false
+  }
+  for (let i = 0; i < pm.length - 1; i++) if (pm[i] !== nm[i]) return false
+  for (let i = 0; i < pd.length - 1; i++) if (pd[i] !== nd[i]) return false
+  return true
+}
+
+/**
+ * True when `next` is the first turn of a chat that `shown`, the transcript
+ * the deferral last committed, holds as loaded and empty: the first send and
+ * its reply. Nothing is on screen for those rows to disagree with, and one
+ * turn costs what a row added at the tail costs, so it is drawn while the
+ * deferral's own render of it is still pending.
+ *
+ * `grewOnlyAtTail` cannot say this. Every transcript is "rows added" to an
+ * empty one, so the deferral would keep the empty frame for the whole visit
+ * and nothing in that chat would be deferred again. Here the deferral still
+ * takes the frame, and what it holds moves on with the first rows.
+ *
+ * Not the first turn: an empty transcript that is still loading (what comes
+ * next is its page), and rows that hold a second turn (a page of history).
+ */
+export function isFirstTurnOfEmptyChat(
+  shown: { messages: ChatMessage[]; loaded?: boolean },
+  next: { messages: ChatMessage[] },
+): boolean {
+  const nm = next.messages
+  if (shown.messages.length !== 0 || shown.loaded !== true || nm.length === 0) return false
+  for (let i = 1; i < nm.length; i++) if (opensRunTurn(nm[i])) return false
   return true
 }
 
 interface TranscriptRowsOptions {
   messages: ChatMessage[]
+  /** False while the active session's transcript is still loading. */
+  transcriptLoaded: boolean
   slotRunning: boolean
   activeSlot: string | null
   /** Tool-call ids with a live MCP App payload in this slot. */
@@ -46,7 +90,7 @@ interface TranscriptRowsOptions {
  * typing responsive while a landed page renders, and the promotion that keeps an
  * MCP App iframe in one stable turn.
  */
-export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef }: TranscriptRowsOptions) {
+export function useTranscriptRows({ messages, transcriptLoaded, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef }: TranscriptRowsOptions) {
   // Grouping depends ONLY on `messages`; `slotRunning` decides one boolean on the
   // trailing turn. Bundling both in one memo re-ran the whole O(N) grouping pass on
   // every turn start/stop just to flip that flag, and the new identity cascaded into
@@ -84,13 +128,17 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // urgent churn that is hundreds of ms -- long enough that a session switch
   // painted the outgoing tab's transcript under the incoming tab's URL, and a
   // new chat's first send briefly showed the previous session's messages
-  // (#8526). Only same-slot updates (streaming flushes, history landings) are
-  // deferred; a switch renders the right transcript in its first commit.
+  // (#8526). Only same-slot updates that reach rows before the tail (a history
+  // landing, an edit, a regroup of earlier rows) are deferred, see
+  // grewOnlyAtTail; a switch renders the right transcript in its first commit.
   // One deferred frame carries both the rows the virtualizer draws and the
   // messages they came from, so every deferred reader (the transcript, the
   // turn minimap, the Navigation tab) sees the same snapshot by construction.
-  const liveTranscript = useMemo(() => ({ messages, displayItems }), [messages, displayItems])
-  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript, grewOnlyAtTail)
+  // `loaded` rides along so the first turn of an empty chat (a send) is told
+  // apart from the first rows of a chat still loading (its page): the first
+  // turn is drawn at once, see isFirstTurnOfEmptyChat.
+  const liveTranscript = useMemo(() => ({ messages, displayItems, loaded: transcriptLoaded }), [messages, displayItems, transcriptLoaded])
+  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript, grewOnlyAtTail, isFirstTurnOfEmptyChat)
   // MCP App payloads live outside the message list, so promote after the
   // transcript defer: the FIRST render that can draw an iframe must already use
   // the same TurnBlock subtree that later grouping will keep. Short turns are

@@ -23,6 +23,7 @@ from webhooks_api_helpers import _bearer, _payload, _req
 
 from kiro_crew import webhooks
 from kiro_crew.dashboard.handlers import hooks as H
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestEveryStoreTouchingHandlerIsGuarded:
@@ -473,7 +474,7 @@ class TestRunHistoryRedaction:
 
     @pytest.mark.asyncio
     async def test_every_caller_supplied_run_field_is_redacted(self, wired):
-        secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        secret = github_classic(seed=93)
         runs = webhooks.run_store()
         runs.record(
             outcome=webhooks.OUTCOME_COMPLETED,

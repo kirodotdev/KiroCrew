@@ -114,6 +114,7 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("api",),  # can PATCH/POST anything the token reaches
         ("secret",),
         ("workflow", "run"),
+        ("alias",),  # `alias set m 'pr merge'` would hide a verb from this list
     ),
     # The GitLab watcher reads outsider-written MR comments (`glab mr view <url> --comments`),
     # so `glab` gets exactly the limit `gh` has: each entry is the `glab` twin of one above.
@@ -127,19 +128,31 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("mr", "approve"),  # `pr review`
         ("mr", "create"),
         ("mr", "new"),  # glab's alias of `mr create`
+        ("mr", "for"),  # creates an MR for an issue: `mr create` by another name
+        ("mr", "new-for"),  # glab's aliases of `mr for`
+        ("mr", "create-for"),
+        ("mr", "for-issue"),
         ("issue", "note"),
         ("issue", "comment"),  # glab's alias of `issue note`
         ("issue", "create"),
         ("issue", "new"),  # glab's alias of `issue create`
         ("issue", "update"),
         ("issue", "close"),
+        # An incident is an issue; these are its `issue note` / `issue close`.
+        ("incident", "note"),
+        ("incident", "comment"),
+        ("incident", "close"),
+        ("incident", "resolve"),
         ("release",),
         ("auth",),
         ("api",),
         ("variable",),  # `secret`
         ("ci", "run"),  # `workflow run`
         ("ci", "create"),  # glab's alias of `ci run`
-        ("ci", "push"),  # glab's alias of `ci run`
+        ("ci", "push"),  # glab's alias of `ci artifact`; refused as before
+        ("ci", "run-trig"),  # runs a pipeline with a trigger token
+        ("schedule", "run"),  # runs a scheduled pipeline now
+        ("alias",),  # `alias set m 'mr merge'` would hide a verb from this list
     ),
     "git": (
         ("push",),
@@ -150,6 +163,27 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
 #: Binaries a loop/watcher agent must never invoke at all — network fetch and remote shell.
 #: No subcommand analysis needed: the binary itself is the capability.
 _FORBIDDEN_BINARIES = ("curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "telnet")
+
+#: glab's top-level commands, from ``internal/commands/root.go`` (gitlab-org/cli
+#: d8d1e57), with cobra's ``help``/``completion``. glab runs a word outside this set
+#: as a user alias, which can name any verb, so an unknown verb is refused.
+_GLAB_COMMANDS = frozenset(
+    "alias api ar artifact-registry attestation auth autoflow changelog check-update ci "
+    "cluster completion conf config container-registry cr deploy-key deploy-token "
+    "dependency-firewall df duo govern gpg-key help incident issue iteration job label mcp "
+    "milestone minder mr opentofu orbit packages pipe pipeline project rc release repo "
+    "runner runner-controller sched schedule search securefile security service-account "
+    "skd skills snippet ssh-key stack stacks terraform tf timelog todo token update user "
+    "v var variable version whatsnew work-items".split()
+)
+#: glab's own aliases of a top-level command the denylist names.
+_GLAB_ALIASES = {
+    "pipe": "ci",
+    "pipeline": "ci",
+    "var": "variable",
+    "sched": "schedule",
+    "skd": "schedule",
+}
 
 
 def _segments(text: str) -> list[list[str]]:
@@ -448,6 +482,10 @@ def _refusal(text: str, *, depth: int) -> str:
                 skip_next = "=" not in word and word.split("=", 1)[0] in value_taking
                 continue
             rest.append(word.lower())
+        if binary == "glab" and rest:
+            if rest[0] not in _GLAB_COMMANDS:
+                return f"glab {rest[0]!r} is not a glab command this gate knows"
+            rest[0] = _GLAB_ALIASES.get(rest[0], rest[0])
         for path in forbidden:
             if tuple(rest[: len(path)]) == path:
                 return f"{binary} {' '.join(path)} cannot mutate state here"

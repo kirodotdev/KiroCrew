@@ -11,20 +11,21 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
-``_initialize_result``, ``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
+``_initialize_result``, ``_initialized``, ``_kas_engine_bundle``, ``_kas_host_auth``,
+``_last_activity``, ``_launch_copy_spec``,
 ``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
 ``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_monotonic``,
-``_spawn_skill_projection``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_spawn_skill_projection``, ``_spawn_spec``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
 ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
 
-Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
+Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
 ``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
@@ -40,8 +41,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from kiro_crew import agent_scratch, member_essential_context, platform_compat
-from kiro_crew.acp import kas_cli_settings, kas_secret_storage
+from kiro_crew import agent_scratch, build_reuse, member_essential_context, platform_compat
+from kiro_crew.acp import kas_cli_settings, kas_memory, kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -53,6 +54,7 @@ from kiro_crew.acp.client import (
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
 )
+from kiro_crew.acp.default_crew_servers import crew_added_servers
 from kiro_crew.acp.harness import SpawnContext, SpawnPlan
 from kiro_crew.acp.harness._common import operator_mandatory_mcps
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
@@ -67,9 +69,13 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
-from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
+from kiro_crew.agent_sdk.backends import (
+    can_restore_session,
+    spawn_delegates_to_internal_sandbox,
+)
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
+    custom_agent_never_defer_ids,
     job_tool_ids,
     kas_client_meta_settings,
     kas_never_defer_ids,
@@ -344,6 +350,8 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
             sandbox_mode=self._sandbox_mode,
             member_context=self._member_context,
             harness_pin=self._harness_pin,
+            extra_env=dict(self._extra_env or {}),
+            agent_env=getattr(self, "_agent_env_override", None),
         )
     )
     # The ONE derived-spec gate on this path, and the one host-level gate that is
@@ -375,6 +383,7 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
     except DerivedSpecStale as exc:
         raise AcpRuntimeError(str(exc)) from exc
     self._kas_host_auth = plan.host_auth
+    self._kas_engine_bundle = plan.engine_bundle
     self._native_launch_sources = dict(plan.native_context_documents)
     self._native_launch_view_alias = None
     self._native_launch_resources = None
@@ -388,7 +397,9 @@ async def _initialize_handshake(
 
     ``client_capabilities`` is the declaration :meth:`spawn` resolved before
     the process existed (the harness constant, or the wire-filled variant a
-    ``client_meta_settings`` host gets); this helper only owns the budget.
+    ``client_meta_settings`` host gets); this helper owns the budget, and on a
+    local KAS process with ``agent.orchestrator_memory`` on adds native memory
+    ``disabled`` as the process default. With the setting off it adds nothing.
 
     The budget is :data:`_INITIALIZE_TIMEOUT` whatever the host's state:
     ``initialize`` is answered only once kiro-cli has started, so a slow
@@ -398,6 +409,15 @@ async def _initialize_handshake(
     names overload instead of a killed process. Any other timeout, and an
     exited process, propagate unchanged.
     """
+    if (
+        self.acp_backend == ACP_BACKEND_KAS
+        and not self.is_cloud_sandbox
+        and await asyncio.to_thread(kas_memory.orchestrator_memory_enabled)
+    ):
+        # The process default for sessions that state no policy of their own.
+        client_capabilities = with_client_meta_settings(
+            client_capabilities, kas_memory.memory_settings(kas_memory.MODE_DISABLED)
+        )
     throttled_at_spawn = agents_slice_throttling()
     timeout = _INITIALIZE_TIMEOUT
     if throttled_at_spawn:
@@ -704,6 +724,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # The frozen snapshot a chat-sharing placement keyed on, else set by the
     # handshake below when it read agent.env; None lets launch read it.
     self._spawn_agent_env = getattr(self, "_agent_env_override", None)
+    # The spec the handshake below judges, for this spawn only: cleared here so a
+    # spawn whose handshake reads none never sees an earlier spawn's.
+    self._spawn_spec = None
     if self._harness.client_meta_settings:
         client_capabilities = await self._handshake_client_capabilities()
 
@@ -779,6 +802,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # with.
             # Called before the launch tail's scrub, so a host can both add its
             # own variables and remove one the generic path would pass through.
+            # What the spawn itself minted for its child (``SpawnPlan.child_env``),
+            # placed first so the host's own answer below is the last word.
+            env.update(plan.child_env)
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
@@ -890,6 +916,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                     self._process,
                     self._pid,
                     label=f"{KIRO_CLI_BIN} acp",
+                    background=self._background_qos,
                 ),
             )
         )
@@ -1101,7 +1128,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
         _agent_caps = init_resp.get("agentCapabilities", {})
         self._agent_capabilities = _agent_caps if isinstance(_agent_caps, dict) else {}
-        self._can_load_session = bool(self._agent_capabilities.get("loadSession", False))
+        self._can_load_session = can_restore_session(self._acp_backend, self._agent_capabilities)
         # Retain promptCapabilities so the prompt path can gate non-text
         # blocks -- without them an image block would be sent regardless of
         # whether the agent accepts one, and a refusal would surface as a
@@ -1316,13 +1343,39 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
             )
         base = kas_cli_settings.with_telemetry_opt_out(base, telemetry_on)
         self._kas_telemetry_sent = telemetry_on
+        # While a provider replaces Crew's memory, the harness's own memory stays off,
+        # so a session never runs two memories (``memory_provider.harness_pin``).
+        from kiro_crew.memory_provider.harness_pin import harness_memory_settings
+
+        pin = await asyncio.to_thread(harness_memory_settings)
+        if pin:
+            base = with_client_meta_settings(base, pin)
     if self._tool_search is None:
         return base
-    spec = await asyncio.to_thread(self._projected_spawn_spec)
+
+    def spec_and_added() -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+        # Only KAS reads this channel. There the Crew servers a custom agent was
+        # given, not its author's, stay behind KAS's loader (``crew_added_servers``).
+        spec = self._projected_spawn_spec()
+        if not self._harness.client_meta_settings or spec_grants_tool_search(spec):
+            return spec, ()
+        return spec, crew_added_servers(self._agent, spec)
+
+    # One block for both reads: the spec read and ``crew_added_servers`` each ask
+    # which installed app owns the agent, and the second reuses the first's reads.
+    spec, added = await asyncio.to_thread(build_reuse.in_one_build, spec_and_added)
+    self._spawn_spec = spec
     loader_granted = spec_grants_tool_search(spec)
     never_defer: list[str] = []
     if not loader_granted:
-        never_defer = await asyncio.to_thread(kas_never_defer_ids, spec, _known_server_tool_names)
+        if added:
+            never_defer = await asyncio.to_thread(
+                custom_agent_never_defer_ids, spec, _known_server_tool_names, added
+            )
+        else:
+            never_defer = await asyncio.to_thread(
+                kas_never_defer_ids, spec, _known_server_tool_names
+            )
     elif operator_mandatory_mcps() is None:
         never_defer = job_tool_ids(self._agent, spec)
     settings = kas_client_meta_settings(
@@ -1384,8 +1437,13 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     """The KAS half of :func:`_switch_off_mcp_for_toolless_spawn`."""
     from kiro_crew.acp.client_mcp_array import spec_is_toolless
 
+    # Per spawn: only the process this toggle reached runs with MCP off.
+    runtime._mcp_switched_off = False
     try:
-        spec = await asyncio.to_thread(runtime._projected_spawn_spec)
+        # The spec this spawn's handshake judged, when it read one; else read here.
+        spec = getattr(runtime, "_spawn_spec", None) or await asyncio.to_thread(
+            runtime._projected_spawn_spec
+        )
     except Exception:
         logger.debug("AcpRuntime: spawn spec unreadable; MCP left on", exc_info=True)
         return
@@ -1396,6 +1454,7 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     except Exception:
         logger.warning("AcpRuntime: could not switch MCP off for a tool-less agent", exc_info=True)
         return
+    runtime._mcp_switched_off = True
     logger.info(
         "AcpRuntime: agent=%s mounts no tool; MCP servers are off for this process",
         runtime._agent or "<none>",

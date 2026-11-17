@@ -78,9 +78,14 @@ logger = logging.getLogger(__name__)
 CREW_VERBS = ("create", "send", "read", "stop", "close")
 
 #: The create fields a crew create carries. Anything else a local create takes
-#: (folder, agent_kind, reasoning_effort, autocompact_pct, dry_run) names a
-#: local-only behaviour and is refused rather than dropped.
-_CREATE_FIELDS = frozenset({"crew", "title", "agent", "model", "work_item"})
+#: (folder, reasoning_effort, autocompact_pct, dry_run) names a local-only
+#: behaviour and is refused rather than dropped. ``agent_kind`` crosses with its
+#: one local value, ``template``, so a ``kirocrew-worker`` lands on the peer's
+#: shared template even where a crew member carries that name. ``requires`` is
+#: read on this hub only (``remote_placement``) and never sent to the peer.
+_CREATE_FIELDS = frozenset(
+    {"crew", "title", "agent", "agent_kind", "model", "work_item", "requires"}
+)
 
 #: A peer slot key this hub will put in a path: one plain segment. A peer is
 #: untrusted, and its create reply names the key every later path is built from,
@@ -214,7 +219,7 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
        level deep, and is not a crew member's own thread (``owner_only``).
     4. The session is persistent (``ephemeral_caller``) and is a conductor mode chat
        (``crew_mode.slot_is_crew_mode_root``, the conductor mode agent lock's own
-       predicate; ``ultra_mode_only``).
+       predicate; ``conductor_mode_only``).
     5. The session is not bound to a private member memory store
        (``private_memory``).
     6. A ``user`` claim, when present, is the owner.
@@ -311,9 +316,8 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     return slot_key
 
 
-#: The refusal for a caller tab that is not a conductor mode chat. The code
-#: stays ``ultra_mode_only``: a conductor on another machine matches on it.
-CONDUCTOR_MODE_ONLY = "ultra_mode_only"
+#: The refusal for a caller tab that is not a conductor mode chat.
+CONDUCTOR_MODE_ONLY = "conductor_mode_only"
 
 #: The refusal while a non-owner dashboard user is possible on this gateway.
 OWNER_UNVERIFIABLE = "crew_owner_unverifiable"
@@ -639,6 +643,18 @@ async def _create(
             raise CrewCallError(
                 400, "crew_field_invalid", f"{name} carries text that cannot leave this machine"
             )
+    # The local create's rule, checked before any peer call: one value, and only
+    # beside an explicit agent (an omitted agent is the peer's default, which a
+    # kind cannot qualify).
+    agent_kind = body.get("agent_kind", "")
+    if agent_kind not in ("", "template"):
+        raise CrewCallError(400, "invalid_agent_kind", 'agent_kind must be "template"')
+    if agent_kind and not fields["agent"]:
+        raise CrewCallError(
+            400,
+            "agent_kind_requires_agent",
+            "agent_kind qualifies an explicit agent; name the agent too",
+        )
     # The cap check and the record each take the cap lock, which a retire holds
     # from evict to restore: the cap never reads a record a retire is settling.
     # The peer call between them is not held, so creates still run side by side.
@@ -659,6 +675,8 @@ async def _create(
     create: dict[str, Any] = {"memory_mode": memory_mode}
     if fields["agent"]:
         create["agent"] = fields["agent"]
+    if agent_kind:
+        create["agent_kind"] = agent_kind
     if fields["model"]:
         create["model"] = fields["model"]
     work_item_id = ""
@@ -908,6 +926,10 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
                 state, caller, board, instance_id, body.get("target"), verb
             )
         await check_version(mgr, instance_id)
+        if verb == "create" and body.get("requires") is not None:
+            from kiro_crew.dashboard.handlers import remote_placement
+
+            await remote_placement.check_crew_requires(mgr, instance_id, name, body["requires"])
         if verb == "create" and body.get("work_item") is not None:
             # Counted in flight so a placement running meanwhile sees it (wave 5).
             from kiro_crew.dashboard.handlers import remote_placement

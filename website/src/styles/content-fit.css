@@ -242,6 +242,15 @@ html[data-font-family="opendyslexic"] .nav-item {
   mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent);
   -webkit-mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent);
 }
+/* A clipped scroller can be the table's keyboard stop (MarkdownTable.tsx,
+   `keyboardStop`). Its own focus ring never shows: the mask above clips
+   everything the scroller paints, the outline included. So the ring is drawn
+   one level up, on the table block, which carries no mask. Same ring as the
+   global `:focus-visible` rule in index.css. */
+.markdown-table:has(> .overflow-x-auto:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* The Expand toggle shows on a top-level table in an unbordered transcript
    bubble (the breakout rule above the overflow cue), on a viewport wide enough that the pane can

@@ -32,8 +32,8 @@ def _url(query: str) -> str:
 
 
 def _redacted(url: str) -> bool:
-    result, warnings = redact_exfiltration_urls(f"see {url} for details")
-    return bool(warnings) and url not in result
+    """Whether the blocking exfil scan flags *url*; the display never replaces a URL whole."""
+    return bool(scan_exfiltration_urls(f"see {url} for details"))
 
 
 class TestObjectNamesAreKept:
@@ -54,14 +54,9 @@ class TestObjectNamesAreKept:
     def test_two_object_names_in_one_query(self) -> None:
         assert not _redacted(_url("from=" + SHA1 + "&to=" + SHA1[::-1]))
 
-    def test_redact_with_records_keeps_the_link(self) -> None:
-        from kiro_crew.security.exfil import redact_exfiltration_urls_with_records
-
+    def test_the_url_redactor_keeps_the_link(self) -> None:
         url = _url("commit=" + SHA1)
-        result, warnings, records = redact_exfiltration_urls_with_records(f"link {url}")
-        assert url in result
-        assert warnings == []
-        assert records == []
+        assert redact_exfiltration_urls(f"link {url}") == (f"link {url}", [])
 
 
 class TestNeighbouringShapesStillRedact:

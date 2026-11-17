@@ -54,6 +54,7 @@ import {
 } from './sessionRows'
 
 import { i18nT } from '../../i18n/t'
+import { channelLabel } from '../../utils/channelLabel'
 import type { PlaneState, SessionsPlaneState } from '../SystemPage'
 
 type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
@@ -297,7 +298,14 @@ export default function SessionsTab({ planeStateRef }: Props) {
           cell: c => fmtUptime(c.getValue<number | null>()),
         }),
         helper.accessor('agent', { header: i18nT('pages.sessionsTab.agent'), size: 112 }),
-        helper.accessor('channel', { header: i18nT('pages.sessionsTab.channel'), size: 100 }),
+        helper.accessor('channel', { header: i18nT('pages.sessionsTab.channel'), size: 100, cell: c => {
+          // A group row of another column carries no channel; render it empty, as before.
+          const v = c.getValue<string | null | undefined>()
+          if (!v) return v
+          // A translated label can outgrow the 100px column; clip it, keep the whole word in the title.
+          const label = channelLabel(v)
+          return <span className="block truncate" title={label}>{label}</span>
+        } }),
         helper.accessor('rssMb', {
           id: 'share',
           header: i18nT('pages.sessionsTab.host_share'),
@@ -579,9 +587,12 @@ export default function SessionsTab({ planeStateRef }: Props) {
               // their own cell is never rendered. Without this the name cell fell
               // through to the first member's title and the row claimed to be a
               // session it merely contained.
-              const groupLabel = grouped && row.groupingColumnId != null
-                ? String(row.getGroupingValue(row.groupingColumnId) ?? '—')
-                : null
+              const groupValue = grouped && row.groupingColumnId != null ? row.getGroupingValue(row.groupingColumnId) : null
+              const groupLabel = !grouped || row.groupingColumnId == null
+                ? null
+                : groupValue == null ? '—'
+                : row.groupingColumnId === 'channel' ? channelLabel(String(groupValue))
+                : String(groupValue)
               const href = grouped ? null : r.href
               return (
                 <TableRow

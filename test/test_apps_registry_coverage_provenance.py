@@ -306,8 +306,8 @@ class TestExternalRegistryCacheIdentity:
 
     def test_repointed_registry_stops_serving_the_old_index(self, monkeypatch, cache_dir):
         # The ignore_ttl stale-fallback readers must MISS after a repoint —
-        # serving the old repository's index under the same display name is
-        # the defect this PR exists to close.
+        # serving the old repository's index under the same display name would
+        # hand out the wrong apps.
         monkeypatch.setattr(registry, "_load_registry_file", list)
         old = _reg("mine", "https://gitea.internal/old.git")
         registry._write_external_registry_cache(
@@ -319,8 +319,8 @@ class TestExternalRegistryCacheIdentity:
         assert registry.known_registry_repos() == set()
 
     def test_absent_none_and_empty_branch_share_one_identity(self):
-        # Duck-typed registry objects may not carry ``branch`` at all
-        # (regression: AttributeError from _registry_app_candidates). Absent,
+        # Duck-typed registry objects may not carry ``branch`` at all (and
+        # _registry_app_candidates must not raise AttributeError). Absent,
         # None, and "" all mean "default branch" and must agree — and must
         # never collide with a real branch.
         no_branch = SimpleNamespace(name="mine", repo="https://gitea.internal/idx.git")
@@ -340,10 +340,10 @@ class TestExternalRegistryCacheIdentity:
         assert real not in ids
 
     def test_owner_count_reader_agrees_with_the_writer(self, monkeypatch, cache_dir):
-        # Regression: _repo_key_owner_count read the cache under the display
-        # name while every writer had moved to the coordinate identity, so an
-        # external source always counted 0 and the single-owner credential
-        # grant was silently disabled.
+        # _repo_key_owner_count must read the cache under the coordinate
+        # identity every writer uses. Reading it under the display name counts
+        # an external source as 0 and silently disables the single-owner
+        # credential grant.
         from kiro_crew.apps.routes import _repo_key_owner_count
 
         monkeypatch.setattr(registry, "_load_registry_file", list)

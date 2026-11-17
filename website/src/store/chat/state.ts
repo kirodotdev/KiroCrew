@@ -95,6 +95,10 @@ export interface SideMessage {
   is_error?: boolean
   /** Injected into a turn that was already running, not asked from idle. */
   steer?: boolean
+  /** A finished answer's blocked-link records, raw from its final frame or the
+   *  restore read (`link_blocks`): the links its bubble draws as a Blocked link
+   *  card. Validated where they are drawn. */
+  link_blocks?: unknown
   /** Shown before the server confirmed it, so it can be found again by identity.
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */
@@ -468,6 +472,8 @@ export interface ChatState {
   voicePlaying: boolean
   /** A speech request for the active slot is waiting for its first audio. */
   voicePreparing: boolean
+  /** The listener paused the reading; the position is held until they resume or stop. */
+  voicePaused: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
   /** Aggregate "waiting to start" count per slot — agents accepted but queued
@@ -819,6 +825,7 @@ export const initialState: ChatState = {
   slotContextTokens: {},
   voicePlaying: false,
   voicePreparing: false,
+  voicePaused: false,
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},

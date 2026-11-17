@@ -693,6 +693,7 @@ async def link_slot_to_slack(
                     existing_ts,
                 )
             except Exception:
+                # The thread notice is a courtesy; the existing link is returned either way.
                 pass
             return {
                 "ok": True,

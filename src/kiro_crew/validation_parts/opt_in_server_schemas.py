@@ -246,6 +246,9 @@ WORK_REPORT_SCHEMA = ToolSchema(
         # When a ``progress`` report's worker will resume. Whether it parses, is in the
         # future and pairs with ``progress`` is the store's check (``_require_wake_at``).
         FieldSpec("wake_at", str, max_len=40),
+        # Where a hosted discussion stands. Its parts and their caps are the store's
+        # check (``_require_discussion``), which names the part that failed.
+        FieldSpec("discussion", dict),
     ],
     custom_validator=lambda cleaned: _validate_work_report(cleaned),
 )

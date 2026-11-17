@@ -42,7 +42,7 @@ function isGoogleRegistrySlug(slug: string): boolean {
  * locale.
  */
 export const SETTINGS_MANUAL: ManualSettingEntry[] = [
-  // The Decisions (Jev) card's three per-point consent switches.
+  // The Decisions card's three per-point consent switches.
   //
   // Declared here rather than extracted because the card draws them from ONE component
   // on whichever point's panel is open, labelled from a map keyed by the scope the
@@ -121,13 +121,36 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     // Same shape as the third-party-apps override above: the toggle lives in
     // the `redaction` rail section, so without `section=redaction` the deep
     // link lands on the security rail with the card unmounted.
-    id: 'security.redact-credentials-in-files-the-dashboard-opens-for-you',
+    id: 'security.redact-credentials',
     labelKey: 'pages.settings.securityPanel.credential_redaction_toggle',
     descriptionKey: 'pages.settings.securityPanel.credential_redaction_toggle_help',
     tab: 'security',
     type: 'toggle',
     occurrence: 1,
     params: { section: 'redaction' },
+  },
+  // The two MCP safety switches (SecurityPanelSafetySwitches.tsx): same shape,
+  // they live in the `safety` rail section. `configKey` keeps the Advanced
+  // page's read-only rows for both keys linked to these controls.
+  {
+    id: 'security.stop-the-agent-from-editing-its-own-permission-rules',
+    labelKey: 'pages.settings.securityPanel.safetySwitches.protect_label',
+    descriptionKey: 'pages.settings.securityPanel.safetySwitches.protect_desc',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'safety' },
+    configKey: 'mcp.protect_kiro_permission_rules',
+  },
+  {
+    id: 'security.ask-me-before-running-tools-an-mcp-server-pre-approves',
+    labelKey: 'pages.settings.securityPanel.safetySwitches.ask_label',
+    descriptionKey: 'pages.settings.securityPanel.safetySwitches.ask_desc',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'safety' },
+    configKey: 'mcp.honour_auto_approve',
   },
   // The review cards for settings files edited outside the dashboard
   // (SecurityPanelConfigPending.tsx). They render in the Security sub-nav's banner,
@@ -420,6 +443,16 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     labelKey: 'settings.secrets.wakatime_api_key_label',
     descriptionKey: 'settings.secrets.wakatime_api_key_description',
     tab: 'secrets',
+    type: 'input',
+    occurrence: 1,
+  },
+  {
+    // Settings > Advanced lists every config key from the gateway's schema at
+    // run time, so no row has a literal label to extract; one entry finds the page.
+    id: 'advanced.all-settings',
+    labelKey: 'settings.advanced.title',
+    descriptionKey: 'settings.advanced.intro',
+    tab: 'advanced',
     type: 'input',
     occurrence: 1,
   },

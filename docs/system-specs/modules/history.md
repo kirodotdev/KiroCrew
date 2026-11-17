@@ -334,9 +334,11 @@ does not repaint the text it replaced. A suffix row no window row matches (anoth
 writer's append) is served from disk where it sits.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
-its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
+its callers are the app-sdk `ChatEmbed`, which issues the read on a poll and,
 when its host passes a push channel, on each change signal for the slot -- see
-app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged). A paged read passing `cursor=1` also
+app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged -- and
+the dashboard store's newest-page reads, `api.chatSlotDetail` in
+`website/src/api/client/chat.ts`, on every refresh, switch and pane hydrate). A paged read passing `cursor=1` also
 gets `cursor: {from, since, digest}`: the page's first and last row indices and a
 digest over the rows in `[from, since)`, so the last row (the folded streaming
 row) is never inside it. The digest is built from each row's render-memo identity
@@ -362,7 +364,11 @@ malformed triple is `400 invalid_query_params`. The read reaches back to the
 span's `from` so it can be checked, but only rows from the older of `from` and the
 new window start are rendered (`render_from`): about one page plus the rows that
 arrived since the last poll, the same render work as a full page. What shrinks is
-the payload and the reader's merge.
+the payload and the reader's merge. A cursor read that also passes `page_bytes=1`
+is cut by the plain page's byte budget, oldest rows first, with `next_before` and
+`cursor.from` naming the first row sent; a window starting older than the held
+`from` is answered whole. Only the dashboard store sends it, because it pages older
+with `before=next_before`; the embed does not page back, so its window is not cut.
 When a chain member after the first has rotated-archive segments, the archived
 block sits between rows the page serves, so slot detail serves that page through
 `read_messages_chained_full` rather than leaving the block unreachable. A
@@ -384,9 +390,7 @@ moved, every row the memo answered is rendered again against the live context,
 nothing from that read is stored and no row identity is issued.
 Filled pages reuse fragments only when the complete source row and render
 context match. The context reuses `_display_redaction_cache_key("")`, so changes
-to that key's redaction dependencies invalidate row fragments too. Workspace
-allowed hosts are also keyed separately: blocked-link restoration reads those
-hosts alone, not their union with policy exemptions. OAuth rows are never
+to that key's redaction dependencies invalidate row fragments too. OAuth rows are never
 memoized: every response rechecks live child identity and endpoint approval.
 Owner-view scopes neither read nor fill the memo.
 The per-string cache still serves cold reads, changed rows and other callers.
@@ -878,6 +882,60 @@ member. The facade grows only in the code listed above as staying there.
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A writer may also pass `extra_meta` (`append` / `append_if_absent`), a dict of display fields merged into the row's `meta` — e.g. `{"turn_stats": …}` for the usage footer; the merge never overrides `mid` (`{**extra_meta, **{"mid": …}}`). The multi-row off-loop writer `append_rows_if_absent_off_loop` takes `row_meta`, a sequence aligned with its `rows` by index, applying each entry as that row's `extra_meta`. A row appended with neither `mid` nor a non-empty `extra_meta` carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated); supplying `extra_meta` alone writes a `meta` dict even without a `mid`.
 
+**Write-boundary redaction, and its one-way door.** Every row, whatever its `role`, is
+scrubbed by `_redact_at_write_boundary` on its way into the transcript, so the rule lives
+where the bytes are written rather than in any caller -- a conversation's dashboard tab and
+its channel thread persist through different paths to the same file, and a new persister is
+covered without being registered. A user row goes through the host's composed policy
+(`redact_via_context`); on a host whose policy fails to compose it falls back to the
+composed baseline pass (`security.redact`), so known credentials are still removed and the
+text is kept.
+Other roles always use the baseline pair. No row is ever withheld. The
+dashboard slot save does not route through this
+boundary at all -- it builds its rows in `chat_persistence` and writes them itself -- so a
+row typed into the dashboard is still stored verbatim. One linked transcript therefore
+holds user rows under two rules until that save routes through the boundary. Because a
+window replay can meet either form, `append_if_absent` treats a raw or a redacted copy on
+disk as the same row.
+
+The redaction is NOT reversible: the original span is not retained, so a false positive
+rewrites a user's own text at rest permanently and a later pattern fix cannot restore it.
+That is the accepted cost of the sink-side rule.
+
+**Why user and assistant rows use different redactors.** Only a user row goes through the
+composed policy; assistant and system rows keep the baseline pair. The cost: when a companion-only pattern catches a credential the user typed, an
+assistant row that echoes it back keeps it at rest, because the baseline pair does not know
+that pattern. Credentials the baseline pair recognises are removed from both.
+
+**Two copies bypass the boundary and are scrubbed where they are made.** A channel's
+session title is derived from the first inbound message and stored in metadata, so each
+transport scrubs it with the user-row rule, `_redact_at_write_boundary("user", ...)`,
+before the 40-character cut. Discord, Telegram and the Slack mirror
+project a turn into the live dashboard slot, which is not a `ConversationLog` write.
+
+**The `user` exemption was measured before it was removed.** An earlier revision kept it,
+citing four timeouts above 120 seconds in `test_history_consolidation_retry.py` and
+`test_history_locking_remediation.py` and attributing them to `_might_contain_credential`.
+That attribution was wrong: the pre-filter is flat on a long uniform run (0.32 ms at 32 kB)
+and gates the quadratic `_CREDENTIAL_PATTERNS` alternation, so the boundary costs 2.4 ms there
+and scales linearly. With the exemption removed both suites pass in under nine seconds, the
+slowest test 2.9 s, so nothing measured still needs it.
+
+**Serve-time scrubbing was evaluated as the alternative, and rejected.** Storing the row
+verbatim and scrubbing on the way out would keep the user's own words recoverable, the one
+real advantage and the reason it was considered. Rejected on three grounds, all properties
+of this file rather than preferences. First, the transcript at rest IS an egress: the JSONL
+sits on the host, is carried by whatever backs that directory up, and is read by the search
+index, so storing a credential verbatim defers the exposure instead of removing it, and the
+threat this rule exists for is the copy that outlives the conversation. Second, it moves the
+rule from a few writers to MANY more readers -- `read_messages`, `read_messages_chained`,
+`recent`, `recent_with_provenance`, `search_sessions`, the snippet builders, the archive
+endpoints -- which is the same "rule lives in each caller" weakness reviewers name against
+the write side, relocated to the side with more callers. Third, the memos above
+(`_folded_cache`, `_snippet_cache`, `_msg_cache`) are filled from the stored bytes and keyed
+by mtime, so a read-side scrub is bypassed by any warm entry. The residual cost of the write
+side is the irreversible false positive, which nothing undoes.
+
 - Append-only for LLM cache efficiency
 - Rotation at 10MB (keeps metadata + last 200 messages, atomic write), enforced
   by `ConversationLog.append`. The dashboard whole-file save
@@ -1235,8 +1293,20 @@ The summary carries `sessions_added`, `sessions_skipped_existing`,
 `sessions_withheld` and `sessions_failed`; an archive without chats adds none of
 these. A failed chat is not added, kept or withheld. Its failure and any rollback
 residue appear in the existing `items` list, and `refused_merges` includes
-`sessions` so the existing API partial-import reporting applies. No new frontend
-field is required.
+`sessions` so the existing API partial-import reporting applies. The export
+manifest carries `home` and `home_real`. Before Merge or Replace copies anything,
+the import moves saved folder paths from either archive home to this home. This
+covers each chat header's `project`, `workspace_dir`, `project_dir`, and
+`dashboard.default_project` in `config.json` and `config.local.json`. A path
+outside both archive homes stays only if that folder exists here. Otherwise the
+import drops it, so the chat opens in the default workspace. Older archives
+without `home` infer it from saved paths and the manifest's `user` only when the
+inferred home is absent here; extraction uses the gateway-only, sandbox-masked
+`import-staging` leaf on the data home's filesystem. Same-home
+imports change nothing. Home relocation supports POSIX homes only. The summary
+may also carry `home_paths_moved` and `sessions_project_cleared`. The latter counts
+only chats this import installs. The Import / Export page shows the
+`import_chats_folder_missing` line for that count.
 
 Image references inside a transcript are absolute paths into the source's
 `sessions/` directory, so an image renders after import only when the target's
@@ -1794,7 +1864,7 @@ no longer destroy older turns.
   against the observation from file A would read "different file" as "deleted and
   recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they
-  stat the OBSERVED file A instead (`_observed_file_deleted`, shared by
+  stat the OBSERVED file A instead (`_observed_file_evidence`, shared by
   `delete_won` and `session_was_deleted`). A still present with the same identity
   means the drift is legitimate and the save proceeds; it first drops the slot's
   `_frozen_prefix_cache`, which was filled from A and is keyed on mtime and size
@@ -3732,7 +3802,7 @@ Contract:
   attachments directory) as corroboration alongside equal body or equal `ts`.
   Corroboration stays required, because `meta.mid` is caller-suppliable; body
   equality stays the rule for id-less callers.
-- **`role != "user"`**, the same gate the redaction boundary uses: an inline image
+- **`role != "user"`**: an inline image
   is agent output, and a path the user typed names a file of their own.
   **Ingested channel pictures are the one stored user-row case.** A channel passes
   the files the gateway itself downloaded for the message (`IngestResult.image_paths`)

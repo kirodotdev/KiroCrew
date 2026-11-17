@@ -764,7 +764,7 @@ def _window_matches_disk(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> b
 
     Matched on ``(role, ts, content)``: the window's ``cls`` and ``meta`` are
     presentation state that a persisted line need not carry, and content is
-    comparable because the write boundary already redacted non-user text before
+    comparable because the write boundary already redacted the text before
     it reached disk.
     """
     older = slot._disk_older_count
@@ -1129,6 +1129,7 @@ def _linked_running_flipped(state: "DashboardState") -> bool:
         try:
             now[name] = bool(slot.linked_turn_running)
         except Exception:
+            # One slot that cannot report must not stop the scan; the next reconcile reads it again.
             continue
     flipped = any(seen.get(name, False) != running for name, running in now.items())
     # A tab that closed while its turn ran needs no push of its own.

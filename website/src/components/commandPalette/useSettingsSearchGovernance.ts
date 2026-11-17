@@ -58,6 +58,9 @@ export function useSettingsSearchGovernance(
     ...CACHED_ONLY,
   })
   const kiroSignInOffered = !cfgQ.isSuccess || kasInUse(cfgQ.data)
+  // The same read holds Channels' switch, which Display > View draws only while on.
+  const channelsOn = cfgQ.isSuccess
+    && (cfgQ.data as { dashboard?: { channels_enabled?: unknown } } | undefined)?.dashboard?.channels_enabled === true
   // The `['instances']` read RemoteCrewPanel picks its branch by, from cache only:
   // the shell's tab bar already reads it at boot.
   const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), ...CACHED_ONLY })
@@ -65,7 +68,7 @@ export function useSettingsSearchGovernance(
     ? true
     : isInstancesDisabledError(instancesQ.error) ? false : undefined
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn],
   )
 }

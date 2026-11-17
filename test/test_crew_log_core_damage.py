@@ -257,7 +257,7 @@ def test_a_forward_gap_inside_one_file_reads_without_raising():
 
 def test_a_duplicate_seq_is_refused_by_a_read_that_never_yields_it():
     # The walked-entry guard, below the requested seq: the duplicate sits
-    # BEFORE the resume point, so the old code dropped it unexamined. The
+    # BEFORE the resume point, where a yield-only check never examines it. The
     # refusal must fire on what the read walks, not only on what it yields.
     crew = _crew()
     for index in range(2):

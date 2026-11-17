@@ -37,8 +37,8 @@ over and what changes.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
-| [Apps](apps.md) | Twenty-two apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
-| [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 38-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
+| [Apps](apps.md) | Twenty-one apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
+| [Connections](connections.md) | MCP servers and OAuth'd services on one page: the curated provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | [Chat Channels](#chat-channels) | DM-based chat with tool approval on ten messaging platforms; the list and per-channel guides are under [Chat Channels](#chat-channels) below |
@@ -51,7 +51,7 @@ over and what changes.
 | [Artifacts](artifacts.md) | Save, version, and revert generated UI and documents so they outlive the chat scrollback |
 | [Monitor Loops](monitor-loops.md) | Keep one session checking something on an interval — a pull request, a CI run, a deployment — until an exit condition fires |
 | [Session Ledger](session-ledger.md) | A durable per-session record of goal, phase, and next step that survives context compaction |
-| [Session Control](session-control.md) | Let one chat session open, fork, seed, watch, broadcast to, stop, retry, continue, switch models on, reload, rename, retitle, color, leave a note in, close, list and revive another one — the 41 `kirocrew-dashboard` MCP tools, plus the sidebar folders, tags, board columns and pins that keep them findable |
+| [Session Control](session-control.md) | Let one chat session open, fork, seed, watch, broadcast to, stop, retry, continue, switch models on, reload, rename, retitle, color, leave a note in, close, list and revive another one — every `kirocrew-dashboard` MCP tool, plus the sidebar folders, tags, board columns and pins that keep them findable |
 | [Work Ledger](work-ledger.md) | Split a goal across one session per item: a conductor dispatches workers, reads their status as data, and settles every completion claim against an acceptance condition |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
@@ -73,6 +73,7 @@ over and what changes.
 | [Streaming Speech-to-Text](configuration.md) | Live transcription partials in the dashboard input, with local Whisper, the macOS on-device recognizer, or optional AWS Transcribe |
 | [Warm Pool](configuration.md) | Keep kiro-cli processes pre-spawned so a new session starts instantly |
 | [Secrets Vault](secrets-vault.md) | Credentials encrypted on disk and refused to the agent, with a `secret://` reference left in `.env` |
+| [Scripted Test Model](scripted-test-model.md) | Test agent specs, hooks, cron scripts and apps against a stand-in model whose replies come from a file: no tokens, the same result every run |
 
 ## Settings reference
 
@@ -135,7 +136,7 @@ gracefully rather than failing the turn.
   output stays plain text otherwise
 - [Context management](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/context-management.md):
   what goes into the model's context — first-turn block order, per-turn additions,
-  sub-agents, custom agents, and Crew mode. A contributor document in the
+  sub-agents, custom agents, and conductor mode. A contributor document in the
   repository, not part of this installed package
 - [Settings deep links](settings-deeplink.md): answer "where is that setting?" with
   a link that opens the tab and flashes the control, from the generated
@@ -144,7 +145,9 @@ gracefully rather than failing the turn.
 ## Security
 
 - OS-level sandbox for the agent process, layered on top of kiro-cli's own
-- Credential redaction across every LLM output path
+- Credential redaction on every LLM output path, one owner toggle in Settings →
+  Security → Redaction (off unless you turn it on or an administrator's policy
+  keeps it on); the request-blocking credential checks run either way
 - HMAC-SHA256 signed, IP-pinned dashboard tokens
 - Denied-command rules enforced at Kiro Crew's own PreToolUse gate, with audit
   logging, and a refusal that names the sanctioned path instead of only the rule

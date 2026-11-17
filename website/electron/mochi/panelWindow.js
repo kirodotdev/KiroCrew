@@ -24,6 +24,7 @@
 const { app, autoUpdater, BrowserWindow, ipcMain, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { revealLocalFile } = require("../app-local-files");
 const { mochiPageUrl } = require("./pageUrl");
 const { registerCaptureSurface } = require("../capture-trust");
 const { onQuitForUpdate } = require("../close-action");
@@ -197,6 +198,17 @@ function isRendererGone(win) {
   }
 }
 
+// Compared as parsed origins: a string prefix lets `${baseUrl}@evil.example`
+// or another port through. An opaque ("null") origin matches nothing.
+function sameOrigin(url, baseUrl) {
+  try {
+    const origin = new URL(baseUrl).origin;
+    return origin !== "null" && new URL(url).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 function createPanelWindow(baseUrl, token = "") {
   const wa = screen.getPrimaryDisplay().workArea;
   const win = new BrowserWindow({
@@ -261,7 +273,7 @@ function createPanelWindow(baseUrl, token = "") {
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith(baseUrl)) {
+    if (!sameOrigin(url, baseUrl)) {
       event.preventDefault();
       if (/^https?:/.test(url)) shell.openExternal(url);
     }
@@ -603,13 +615,7 @@ function bindPanelIpc(baseUrl) {
    * silent — a renderer must not learn from the shell whether a path exists.
    */
   ipcMain.on("mochi-panel:reveal-file", (_e, filePath) => {
-    if (typeof filePath !== "string" || filePath === "") return;
-    try {
-      if (!fs.statSync(filePath).isFile()) return;
-    } catch {
-      return;
-    }
-    shell.showItemInFolder(filePath);
+    revealLocalFile({ fs, shell }, filePath);
   });
 
   /**

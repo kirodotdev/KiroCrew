@@ -626,6 +626,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                 # The nested call is a whole turn with its own exit guard, so the
                 # tail is its to run, however it ends.
                 turn_exit.handed_off = True
+                # The caller's trace id (tracing/inbound.py) goes to the nested turn,
+                # the one that produces the reply.
+                from kiro_crew.tracing import inbound as trace_inbound
+
+                trace_inbound.hand_back(turn._recovery_turn_id)
                 await _run_chat(
                     state,
                     slot,
@@ -851,10 +856,10 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
     # either, or (claude) run one Crew cannot observe, so /clear alone is answered
-    # here for them too; their other commands keep the prompt path, where those
-    # harnesses serve the ones they know. A harness with a row in
-    # ACP_BACKEND_PROMPT_HANDLER_COMMANDS (codex) keeps the prompt path only for the
-    # commands in its row; its other commands get the notice, as on KAS.
+    # here for them too. A harness with a row in ACP_BACKEND_PROMPT_HANDLER_COMMANDS
+    # (codex, opencode, mimocode, pi, deepseek, goose, copilot, antigravity) keeps
+    # the prompt path only for the commands in its row; its other commands get the
+    # notice, as on KAS.
     # A kiro-cli command that is not a Crew harness command (/knowledge, /effort,
     # /plan, /rewind) is answered here on KAS alone; anywhere else it stays text.
     # The user's own quick prompt of that name is a macro and keeps the text path.
@@ -1055,7 +1060,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
                 # The provider ships the reason on `failed` too, and every
                 # other surface already tells the user what it was — Slack,
                 # Telegram, Discord, and this dashboard's own AUTO-compact
-                # notice (see chat_utils._compaction_notice_text). Dropping
+                # notice (see chat_utils._append_compaction_notice). Dropping
                 # it here left the one path a user takes deliberately as the
                 # only one that says nothing, so a `/compact` that fails
                 # because the conversation is too large is indistinguishable

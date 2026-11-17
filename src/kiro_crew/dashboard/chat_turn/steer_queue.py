@@ -219,9 +219,9 @@ def _settle_consumed_steers(
             # the resolver refuses to patch when two live steers share the
             # sanitized content, and `_pending_steers` still holds this whole
             # echo's entries until the assignment below. So a redaction collision
-            # whose members the echo ALL accounted for looked ambiguous and both
-            # rows kept `written` forever -- understating a confirmed injection,
-            # the mirror of the defect this fix exists for. Ambiguity is about
+            # whose members the echo ALL accounted for would look ambiguous and
+            # both rows would keep `written` forever, understating a confirmed
+            # injection. Ambiguity is about
             # attribution, and only a steer that is still PENDING can also claim
             # this row; ``steer_settle`` already draws the line this way for its
             # own keys. When a twin stayed pending the count is 2 again and the

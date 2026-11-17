@@ -1,4 +1,4 @@
-"""File readers for knowledge ingestion. Supports text, PDF, PPTX, DOCX, MSG, HTML."""
+"""File readers for knowledge ingestion. Supports text, PDF, PPTX, XLSX, DOCX, MSG, HTML."""
 
 import codecs
 import html as html_lib
@@ -12,11 +12,8 @@ from kiro_crew.bounded_read import bounded_read
 from kiro_crew.pdf_extract import PDF_MAX_PAGES, extract_pdf_segments, pdfplumber_available
 from kiro_crew.pinned_fs import open_fenced_for_read
 from kiro_crew.security import is_sensitive_path
-
-try:
-    from pptx import Presentation  # type: ignore[import-untyped]
-except ImportError:
-    Presentation = None  # type: ignore[assignment,misc]
+from kiro_crew.workbook_rows import read_workbook_rows
+from kiro_crew.zip_vet import WORKBOOK_MAX_EXPANDED_BYTES, WORKBOOK_MAX_MEMBERS
 
 try:
     import html2text as _html2text_mod
@@ -237,12 +234,22 @@ class _AdocIncludes:
 def _missing_dep(fmt: str, package: str) -> tuple[str, dict]:
     """The reader result when an optional extraction dependency is absent.
 
-    Carries the same ``format: 'error'`` sentinel as :func:`_read_error`. ``.pptx``
-    has no declared dependency, so this is the normal path for that format rather
-    than an anomaly.
+    Carries the same ``format: 'error'`` sentinel as :func:`_read_error`.
     """
     message = f'{fmt} support requires {package}: pip install {package}'
     return message, {'format': 'error', 'error': f'{fmt} support requires {package}'}
+
+
+#: Characters of text one slide deck or workbook may contribute to the index.
+#: Same ceiling as a PDF: the caps are the whole bound on what a document costs.
+_PPTX_MAX_CHARS = 4_000_000
+_XLSX_MAX_CHARS = 4_000_000
+#: Wall-clock ceiling for one workbook, checked every ``_XLSX_DEADLINE_STRIDE``
+#: rows: a sparse sheet is one small member that yields millions of empty rows,
+#: which the character cap cannot see. Its archive ceilings are zip_vet's
+#: ``WORKBOOK_MAX_MEMBERS`` and ``WORKBOOK_MAX_EXPANDED_BYTES``.
+_XLSX_WALL_SECS = 120.0
+_XLSX_DEADLINE_STRIDE = 512
 
 
 #: The MAPI string properties a .msg indexes, each a top-level
@@ -332,10 +339,9 @@ def _msg_text(ole, size: int) -> str:
 
 
 class FileReader:
-    # Binary formats need optional runtime deps: .pdf -> pdfplumber, .docx ->
-    # python-docx and .msg -> olefile (all declared in setup.cfg). .pptx ->
-    # python-pptx is NOT declared, so .pptx is intentionally kept out of
-    # SUPPORTED even though _read_pptx exists.
+    # Binary formats need runtime deps, all declared in setup.cfg: .pdf ->
+    # pdfplumber, .docx -> python-docx, .msg -> olefile, .xlsx -> openpyxl and
+    # .pptx -> the hardened XML parser behind doc_parser (defusedxml).
     # Every source-code extension listed in ingestion.CODE_EXTS must appear here:
     # SUPPORTED is the folder-scan gate (folder_watcher._walk), and a source's
     # include_extensions can only narrow it, so an extension missing here is
@@ -343,7 +349,7 @@ class FileReader:
     # CODE_EXTS as a subset of this set.
     SUPPORTED = {
         '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
-        '.html', '.htm', '.docx', '.pdf', '.msg',
+        '.html', '.htm', '.docx', '.pdf', '.msg', '.pptx', '.xlsx',
         # AsciiDoc reads as text; .asc stays out because it also names PGP armor.
         '.adoc', '.asciidoc',
         '.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
@@ -354,6 +360,7 @@ class FileReader:
     _DISPATCH = {
         '.pdf': '_read_pdf',
         '.pptx': '_read_pptx',
+        '.xlsx': '_read_xlsx',
         '.docx': '_read_docx',
         '.msg': '_read_msg',
         '.html': '_read_html',
@@ -457,31 +464,82 @@ class FileReader:
         return '\n'.join(text for _label, text in outcome.segments), meta
 
     def _read_pptx(self, path: str) -> tuple[str, dict]:
-        if Presentation is None:
-            return _missing_dep('PPTX', 'python-pptx')
+        """A slide deck, one ``## Slide N`` section per slide that carries text.
+
+        The slide walk is ``doc_parser``'s: stdlib ``zipfile`` and the hardened XML
+        parser, with the archive-inventory vet and per-entry size cap every OOXML
+        read shares. Its strict mode raises, so a file that is not a readable deck
+        is the same ``format: 'error'`` result a bad ``.docx`` is. Strict mode
+        also bounds the slide parts it inflates, together, and the walk's wall
+        time. A deck with no slide text (pictures only) reads as empty text.
+        """
+        # Imported here, not at module scope: this module is on the gateway's
+        # boot import chain and only a deck read needs the XML parser.
         try:
-            prs = Presentation(path)
-            parts = []
-            for i, slide in enumerate(prs.slides, 1):
-                title = ''
-                body_parts = []
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        text = shape.text_frame.text.strip()
-                        if shape == slide.shapes.title:
-                            title = text
-                        else:
-                            body_parts.append(text)
-                notes = ''
-                if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
-                    notes = slide.notes_slide.notes_text_frame.text.strip()
-                section = f'## Slide {i}: {title}\n{chr(10).join(body_parts)}'
-                if notes:
-                    section += f'\n{notes}'
-                parts.append(section)
-            return '\n\n'.join(parts), {'format': 'pptx', 'slide_count': len(prs.slides)}
+            import defusedxml  # noqa: F401
+        except ImportError:
+            return _missing_dep('PPTX', 'defusedxml')
+        from kiro_crew.doc_parser import extract_slides
+        try:
+            with open(path, 'rb') as fh:
+                slides = extract_slides(
+                    path, max_chars=_PPTX_MAX_CHARS, fileobj=fh, strict=True,
+                    filename='deck.pptx',
+                )
         except Exception as e:
             return _read_error(e)
+        # The walk stops after the slide that meets the budget, so that slide
+        # can carry the deck past it (one slide part may inflate to the per-entry
+        # cap). Spend the budget across the slides in order: the slide that does
+        # not fit is cut to what is left, and none after it is kept.
+        total = sum(len(body) for _number, body in slides)
+        budget = _PPTX_MAX_CHARS
+        kept: list[tuple[int, str]] = []
+        for number, body in slides:
+            if budget <= 0:
+                break
+            body = body[:budget]
+            budget -= len(body)
+            kept.append((number, body))
+        text = '\n\n'.join(f'## Slide {number}\n{body}' for number, body in kept)
+        meta: dict = {'format': 'pptx', 'slide_count': len(kept)}
+        if total >= _PPTX_MAX_CHARS:
+            meta['truncated'] = True
+        return text, meta
+
+    def _read_xlsx(self, path: str) -> tuple[str, dict]:
+        """A workbook as one line per non-empty row, ``<sheet> · row <n>: a | b | c``.
+
+        Every line names its sheet and row, so a chunk cut from the middle of a
+        sheet still says where it came from. Cells are the values the writing
+        application cached (a formula reads as its last result); newlines inside
+        a cell become spaces. The rows come from the walk file grep reads workbooks
+        with (:func:`kiro_crew.workbook_rows.read_workbook_rows`), which vets the
+        archive before openpyxl inflates it. The text stops at ``_XLSX_MAX_CHARS``
+        and the read at ``_XLSX_WALL_SECS``, and either stop marks the result
+        ``truncated``. A file that is refused, cannot be parsed or breaks mid-read
+        is the same ``format: 'error'`` result a bad ``.docx`` is.
+        """
+        try:
+            import openpyxl  # type: ignore[import-untyped]  # noqa: F401
+        except ImportError:
+            return _missing_dep('XLSX', 'openpyxl')
+        try:
+            with open(path, 'rb') as fh:
+                walk = read_workbook_rows(
+                    fh, deadline=time.monotonic() + _XLSX_WALL_SECS, max_chars=_XLSX_MAX_CHARS,
+                    separator=' | ', stride=_XLSX_DEADLINE_STRIDE, labels_count=True,
+                    collapse_whitespace=True, max_members=WORKBOOK_MAX_MEMBERS,
+                    max_expanded_bytes=WORKBOOK_MAX_EXPANDED_BYTES,
+                )
+        except Exception as e:
+            return _read_error(e)
+        if walk.failure is not None:
+            return _read_error(walk.failure)
+        meta: dict = {'format': 'xlsx', 'sheet_count': walk.sheets}
+        if walk.cut:
+            meta['truncated'] = True
+        return '\n'.join(f'{label}: {cells}' for label, cells in walk.rows), meta
 
     def _read_docx(self, path: str) -> tuple[str, dict]:
         # Imported here, not at module scope: this module is on the gateway's

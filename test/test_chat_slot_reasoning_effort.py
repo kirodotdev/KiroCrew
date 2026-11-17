@@ -41,8 +41,9 @@ def _mock_state(slot: _ChatSlot | None = None, provider: object = None) -> Dashb
     state.sessions.get_provider = MagicMock(return_value=provider)
     if isinstance(provider, MagicMock):
         # A spec double answers every method with a mock; these sessions advertise
-        # no ultracode switch.
+        # no ultracode or Fast mode switch.
         provider.ultracode_enabled.return_value = None
+        provider.fast_mode_enabled.return_value = None
     return state
 
 
@@ -493,8 +494,7 @@ class TestChatSlotReasoningEffort:
     async def test_failed_reset_spares_concurrent_writes(self):
         # Commit-after-reset: the failure path touches nothing, so a value
         # written by a concurrent actor while the reset was failing survives
-        # -- restoring captured priors (the old rollback shape) would
-        # silently erase it.
+        # -- restoring captured priors instead would silently erase it.
         slot = _ChatSlot("test")
         slot.reasoning_effort = "high"
         state = _mock_state(slot)

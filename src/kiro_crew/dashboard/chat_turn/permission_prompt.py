@@ -273,8 +273,19 @@ async def _on_permission_prompt(
     # transport's boolean provenance as well.  It contains no
     # secret itself and prevents two different hidden commands
     # from collapsing to one durable trust pattern.
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.security.exfil import refuses
+
+    def _shown(text: str) -> str:
+        return redact_credentials(redact_exfiltration_urls(text)[0])[0]
+
+    # A grant names these bytes, so the refusal every gate reads decides: a
+    # credential read in full whatever the setting, or a URL the exfil scan flags.
     _command_grantable = (
-        bool(_full) and bool(_trust_key) and not event.tool_input_redacted and _safe_full == _full
+        bool(_full)
+        and bool(_trust_key)
+        and not event.tool_input_redacted
+        and not refuses(_full, _shown)
     )
     if _command_grantable:
         perm_meta["full_command"] = _safe_full
@@ -303,6 +314,13 @@ async def _on_permission_prompt(
     # canonical command.
     perm_meta["trust_grantable"] = "1"
     _override_offer = getattr(turn, "_deny_override", None)
+    if _override_offer is None:
+        # "Always allow this tool": the verified ``@server/tool`` this card may
+        # grant, or why not. Read off the loop (config and governance reads).
+        # Imported here: this body runs on the chat runner module's globals.
+        from kiro_crew.dashboard import always_allow_tool
+
+        perm_meta.update(await asyncio.to_thread(always_allow_tool.card_fields, event))
     if event.takes_rejection_reason and _override_offer is None:
         # The card may ask why: this backend hands a rejection's reason to the
         # model. Not on a deny-rule override card, whose rejection is the rule's
@@ -311,7 +329,7 @@ async def _on_permission_prompt(
     _base = _extract_base_command(_trust_key) if event.is_shell else ""
     _safe_base, _ = redact_exfiltration_urls(_base)
     _safe_base, _ = redact_credentials(_safe_base)
-    if _command_grantable and _base and _safe_base == _base:
+    if _command_grantable and _base and not refuses(_base, _shown):
         perm_meta["base_command"] = _safe_base
         perm_meta["trust_base_grantable"] = "1"
     # A deny-rules refusal the person may override (tool_approval): the card
@@ -338,6 +356,11 @@ async def _on_permission_prompt(
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
     slot.register_approval(str(event.request_id), fut, permission_row)
+    from kiro_crew.tracing import steps as trace_steps
+
+    # Answerable from here: its trace span starts now, though it opens below beside
+    # the crew-log request, after the cancellable Slack post (tracing/steps.py).
+    _trace_asked = trace_steps.asked_now()
     _decision_id = (
         "" if "resolved" in perm_meta else open_slot_approval(state, slot, str(event.request_id))
     )
@@ -548,6 +571,13 @@ async def _on_permission_prompt(
         tool=event.tool_name or "",
         reason=event.title or "",
     )
+    # Its span, closed beside the decision below; never awaits.
+    _trace_approval = trace_steps.approval_opened(
+        str(event.request_id),
+        session_key=session_key,
+        tool_call_id=event.tool_call_id or "",
+        since=_trace_asked,
+    )
     _approval_window = min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
     _unattended_wait = slot.unattended
     _approval_card: str | None = None
@@ -738,6 +768,13 @@ async def _on_permission_prompt(
             decision=_crew_log_decision,
             by=("host" if (_host_deny_cause or _host_cancelled or _host_stopped) else ""),
             cause=_host_deny_cause,
+        )
+        trace_steps.approval_closed(
+            _trace_approval,
+            approved=_crew_log_decision == "approved",
+            by=trace_steps.decided_by(
+                host=_host_cancelled or _host_stopped, cause=_host_deny_cause
+            ),
         )
         # The same attribution decides the approval hold: a decision
         # no host route made came from a person, and a loop paused for
@@ -941,7 +978,7 @@ async def _on_permission_prompt(
                 await asyncio.to_thread(pin_human_approval, cmd)
             # The transport floor judges the call again, so it gets the keys the
             # gate was judged with: an override's, or the session's overrides
-            # (none for almost every call, which then goes exactly as before).
+            # (none for almost every call, which then goes through unchanged).
             _floor_waivers = (
                 {"deny_waivers": _override_waivers(turn, _override_offer)}
                 if _override_offer is not None

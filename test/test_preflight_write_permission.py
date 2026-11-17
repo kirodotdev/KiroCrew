@@ -41,7 +41,6 @@ import shutil
 import subprocess
 import sys
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
@@ -738,18 +737,74 @@ class TestProbeTimeout:
     forever; expiry must be a distinct rc that the verdict logic reads as
     unknown - a WARNING that proceeds - never a hang and never a blocker."""
 
+    @staticmethod
+    def _spy_child_waits(monkeypatch, mod, bound):
+        """Record the waits ``mod.run`` takes on its child and the stop it sends.
+
+        The runner's module (push_guard) gets a ``subprocess`` whose ``Popen`` logs
+        ``("wait", timeout)`` per wait, and a ``_stop`` that logs ``("stop",)``
+        before stopping and reaping the child. A wait is refused on the spot
+        (``AssertionError`` out of ``run``) when it is the call blocking on the
+        child: an unbounded wait on a child no signal was sent to, or, before the
+        stop, a wait longer than *bound* (the bound the call was handed).
+        """
+        events: list = []
+        procs: list = []
+        runner_globals = mod.run_child.__globals__
+        real_stop = runner_globals["_stop"]
+
+        class _SpyPopen(subprocess.Popen):
+            stopping = False
+            signalled = False
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                unbounded = timeout is None and not self.signalled
+                if unbounded or not (self.stopping or (timeout or 0) <= bound + 1e-6):
+                    raise AssertionError(
+                        f"run() waited (timeout={timeout!r}) on a live child handed a {bound}s bound"
+                    )
+                return super().wait(timeout=timeout)
+
+            def send_signal(self, sig):
+                self.signalled = True
+                super().send_signal(sig)
+
+            def kill(self):
+                self.signalled = True
+                super().kill()
+
+        def _popen(*args, **kwargs):
+            proc = _SpyPopen(*args, **kwargs)
+            procs.append(proc)
+            return proc
+
+        def _stop(proc):
+            events.append(("stop",))
+            proc.stopping = True
+            real_stop(proc)
+
+        proxy = type(
+            "SubprocessSpy", (), {"__getattr__": lambda _self, name: getattr(subprocess, name)}
+        )()
+        proxy.Popen = _popen
+        monkeypatch.setitem(runner_globals, "subprocess", proxy)
+        monkeypatch.setitem(runner_globals, "_stop", _stop)
+        return events, procs
+
     def test_run_kills_hanging_subprocess_at_timeout(self, tmp_path, monkeypatch):
         """A subprocess that outlives the timeout is killed and reported as
-        rc 124 - the call returns promptly instead of blocking on the child."""
+        rc 124 - the call waits on the child for its timeout only, then stops and
+        reaps it, instead of blocking on the child."""
         monkeypatch.chdir(tmp_path)
         mod = _preflight_module()
         monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(tmp_path))
-        start = time.monotonic()
+        events, procs = self._spy_child_waits(monkeypatch, mod, bound=1)
         rc, out, err = mod.run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=1)
-        elapsed = time.monotonic() - start
         assert rc == 124
         assert "timed out" in err
-        assert elapsed < 15, "run() blocked on the hanging child instead of killing it"
+        assert events[:2] == [("wait", 1), ("stop",)], events
+        assert len(procs) == 1 and procs[0].returncode is not None, "the child was not reaped"
 
     def test_a_call_without_a_bound_gets_the_git_bound(self, tmp_path, monkeypatch):
         """gh auth status, gh pr view and the rev-list pass no timeout; none is unbounded."""
@@ -757,10 +812,11 @@ class TestProbeTimeout:
         mod = _preflight_module()
         monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(tmp_path))
         monkeypatch.setattr(mod, "GIT_TIMEOUT_S", 1)
-        start = time.monotonic()
+        events, procs = self._spy_child_waits(monkeypatch, mod, bound=1)
         rc, _, err = mod.run([sys.executable, "-c", "import time; time.sleep(30)"])
         assert rc == 124 and "timed out" in err
-        assert time.monotonic() - start < 15
+        assert events[:2] == [("wait", 1), ("stop",)], events
+        assert len(procs) == 1 and procs[0].returncode is not None
 
     def test_run_without_timeout_expiry_passes_through(self, tmp_path, monkeypatch):
         """A subprocess that finishes inside the bound is unaffected."""

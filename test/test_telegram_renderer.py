@@ -243,9 +243,9 @@ class TestRenderer:
         assert "| a | b |" in sealed, "the table text survives inside the pre block"
 
     def test_the_degraded_path_keeps_prose_formatting_around_the_table(self) -> None:
-        # Regression: wrapping the WHOLE segment in <pre> made a prose+table
-        # reply render worse than before the feature existed -- every bold, link
-        # and inline-code span was lost and `**` markers showed up literally.
+        # Wrapping the WHOLE segment in <pre> would make a prose+table reply
+        # render worse than plain text -- every bold, link and inline-code span
+        # lost and `**` markers shown literally.
         # On a server without Rich Messages this is the permanent path, so it
         # must never be a downgrade. Only the table run may be monospace.
         text = "Here is the **summary**:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nSee `docs` too."
@@ -495,7 +495,7 @@ class TestRenderer:
         return cli
 
     def test_rotation_keeps_an_open_fence_open_in_the_retained_tail(self) -> None:
-        # Regression: mid-stream the source fence is still open (the model has
+        # Mid-stream the source fence is still open (the model has
         # not emitted its closing ``` yet). _split_markdown balances each chunk
         # with a synthetic closer, which is right for sealed chunks but wrong for
         # the tail we keep streaming into: later tokens would land after that

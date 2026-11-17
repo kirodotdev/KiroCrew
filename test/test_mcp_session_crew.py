@@ -86,6 +86,13 @@ def test_create_refuses_a_local_only_field_before_sending():
     assert client.calls == []
 
 
+def test_create_forwards_agent_kind_for_the_gateway_to_judge():
+    client = _Client({"target": "chat-77", "crew": "inst"})
+    args = {"crew": "lab", "agent": "kirocrew-worker", "agent_kind": "template"}
+    tools.run_crew_create(args, _ctx(client))
+    assert client.calls == [("POST", "/api/session-control/create", args)]
+
+
 def test_create_renders_a_refusal():
     out = tools.run_crew_create({"crew": "lab"}, _ctx(_Client(refuse=_REFUSAL)))
     assert out.startswith("Error: could not create a session on that crew: nope")

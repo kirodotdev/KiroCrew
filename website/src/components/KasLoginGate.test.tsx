@@ -530,6 +530,51 @@ describe('KasLoginGate', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
   })
 
+  it('company SSO starts with the gateway default and stays editable', async () => {
+    kasLoginStatus.mockResolvedValue({
+      authenticated: false,
+      provider: null,
+      identity: null,
+      transport: 'device',
+      company_sign_in: { start_url: 'https://default-org.awsapps.com/start', region: 'us-east-1' },
+    })
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    const input = screen.getByLabelText('Company sign-in URL')
+    expect(input).toHaveValue('https://default-org.awsapps.com/start')
+    expect(screen.getByLabelText('AWS Region (optional)')).toHaveValue('us-east-1')
+    // The form says where the URL came from, tied to the field.
+    const note = screen.getByTestId('kas-login-sso-prefilled')
+    expect(note).toHaveTextContent("Filled in from your organization's settings.")
+    expect(input.getAttribute('aria-describedby')).toBe(note.id)
+    fireEvent.change(input, { target: { value: 'https://other.awsapps.com/start' } })
+    expect(screen.queryByTestId('kas-login-sso-prefilled')).toBeNull()
+    expect(input).not.toHaveAttribute('aria-describedby')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(kasLoginBeginDevice).toHaveBeenCalledWith('idc', {
+      start_url: 'https://other.awsapps.com/start',
+      region: 'us-east-1',
+    })
+  })
+
+  it('company SSO says nothing about the gateway default when this browser remembered a URL', async () => {
+    localStorage.setItem(COMPANY_SIGN_IN_URL_KEY, 'https://mine.awsapps.com/start')
+    kasLoginStatus.mockResolvedValue({
+      authenticated: false,
+      provider: null,
+      identity: null,
+      transport: 'device',
+      company_sign_in: { start_url: 'https://default-org.awsapps.com/start', region: 'us-east-1' },
+    })
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('https://mine.awsapps.com/start')
+    expect(screen.queryByTestId('kas-login-sso-prefilled')).toBeNull()
+  })
+
   it('company SSO normalizes a remembered scheme-less URL before submitting', async () => {
     localStorage.setItem(COMPANY_SIGN_IN_URL_KEY, 'example.awsapps.com/start')
     renderWithProviders(<KasLoginGate />)

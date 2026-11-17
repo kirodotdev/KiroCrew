@@ -4,7 +4,7 @@
 
 `src/kiro_crew/channel.py`, `src/kiro_crew/dashboard/handlers_channel.py`, and `website/src/pages/ChannelPage.tsx` implement persistent multi-agent workspaces where an orchestrator coordinates specialist agents through channel messages, threads, and @mentions.
 
-The UI is a hidden, opt-in built-in app (`name: channels`, `defaultEnabled: false`) on macOS, Linux, and Windows. Enable it with `kirocrew app enable channels`. The app is manifest-only: the dashboard server always initializes the core `ChannelManager` and registers `/api/channels` routes; enabling the app exposes its `/channels` page rather than registering a separate backend.
+The UI is a core page at `/channels` on macOS, Linux, and Windows, behind the opt-in setting `dashboard.channels_enabled` (default off). It was the hidden, manifest-only built-in app `channels` (`defaultEnabled: false`), whose enabled state was the only thing it kept; that app folded into core ([app-kit-platform](app-kit-platform.md#folding-a-built-in-into-core)), and the boot cleanup carries an on record into the setting before it retires the record. Turn it on with `kirocrew app enable channels` (which writes the setting) or `kirocrew config set dashboard.channels_enabled true`. The setting decides only whether the page has a sidebar row and a Search Everywhere result: the dashboard server always initializes the core `ChannelManager` and registers `/api/channels`, and the `/channels` route always opens the page, exactly as while it was an app. Its Settings row (Display > View, `ChannelsSetting.tsx`) is drawn, and offered by a settings search, only while the setting is on, as the app's Library card was listed only while it was enabled.
 
 ## Problem
 
@@ -117,7 +117,7 @@ No lock guards any of this. What makes the pair decidable against the index the 
 
 ## Security
 
-- `_stream_task` redacts credentials and exfiltration URLs from streamed agent output, tool status, and approval content before channel publication.
+- `_stream_task` redacts credentials, inside URLs too, from streamed agent output, tool status, and approval content before channel publication.
 - A reply that carries a redaction placeholder is followed by the shared `messaging.renderer.redaction_notice`, counted with `count_redaction_tags` over the posted reply, so a reader learns a pasted command or link will not work as-is. The notice is a `system` message in the reply's thread, posted with `notify_members=False`, and is best-effort: a failed post is logged and the reply stands. `test/test_channel_redaction_notice.py` pins it.
 - `CHANNEL_AGENT_BLOCKED_TOOLS` and `_blocked_tool_named` contain direct-to-user messaging, the Slack history read, session-control, and work-ledger operations so a channel agent cannot move channel content into a private dashboard session or another channel's messages into its own thread, take control of one, or write into another dispatch's decision record.
 - The same list carries `CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS`, the verbs that start work outside the channel agent's own turn (a descendant agent, a workflow, the task runner, a webhook-driven session, a preview pod). A descendant does not carry the `channel:` identity, so it would hold the full default toolset; the verbs are therefore refused at the channel agent's own hop, at the permission-request matcher and again at MCP dispatch (`mcp_core._deny_channel_agent_dispatch`), so an approval cannot buy them. The one passthrough tool with a dispatch operation, `ops_mission_control_api`, holds `POST /rotation/arm` at the app route that serves it, so its read surface stays reachable. The observe-and-tear-down verbs (`spawn_list`, `spawn_status`, `spawn_release`, `workflow_status`, `workflow_result`, `workflow_list`, `workflow_cancel`, `workflow_library_list`, `pod_ls`, `pod_status`, `pod_down`) are left off on purpose: they read or end a context that already exists and start no turn.
@@ -154,7 +154,8 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 
 | File | Purpose |
 |---|---|
-| `src/kiro_crew/apps/builtins/channels/app.json` | Hidden opt-in app manifest, platform declaration, permissions, and `/channels` page registration. |
+| `src/kiro_crew/apps/builtins/__init__.py` | `channels` in `_MIGRATED_BUILTINS`, `_FOLDED_BUILTIN_SWITCHES` (to `dashboard.channels_enabled`) and `_FOLDED_OFF_BY_DEFAULT`; the carry is `apps/builtin_fold.py`. |
+| `website/src/surfaces/surfaceData.ts` | The `channels` surface: nav id, Apps group, `configSwitch` with `configSwitchDefault: false`, `formerApp`. |
 | `src/kiro_crew/channel.py` | Channel model, routing, persistence, containment, and agent execution loop. |
 | `src/kiro_crew/channel_spec_hooks.py` | The member turn's gate on its agent spec's own PreToolUse hooks. |
 | `src/kiro_crew/dashboard/handlers_channel.py` | Validated channel REST handlers, agent lifecycle calls, approvals, presets, and context resets. |
@@ -162,6 +163,7 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 | `website/src/pages/ChannelPage.tsx` | Channel workspace UI, WebSocket reconciliation, threads, presets, and agent controls. |
 | `website/src/api/client/agentChannels.ts` | Encoded channel API client methods, exposed on `api` by `website/src/api/client.ts`. |
 | `test/test_channel.py` | Model, routing, capacity, and persistence coverage. |
+| `test/test_channels_fold.py` | The retired app record's state carried into `dashboard.channels_enabled`, and `kirocrew app enable/disable channels` writing it. |
 | `test/test_channel_blocked_tools.py` | Containment ordering and blocked-tool-name coverage. |
 | `test/test_channel_agent_spec_hooks.py` | The agent spec's own PreToolUse hooks on a member's permission requests. |
 | `test/test_channel_trusted_patterns.py` | Exact/base shell-command trust derivation, binding, and auto-approval coverage. |

@@ -403,6 +403,50 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
       text: 'p is throttled — running on f until p recovers.',
       tone: 'warn',
     })
+    expect(resolveGatewayNotice(row('notice', 'model_server_error_fallback', { primary: 'p', fallback: 'f' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'p keeps returning server errors — running on f until p recovers.',
+      tone: 'warn',
+    })
+    // The mode a harness's session moved to, by the name the session advertised.
+    expect(resolveGatewayNotice(row('notice', 'harness_mode_changed', { mode: 'Plan' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'This session switched to Plan mode.',
+      tone: 'info',
+    })
+    // A harness's background task that ended, with its own summary when it sent one.
+    expect(
+      resolveGatewayNotice(row('notice', 'harness_task_completed', { task: 'Sleep then echo', detail: 'exit code 0' }), [], 0),
+    ).toEqual({ card: 'notice', text: 'Background task completed: Sleep then echo — exit code 0', tone: 'info' })
+    expect(resolveGatewayNotice(row('notice', 'harness_task_failed', { task: 'npm test', detail: '' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'Background task failed: npm test',
+      tone: 'warn',
+    })
+    expect(resolveGatewayNotice(row('notice', 'harness_task_stopped', { task: 'watch logs' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'Background task stopped: watch logs',
+      tone: 'info',
+    })
+    // Claude Code retrying a request: the category it named, worded by the catalog.
+    expect(
+      resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 2, max: 10, reason: 'overloaded', status: 529 }), [], 0),
+    ).toEqual({ card: 'notice', text: 'Claude is retrying a failed request (overloaded), attempt 2 of 10.', tone: 'warn' })
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: 'rate_limit' }), [], 0)?.text).toBe(
+      'Claude is retrying a failed request (rate limit), attempt 1 of 3.',
+    )
+    // A category this build does not word is its own token; no category, the HTTP status.
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: 'invalid_request' }), [], 0)?.text).toBe(
+      'Claude is retrying a failed request (invalid request), attempt 1 of 3.',
+    )
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: '', status: 503 }), [], 0)?.text).toBe(
+      'Claude is retrying a failed request (HTTP 503), attempt 1 of 3.',
+    )
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: '' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'Claude is retrying a failed request, attempt 1 of 3.',
+      tone: 'warn',
+    })
   })
 
   it('classifies pre-token history rows by their wording', () => {
@@ -422,9 +466,6 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
     expect(
       resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
-    ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
-    expect(
-      resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
     ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
@@ -580,9 +621,16 @@ describe('wire parity with the gateway constants', () => {
     [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\s*=\s*"([^"]+)"/gm)].map((m) => m[1]),
   )
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
+  // Every column-0 assignment of a token name, whatever its right-hand side: the
+  // strict scan above must read each one, or a token written in another shape
+  // (an annotation, single quotes) drops out of the per-token check below. Compared
+  // with this scan rather than a stored total, which every PR adding a token edits.
+  const assigned = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\b\s*[:=]/gm)])
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(85)
+    expect(backend.length).toBeGreaterThan(0)
+    expect(backend).toHaveLength(assigned.length)
+    expect(new Set(backend).size).toBe(backend.length)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 
@@ -624,6 +672,13 @@ describe('the composed cards carry no English fragment in a non-English locale',
     const waited = resolveGatewayNotice(row('error', 'background_turn_abandoned', { waited_minutes: 5 }), [], 0)?.text ?? ''
     expect(waited).toContain('\u5206\u949f')
     expect(waited).not.toMatch(/minutes?/)
+  })
+
+  it('words a retry\'s error category in zh-CN', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const retry = resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 2, max: 10, reason: 'rate_limit' }), [], 0)?.text ?? ''
+    expect(retry).toContain('\u901f\u7387\u9650\u5236')
+    expect(retry).not.toMatch(/rate|limit/)
   })
 })
 

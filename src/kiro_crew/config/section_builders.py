@@ -65,11 +65,13 @@ from kiro_crew.config.memory_sections import (
     STARTUP_RECALL_TIMEOUT_MAX_SECS,
     KnowledgeConfig,
     MemoryConfig,
+    MemoryProviderConfig,
     SessionSummaryConfig,
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
     dream_mode_from,
+    extraction_instructions_from,
     kind_routing_mode_from,
     lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
@@ -147,7 +149,7 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
-from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN, coerce_dispatch_tags
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -244,6 +246,9 @@ def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
         remote_dispatch_retire_minutes=_positive_gb(
             work_ledger_data, "remote_dispatch_retire_minutes"
         ),
+        remote_dispatch_tags=list(
+            coerce_dispatch_tags(work_ledger_data.get("remote_dispatch_tags"))
+        ),
     )
 
 
@@ -301,6 +306,19 @@ def _history_idle_hours(section: SectionReader) -> float:
     return hours
 
 
+def _embedding_idle_evict_secs(raw: object) -> int | str:
+    """``"auto"``, or a stored number of seconds the operator chose.
+
+    The same reading as ``embeddings_settings.embedding_idle_evict_secs``, which the
+    evictor uses: a non-negative number is kept (``0`` never unloads; capped at a
+    year), and anything else, ``"auto"`` included, is ``"auto"``, which picks by
+    machine size at run time.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < 0:
+        return "auto"
+    return min(int(raw), 365 * 24 * 3600)
+
+
 def _build_memory_config(memory_data: dict) -> MemoryConfig:
     section = SectionReader(MemoryConfig, memory_data)
     return MemoryConfig(
@@ -315,9 +333,8 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         # deliberate opt-in to the interactive pool.
         embedding_bulk_threads=section.read("embedding_bulk_threads", _safe_int, 0, 256),
         embedding_bulk_duty=section.read("embedding_bulk_duty", _safe_float, 0.05, 1.0),
-        # 0 is the documented "never unload" sentinel, so the floor is 0.
-        embedding_idle_evict_secs=section.read(
-            "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
+        embedding_idle_evict_secs=_embedding_idle_evict_secs(
+            section.get("embedding_idle_evict_secs")
         ),
         embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
         embedding_child_process=section.read("embedding_child_process", _safe_bool),
@@ -362,6 +379,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        extraction_instructions=extraction_instructions_from(
+            section.get("extraction_instructions")
+        ),
         lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
         lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
         lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
@@ -377,6 +397,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             "startup_recall_timeout_secs", _safe_float, 0.0, STARTUP_RECALL_TIMEOUT_MAX_SECS
         ),
         migrated=section.get("migrated"),
+        provider=MemoryProviderConfig.from_raw(memory_data.get("provider")),
     )
 
 
@@ -491,6 +512,8 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
         # schema validator before this runs, so it reads as absent and the default
         # applies rather than a guess at what the text meant.
         honour_auto_approve=section.get("honour_auto_approve") is True,
+        # Opt-in, off by default: only a real ``true`` turns the write fence on.
+        protect_kiro_permission_rules=section.get("protect_kiro_permission_rules") is True,
     )
 
 
@@ -764,6 +787,9 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
+        # Default True: a missing or unparseable value keeps Slack conversations
+        # listed, as they were before the setting existed.
+        show_in_session_list=section.read("show_in_session_list", _safe_bool),
         # Default False for all three: an unparseable value must never declare the
         # app an agent, open code channels or let a code channel dispatch work.
         agent_sessions=section.read("agent_sessions", _safe_bool),

@@ -801,7 +801,7 @@ class TestRefreshRegistries:
 
     @pytest.mark.asyncio
     async def test_refresh_unconfigured_repo_404(self, tmp_path, monkeypatch):
-        # GPT 5.6 MEDIUM: a valid-but-unconfigured repo matches no registry;
+        # A valid-but-unconfigured repo matches no registry;
         # the endpoint must return 404, not a misleading ok:true "synced".
         _setup_env(tmp_path, monkeypatch)[1].write_text(
             json.dumps(

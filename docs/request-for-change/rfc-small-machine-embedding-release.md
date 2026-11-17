@@ -1,23 +1,30 @@
 ---
 title: Small machines release the embedding model sooner, and nothing waits for it
-status: draft
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: 911bde870d
+last-audited: 2026-11-15
+audited-at: 52a3af8267a3
 doc-pr: null
-implementation-prs: []
-tracking-issues: [26319]
+implementation-prs: [37128]
+tracking-issues: [26319, 37556]
 supersedes: []
 superseded-by: []
 ---
 
 # RFC: Small machines release the embedding model sooner, and nothing waits for it
 
-Status: draft. Acceptance requested from a maintainer; the status flips to `accepted`
-when one records it in the index. This document lands first because it changes a
-shipped default (`memory.embedding_idle_evict_secs`), and the First Principles lane
-reads that decision off the base branch. Every code reference was read at `911bde870d`.
+Status: implemented. The repository owner asked for this change in the conductor chat on
+2026-11-13 and accepted this document on 2026-11-14. It is implemented by
+[#37128](https://github.com/kirodotdev/KiroCrew/pull/37128). Section 2.6 holds the
+Windows rows, measured on a real 16 GiB machine, and the macOS rows, which are simulated
+on a 24 GB Mac. Runs on a real Mac and a real Linux machine with 16 GB or less, and the
+channel row on Windows, are deferred to
+[#37556](https://github.com/kirodotdev/KiroCrew/issues/37556) (Limit 2). This document
+landed first because it changes a shipped default (`memory.embedding_idle_evict_secs`),
+and the First Principles lane reads that decision off the base branch. The code
+references of sections 1 to 2.5 were read at `911bde870d`, before the implementation;
+section 2.6 was measured at `52a3af8267a3`, a commit of #37128.
 
 ## 1. Problem
 
@@ -137,13 +144,71 @@ queued, while inference holds the lock, and while a load is running. These refus
 come with [#36612](https://github.com/kirodotdev/KiroCrew/pull/36612); the
 implementation of this RFC builds on them and changes none of them.
 
+### 2.6 Measured on Windows, macOS and a larger Linux machine
+
+Windows and macOS each ran two packaged builds, n = 3, one gateway at a time: "before" is the
+merge-base `e5d20ea7417e`, "after" is the implementation at `52a3af8267a3`. The later
+heads of #37128 carry the same `src/` and `test/` change, rebased.
+
+**Windows: a real 16 GiB machine, nothing patched.** One Windows Server 2025 cloud
+virtual machine, run at 16 GiB (15,996 MiB reported, 4 CPUs) and at 32 GiB (32,124 MiB
+reported, 8 CPUs). "Memory part" is the `memory=` share of the turn's context build,
+the part that waits for the model.
+
+| Row | Before | After |
+|---|---|---|
+| 16 GiB: `small_memory_host()` | not in this build | true |
+| 16 GiB: `"auto"` and a missing value resolve to | 3600 s | 600 s |
+| 16 GiB: new dashboard chat, model unloaded, sent about 10.1 s after the open: the model loads | at the send (10.839, 10.711, 10.695 s after the open) | at the open (0.645, 0.715, 0.744 s after it) |
+| 16 GiB: that chat's memory part | 515, 578, 563 ms | 62, 172, 125 ms |
+| 16 GiB: send to a chat that was never opened, model unloaded: memory part | under 1 ms, 3 of 3 | under 1, 15, under 1 ms |
+| 16 GiB: `"auto"`, unload line after the turn ended | | 610.1, 593.3, 593.7 s (under 600 s where the turn's last embed came a few seconds before its end) |
+| 16 GiB: gateway working set just before the unload, and 20 s after it | | 1,359.8, 1,349.6, 1,350.9 MiB, then 304.7, 308.0, 308.4 MiB |
+| 16 GiB: stored 3600 read as; report row of 2.2 | 3600; none | 3600; shown |
+| 32 GiB: `small_memory_host()`; `"auto"` resolves to | not in this build; 3600 s | false; 3600 s |
+| 32 GiB: new dashboard chat, model unloaded: the model loads | | at the send, 3 of 3 |
+| 32 GiB: stored 3600 read as; report row of 2.2 | 3600; none | 3600; none |
+
+The Windows run took the dashboard paths only. It did not run a channel message.
+
+**macOS: simulated small machine.** A 24 GB Mac (`hw.memsize` 24,576 MiB). No Mac with
+16 GB or less was available, so for the last column `platform_compat.host_total_mib`
+was patched to return 16,384; `small_memory_host()` and its threshold ran as shipped.
+"Load wait" is the measure of 2.4, taken with the same loopback Telegram stand-in and
+read from a logging-only line added to every build in the table.
+
+| Row | Before | After, size reading untouched (24 GB) | After, reading set to 16,384 MiB |
+|---|---|---|---|
+| `host_total_mib()`; `small_memory_host()` | 24,576; not in this build | 24,576; false | 16,384; true |
+| `"auto"` resolves to | 3600 s | 3600 s | 600 s |
+| New channel conversation, model unloaded: load wait | 674, 696, 730 ms | 665, 677, 715 ms | 0, 0, 0 ms |
+| New dashboard chat opened as the UI opens it, model unloaded: load wait | 829, 1,281, 864 ms | 753, 957, 896 ms | 0, 0, 0 ms |
+| Dashboard send with no focus frame, model unloaded: load wait | 675, 681, 682 ms | 675, 681, 682 ms (675, 697, 687 ms in an earlier run) | 625, 623, 634 ms (640, 645, 952 ms in an earlier run) |
+| Follow-up in a live conversation: load wait | 0 ms | 0 ms | 0 ms |
+| Stored 3600: the model 660 s after the last turn | | | still loaded |
+| Then switched to `"auto"` | | | `Unloaded the embedding model after 600 s idle`; gateway RSS 1,837 MB, then 384 MB |
+| Stored 3600 read as; report row of 2.2 | 3600; none | 3600; none | 3600; shown |
+
+The middle column shows the macOS memory reading returns the machine's real size
+and a larger Mac is unchanged. The last column shows the small path behaves as it does
+on Linux once the machine counts as small. It does not show a real small Mac counting
+as small (Limit 2).
+
+The dashboard send with no focus frame can still wait (Limit 5): its load starts at
+the send, and on this Mac the dashboard's own build started before the load finished.
+
+**Linux, larger machine.** On a 30 GB Linux machine (31,560 MiB reported) the after
+build answered `small_memory_host()` false, resolved `"auto"` and a missing value to
+3600 s, kept a stored 1800, 3600 and 0, showed no report row, and ran `keep_warm` 0
+times across 3 gateways and 6 dashboard sends.
+
 ## 3. Guarantees
 
 1. A machine that is not small behaves exactly as today, for every stored value, and
    runs no early load.
 2. A stored number is always honoured; only `"auto"` (or no value) picks by size.
 3. No dashboard turn and no channel message waits for a reload that the early load
-   could have started first.
+   could have started first. A dashboard send with no earlier signal is Limit 5.
 4. The model is never unloaded while an embed, a sweep or a load is in flight or queued.
 5. Vectors are byte-identical: only when the model is resident changes.
 
@@ -155,13 +220,28 @@ implementation of this RFC builds on them and changes none of them.
    2.2 s warm), and a new conversation then waits for the rest. That happens today
    after an hour idle; a 10-minute timer makes it more likely only if the page cache
    drops the file within those minutes.
-2. macOS and Windows rows are owed before the implementation merges; they run the same
-   measurement on real 16 GiB-or-smaller hardware, where `small_memory_host()` must
-   answer true unpatched.
+2. Only Windows ran on a real machine with 16 GiB or less: there (2.6)
+   `small_memory_host()` answers true unpatched. The Linux rows of 2.4 come from a
+   host with more than 16 GiB running a prototype build whose admission early load
+   was always on; they measure the early load, not the size rule. The macOS rows of
+   2.6 are simulated: a 24 GB Mac with the total-memory reading set to 16,384 MiB,
+   because no Mac with 16 GB or less was available. A run on a real Mac with 16 GB or
+   less is deferred and tracked in
+   [#37556](https://github.com/kirodotdev/KiroCrew/issues/37556), together with the
+   size rule on a real small Linux machine and the channel row on Windows, which the
+   Windows run did not take. Deferring the missing rows with a tracking issue is one
+   of the two options the reviewer of #37128 offered on 2026-11-15.
 3. The early load also fires on a follow-up, which does not need it, so a busy channel
    keeps the model loaded. That costs some of the memory saving, never time.
 4. Unattended turns (cron, heartbeat, conductor workers) get no early signal. Their
    first embed after an unload waits for the reload, with no person waiting on it.
+5. A dashboard send that arrives with no focus frame before it gets no head start: the
+   load starts at the send, so its build can wait for the reload. On the simulated
+   macOS small path of 2.6 it waited 623 to 952 ms over two runs of three (675, 681,
+   682 ms before). On Windows the same send did not wait before or after the change
+   (memory part under 1 ms before; under 1, 15 and under 1 ms after), so the row shows
+   no change there; why the two platforms differ was not measured. The dashboard UI
+   sends the focus frame whenever a chat opens.
 
 ## 5. Rollback
 

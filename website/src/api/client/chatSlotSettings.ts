@@ -84,6 +84,11 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         models_backend?: string
         /** The session's ultracode switch; present only while its harness advertises one. */
         ultracode?: boolean
+        /** The session's Fast mode switch; present only while its harness advertises one. */
+        fast?: boolean
+        /** Why that switch cannot be turned on, in the harness's own words (`""` when
+         *  it gives none); present only while it reads off and something blocks it. */
+        fast_unavailable?: string
       }>,
     /** The steering files this chat receives, read-only (`handlers/chat_steering.py`). */
     chatSlotSteering: (slot: string) =>
@@ -152,6 +157,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** Turn the live session's ultracode switch on or off; answers the value it reads back. */
     chatSlotUltracode: (slot: string, enabled: boolean) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/ultracode', { enabled }).then(j) as Promise<{ ok: boolean; ultracode: boolean }>,
+    /** Turn the live session's Fast mode switch on or off; answers the value it reads back. */
+    chatSlotFastMode: (slot: string, enabled: boolean) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/fast', { enabled }).then(j) as Promise<{ ok: boolean; fast: boolean }>,
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>

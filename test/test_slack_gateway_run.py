@@ -315,9 +315,9 @@ class TestRunMethod:
             write_started.set()
             # Held until the finally below releases it, so the shutdown finds the
             # write in flight however long the boot before it takes. No timeout on
-            # purpose: any bound here is a wall-clock bound on run()'s boot, which is
-            # the race this replaced (the old 5 s stall ended on its own under a
-            # slow boot), and the finally always releases it.
+            # purpose: any bound here is a wall-clock bound on run()'s boot, which
+            # races a slow boot (a fixed 5 s stall can end before the shutdown
+            # arrives), and the finally always releases it.
             # flake-ok: pre-existing unbounded stall the finally always releases, moved verbatim; tracked for a de-flake pass
             stall.wait()
             original_write_marker(port)  # late write republishes the marker

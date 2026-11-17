@@ -52,25 +52,29 @@ import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
-import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
+import { installedArt, installedArtList, installedArtListAligned, installedIcon, installedPageIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric, fmtCompact, fmtNumber, fmtList } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
 import AppDetailLinks from './AppDetailLinks'
 import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
+import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
+import AppDetailBotGrants, { StagedBotScopes, stagedBotScopes } from './AppDetailBotGrants'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
-import { memoryAccessLabel } from '../components/appstore/memoryAccessLabel'
+import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { ChatSlotsBox, UserSessionReachBox, UserSessionReachStaged, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
+import { ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
+import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
 // its local-art second chance), `appDetailPageTypes.ts` (the page's view
-// model) and `appDetailPageLabels.ts` (the origin and lifecycle words).
+// model), `appDetailPageLabels.ts` (the origin and lifecycle words) and
+// `appDetailPageStagedGrants.ts` (what the approved set holds back).
 // Callers import the two art components from this module.
 export { HeroBanner, ScreenshotGallery }
 
@@ -107,33 +111,15 @@ export default function AppDetailPage() {
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
-  // Declared api/events entries outside the approved set (`approvedGrants`) are
-  // held back: the app runs without them until the owner approves them here.
-  const stagedApi = app?.approvedGrants
-    ? (app.manifest?.permissions?.api || []).filter(p => !(app.approvedGrants?.api || []).includes(p))
-    : []
-  const stagedEvents = app?.approvedGrants
-    ? (app.manifest?.permissions?.events || []).filter(e => !(app.approvedGrants?.events || []).includes(e))
-    : []
-  // Link-preview hosts and text patterns an update widened wait the same way.
-  const stagedLinkHosts = app?.linkPreviewGrant?.stagedHosts || []
-  const stagedLinkPatterns = app?.linkPreviewGrant?.stagedTextPatterns || []
-  const stagedFullUrl = app?.linkPreviewGrant?.stagedFullUrl === true
-  // Message-action reach an update widened (the user role, markdown, a new action).
-  const stagedMessageActions = app?.messageActionGrant?.staged || []
-  const declaredMessageActions = (app?.manifest as { contributes?: { messageActions?: unknown } } | undefined)?.contributes?.messageActions
-  // So do link-open hosts and whole URLs for opened links.
-  const stagedOpenHosts = app?.linkOpenGrant?.stagedHosts || []
-  const stagedOpenFullUrl = app?.linkOpenGrant?.stagedFullUrl === true
-  // A composer button an update added waits the same way.
-  const stagedComposerActions = app?.composerActionGrant?.staged || []
-  // Selection actions an update added or changed (a new source, more text, a new effect).
-  const stagedSelection = app?.selectionActionGrant?.staged || []
-  const declaredSelectionActions = (app?.manifest as { contributes?: { selectionActions?: unknown } } | undefined)?.contributes?.selectionActions
-  // An update that added `permissions.workerAutoApprove` waits the same way.
-  const stagedWorkerAutoApprove = app?.workerAutoApproveGrant?.staged === true
-  const stagedUserSessionReach = app?.userSessionReachGrant?.staged || []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  const {
+    stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
+    stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
+    stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, hasStagedGrants: hasOtherStagedGrants,
+  } = stagedGrantsOf(app)
+  // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
+  const stagedBots = stagedBotScopes(app)
+  const hasStagedGrants = hasOtherStagedGrants || stagedBots.length > 0
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -363,6 +349,8 @@ export default function AppDetailPage() {
             selectionActionGrant: installed.selectionActionGrant,
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
             userSessionReachGrant: installed.userSessionReachGrant,
+            desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
+            frameSourcesGrant: installed.frameSourcesGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -386,17 +374,6 @@ export default function AppDetailPage() {
           // since the app IS installed those paths resolve against its own
           // install directory through `installedArt` — no repo identifier, no
           // clone, no network.
-          // A page's own icon ships inside the app's UI bundle, not at the repo
-          // root, so a relative value resolves against the app's UI asset route —
-          // the same base the rail and the command palette use. A cross-origin
-          // value is refused here for the same reason it is everywhere else on
-          // this path: the manifest is untrusted, and requesting it would leak the
-          // viewer to whatever host it names.
-          const pageIcon: unknown = m.ui?.pages?.[0]?.iconUrl
-          const pageIconKind = classifyManifestArt(pageIcon)
-          const pageIconUrl = pageIconKind === 'same-origin' ? pageIcon as string
-            : pageIconKind === 'relative' ? `/apps/${installed.name}/ui/${pageIcon as string}`
-              : ''
           setApp({
             name: installed.name,
             displayName: installed.displayName || m.displayName || installed.name,
@@ -424,7 +401,7 @@ export default function AppDetailPage() {
             // through the same resolver rather than straight to `<img>`, so a
             // manifest naming an external host is refused on this surface too.
             iconUrl: registryEntry?.iconUrl
-              || installedIcon(m.iconPath, m.iconUrl, installed.name) || pageIconUrl || '',
+              || installedIcon(m.iconPath, m.iconUrl, installed.name) || installedPageIcon(m.ui?.pages?.[0]?.iconUrl, installed.name) || '',
             iconUrlDark: registryEntry?.iconUrlDark
               || installedIcon(m.iconPathDark, m.iconUrlDark, installed.name) || '',
             // The app IS installed on this branch, so its icon bytes are on
@@ -499,6 +476,8 @@ export default function AppDetailPage() {
             selectionActionGrant: installed.selectionActionGrant,
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
             userSessionReachGrant: installed.userSessionReachGrant,
+            desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
+            frameSourcesGrant: installed.frameSourcesGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -1171,6 +1150,7 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              <StagedBotScopes scopes={stagedBots} />
               {stagedLinkHosts.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_hosts')}</div>
@@ -1214,6 +1194,16 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedFrameSources.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_frame_sources')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1" data-testid="staged-frame-sources">
+                    {stagedFrameSources.map(o => (
+                      <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
               {stagedComposerActions.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
@@ -1234,13 +1224,10 @@ export default function AppDetailPage() {
                   </ul>
                 </div>
               )}
-              {stagedOpenFullUrl && (
-                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>
-              )}
-              {stagedWorkerAutoApprove && (
-                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_worker_auto_approve')}</div>
-              )}
+              {stagedOpenFullUrl && <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>}
+              {stagedWorkerAutoApprove && <WorkerAutoApproveStaged />}
               <UserSessionReachStaged staged={stagedUserSessionReach} />
+              <DesktopCapabilitiesStaged staged={stagedDesktopCapabilities} />
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1253,11 +1240,12 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
                     events: stagedEvents,
+                    bots: stagedBots,
                     linkPreviewHosts: stagedLinkHosts,
                     linkPreviewTextPatterns: stagedLinkPatterns,
                     linkPreviewFullUrl: stagedFullUrl ? ['fullUrl'] : [],
@@ -1268,10 +1256,14 @@ export default function AppDetailPage() {
                     selectionActions: stagedSelection,
                     workerAutoApprove: stagedWorkerAutoApprove ? ['ownSlots'] : [],
                     reachableByUserSessions: stagedUserSessionReach,
+                    desktopCapabilities: stagedDesktopCapabilities,
+                    frameSources: stagedFrameSources,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load({ keepView: true })
+                  // The Bot card's own query: `mc:apps-changed` marks it stale without a refetch.
+                  if (stagedBots.length) void queryClient.invalidateQueries({ queryKey: ['apps', app.name, 'bot-grants'] })
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
@@ -1813,39 +1805,23 @@ export default function AppDetailPage() {
                 )}
                 {app.manifest.permissions.workerAutoApprove && <WorkerAutoApproveBox staged={stagedWorkerAutoApprove} />}
                 {app.manifest.permissions.chatSlots === true && <ChatSlotsBox />}
+                {app.manifest.permissions.hiddenSessions === true && <HiddenSessionsBox />}
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
+                <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />
+                {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}
                   {app.manifest.permissions.cron && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.cron_yes')}</span>}
                   {app.manifest.permissions.network && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.network_yes')}</span>}
-                  {app.manifest.permissions.memory && <span className="flex items-center gap-1">{memoryAccessLabel(app.manifest.permissions.memory)}</span>}
+                  {memoryRequested(app.manifest.permissions.memory) && <span className="flex items-center gap-1">{memoryAccessLabel(app.manifest.permissions.memory as boolean | string)}</span>}
                 </div>
               </div>
             </Card>
           )}
 
-          {/* MCP Servers */}
-          {app.manifest?.mcpServers && Object.keys(app.manifest.mcpServers).length > 0 && (
-            <Card>
-              <CardTitle>{i18nT('pages.appDetailPage.mcp_servers')}</CardTitle>
-              <div className="grid gap-2 mt-2 text-[13px]">
-                {Object.entries(app.manifest.mcpServers).map(([sName, sConfig]) => (
-                  <div key={sName} className="bg-bg-elevated border border-border rounded-md px-2.5 py-2">
-                    <div className="font-mono font-medium text-text text-[12px]">{sName}</div>
-                    {sConfig.url && <div className="text-muted text-[11px] mt-0.5">{sConfig.url}</div>}
-                    {sConfig.command && <div className="text-muted text-[11px] mt-0.5">{sConfig.command}</div>}
-                    {(sConfig.autoApprove || []).length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {(sConfig.autoApprove || []).map((t: string) => (
-                          <span key={t} className="bg-ok-subtle border border-ok/20 px-1 py-0 rounded text-[10px] text-ok-text">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
+          {app.installed && <AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} />}
+
+          <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 
           {/* Tags */}
           {(app.tags || []).length > 0 && (

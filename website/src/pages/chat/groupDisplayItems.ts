@@ -90,6 +90,16 @@ export const opensDisplayTurn = (msg: ChatMessage): boolean =>
   TURN_OPENER_ROLES.has(msg.role) || injectOpensTurn(msg)
 
 /**
+ * A row that starts the next run turn. A steer (`meta.steer`, whatever its
+ * role: a typed one or a wake steered in) belongs to the turn already running.
+ * So does a parked send: drawn as a bubble (`withQueuedAsBubbles`), or written
+ * at send time with `queuedEntryId` while the running turn goes on below it.
+ * The parked turn starts once the running one ends (`isTurnEnd`).
+ */
+export const opensRunTurn = (msg: ChatMessage): boolean =>
+  opensDisplayTurn(msg) && !msg.meta?.steer && !msg.meta?.queuedBubble && !msg.meta?.queuedEntryId
+
+/**
  * A steer the turn never took, whose own queued turn has since written a fresh
  * row with the same text (`steerState: 'superseded'`, see `chat_delivery.py`).
  * The row stays in the transcript for history; drawing it would show the

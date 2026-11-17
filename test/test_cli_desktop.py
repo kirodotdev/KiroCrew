@@ -312,6 +312,51 @@ class TestNonNumericValues:
         assert cli_desktop._num(float("nan")) == 0.0
         assert cli_desktop._fmt_pct(float("nan")) == "-"
 
+    def test_an_integer_past_float_range_is_junk_not_a_crash(self, monkeypatch, capsys, tmp_path):
+        """JSON integers are unbounded; one float cannot hold reads as junk, like a string."""
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        huge = 10**400
+        doc = _doc(intervalMs=huge)
+        doc["samples"][0]["totalCpuPercent"] = huge
+        doc["samples"][1]["totalWorkingSetKb"] = huge
+        art = tmp_path / "desktop-metrics.json"
+        art.write_text(json.dumps(doc), encoding="utf-8")
+        try:
+            outcome: object = cli_desktop.desktop_cmd(_args(art))
+        except OverflowError:
+            outcome = "escaped as OverflowError"
+        assert outcome == 0
+        out = capsys.readouterr().out
+        assert "latest total: cpu=1.0% rss=-" in out
+        assert " at " not in out.splitlines()[1]
+
+    def test_json_nested_past_the_parser_limit_is_reported_not_raised(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        art = tmp_path / "desktop-metrics.json"
+        art.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+        try:
+            outcome: object = cli_desktop.desktop_cmd(_args(art))
+        except RecursionError:
+            outcome = "escaped as RecursionError"
+        assert outcome == 5
+        assert "not valid JSON" in capsys.readouterr().err
+
+    def test_json_mode_nested_past_the_encoder_limit_is_reported_not_raised(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The parser takes deeper nesting than ``--json`` can print back."""
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        art = tmp_path / "desktop-metrics.json"
+        art.write_text('{"version": 1, "x": ' + "[" * 3000 + "]" * 3000 + "}", encoding="utf-8")
+        try:
+            outcome: object = cli_desktop.desktop_cmd(_args(art, json=True))
+        except RecursionError:
+            outcome = "escaped as RecursionError"
+        assert outcome == 5
+        assert "not valid JSON" in capsys.readouterr().err
+
 
 class TestNightlyProductDirectory:
     """Nightly installs under its own names and so its own log directory.

@@ -160,7 +160,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_aborts_and_keeps_dirty_when_source_save_fails(self, tmp_path):
-        # Regression (double-persistence data-loss): the fork persists the dirty
+        # Double-persistence data loss: the fork persists the dirty
         # source slot before reading it as the source of truth, then clears
         # `_dirty` (which also disables the periodic retry). If that save is
         # best-effort it can silently drop the write under a lock timeout / I/O

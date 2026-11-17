@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _deny_app_caller,
     _member_names_for_slug,
     _sel,
+    _teammate_admitted,
 )
 from kiro_crew.dashboard.handlers.members_roster import (
     _SEQ_NO_LOG,
@@ -107,10 +108,13 @@ async def api_member_projections(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.projections")
     if denied is not None:
         return denied
-    owner_denied = await require_owner_dashboard_request(request, "members.projections.read")
-    if owner_denied is not None:
-        return owner_denied
-    _audit_owner_read(request, "members.projections.read")
+    if not await _teammate_admitted(
+        request, "members.projections.read", slug=request.match_info["slug"]
+    ):
+        owner_denied = await require_owner_dashboard_request(request, "members.projections.read")
+        if owner_denied is not None:
+            return owner_denied
+        _audit_owner_read(request, "members.projections.read")
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)
@@ -240,10 +244,13 @@ async def api_member_activity(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.activity")
     if denied is not None:
         return denied
-    owner_denied = await require_owner_dashboard_request(request, "members.activity.read")
-    if owner_denied is not None:
-        return owner_denied
-    _audit_owner_read(request, "members.activity.read")
+    if not await _teammate_admitted(
+        request, "members.activity.read", slug=request.match_info["slug"]
+    ):
+        owner_denied = await require_owner_dashboard_request(request, "members.activity.read")
+        if owner_denied is not None:
+            return owner_denied
+        _audit_owner_read(request, "members.activity.read")
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)

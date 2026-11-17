@@ -803,22 +803,14 @@ class TestThreadTextRedaction:
         note = stored["comments"][0]["thread"][-1]
         assert "[REDACTED: credential]" in note["text"]
 
-    def test_exfiltration_url_is_redacted_host_and_all(self, queued_request):
-        """Also pins the ORDER: URLs are redacted before credentials.
-
-        A credential-first pass would rewrite only the token inside the query
-        and leave a live, fetchable `https://evil.example.com/collect?key=…`
-        standing. So the proof is that the URL was replaced WHOLE by the URL tag
-        (which names the host by design), not merely stripped of its token.
-        """
+    def test_a_url_keeps_everything_but_its_credential(self, queued_request):
+        """A URL is never replaced whole: only the credential value inside it goes."""
         rid, fp = queued_request
         url = f"https://{_EXFIL_HOST}/collect?key={_FAKE_KEY}"
         self._post(rid, {"role": "agent", "text": f"posting to {url}"})
         raw = fp.read_text("utf-8")
         assert _FAKE_KEY not in raw
-        assert f"https://{_EXFIL_HOST}" not in raw
-        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST}]" in raw
-        assert "[REDACTED: credential]" not in raw, "credential pass ran first"
+        assert f"https://{_EXFIL_HOST}/collect?key=[REDACTED: credential]" in raw
 
     def test_clean_text_is_stored_verbatim(self, queued_request):
         """Redaction must not mangle ordinary progress notes."""
@@ -860,21 +852,12 @@ class TestCommentTextIsRedactedOnTheWayOut:
         msg = f"post it to https://{_EXFIL_HOST}/collect"
         assert server._summarize_comment({"cid": "c1", "comment": msg})["comment"] == msg
 
-    def test_a_credential_inside_a_url_leaves_no_host_standing(self):
-        """Pins the ORDER, which is why the two calls live in one helper.
-
-        `redact_exfiltration_urls` keys off the host, so a credential-first pass
-        would rewrite only the token inside the query and leave a live, fetchable
-        URL standing. The proof is that the URL was replaced WHOLE by the URL tag,
-        not merely stripped of its token.
-        """
+    def test_a_credential_inside_a_url_is_masked_and_the_url_kept(self):
+        """A URL is never replaced whole: only the credential value inside it goes."""
         out = server._summarize_comment(
             {"cid": "c1", "comment": f"https://{_EXFIL_HOST}/x?key={_FAKE_KEY}"}
         )
-        assert _FAKE_KEY not in out["comment"]
-        assert f"https://{_EXFIL_HOST}" not in out["comment"]
-        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST}]" in out["comment"]
-        assert "[REDACTED: credential]" not in out["comment"], "credential pass ran first"
+        assert out["comment"] == f"https://{_EXFIL_HOST}/x?key=[REDACTED: credential]"
 
     def test_ordinary_comment_text_is_untouched(self):
         """The floor must not mangle the text users actually write."""
@@ -1372,18 +1355,13 @@ class TestThreadRedactionOnRead:
         assert _FAKE_KEY not in json.dumps(out)
         assert "[REDACTED: credential]" in out["comments"][0]["thread"][0]["text"]
 
-    def test_url_pass_runs_before_the_credential_pass(self):
-        """Same ordering the ingest path pins: a whole exfil URL, host and all.
-
-        Credentials-first would rewrite the token inside the URL and leave the
-        host standing, which is the thing that makes the URL dangerous.
-        """
+    def test_a_url_keeps_everything_but_its_credential(self):
+        """Same contract the ingest path pins: only the credential value goes."""
         url = f"https://{_EXFIL_HOST}/collect?key={_FAKE_KEY}"
         out = server._summarize(self._req_with_thread([{"role": "agent", "text": f"to {url}"}]))
         text = out["thread"][0]["text"]
         assert _FAKE_KEY not in text
-        assert _EXFIL_HOST not in text.replace(f"[REDACTED: suspicious URL to {_EXFIL_HOST}]", "")
-        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST}]" in text
+        assert f"to https://{_EXFIL_HOST}/collect?key=[REDACTED: credential]" == text
 
     def test_clean_thread_text_is_untouched(self):
         out = server._summarize(

@@ -271,19 +271,15 @@ async def _run_inner_impl(
         # The worker's spec lives in the crewmate folder, which the agent roster
         # does not list, so it is not looked up by name; what it needs is a
         # backend that carries its per-session kit (the hand-off's own check).
-        from kiro_crew.acp_backends import resolve_selected_backend
         from kiro_crew.config.loader import KiroCrewConfig as _Config
         from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crew_for_member_id
-        from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+        from kiro_crew.mate_worker import subagent_start_backend, worker_kit_backend_refusal
 
         _cfg = await asyncio.to_thread(_Config.load)
         _crew = crew_for_member_id(_cfg, str(execution.member_id or ""))
         try:
-            worker_backend = (
-                resolve_selected_backend(info.backend)
-                if info.backend is not None
-                else crewmate_worker_backend(_cfg, _crew)
-            )
+            # The one resolver admission also reads (``api_spawn``'s light tier).
+            worker_backend = subagent_start_backend(_cfg, execution, info.backend)
         except CrewmateHarnessUnavailable as exc:
             # The crewmate's pinned harness cannot start, so neither can its
             # worker; it never runs on another harness in its place. The
@@ -325,10 +321,12 @@ async def _run_inner_impl(
     # An explicit per-spawn model wins; otherwise fall back to the
     # configured sub-agent role model (agent.role_models['subagent']). When
     # that role is unpinned the helper returns "" so we omit the kwarg and
-    # keep deferring to the provider's configured default, exactly as before.
+    # defer to the provider's configured default.
+    #
     # The one sharing decision (``_sharing_plan``), which admission also read
     # to price this start: template execution, not ``keep``, the eligibility
     # predicate, and no model / reasoning-effort pin.
+    #
     # An UNPINNED start may take a model from ``model.route``'s derived tiers
     # (``decisions.model_route_derive``, off by default). Decided before the
     # sharing plan, which reads the routed model as a pin: a routed model
@@ -414,6 +412,11 @@ async def _run_inner_impl(
         await inherit_environment_for_subagent(info.parent_session_key, session_key)
     )
     info._remote_workspace = inherits_remote
+    if info.parent_session_key:
+        # The child reads and writes the memory its parent's chat is frozen to.
+        from kiro_crew.memory_provider.resolver import inherit_snapshot
+
+        await asyncio.to_thread(inherit_snapshot, session_key, info.parent_session_key)
     if info.keep:
         self._manager._sessions.mark_continuable(session_key)
         self._manager._conversations[session_key] = time.monotonic()
@@ -469,6 +472,11 @@ async def _run_inner_impl(
     # run never spends a turn discovering the absence for itself. Empty for a
     # healthy session, which leaves this prompt exactly as it was.
     message = self._spawn_mcp_notice(mcp_problems) + message
+    # A spec field the claude session does not apply is named the same way.
+    notice = await _session.spec_builtin_tools_notice(
+        client, info, session_key, fresh=is_new and not _resumed
+    )
+    message = notice + message
     # Scale the injected-context budget to this subagent's model window (a
     # subagent can be pinned to a smaller model). Resolved from the live
     # client; None ⇒ 1M reference.
@@ -552,13 +560,17 @@ async def _run_inner_impl(
     _result_file_started = False
     # Cache tool names by tool_call_id so PostToolUse can recover the tool name
     # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
-    # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
+    # Mirrors the chat turn's ``turn._pending_tools`` (dashboard/chat_turn).
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
     from kiro_crew.hooks import pre_tool_match_names
+    from kiro_crew.subagent_manager.card_tool_titles import CardToolTitles
 
     _pending_tool_ids: dict[str, PostToolIdentity] = {}
+    # The card rows a call's ``tool_call_update`` renames.
+    _card_titles = CardToolTitles(client)
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
@@ -1000,6 +1012,8 @@ async def _run_inner_impl(
                                 try:
                                     setattr(exc, FALLBACK_STORY_ATTR, _story)
                                 except Exception:
+                                    # An exception type that refuses attributes cannot carry the
+                                    # story.
                                     pass
                             raise
                     _fb_delay = transient_retry_delay(1)
@@ -1243,6 +1257,7 @@ async def _run_inner_impl(
             info.last_tool = event.title or ""
             info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
+            _card_titles.note_call(event)
             # Persist turn state for orphan recovery diagnostics. Off-loop
             # and drained on cancellation via _write_state_off_loop — the
             # highest-frequency of the three off-loop state
@@ -1253,6 +1268,7 @@ async def _run_inner_impl(
                     info, "diagnostics", turns=turns, last_tool=event.title or ""
                 )
             except Exception:
+                # Diagnostics only: a failed write must not stop the tool event.
                 pass
             await self._manager._fire_event(
                 "subagent_tool",
@@ -1336,6 +1352,7 @@ async def _run_inner_impl(
             if event.title:
                 info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
+            _card_titles.note_call(event)
             await self._manager._fire_event(
                 "subagent_tool",
                 info,
@@ -1384,6 +1401,8 @@ async def _run_inner_impl(
                     parent_session_key=info.parent_session_key or None,
                     agent_role=info.agent or None,
                 )
+        elif event.kind == EVENT_TOOL_CALL_UPDATE:
+            await _card_titles.refine(self._manager, info, event)
         elif event.kind == EVENT_TOOL_RESULT:
             # A FINAL result means the tool is done: drop the attribution
             # snapshot so a later idle stretch is not judged against a

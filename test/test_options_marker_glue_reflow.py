@@ -139,7 +139,7 @@ def test_multiple_glued_markers_on_separate_lines_all_reflow() -> None:
 
 
 def test_interior_closer_shape_is_not_split_into_a_false_pill() -> None:
-    # GPT 5.6 F1: the interior ``]`` after ``Fix`` terminates the match early (it
+    # The interior ``]`` after ``Fix`` terminates the match early (it
     # is followed by ``x``, not a separator), and the remainder ``x logging |
     # Skip]`` still carries a ``|`` and a closer. This is the grammar's documented
     # "unmatched -- no opener at all" residual that must fail toward a VISIBLE
@@ -293,15 +293,21 @@ def test_fence_state_at_each_candidate_matches_the_single_position_walker() -> N
 
 def test_many_glued_markers_stay_linear() -> None:
     # Re-walking the prefix per candidate is quadratic: 8k glued lines took ~14 s
-    # on the event loop, past the 25 s loop-stall watchdog at ~11k. Linear is
-    # milliseconds; the bound below is loose for slow CI hosts.
-    import time
+    # on the event loop, past the 25 s loop-stall watchdog at ~11k. The fence walk
+    # is Python, so the instructions this thread executes count its work: each
+    # further 2 000 glued lines must cost what the first 2 000 did.
+    from denied_commands_security_helpers import _interpreter_work, _linear_work
 
-    text = "[OPTIONS: A | B]x\n" * 8000
-    started = time.perf_counter()
-    fixed = reflow_glued_option_marker(text)
-    assert time.perf_counter() - started < 3.0
-    assert fixed == "[OPTIONS: A | B]\nx\n" * 8000
+    sizes = (2000, 4000, 6000)
+    fixed: list[str] = []
+    work = [
+        _interpreter_work(
+            lambda n=n: fixed.append(reflow_glued_option_marker("[OPTIONS: A | B]x\n" * n))
+        )
+        for n in sizes
+    ]
+    assert fixed == ["[OPTIONS: A | B]\nx\n" * n for n in sizes]
+    assert _linear_work(work), f"{work} instructions at {sizes} glued lines"
 
 
 def test_repeated_stray_tic_is_left_alone() -> None:

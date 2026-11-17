@@ -632,8 +632,9 @@ async def shutdown(self: Backend, timeout: float = 5.0) -> None:
             # neither name exists on Windows, and the except clause below
             # does not catch AttributeError — so on Windows this raised out
             # of shutdown() and the process.kill() fallback never ran,
-            # leaving the backend alive. The _async variant is required per
-            # test_kill_process_awaits_async_variant_not_sync (Windows
+            # leaving the backend alive. The _async variant is required
+            # (test_mcp_gateway_backend_coverage_process_lifecycle.py::
+            # test_timeout_escalates_to_tree_kill awaits it; Windows
             # taskkill would otherwise block this loop).
             try:
                 await platform_compat.kill_process_tree_async(

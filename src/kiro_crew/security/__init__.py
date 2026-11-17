@@ -303,7 +303,6 @@ _EXPORTS: dict[str, str] = {
     "sanitized_oauth_endpoint": "display_safety",
     "sanitized_oauth_endpoint_display": "display_safety",
     # exfil
-    "EXFILTRATION_REDACTION_TAG_PREFIX": "exfil",
     "OAuthUrlCredentialDiagnostic": "exfil",
     "OAuthUrlShapeProfile": "exfil",
     "_BASH_EXFIL_PATTERNS": "exfil",
@@ -365,7 +364,6 @@ _EXPORTS: dict[str, str] = {
     "_valid_oauth_extension_path": "exfil",
     "_validate_operator_oauth_entries": "exfil",
     "audit_bash_exfiltration": "exfil",
-    "bounded_blocked_links": "exfil",
     "canonicalize_ip": "exfil",
     "diagnose_oauth_url_credential": "exfil",
     "exfil_query_min_len": "exfil",
@@ -373,7 +371,7 @@ _EXPORTS: dict[str, str] = {
     "oauth_url_contains_credential": "exfil",
     "record_discovered_oauth_endpoint": "exfil",
     "redact_exfiltration_urls": "exfil",
-    "redact_exfiltration_urls_with_records": "exfil",
+    "refuses": "exfil",
     "scan_exfiltration_urls": "exfil",
     # helpers
     "_RLIMIT_DEFAULTS": "helpers",
@@ -1001,7 +999,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _STRUCTURAL_VALIDATORS,
         _STS_TOKEN_RE,
         _URL_RE,
-        EXFILTRATION_REDACTION_TAG_PREFIX,
         OAuthUrlCredentialDiagnostic,
         OAuthUrlShapeProfile,
         _approved_oauth_authorization_endpoint,
@@ -1028,7 +1025,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _valid_oauth_extension_path,
         _validate_operator_oauth_entries,
         audit_bash_exfiltration,
-        bounded_blocked_links,
         canonicalize_ip,
         diagnose_oauth_url_credential,
         exfil_query_min_len,
@@ -1036,7 +1032,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         oauth_url_contains_credential,
         record_discovered_oauth_endpoint,
         redact_exfiltration_urls,
-        redact_exfiltration_urls_with_records,
+        refuses,
         scan_exfiltration_urls,
     )
     from kiro_crew.security.helpers import (  # noqa: F401

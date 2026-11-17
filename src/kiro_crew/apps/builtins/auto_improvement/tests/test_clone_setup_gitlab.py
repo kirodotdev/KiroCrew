@@ -10,6 +10,7 @@ validator share with the gateway's ``dashboard.gitlab_hosts`` snapshot.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from typing import Any, Callable
 
@@ -139,6 +140,20 @@ class TestGitLabSaaSUrls:
             names.add(spec.dir_name)
         assert len(names) == 3
         assert "acme--app" in names, "a GitHub clone keeps its existing directory"
+
+    def test_the_clone_dir_digest_is_128_bits(self, no_dns, https_transport) -> None:
+        """A 48-bit digest is small enough to search for two projects sharing a name."""
+        spec, err = clone_setup.validate_target_url("https://gitlab.com/acme/app")
+        assert err == "" and spec is not None
+        want = hashlib.sha256(b"gitlab.com/acme/app").hexdigest()[:32]
+        assert spec.dir_name == f"gitlab+gitlab.com--acme--app--{want}"
+
+    def test_the_longest_clone_dir_fits_a_file_name(self, no_dns, https_transport) -> None:
+        """Every '/' grows to '--', so a path of one-character segments is the longest."""
+        path = "/".join(["a"] * 65)  # 129 characters: 140 with the host
+        spec, err = clone_setup.validate_target_url(f"https://gitlab.com/{path}")
+        assert err == "" and spec is not None and len(spec.display) == 140
+        assert len(spec.dir_name) <= 255
 
     def test_the_workspace_never_collides_with_another_forge(self, no_dns, https_transport) -> None:
         """Ledgers, rulers and PR queues hang off the workspace key, which reads

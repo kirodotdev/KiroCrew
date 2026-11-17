@@ -1,10 +1,10 @@
 ---
 title: Question Card Pager — one question on screen, and answers that carry their question
-status: accepted
+status: implemented
 author: tilakputta
 created: 2026-09-24
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [13196, 15250]
 tracking-issues: []
@@ -13,7 +13,7 @@ superseded-by: []
 ---
 # RFC: Question Card Pager — one question on screen, and answers that carry their question
 
-- Status: accepted by buluoray
+- Status: implemented. Accepted by buluoray; the pager (§3.1-§3.5) shipped in #13196 and the blocking `ask_question` (§3.6, `_ask_question_blocking` in `src/kiro_crew/mcp_tools/control.py`) in #15250. §7.1 stays deferred and §7.2 open.
 - Author: tilakputta
 - Created: 2026-09-24
 - Related: `website/src/components/QuestionCard.tsx` (the card this reshapes),

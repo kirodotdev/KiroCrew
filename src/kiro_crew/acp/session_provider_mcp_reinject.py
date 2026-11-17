@@ -27,7 +27,8 @@ the eviction -- is ``acp/runtime_session_registry.py``.
 
 Instance fields written: ``_handle``, ``_mcp_reinject_pending``.
 
-Instance fields read: ``_channel_id``, ``_handle``, ``_runtime``, ``_session_key``.
+Instance fields read: ``_channel_id``, ``_handle``, ``_runtime``, ``_session_key``,
+``kas_memory_mode``.
 """
 
 from __future__ import annotations
@@ -164,6 +165,8 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
                 member_session_key=member_session_key,
                 session_key=self._session_key,
                 channel_id=self._channel_id or "",
+                kas_memory_mode=self.kas_memory_mode,
+                harness_options=self._harness_options,
             )
     except BaseException as exc:
         # Restored on EVERY exit that is not a loaded session, a cancel included,
@@ -197,8 +200,11 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
     # The keepalive route's mark: the registry holds this provider, not the handle.
     new_handle.keepalive_routed = getattr(old, "keepalive_routed", False) is True
     # The load restores the session's model; the mark that it was inherited, not
-    # pinned, travels with it so a later fresh conversation re-applies it.
-    new_handle.inherited_model = getattr(old, "inherited_model", "")
+    # pinned, travels with it so a later fresh conversation re-applies it. One the
+    # load itself re-applied (``ensure_served_default``) stands when the old had none.
+    new_handle.inherited_model = getattr(old, "inherited_model", "") or getattr(
+        new_handle, "inherited_model", ""
+    )
     # Accumulated, not replaced: the old handle's KAS launch snapshots are this
     # session's too, and only this provider's shutdown removes them.
     new_handle.kas_launch_snapshots = [
@@ -206,6 +212,7 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
         *getattr(new_handle, "kas_launch_snapshots", []),
     ]
     self._handle = new_handle
+    self._rewatch_agent_turns()
     # Whoever follows this session's MCP report follows the reloaded one, and is
     # told at once: the server set it describes has changed.
     old.mcp_session_report().hand_over(new_handle.mcp_session_report())

@@ -124,16 +124,26 @@ def _inputs(cfg: Any) -> tuple[object, ...]:
         getattr(cfg, "traces_otlp_endpoint", ""),
         _pairs(getattr(cfg, "traces_otlp_headers_secret", None)),
         _pairs(getattr(cfg, "traces_otlp_headers_env", None)),
-        getattr(cfg, "traces_ultra_mode", CONDUCTOR_MODE_RUN),
+        getattr(cfg, "traces_conductor_mode", CONDUCTOR_MODE_RUN),
+        getattr(cfg, "accept_traceparent", False) is True,
     )
 
 
-#: ``telemetry.traces_ultra_mode`` (a saved config key, so it keeps its spelling): a
-#: conductor mode round is one trace (``run``), or every turn its own (``turn``).
+#: ``telemetry.traces_conductor_mode``: a conductor mode round is one trace (``run``), or every turn its own (``turn``).
 #: Read with the switch, served by :func:`conductor_mode_shape`.
 CONDUCTOR_MODE_RUN = "run"
 CONDUCTOR_MODE_TURN = "turn"
 _conductor_mode_shape = CONDUCTOR_MODE_RUN
+
+
+#: ``telemetry.accept_traceparent``: whether an authenticated HTTP caller's W3C
+#: ``traceparent`` parents the turn it starts (``tracing/inbound.py``). Read with the switch.
+_accept_traceparent = False
+
+
+def accepts_traceparent() -> bool:
+    """Whether the last read of the switch resolved ``accept_traceparent`` on; never reads."""
+    return _accept_traceparent
 
 
 def conductor_mode_shape() -> str:
@@ -179,10 +189,11 @@ def _build() -> TraceState | None:
         _built_inputs = None
         return None
     _built_inputs = _inputs(cfg)
-    global _built, _conductor_mode_shape
+    global _built, _conductor_mode_shape, _accept_traceparent
+    _accept_traceparent = getattr(cfg, "accept_traceparent", False) is True
     _conductor_mode_shape = (
         CONDUCTOR_MODE_TURN
-        if getattr(cfg, "traces_ultra_mode", "") == CONDUCTOR_MODE_TURN
+        if getattr(cfg, "traces_conductor_mode", "") == CONDUCTOR_MODE_TURN
         else CONDUCTOR_MODE_RUN
     )
     # Today's caps reach the kept tracer whatever the switch says: a turn still
@@ -349,12 +360,14 @@ def start_span(
     parent: Any = None,
     attributes: Mapping[str, Any] | None = None,
     links: Sequence[Any] = (),
+    start_time: int | None = None,
 ) -> Any:
     """Start a span with the given hex ids under *parent* (``None`` = a root).
 
     A root is started under an EMPTY context, never whatever span happens to be
     current, so its trace id is always the pinned one. Under a parent the span
     takes the parent's trace id, which the caller passes as *trace_id* too.
+    *start_time* (epoch ns) backdates the start, for a step that began earlier.
     """
     from opentelemetry import trace
     from opentelemetry.context import Context
@@ -364,7 +377,11 @@ def start_span(
     _pins.span_id = int(span_id, 16)
     try:
         span = state.tracer.start_span(
-            name, context=context, attributes=dict(attributes or {}), links=list(links)
+            name,
+            context=context,
+            attributes=dict(attributes or {}),
+            links=list(links),
+            start_time=start_time,
         )
     finally:
         _pins.trace_id = None
@@ -408,9 +425,10 @@ async def flush_for_exit() -> None:
 
 def reset_for_testing() -> None:
     """Shut down and forget the tracer, so a test starts from the switch."""
-    global _conductor_mode_shape
+    global _conductor_mode_shape, _accept_traceparent
     shutdown()
     _conductor_mode_shape = CONDUCTOR_MODE_RUN
+    _accept_traceparent = False
     with _counts_lock:
         _span_counts.clear()
 

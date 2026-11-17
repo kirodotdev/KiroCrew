@@ -169,7 +169,7 @@ describe('libraryView holds a row in place across a toggle', () => {
  */
 describe('every builtin we ship stays reachable while disabled', () => {
   /** Concealment is a product decision; this list is the record of it. */
-  const SANCTIONED_HIDDEN = ['channels', 'workflows']
+  const SANCTIONED_HIDDEN = ['workflows']
 
   const BUILTINS = resolve(__dirname, '../../../src/kiro_crew/apps/builtins')
 
@@ -207,13 +207,13 @@ describe('every builtin we ship stays reachable while disabled', () => {
     expect(keepInLibrary(asDisabled(awsControl!))).toBe(true)
   })
 
-  it('holds the set of self-concealing builtins to the sanctioned two', () => {
+  it('holds the set of self-concealing builtins to the sanctioned one', () => {
     // Not a style rule. A new name here is an app reachable from no tab, so it
     // has to be chosen deliberately and land in this list with it.
     expect(shipped.filter(m => m.hidden).map(m => m.name).sort()).toEqual(SANCTIONED_HIDDEN)
   })
 
-  it('withholds those two while they are disabled, from their real manifests', () => {
+  it('withholds that one while it is disabled, from its real manifest', () => {
     // The contrast case, asserted over shipped bytes rather than a fixture: if
     // `hidden` stopped being honoured, the assertions above would still pass
     // (the flag is present either way) while concealment silently stopped

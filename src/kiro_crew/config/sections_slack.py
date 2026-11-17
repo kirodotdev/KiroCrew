@@ -261,6 +261,23 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    show_in_session_list: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Slack Conversations In The Session List",
+            "List conversations that start in Slack (threads, DMs, channel "
+            "mentions) in the dashboard's session list. Off removes them from "
+            "the list only: they keep working in Slack, stay in History and "
+            "search, still raise approvals and notifications, and come back "
+            "when this is turned on again; nothing is closed or deleted. The "
+            "conversation open in the dashboard, and one waiting on an approval "
+            "or an answer, keep their rows. Sessions started "
+            "in the dashboard and linked to Slack, and Slack code channel "
+            "sessions with their helper agents, are always listed. On by "
+            "default; no restart.",
+            tags=["slack"],
+        ),
+    )
     auto_link_sessions: bool = field(
         default=False,
         metadata=_meta(
@@ -317,7 +334,7 @@ class SlackConfig:
             "that is one session, with a context bar and a diff tab. Adds "
             "features.code_channels and the code-channel scopes "
             "(code_channels:manage, chat:write.customize, canvases:write, "
-            "channels:write.invites, groups:write.invites) to the generated app "
+            "channels:write.invites, groups:write.invites, pins:write) to the generated app "
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",

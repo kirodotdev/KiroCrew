@@ -315,10 +315,10 @@ class TestGetConfig:
         ],
     )
     def test_a_malformed_parent_never_raises(self, document, tmp_path, monkeypatch):
-        # A chained `.get` on a non-dict raises AttributeError, which is NOT in
-        # this function's caught set — so before the type checks a single
-        # hand-edited typo was an HTTP 500 on every terminal route, including the
-        # per-keystroke completion one. The read fails closed to the default.
+        # A chained `.get` on a non-dict raises AttributeError, which this
+        # function does not catch, so one hand-edited typo would be an HTTP 500
+        # on every terminal route, keystroke completion included. The read
+        # fails closed to the default.
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(document)
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
@@ -329,9 +329,9 @@ class TestGetConfig:
         self, value, tmp_path, monkeypatch,
     ):
         # `"terminal": false` reads like "off" but is not the documented shape
-        # (`terminal.enabled`), and returning it verbatim made `_is_enabled` do
-        # `False.get("enabled")` — a 500 rather than a disabled panel. A malformed
-        # value degrades to the default, as an absent key does.
+        # (`terminal.enabled`); passed through, `_is_enabled` would call
+        # `False.get("enabled")` and answer 500 instead of a disabled panel. A
+        # malformed value degrades to the default, as an absent key does.
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text('{"dashboard": {"terminal": ' + value + "}}")
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
@@ -1155,8 +1155,8 @@ class TestApiTerminalCreateWindowsFailFast:
 
     @pytest.mark.asyncio
     async def test_windows_returns_session_id(self, monkeypatch):
-        # Windows now spawns a ConPTY-backed shell, so create SUCCEEDS (returns
-        # a session_id) instead of the old 501 "unsupported" refusal.
+        # Windows spawns a ConPTY-backed shell, so create succeeds and returns
+        # a session_id.
         registry: dict = {}
         req = _make_request(registry=registry)
         monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)

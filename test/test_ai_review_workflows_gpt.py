@@ -699,7 +699,7 @@ class TestDeploymentNeutralFramingParity:
             assert block == reference, (
                 f"{name} framing block drifted from {self.LANES[0]}; "
                 "the deployment-neutral framing must stay byte-identical "
-                "across every reviewer lane that inlines it (issue #3451)"
+                "across every reviewer lane that inlines it"
             )
 
     def test_shared_prompts_carry_the_same_framing_as_the_lanes(self):
@@ -713,7 +713,7 @@ class TestDeploymentNeutralFramingParity:
             assert block == reference, (
                 f"{name} framing block drifted from {self.LANES[0]}; "
                 "the deployment-neutral framing must stay byte-identical "
-                "across every prompt that carries it (issues #3451, #3484)"
+                "across every prompt that carries it"
             )
 
     def test_framing_states_the_keystone_read_write_split(self):

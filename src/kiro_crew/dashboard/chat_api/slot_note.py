@@ -536,9 +536,8 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # and gets no author pill — the note is their own and needs no attribution.
     # Because the label is a trusted, slug-shaped identity and not
     # caller-controlled free text, it needs no credential/exfil redaction (an
-    # app slug cannot carry a spliced credential span), which is why the
-    # two-pass ``redact_caller_text`` and ``slot_buffers``'s redactor-sink
-    # allowlist entry both drop out with this change. The body's ``source`` is
+    # app slug cannot carry a spliced credential span), so the label passes
+    # through no caller-text redaction pass. The body's ``source`` is
     # still read above for the internal drain-frame cap bucket only.
     #
     # An app name has no length bound at the single-name contract and the

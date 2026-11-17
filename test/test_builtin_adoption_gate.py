@@ -13,6 +13,7 @@ and at the gate, and end to end through a real STAGE and APPLY.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import types
@@ -36,10 +37,12 @@ from builtin_adoption_helpers import (
 )
 
 from kiro_crew import hooks
+from kiro_crew.apps import builtin_adoption_gate
 from kiro_crew.apps import execution as exec_mod
 from kiro_crew.apps import manager
 from kiro_crew.apps.builtin_adoption_gate import adopted_app_own_mcp_servers
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, HookManager, HooksConfig, ToolCall
+from kiro_crew.testing.wait import await_until
 
 LAUNCHER = "backend/mcp_launch.py"
 SERVER = "srv"
@@ -60,9 +63,10 @@ AGENT = "fixture-former-helper"
 
 @pytest.fixture
 def gate_sets(monkeypatch: pytest.MonkeyPatch):
-    """Restore the gate's three boot-warmed registries after the test."""
+    """Restore the gate's three boot-warmed registries, and the warm mark, after the test."""
     for name in ("_BUILTIN_APP_NAMES", "_BUILTIN_APP_MCP_SERVERS", "_BUILTIN_APP_AGENTS"):
         monkeypatch.setattr(hooks, name, getattr(hooks, name))
+    monkeypatch.setattr(builtin_adoption_gate, "_warmed", builtin_adoption_gate._warmed)
 
 
 def _wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -294,3 +298,58 @@ async def test_adoption_leaves_the_own_server_grant_as_it_was(tmp_path, monkeypa
 
     await _warm()
     assert _granted(_own_server_call(), app=NAME)
+
+
+# -- after a lifecycle change, without a restart ------------------------------------
+
+
+def _replace_with_third_party() -> None:
+    _record(source_url=OTHER_REPOSITORY)
+
+
+def _uninstall() -> None:
+    assert manager.uninstall_app(NAME).ok
+
+
+@pytest.mark.parametrize(
+    "change", [_replace_with_third_party, _uninstall], ids=["replace", "uninstall"]
+)
+@pytest.mark.asyncio
+async def test_a_lifecycle_change_drops_the_grant_without_a_restart(adopted, gate_sets, change):
+    """The dashboard's refresh re-reads the sets: the boot grant does not outlive the app."""
+    from kiro_crew.apps import hidden_sessions
+    from kiro_crew.dashboard.state_parts.slots_push import refresh_app_state
+
+    await _warm()
+    assert _granted(_own_server_call(), app=NAME)
+    loop = asyncio.get_running_loop()
+    refreshes: list[asyncio.Future] = []
+
+    def kick() -> None:
+        refreshes.append(loop.run_in_executor(None, refresh_app_state))
+
+    def schedule() -> None:
+        loop.call_soon_threadsafe(kick)
+
+    # The job the serving dashboard binds (``bind_serving_loop``), run off the loop.
+    hidden_sessions.bind_listing(schedule, None)
+    try:
+        await asyncio.to_thread(change)
+        assert refreshes, "the lifecycle change asked for no refresh"
+        await await_until(asyncio.gather(*refreshes))
+        assert not _granted(_own_server_call(), app=NAME)
+        assert not _granted(_own_server_call(resolved_agent=AGENT))
+    finally:
+        hidden_sessions.bind_listing(None, None)
+
+
+def test_a_process_that_never_warmed_grants_nothing_on_a_refresh(adopted, gate_sets, monkeypatch):
+    """The ``--slack-only`` gateway runs no reconciler tick, so its sets stay empty."""
+    from kiro_crew.dashboard.state_parts.slots_push import refresh_app_state
+
+    monkeypatch.setattr(builtin_adoption_gate, "_warmed", False)
+    hooks.set_builtin_app_names(())
+    hooks.set_builtin_app_mcp_servers(())
+    hooks.set_builtin_app_agents({})
+    refresh_app_state()
+    assert not _granted(_own_server_call(), app=NAME)

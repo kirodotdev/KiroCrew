@@ -309,6 +309,7 @@ def _stop(proc):
             except subprocess.TimeoutExpired:
                 pass
     else:
+        _free_waitpid_lock(proc)
         try:
             proc.terminate()
             proc.wait(timeout=_KILL_GRACE_S)
@@ -320,6 +321,22 @@ def _stop(proc):
     except OSError:
         pass
     proc.wait()
+
+
+def _free_waitpid_lock(proc):
+    """Release the waitpid lock an interrupted Popen.wait left taken.
+
+    POSIX Popen.wait(timeout) takes its lock with acquire(False) and only then
+    enters the try that releases it, so a SIGHUP/SIGTERM/SIGINT handler raising
+    between the two leaves it taken, and every later wait on ``proc`` (the one
+    below, after the kill) blocks forever.  The guard waits on a child from one
+    thread only, so a lock still taken here is that leak.
+    shortcut: reads Popen's private ``_waitpid_lock``; drop this once CPython
+    releases it on an asynchronous exception.
+    """
+    lock = getattr(proc, "_waitpid_lock", None)
+    if lock is not None and lock.locked():
+        lock.release()
 
 
 def _wait(proc, timeout, stall, out, errf):

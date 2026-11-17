@@ -129,7 +129,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import { crewRowOwnState } from '../pages/chat-sidebar/SessionRow'
 import type { RootState } from '../store'
-import { crewModePreviewOn } from './crewModePreview'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 type TestSlot = Record<string, unknown>
 
@@ -430,6 +430,24 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('crew-root-attention')).toBeNull()
   })
 
+  it("reads Done from the ledger's verdict, not from every crew member being done", async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: 'it_1', created_by: 'k-root' },
+    ]
+    const run = { settled: 'stopped', open: 1, accepted: 1, not_done: 0, at_limit: false, patrol_on: false }
+    const stopped = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true,
+      last_message: 'Stopped: docs left.', crew_work: { open: 1, person: 0, conductor_looping: false, run, items: [] } }]
+    const first = renderSidebar(stopped, [], null, {}, [], stopped)
+    await waitFor(() => expect(first.qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('success'))
+    // A stopped run keeps the row's usual line: the conductor's final report.
+    expect(first.queryByTestId('crew-root-done')).toBeNull()
+    expect(first.getByText('Stopped: docs left.')).toBeInTheDocument()
+    first.unmount()
+    const done = [{ ...stopped[0], crew_work: { open: 0, person: 0, conductor_looping: false, run: { ...run, settled: 'done', open: 0 }, items: [] } }]
+    const second = renderSidebar(done, [], null, {}, [], done)
+    await waitFor(() => expect(second.getByTestId('crew-root-done')).toHaveTextContent(/^Done$/))
+  })
+
   it('keeps the unread dot beside Done when the finished crew has an unread reply', async () => {
     mocks.crewWorkersRows = [
       { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
@@ -492,8 +510,8 @@ describe('chat sidebar — conductor lane', () => {
     expect(container.querySelectorAll('[data-crew-parent="true"]')).toHaveLength(1)
   })
 
-  it('marks no crew parent with the conductor mode preview off', async () => {
-    localStorage.removeItem('mc-preview-crew-mode')
+  it('marks no crew parent in a build without conductor mode (LTS)', async () => {
+    turnOffCrewModeAsLts()
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -1782,6 +1800,3 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

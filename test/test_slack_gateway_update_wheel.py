@@ -116,6 +116,8 @@ class TestWheelAutoApplyRefusals:
         ds.notify.assert_called_once()
         assert "kirocrew service install" in ds.notify.call_args.args[2]
         ds.push_update_progress.assert_not_called()
+        # Only a policy floor retries on the short cadence; a routine update waits.
+        assert orch._update_apply_deferred is False
 
 
 class TestWheelAutoApplyUsesTheShadowEngine:

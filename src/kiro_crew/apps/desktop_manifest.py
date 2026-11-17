@@ -9,6 +9,10 @@ web preferences, loads the host's own ``/popout/desktop/<app>/<id>`` route from 
 gateway, and that route mounts the app's ``entry`` ESM module the way ``AppHost``
 mounts a panel tab. No app code runs in the Electron main process.
 
+A shortcut's default may differ per platform (``platformAccelerators``), and the
+user may rebind it on their computer: the shell keeps the binding, never the
+manifest.
+
 This block is the whole of what an app can ask for. Anything it does not declare
 here the shell refuses (``website/electron/app-window-host-rules.js`` re-checks the
 same rules, because the shell must not trust an older or newer gateway's parse).
@@ -61,8 +65,10 @@ _WINDOW_KEYS = frozenset(
 )
 _PANEL_ONLY_KEYS = ("width", "height", "position", "transparent", "gutter")
 _OVERLAY_ONLY_KEYS = ("displays",)
-_SHORTCUT_KEYS = frozenset({"id", "accelerator", "window"})
+_SHORTCUT_KEYS = frozenset({"id", "accelerator", "platformAccelerators", "window"})
 _BLOCK_KEYS = frozenset({"windows", "shortcuts"})
+#: The platforms a shortcut's ``platformAccelerators`` may name.
+SHORTCUT_PLATFORMS = ("macos", "windows", "linux")
 
 #: Electron accelerator modifiers, case-insensitive, mapped to one canonical spelling
 #: so two spellings of one chord count as the same chord.
@@ -175,9 +181,19 @@ class DesktopShortcut:
     id: str = ""
     accelerator: str = ""
     window: str = ""
+    # Platform name -> its default, overriding ``accelerator`` there.
+    platformAccelerators: dict[str, str] = field(default_factory=dict)  # noqa: N815
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "accelerator": self.accelerator, "window": self.window}
+        d: dict[str, Any] = {"id": self.id, "accelerator": self.accelerator}
+        if self.platformAccelerators:
+            d["platformAccelerators"] = dict(self.platformAccelerators)
+        d["window"] = self.window
+        return d
+
+    def default_for(self, platform: str) -> str:
+        """The accelerator this shortcut defaults to on *platform* (one of SHORTCUT_PLATFORMS)."""
+        return self.platformAccelerators.get(platform, self.accelerator)
 
 
 @dataclass
@@ -319,7 +335,7 @@ def _parse_shortcuts(raw: Any, window_ids: set[str], errors: list[str]) -> list[
         errors.append(f"desktop.shortcuts: at most {MAX_DESKTOP_SHORTCUTS} shortcuts ({len(raw)})")
     shortcuts: list[DesktopShortcut] = []
     seen_ids: set[str] = set()
-    seen_chords: set[str] = set()
+    seen_chords: dict[str, set[str]] = {platform: set() for platform in SHORTCUT_PLATFORMS}
     for index, item in enumerate(raw[:MAX_DESKTOP_SHORTCUTS]):
         where = f"desktop.shortcuts[{index}]"
         if not isinstance(item, dict):
@@ -338,13 +354,43 @@ def _parse_shortcuts(raw: Any, window_ids: set[str], errors: list[str]) -> list[
         elif shortcut.id in seen_ids:
             errors.append(f"{where}: duplicate id {shortcut.id!r}")
         seen_ids.add(shortcut.id)
-        chord, reason = canonical_accelerator(shortcut.accelerator)
+        _, reason = canonical_accelerator(shortcut.accelerator)
         if reason:
             errors.append(f"{where}: accelerator {reason}")
-        elif chord in seen_chords:
-            errors.append(f"{where}: accelerator repeats another shortcut's chord")
-        seen_chords.add(chord)
+        shortcut.platformAccelerators = _parse_platform_accelerators(
+            item.get("platformAccelerators", {}), where, errors
+        )
+        # Each platform's default is one chord, never another shortcut's there. One
+        # refusal per shortcut, naming the platforms only when not every one repeats.
+        repeats: list[str] = []
+        for platform in SHORTCUT_PLATFORMS:
+            chord, reason = canonical_accelerator(shortcut.default_for(platform))
+            if reason:
+                continue
+            if chord in seen_chords[platform]:
+                repeats.append(platform)
+            seen_chords[platform].add(chord)
+        if repeats:
+            on = "" if len(repeats) == len(SHORTCUT_PLATFORMS) else f" on {', '.join(repeats)}"
+            errors.append(f"{where}: accelerator repeats another shortcut's chord{on}")
         if shortcut.window not in window_ids:
             errors.append(f"{where}: window must name one of the app's desktop.windows")
         shortcuts.append(shortcut)
     return shortcuts
+
+
+def _parse_platform_accelerators(raw: Any, where: str, errors: list[str]) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        errors.append(f"{where}: platformAccelerators must be an object")
+        return {}
+    out: dict[str, str] = {}
+    for platform, accelerator in raw.items():
+        if platform not in SHORTCUT_PLATFORMS:
+            errors.append(f"{where}: platformAccelerators may name only {list(SHORTCUT_PLATFORMS)}")
+            continue
+        _, reason = canonical_accelerator(accelerator)
+        if reason:
+            errors.append(f"{where}: platformAccelerators.{platform} {reason}")
+            continue
+        out[platform] = accelerator
+    return out

@@ -423,8 +423,8 @@ class TestSteeringAWakeIntoARunningTurn:
             "loop_id": loop.id,
             "generation": loop.config_generation,
         }, (
-            "the wake is automation, so its row is the loop's nudge chip (#22747), and "
-            "the turn that carries it charges this loop's generation (#32250)"
+            "the wake is automation, so its row is the loop's nudge chip, and "
+            "the turn that carries it charges this loop's generation"
         )
 
     @pytest.mark.asyncio

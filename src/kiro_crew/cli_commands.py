@@ -578,9 +578,11 @@ def _telemetry(args: argparse.Namespace) -> None:
     set_recording = True
     if want:
         try:
-            from kiro_crew.metrics.provider import otlp_egress_active
+            # The built-in Kiro destination does not count: the notice this
+            # command records below names it.
+            from kiro_crew.metrics.kiro_export import egress_needs_written_opt_in
 
-            set_recording = not otlp_egress_active(cfg.telemetry)
+            set_recording = not egress_needs_written_opt_in(cfg.telemetry)
         except Exception:  # noqa: BLE001 - unknown posture is treated as egress
             set_recording = False
     path = config_path()
@@ -672,6 +674,7 @@ def _telemetry(args: argparse.Namespace) -> None:
     # printed "DISABLED" — a false promise on a privacy control is worse than an
     # error, so re-read the effective config and report the shadowing file.
     exporting = False
+    loaded_cfg: object = None
     try:
         loaded_cfg = KiroCrewConfig.load()
         loaded = loaded_cfg.telemetry
@@ -726,6 +729,8 @@ def _telemetry(args: argparse.Namespace) -> None:
             "destination configured, but nothing is exported until "
             "telemetry.enabled: true is written in the config file."
         )
+        if _kiro_telemetry_exporting(loaded_cfg):
+            print("   Product usage metrics are sent to Kiro telemetry (kiro-telemetry).")
     elif want and not set_recording:
         print("Anonymous usage beacon ENABLED (one heartbeat per day).")
         print(
@@ -737,12 +742,64 @@ def _telemetry(args: argparse.Namespace) -> None:
     elif want:
         print("Usage data ENABLED: local metric recording and the anonymous beacon")
         print("   (one heartbeat per day).")
+        if _kiro_telemetry_listed():
+            print(
+                "   Product usage metrics are also sent to Kiro telemetry (kiro-telemetry), "
+                "labelled with a hashed install ID.",
+                flush=True,
+            )
+            _record_kiro_telemetry_ack(path)
         print("   Run 'kirocrew telemetry status' to see exactly what is sent.")
     else:
         print("Usage data DISABLED: local metric recording and the anonymous beacon")
         print("   are off. Nothing will be recorded or sent.")
         print(f"   You can also delete {beacon.INSTALL_ID_FILE} from the data home.")
     _report_env_pin(want)
+
+
+def _record_kiro_telemetry_ack(path: Path) -> None:
+    """Record that this command's line naming Kiro telemetry reached a terminal.
+
+    Written after the line printed, and only to a terminal: a redirected or
+    closed stdout told nobody, so the Kiro destination keeps waiting for a notice
+    (``kiro_export.notice_shown``).
+    """
+    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
+
+    try:
+        if not sys.stdout.isatty():
+            return
+
+        def _mutate(data: dict) -> dict:
+            if isinstance(data, dict):
+                dashboard = data.get("dashboard")
+                if isinstance(dashboard, dict):
+                    dashboard["kiro_telemetry_ack_version"] = PRIVACY_NOTICE_VERSION
+            return data
+
+        update_config_locked(path, mutate=_mutate, fsync=True, stamp_meta=False)
+    except Exception:  # noqa: BLE001 - not recorded: the notice still waits
+        return
+
+
+def _kiro_telemetry_exporting(cfg: object) -> bool:
+    """Whether recording on sends product usage metrics to Kiro telemetry now."""
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        return bool(kiro_export.destinations()) and kiro_export.notice_shown(cfg or None)
+    except Exception:  # noqa: BLE001 - informational only
+        return False
+
+
+def _kiro_telemetry_listed() -> bool:
+    """Whether this build sends product usage metrics to Kiro telemetry."""
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        return bool(kiro_export.destinations())
+    except Exception:  # noqa: BLE001 - informational only
+        return False
 
 
 def _format_recording_status(cfg: KiroCrewConfig) -> str:
@@ -764,9 +821,28 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         # Unknown consent: a running gateway may still export to a destination this
         # (fallback) load cannot see, so never promise local-only.
         egress_host = effective is None or otlp_egress_active(cfg.telemetry)
-        exports = egress_host and (effective is None or outbound_consented(cfg))
+        from kiro_crew.metrics import kiro_export
+
+        builtin = bool(kiro_export.destinations()) and kiro_export.notice_shown(cfg)
+        exports = egress_host and (effective is None or outbound_consented(cfg) or builtin)
     except Exception:  # noqa: BLE001 - unknown posture is treated as egress
         egress_host = exports = True
+    # Names only, never an endpoint (it can carry credentials). A build's own
+    # destination is marked so, since config cannot remove it.
+    sends_to = ""
+    try:
+        from kiro_crew.metrics.provider import otlp_egress_listing
+
+        sends_to = ", ".join(
+            (
+                f"{row.destination.name} (included by this build)"
+                if row.locked
+                else row.destination.name
+            )
+            for row in otlp_egress_listing(cfg.telemetry)
+        )
+    except Exception:  # noqa: BLE001 - the line is informational; the posture above stands
+        sends_to = ""
     lines = [
         "Local metric recording"
         + (
@@ -788,6 +864,8 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         ),
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
     ]
+    if sends_to:
+        lines.append(f"  Collectors:  {sends_to}")
     if pin is not None and env_pin_is_soft():
         remedy = (
             "in the config file, where the export destination is configured"
@@ -935,6 +1013,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_install_source,
         _run_app_action_through_gateway,
         _run_app_mcp_server,
+        _set_folded_app_switch,
         _shell_quoted,
         _warn_backend_not_stopped,
         _warn_hooks_need_restart,
@@ -952,9 +1031,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_preview,
         _cron_update_not_found,
         _format_schedule,
+        _ownerless_hint,
     )
     from kiro_crew.cli_commands_eval import (  # noqa: F401
+        _eval_provider_kwargs,
+        _judge_results,
         _load_eval_scenarios,
+        _load_failure,
+        _load_user_scenarios,
+        _read_user_scenario,
         _run_eval,
         write_eval_artifacts,
     )

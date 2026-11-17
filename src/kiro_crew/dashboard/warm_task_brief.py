@@ -79,6 +79,14 @@ _MAX_LAST_SEEN = 1024
 _MAX_RENDERS = 3
 # The clock a digest render reads, so time passing alone never changes it.
 _DIGEST_EPOCH = 0.0
+
+
+def _digest_clock(epoch: float | None) -> str:
+    """A time as its whole epoch seconds, for the digest render only: it reads
+    neither "now" nor the configured zone."""
+    return "" if epoch is None else f"{epoch:.0f}"
+
+
 # The quiet line is fixed text, never model output, picked by the script of
 # the owner's last three genuine messages; Latin-script and unknown text get
 # English. It is the whole welcome when nothing changed. It says only "nothing
@@ -865,8 +873,11 @@ def _defang_markers(text: str) -> str:
 
 
 def _holds_a_secret(text: str) -> bool:
-    """Whether the redactor finds anything in any of *text*'s scan views."""
-    return any(_redact(view) != view for view in _scan_views(text))
+    """Whether the redactor finds anything in any of *text*'s scan views, or the
+    exfiltration scan flags a URL in one: the refusal every gate reads."""
+    from kiro_crew.security.exfil import refuses
+
+    return any(refuses(view, _redact) for view in _scan_views(text))
 
 
 # Every span the chat's GFM autolinker would turn into a link: a web address
@@ -1197,6 +1208,9 @@ async def _compose(
         checked_at=inputs.clock(checked_epoch),
         clean=_clean,
         terminal=work_item_is_terminal,
+        # The digest render must not change with the date or the zone: a time that
+        # gains its date tomorrow would re-send an unchanged welcome.
+        clock=_digest_clock if checked_epoch == _DIGEST_EPOCH else inputs.clock,
     )
     # Every ledger string was redacted as it was cleaned; this scan of the exact
     # text the row posts is the last check. A hit returns "": the caller posts

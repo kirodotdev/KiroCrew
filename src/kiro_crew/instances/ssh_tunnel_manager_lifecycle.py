@@ -35,6 +35,7 @@ from kiro_crew.instances.registry import (
     _UNALLOCATED_PORT,
     Instance,
     InstanceDisabledError,
+    InstanceStoppedError,
     ancestor_ids,
     descendant_ids,
     is_headless_provisioner,
@@ -169,7 +170,9 @@ async def connect(
     the browser could.
 
     A disabled crew raises :class:`InstanceDisabledError` and spawns nothing,
-    and so does a chained crew with a disabled crew anywhere up its chain.
+    and so does a chained crew with a disabled crew anywhere up its chain. A
+    crew whose cloud machine was stopped raises its subclass,
+    :class:`InstanceStoppedError`.
     The check reads the record under the same lock the disabling write is
     made under (see :meth:`reconfigure`), so a connect racing a disable either
     finishes first and is torn down by it, or starts after and is refused.
@@ -206,6 +209,8 @@ async def connect(
             )
         if inst.disabled:
             raise InstanceDisabledError(f"crew {instance_id!r} is disabled")
+        if inst.cloud_stopped:
+            raise InstanceStoppedError(f"crew {instance_id!r} is stopped")
         if inst.via_instance_id:
             # A chained crew's forward dials its parent's host, so a disabled
             # crew anywhere up the chain keeps this one closed as well.
@@ -386,13 +391,11 @@ async def connect(
         # rather than on there being a freed port to add back.
         #
         # Everything here runs off the event loop: ``_reserved_ports`` reads
-        # the registry from disk under its own lock, and the port probe binds
-        # a socket. Under the mirror neither happened on this path -- the port
-        # was a fixed field read and one probe -- whereas this reads a file
-        # and can walk upward past every occupied candidate, all inside the
-        # manager lock on the gateway's loop, where a synchronous scan would
-        # stall unrelated requests and heartbeats. This matches how the rest
-        # of the module already reaches the registry (``asyncio.to_thread``).
+        # the registry from disk under its own lock, the port probe binds a
+        # socket, and the scan can walk past every occupied candidate, all
+        # inside the manager lock. On the gateway's loop that would stall
+        # unrelated requests and heartbeats. The rest of the module reaches
+        # the registry the same way (``asyncio.to_thread``).
         reserved = await asyncio.to_thread(self._reserved_ports)
         # Prefer this crew's own recorded port for origin stability (above),
         # but not on a rebuild, which wants a fresh port. ``_reserved_ports``
@@ -862,13 +865,16 @@ async def shutdown(self: SshTunnelManager) -> None:
             self._cancel_token_refresh(instance_id)
         ids = list(self._tunnels)
         for instance_id in ids:
-            tunnel = self._tunnels.pop(instance_id, None)
+            tunnel = self._tunnels.get(instance_id)
             self._tokens.pop(instance_id, None)
             self._peer_sessions.pop(instance_id, None)
             self._chained_far_end.pop(instance_id, None)
             if tunnel is not None:
                 with contextlib.suppress(Exception):
                     await tunnel.stop()
+            # Only once the stop has returned: a shutdown cut mid-stop leaves the
+            # tunnel here, so the next shutdown (the gateway's exit path) stops it.
+            self._tunnels.pop(instance_id, None)
         # Every lent hop port goes with the process, so nothing stays bound by a
         # guard whose gateway is gone. The LEASE survives this, and
         # `sync_hop_holds` at the next startup is what re-takes the ports.

@@ -214,7 +214,8 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
       put('/api/agent-spec-pins/' + encodeURIComponent(agent), { file }).then(j) as Promise<{ ok: boolean; agent: string; file: string }>,
     kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
     saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
-    patchConfig: (path: string, value: unknown, opts?: { ifUnset?: boolean }) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value, ...(opts?.ifUnset ? { if_unset: true } : {}) }) }).then(j),
+    /** `unset` removes the stored value so the default applies (Settings -> Advanced keys only). */
+    patchConfig: (path: string, value: unknown, opts?: { ifUnset?: boolean; unset?: boolean }) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value, ...(opts?.ifUnset ? { if_unset: true } : {}), ...(opts?.unset ? { unset: true } : {}) }) }).then(j),
     // Owner-only, and absent (404) on an older gateway. Both of those reach the
     // caller as a rejection, which is the intended signal: "no probe information",
     // to be treated as fail-open rather than as a verdict.

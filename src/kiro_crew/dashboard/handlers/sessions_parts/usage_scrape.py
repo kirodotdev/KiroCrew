@@ -575,6 +575,7 @@ async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
             try:
                 await kill_and_reap(proc, timeout=5)
             except Exception:
+                # Cleanup in ``finally`` must not replace the answer being returned.
                 pass
         if cleanup:
             try:

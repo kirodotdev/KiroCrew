@@ -36,6 +36,7 @@ from kiro_crew.instances.ssh_tunnel_manager import (
     _SshTunnel,
     _TransportParams,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -724,10 +725,14 @@ class TestMonitor:
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates(self) -> None:
-        tunnel = _tunnel()
+        notified: list[str] = []
+        tunnel = _tunnel(on_exit=notified.append)
         tunnel._proc = _FakeProc(wait_raises=asyncio.CancelledError())  # type: ignore[assignment]
         with pytest.raises(asyncio.CancelledError):
             await tunnel._monitor()
+        # Cancelling the watcher is not the child dying: no ERROR, no self-heal.
+        assert tunnel.status.state is not TunnelState.ERROR
+        assert notified == []
 
 
 class TestTerminate:
@@ -993,22 +998,19 @@ class TestSanitizeBannerAnchor:
         assert _sanitize_banner("short", anchor="connection reset") == "short"
 
     def test_banner_scrub_is_the_exfil_first_composition(self) -> None:
-        """A long-query exfil URL in a proxy banner loses its WHOLE url.
+        """A URL in a proxy banner keeps everything but its credential value.
 
-        The banner buffer is proxy-controlled, and `redact_exfiltration_urls`
-        classifies partly by query length before replacing the entire url — a
-        hand-sequenced creds-first pair here would shorten `?token=<long>`
-        first and defeat it, leaving the destination and payload parameters in
-        the tunnel status detail. The scrub must stay the canonical
+        The banner buffer is proxy-controlled. The scrub must stay the canonical
         `security.redact()` composition (the seam `discover.py`'s
-        TestRedactExternalLayerOrder pins).
+        TestRedactExternalLayerOrder pins), which masks the `?token=` value in
+        place: the destination stays readable in the tunnel status detail.
         """
         banner = (
             "refused: https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
         )
         out = _sanitize_banner(banner)
-        assert "corp-laptop" not in out
-        assert "?token=" not in out
+        assert "aB3" not in out
+        assert "collect.attacker.example/?token=[REDACTED: credential]&host=corp-laptop" in out
 
     def test_no_anchor_takes_the_head(self) -> None:
         assert _sanitize_banner("a" * 300) == "a" * 200
@@ -1030,7 +1032,7 @@ class TestSanitizeBannerAnchor:
         assert len(out) == 200
 
     def test_redaction_happens_before_the_window_is_taken(self) -> None:
-        token = "ghp_" + "a1B2" * 9
+        token = github_classic(seed=95)  # a ghp_ without a valid checksum is no token
         text = "m" * 250 + f"\ntoken {token} then Connection reset by peer"
         out = _sanitize_banner(text, anchor="connection reset")
         assert token not in out

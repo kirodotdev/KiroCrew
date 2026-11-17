@@ -89,15 +89,11 @@ class TestKeys:
 class TestWebhookSources:
     @pytest.mark.parametrize("edition", EDITIONS)
     def test_no_policy_refuses_only_in_lts(self, monkeypatch, edition) -> None:
-        from kiro_crew.webhook_sources import (
-            SOURCE_AGENT,
-            SOURCE_OPS_MISSION_CONTROL,
-            source_refusal,
-        )
+        from kiro_crew.webhook_sources import SOURCE_AGENT, source_refusal
 
         lts = _set_edition(monkeypatch, edition)
         _install_policy(monkeypatch, None)
-        for source in (SOURCE_AGENT, SOURCE_OPS_MISSION_CONTROL):
+        for source in (SOURCE_AGENT, "fixture-app"):
             assert bool(source_refusal(source)) is lts
 
     @pytest.mark.parametrize("edition", EDITIONS)

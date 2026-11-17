@@ -168,10 +168,14 @@ class TestRevalidationAndGzip:
         monkeypatch.setattr(slot_detail, "SLOT_DETAIL_PAGE_BYTE_BUDGET", 5000)
         state = _state(tmp_path, monkeypatch, [2000] * 30)
         async with TestClient(TestServer(_make_app(state))) as client:
-            first = await (await client.get(f"/api/chat/slots/{NAME}?limit=500&cursor=1")).json()
+            first = await (
+                await client.get(f"/api/chat/slots/{NAME}?limit=500&cursor=1&page_bytes=1")
+            ).json()
             cur = first["cursor"]
             echo = f"from={cur['from']}&since={cur['since']}&digest={cur['digest']}"
-            nxt = await (await client.get(f"/api/chat/slots/{NAME}?limit=500&{echo}")).json()
+            nxt = await (
+                await client.get(f"/api/chat/slots/{NAME}?limit=500&page_bytes=1&{echo}")
+            ).json()
         assert [m["content"].split(":")[0] for m in first["messages"]] == ["r28", "r29"]
         assert (first["next_before"], cur["from"], cur["since"]) == (28, 28, 29)
         assert nxt["delta"] == {"from": 28, "since": 29}
@@ -187,12 +191,33 @@ class TestRevalidationAndGzip:
         state = _state(tmp_path, monkeypatch, [2000] * 30)
         async with TestClient(TestServer(_make_app(state))) as client:
             first = await (
-                await client.get(f"/api/chat/slots/{NAME}?limit={first_limit}&cursor=1")
+                await client.get(
+                    f"/api/chat/slots/{NAME}?limit={first_limit}&cursor=1&page_bytes=1"
+                )
             ).json()
             cur = first["cursor"]
             echo = f"from={cur['from']}&since={cur['since']}&digest={cur['digest']}"
             plain = await (await client.get(f"/api/chat/slots/{NAME}?limit=20")).json()
-            nxt = await (await client.get(f"/api/chat/slots/{NAME}?limit=20&{echo}")).json()
+            nxt = await (
+                await client.get(f"/api/chat/slots/{NAME}?limit=20&page_bytes=1&{echo}")
+            ).json()
         assert "delta" not in nxt
         assert nxt["messages"] == plain["messages"]
         assert nxt["next_before"] == plain["next_before"] == 10
+
+    @pytest.mark.asyncio
+    async def test_a_cursor_read_without_page_bytes_keeps_the_whole_window(
+        self, tmp_path, monkeypatch
+    ):
+        """The app-sdk embed asks ``cursor=1`` and never pages back with ``before``:
+        without the opt-in its window is not byte-cut, as before the budget existed."""
+        monkeypatch.setattr(slot_detail, "SLOT_DETAIL_PAGE_BYTE_BUDGET", 5000)
+        state = _state(tmp_path, monkeypatch, [2000] * 30)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            first = await (await client.get(f"/api/chat/slots/{NAME}?limit=20&cursor=1")).json()
+            cur = first["cursor"]
+            echo = f"from={cur['from']}&since={cur['since']}&digest={cur['digest']}"
+            nxt = await (await client.get(f"/api/chat/slots/{NAME}?limit=20&{echo}")).json()
+        assert len(first["messages"]) == 20
+        assert (first["next_before"], cur["from"], cur["since"]) == (10, 10, 29)
+        assert nxt["delta"] == {"from": 10, "since": 29}

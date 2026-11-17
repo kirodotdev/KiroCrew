@@ -37,7 +37,9 @@ class TestAcpPerAgentModel:
         # The declared model must reach the client verbatim (not the global
         # default, and not the DEFAULT_MODEL "auto" sentinel).
         assert provider.client._model == "gpt-5.6-sol"
-        assert provider.client._is_claude is False
+        from kiro_crew.acp.client import ClaudeAcpClient
+
+        assert not isinstance(provider.client, ClaudeAcpClient)
 
     def test_model_override_wins_over_agent_model(self):
         cfg = self._acp_cfg()

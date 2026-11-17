@@ -9,14 +9,13 @@ state fakes, and ``_tick``.
 
 import json
 import os
-import tempfile
 import time
 import unittest
 import warnings
-from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
@@ -153,12 +152,20 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
     """Base: a temp data root, an enabled app, a connected repo -- and an isolated
     crew log, since a crew's ledger is the fold of the crew log its slot runs on."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        home = tempfile.TemporaryDirectory()
-        self.addCleanup(home.cleanup)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
+        home = self._tmp_path / "crew-home"
+        home.mkdir()
         # _scope is the single place that decides which data root a request's store
         # calls land in, so this one patch keeps every request's store writes in self.root.
         for patcher in (
@@ -177,7 +184,7 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
                 ],
             ),
             mock.patch.dict(
-                os.environ, {"KIROCREW_HOME": home.name, crew_log_emit.CREW_LOG_ENV: "1"}
+                os.environ, {"KIROCREW_HOME": str(home), crew_log_emit.CREW_LOG_ENV: "1"}
             ),
         ):
             patcher.start()

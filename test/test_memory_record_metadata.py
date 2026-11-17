@@ -13,6 +13,7 @@ from kiro_crew import memory_record_metadata as meta
 from kiro_crew import memory_stores, vector_memory
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.history_consolidation import HistoryConsolidator
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
@@ -141,6 +142,7 @@ def test_store_opens_when_legacy_rows_have_no_id_or_key(tmp_path, caplog):
         "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at) "
         "VALUES (NULL, '1', 'user_explicit', '2026-01-01', '2026-01-01')"
     )
+    meta.invalidate_marker(tier.db)  # the skip warning is logged by a full pass
     tier.db.commit()
     tier.close()
 
@@ -970,7 +972,7 @@ def test_true_but_older_user_quote_cannot_override_a_newer_owner_fact(store):
 def test_outbound_redaction_discovers_both_extension_tables(store, tmp_path):
     from kiro_crew import snapshot_redact
 
-    secret = "ghp_" + "A" * 36
+    secret = github_classic(seed=29)
     fact(store)
     # Historical/proposed and metadata strings must be scanned even when current
     # live content is clean. The generic schema walker needs no table allowlist.

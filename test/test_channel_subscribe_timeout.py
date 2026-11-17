@@ -40,7 +40,7 @@ async def test_subscribe_exits_when_agent_becomes_done(monkeypatch) -> None:
     assert not task.done()
 
     agent.state = "done"
-    # Must exit within a few poll intervals; would hang forever before the fix.
+    # Must exit within a few poll intervals, never hang.
     await await_until(task, what="subscribe() exiting once the agent is done")
 
 

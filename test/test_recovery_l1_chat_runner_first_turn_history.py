@@ -767,7 +767,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
                 "a bare CancelledError after output is a discarded turn (kiro-cli "
                 "drops the cancelled prompt carrying the history); the debt must "
                 "stay armed even though _stop_reason was never set via "
-                "EVENT_COMPLETE (GPT 6.1 F1)"
+                "EVENT_COMPLETE"
             )
             await _run_chat(state, slot, "carry on")
             if slot.task:
@@ -776,5 +776,5 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
         assert _context_is_new_per_prompt(state.context_builder) == [True, True], (
             "the cancelled FRESH turn did not durably deliver history; the next "
             "turn must be context-new so it rebuilds the history dropped with the "
-            "discarded cancelled prompt (GPT 6.1 F1 — crash-data-loss)"
+            "discarded cancelled prompt (crash data loss)"
         )

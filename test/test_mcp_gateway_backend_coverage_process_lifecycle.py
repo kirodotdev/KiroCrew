@@ -862,10 +862,10 @@ class TestBackendTmpContainment:
     async def test_ambient_temp_does_not_suppress_containment(
         self, fake_spawn, monkeypatch, tmp_path
     ) -> None:
-        # Regression: the resolver folds the daemon's own inherited environ
-        # into the spawn env, and macOS always exports TMPDIR (Windows: TMP /
-        # TEMP). An env-membership gate read that ambient value as an operator
-        # declaration and disabled containment on those platforms entirely.
+        # The resolver folds the daemon's own inherited environ into the spawn
+        # env, and macOS always exports TMPDIR (Windows: TMP / TEMP). An
+        # env-membership gate would read that ambient value as an operator
+        # declaration and disable containment on those platforms entirely.
         # Ambient keys must be OVERRIDDEN by the managed triple.
         from pathlib import Path
 

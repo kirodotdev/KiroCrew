@@ -15,10 +15,9 @@ file is not usable, fall back to the default" rather than a crash; a real
 ``OSError``) must degrade the same way, not escape as an unhandled exception.
 """
 
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store
 from kiro_crew.crew_log import projection as crew_log_projection
@@ -33,9 +32,17 @@ _NON_UTF8_BYTES = b'{"claim_ttl_hours": 5, "note": "caf\x80"}'
 
 
 class TestCrewStoreReadersSurviveNonUtf8Files(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.tmp = self._tmp_path
 
     def test_read_settings_degrades_to_default_on_non_utf8(self):
         path = crew_store.settings_path(OWNER, REPO, self.tmp)
@@ -62,6 +69,15 @@ class TestCrewStoreReadersSurviveNonUtf8Files(unittest.TestCase):
 
 
 class TestTheCarrySurvivesNonUtf8PreProjectionFiles(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     """The ledger's own files -- work items and the skip index -- are read only once
     more, by the carry into the crew log on a crew's first write; a non-UTF-8 one is
     never silently dropped there. The write that would have carried it is refused,
@@ -76,11 +92,13 @@ class TestTheCarrySurvivesNonUtf8PreProjectionFiles(unittest.TestCase):
 
         from kiro_crew.crew_log import emit as crew_log_emit
 
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        home = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
-        env = mock.patch.dict(os.environ, {"KIROCREW_HOME": home, crew_log_emit.CREW_LOG_ENV: "1"})
+        self.tmp = self._tmp_path / "radar-root"
+        self.tmp.mkdir()
+        home = self._tmp_path / "home"
+        home.mkdir()
+        env = mock.patch.dict(
+            os.environ, {"KIROCREW_HOME": str(home), crew_log_emit.CREW_LOG_ENV: "1"}
+        )
         env.start()
         self.addCleanup(env.stop)
         crew_log_emit.reset_caches()

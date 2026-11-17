@@ -1005,6 +1005,7 @@ function OtherCodingAgents({
                   setup gate hides the chat the hand-off would open. The button
                   above is the retry, so the notice sits beside it. */}
               <ErrorNotice
+                nested
                 className="mt-2 text-xs"
                 message={switchErrorFor(KIRO_BACKEND)}
                 testId="use-kiro-instead-error"

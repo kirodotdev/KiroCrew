@@ -29,15 +29,16 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
-from kiro_crew.acp import launch_tuning, runtime_models
+from kiro_crew.acp import harness_notices, launch_tuning, raw_sdk_tasks, runtime_models
 from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness.mimocode import mimocode_model_rows
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
-from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpProcessDied
+from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
@@ -247,7 +248,7 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         # Capability-gated (not ``_is_claude``) so a future settings-seeding
         # adapter re-seeds on a warm claim by joining the set.
         try:
-            await asyncio.to_thread(self._write_claude_local_settings)
+            await asyncio.to_thread(self._write_settings_seed)
         except (OSError, ValueError, TypeError):
             logger.warning("re-seed of settings.local.json on set_model failed", exc_info=True)
     # The previous model's window (and its authoritative usage_update, if
@@ -256,10 +257,9 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     # turn's telemetry (and so _backfill_context_window is un-gated).
     # Keyed on the SERVED id, not the requested one: a config-option
     # advisory can substitute the model this switch actually got, and the
-    # meter describes what is serving. Rebasing on model_id showed the
-    # requested model's window against the substitute's token counts, so
-    # the percentage was wrong for exactly the sessions that were
-    # silently moved.
+    # meter describes what is serving. Rebasing on model_id would show the
+    # requested model's window against the substitute's token counts, a
+    # wrong percentage for exactly the sessions that were silently moved.
     served_model_id = self._resolved_model_id or model_id
     win = (
         model_registry.model_window(served_model_id)
@@ -282,8 +282,9 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     The shape walk is delegated to
     :func:`kiro_crew.acp.session_handle.parse_advertised_models` so this
     snapshot stays directly comparable with the pooled-runtime probe.
-    This path keeps its dict-only ``models`` gate and its
-    non-empty assignment guard — both are call-site policy, not parsing.
+    The ``configOptions`` fold can replace a conflicting ``models`` object for a
+    host whose model select is canonical. The non-empty assignment guard remains
+    call-site policy, not parsing.
 
     Also records ``currentModelId`` for ``_track_metadata``'s context
     window lookup.
@@ -293,11 +294,16 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     from kiro_crew.acp.session_handle import models_from_config_options
 
     models = session_resp.get("models")
-    if not isinstance(models, dict):
+    if (
+        not isinstance(models, dict)
+        or self.backend in ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL
+    ):
         # Adapters that omit `models` still advertise via configOptions. One
         # authoring, shared with the shared-runtime driver's own capture.
-        models = models_from_config_options(session_resp, self.backend)
-        if models is None:
+        select_models = models_from_config_options(session_resp, self.backend)
+        if select_models is not None:
+            models = select_models
+        elif not isinstance(models, dict):
             return
     current_model_id = models.get("currentModelId")
     if isinstance(current_model_id, str) and current_model_id:
@@ -704,8 +710,10 @@ async def _ensure_served_default(self: AcpClient) -> None:
     ``session/set_model`` accepts, so "absent from the list" genuinely means
     unusable. The claude backend advertises a different namespace than the
     model it runs and announces its own substitutions instead. Its gap is a
-    different one, closed by :meth:`_reassert_adapter_resolved_model`: the
-    model it reports is not always the model Claude Code runs.
+    different one, closed by the claude client's own ``_ensure_served_default``
+    (``client_claude_session._reassert_adapter_resolved_model``): the model it
+    reports is not always the model Claude Code runs. Every other backend keeps
+    the default it was given.
 
     ``self._model`` is deliberately left alone. ``""``/``"auto"`` there mean
     "inherit" to every reader of that field (the settings seed, the
@@ -733,8 +741,10 @@ async def _ensure_served_default(self: AcpClient) -> None:
             ", ".join(advertised),
             fallback,
         )
-    elif self._is_claude:
-        await self._reassert_adapter_resolved_model()
+    else:
+        # A backend whose session/new can land on a model of its own choosing that
+        # Crew refuses (opencode's hosted fall-back): its client class decides.
+        self._refuse_harness_default_model()
 
 
 def _note_agent_switched(self: AcpClient, params: dict[str, Any] | None) -> None:
@@ -781,53 +791,6 @@ async def _judge_activated_model(self: AcpClient) -> None:
     if self._is_kiro:
         self._resolved_model_id = activated
         await self._ensure_served_default()
-
-
-async def _reassert_adapter_resolved_model(self: AcpClient) -> None:
-    """Send an inheriting claude session the model its adapter reports.
-
-    claude-agent-acp resolves an inheriting session's model from
-    ``ANTHROPIC_MODEL`` or the user's ``settings.model`` and reports it as the
-    ``model`` option's current value. When that value is the setting verbatim it
-    does not pass it on, trusting Claude Code to have read the same setting; a
-    resumed session can instead run Claude Code's built-in default while the
-    adapter still reports the settings model. A custom gateway that does not
-    serve that built-in default then refuses every turn. The report cannot tell
-    the two cases apart, so the reported id is sent back over
-    ``session/set_config_option``: the write the picker and ``/model`` make,
-    which the adapter always passes on to Claude Code.
-
-    Nothing is sent when the reported id is the head of the advertised list:
-    with no model setting the adapter reports that entry (its ``default``
-    pseudo-model), so there is no setting to re-apply. Nothing is sent for an
-    id the list does not carry either, since the adapter would refuse it.
-
-    Best effort: the session started without this write, so a refused value or
-    a failed request leaves it on the adapter's own model and only logs. A dead
-    process still propagates, because the session cannot continue.
-    """
-    advertised = self._advertised_model_ids()
-    reported = self._resolved_model_id or ""
-    if reported not in advertised or reported == advertised[0]:
-        return
-    _reported_log = redact_log_via_context(reported)
-    # An advisory belongs to the request that emitted it (see set_model).
-    self._last_substitution_model = None
-    try:
-        sent = await self._push_model_config_option(reported, strict=False)
-    except AcpProcessDied:
-        raise
-    except AcpError as exc:
-        logger.warning(
-            "ACP model %s reported by the backend could not be re-applied: %s",
-            _reported_log,
-            redact_log_via_context(str(exc)),
-        )
-        return
-    if not sent:
-        return
-    self._resolved_model_id = self._last_substitution_model or sent
-    logger.info("ACP model: re-applied %s, resolved by the backend's settings", _reported_log)
 
 
 async def _apply_startup_model(self: AcpClient) -> None:
@@ -917,7 +880,7 @@ async def _apply_startup_model(self: AcpClient) -> None:
         # model the backend fully serves: resolve to the advertised
         # spelling and send THAT, so the session runs the model the pin
         # names instead of silently dropping to the default. Same fold the
-        # display verdict uses (chat_runner._pinned_model_verdict), so the
+        # display verdict uses (chat_turn.model_fallback._pinned_model_verdict), so the
         # chip and the wire cannot disagree about what "usable" means. A
         # pin absent under either spelling still takes the withhold below.
         _resolved = runtime_models.resolve_pin_spelling(self._model, self._advertised_model_ids())
@@ -978,6 +941,9 @@ async def _apply_startup_model(self: AcpClient) -> None:
             # pin so a caller billing by it can tell it never ran.
             self.model_pin_refused = self._model
             self._model = DEFAULT_MODEL
+            # The session now runs session/new's own model, which on opencode can
+            # be its hosted fall-back: judged as an inherited one would be.
+            self._refuse_harness_default_model()
             return
         self.model_pin_refused = ""
         self._model = sent
@@ -1037,6 +1003,10 @@ def _store_session_config(self: AcpClient, resp: dict) -> None:
     # Assigned unconditionally so a re-init that omits `modes` clears any
     # stale state rather than guarding on it.
     self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
+    # The mode names a mode-change notice reads (``acp.harness_notices``).
+    harness_notices.note_session_modes(self, resp)
+    # The background tasks of the session this one replaced do not report here.
+    raw_sdk_tasks.forget_tasks(self)
 
 
 def _handle_config_option_update(self: AcpClient, msg: JsonRpcMessage) -> None:

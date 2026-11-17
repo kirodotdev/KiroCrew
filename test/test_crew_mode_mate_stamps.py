@@ -158,8 +158,9 @@ def test_crew_mode_stamps_are_unchanged_by_the_mate_walk(
             f: with_mates[key].get(f) for f in CREW_FIELDS
         }, key
     assert with_mates["w2"][crew_mode.WORKER_FIELD] == ROOT
+    # The mate's sessions leave a person's list: its Bot does not show them there.
     assert crew_mode.list_view(list(with_mates.values()), "", agent=False) == [
-        r for r in with_mates.values() if r["key"] in {ROOT, MATE, CHILD, GRAND, "p1", "p2"}
+        r for r in with_mates.values() if r["key"] in {ROOT, MATE, "p1", "p2"}
     ]
 
 

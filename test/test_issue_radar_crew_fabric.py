@@ -18,7 +18,6 @@ crew log home. Route tests take the handler from a real ``web.Application`` behi
 import itertools
 import json
 import os
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -52,11 +51,21 @@ _UNITS: dict[str, str] = {}
 _SEQ = itertools.count(1)
 
 
-def _isolate_crew_log(case: unittest.TestCase) -> None:
-    """Own crew log data home, crew log on, writer state reset around *case*."""
-    home = tempfile.TemporaryDirectory()
-    case.addCleanup(home.cleanup)
-    env = mock.patch.dict(os.environ, {"KIROCREW_HOME": home.name, crew_log_emit.CREW_LOG_ENV: "1"})
+class _TmpPathCase:
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+
+def _isolate_crew_log(case: unittest.TestCase, home: Path) -> None:
+    """Own crew log data home *home*, crew log on, writer state reset around *case*."""
+    home.mkdir()
+    env = mock.patch.dict(os.environ, {"KIROCREW_HOME": str(home), crew_log_emit.CREW_LOG_ENV: "1"})
     env.start()
     case.addCleanup(env.stop)
     crew_log_emit.reset_caches()
@@ -147,12 +156,11 @@ def _bulk_no_move_lines(
     assert_drained()
 
 
-class FoldTest(unittest.TestCase):
+class FoldTest(_TmpPathCase, unittest.TestCase):
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        _isolate_crew_log(self)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
+        _isolate_crew_log(self, self._tmp_path / "crew-home")
         self.crew = _crew(self.root)
         self.cid = self.crew["id"]
 
@@ -163,12 +171,9 @@ class FoldTest(unittest.TestCase):
         self.assertEqual(crew_store.fold_fabric(OWNER, REPO, self.root), [])
 
     def test_no_crews_at_all_folds_to_no_items(self):
-        # TemporaryDirectory rather than mkdtemp + rmtree(ignore_errors=True): the
-        # suppressed form hides a failure to remove the tree, so a leak survives the
-        # run silently. This raises instead, which is what a cleanup fault should do.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.assertEqual(crew_store.fold_fabric(OWNER, REPO, Path(tmp.name)), [])
+        empty = self._tmp_path / "empty-root"
+        empty.mkdir()
+        self.assertEqual(crew_store.fold_fabric(OWNER, REPO, empty), [])
 
     # ── single item ────────────────────────────────────────────────────────
 
@@ -481,12 +486,11 @@ def _payload(response: web.Response) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-class RouteTest(unittest.IsolatedAsyncioTestCase):
+class RouteTest(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        _isolate_crew_log(self)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
+        _isolate_crew_log(self, self._tmp_path / "crew-home")
         for patcher in (
             mock.patch.object(routes, "_scope", return_value=self.root),
             mock.patch.object(routes, "is_app_enabled", return_value=True),
@@ -591,7 +595,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TitleHintDegradationTest(unittest.TestCase):
+class TitleHintDegradationTest(_TmpPathCase, unittest.TestCase):
     """A title cache that cannot be read costs the TITLES, not the endpoint.
 
     A refresh can rewrite a cache between the exists check and the read; the item then
@@ -599,10 +603,9 @@ class TitleHintDegradationTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        _isolate_crew_log(self)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
+        _isolate_crew_log(self, self._tmp_path / "crew-home")
         crew = _crew(self.root)
         self.cid = crew["id"]
         _step(self.root, self.cid, 5109, "claimed", "claim", "mine")
@@ -625,7 +628,7 @@ class TitleHintDegradationTest(unittest.TestCase):
 
 
 @pytest.mark.timeout(300)
-class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
+class TestStalledLaneSurvivesLedgerVolume(_TmpPathCase, unittest.TestCase):
     """A lane parked in one phase keeps its entry timestamp no matter how many
     newer lines the crew's log accumulates.
 
@@ -635,10 +638,9 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
     """
 
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        _isolate_crew_log(self)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
+        _isolate_crew_log(self, self._tmp_path / "crew-home")
 
     def test_an_old_phase_entry_survives_thousands_of_later_writes(self):
         crew = _crew(self.root)

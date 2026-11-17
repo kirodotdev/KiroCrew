@@ -533,7 +533,7 @@ async def test_with_titles_is_a_noop_without_dashboard_state() -> None:
 
 @pytest.mark.asyncio
 async def test_with_titles_is_a_noop_when_state_exposes_no_slot_accessor() -> None:
-    """``get_slot`` is the only public way in — a ``slots`` attribute is not it."""
+    """``get_slot`` is the only public way in; a private ``_slots`` map is not read."""
     cost = {"conversations": [{"slot": "chat-1-9"}]}
     state = SimpleNamespace(_slots={"chat-1-9": object()})
     assert await h._with_conversation_titles(_mk(state=state), cost) is cost
@@ -707,6 +707,8 @@ async def test_collection_status_reports_the_effective_switch_state(
         "overlay_override": False,
         "otlp_configured": True,
         "export_permitted": True,
+        "enable_refused": True,
+        "off_offer": False,
         "otlp_destinations": [{"name": "ops", "source": "otlp_endpoints", "locked": False}],
         "metrics_dir": str(tmp_path / "m"),
     }

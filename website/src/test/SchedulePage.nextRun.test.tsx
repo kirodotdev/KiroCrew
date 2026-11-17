@@ -94,3 +94,37 @@ describe('SchedulePage next run', () => {
     expect(screen.getByText('in 5 m')).toBeInTheDocument()
   })
 })
+
+describe('SchedulePage last run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW_MS)
+  })
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    if (i18next.language !== 'en') await i18next.changeLanguage('en')
+  })
+
+  it('words a run more than a year ago in years, not hundreds of days', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ last_run_ts: NOW_MS / 1000 - 400 * 86400 })] })
+
+    renderWithProviders(<SchedulePage />)
+
+    await waitFor(() => expect(screen.getByText('1y ago')).toBeInTheDocument())
+    expect(screen.queryByText('400d ago')).toBeNull()
+  })
+
+  it('words the last run in German', async () => {
+    await i18next.changeLanguage('de')
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ last_run_ts: NOW_MS / 1000 - 3 * 3600 })] })
+
+    renderWithProviders(<SchedulePage />)
+
+    const want = new Intl.RelativeTimeFormat('de', { numeric: 'always', style: 'narrow' }).format(-3, 'hour')
+    await waitFor(() => expect(screen.getByText(want)).toBeInTheDocument())
+  })
+})

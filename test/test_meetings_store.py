@@ -12,6 +12,7 @@ traversal or symlink-escape write anywhere in the app.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -237,15 +238,21 @@ class TestMeetingMeta:
         assert [tree for tree in trees if tree.exists()] == []
 
     def test_delete_held_past_the_budget_keeps_the_marker_for_a_retry(
-        self, root: Path, monkeypatch
+        self, root: Path, monkeypatch, caplog
     ):
         trees = self._meeting_with_sidecars(root)
         real_unlink = os.unlink
         self._hold_transcript(monkeypatch, times=None)
 
-        with pytest.raises(store.MeetingsPathError, match="held open by another process") as err:
-            store.delete_meeting("m1", root)
+        with caplog.at_level(logging.WARNING, logger="kirocrew.app.meetings"):
+            with pytest.raises(store.MeetingsPathError, match="could not be deleted") as err:
+                store.delete_meeting("m1", root)
         assert (err.value.status, err.value.code) == (500, "meeting_delete_failed")
+        # The reply names no local path; the server log keeps the OS error.
+        assert str(root) not in str(err.value)
+        assert "held open by another process" not in str(err.value)
+        logged = [r for r in caplog.records if r.exc_info]
+        assert logged and "held open by another process" in str(logged[0].exc_info[1])
         assert (store.meeting_dir("m1", root) / k.SESSION_META_FILE).is_file()
 
         monkeypatch.setattr(os, "unlink", real_unlink)

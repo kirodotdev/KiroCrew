@@ -733,6 +733,7 @@ def _copy_item(item: WorkItem, directory: Path) -> WorkItem:
     copied.acceptance = acceptance
     copied.artifacts = dict(item.artifacts)
     copied.retired_bindings = [dict(b) for b in item.retired_bindings]
+    copied.discussion = _json_copy(item.discussion)
     return copied
 
 
@@ -871,8 +872,13 @@ def _append_event_locked(
     *,
     status: str | None = None,
     id_salt: str = "",
+    fixed_id: str | None = None,
 ) -> WorkEvent:
     """Append one event to *item_id*'s log. THE CALLER MUST HOLD THE ITEM LOCK.
+
+    *fixed_id*, when given, is the event's id instead of the content address: an
+    ingested peer report keeps the peer's own event id. A log that already holds
+    that id is left as it is, so filing the same peer event twice is a no-op.
 
     Stamps ``ts`` here, under the lock and immediately before the write, so file
     order and timestamp order agree. A caller that built its entry first and then
@@ -893,7 +899,7 @@ def _append_event_locked(
     incoming = WorkEvent(
         # *id_salt* tells apart two events the same second with the same text: an
         # ingested remote report passes the peer's own event identity.
-        id=event_id(ts, item_id, kind, trimmed + id_salt, status=status),
+        id=fixed_id or event_id(ts, item_id, kind, trimmed + id_salt, status=status),
         ts=ts,
         item_id=item_id,
         kind=kind,
@@ -901,7 +907,12 @@ def _append_event_locked(
         text=trimmed,
     )
     path = item_events_path(slot_key, item_id)
-    events = _coalesce_progress(_read_events_unlocked(path, strict=True), incoming)
+    held = _read_events_unlocked(path, strict=True)
+    if fixed_id:
+        already = next((event for event in held if event.id == fixed_id), None)
+        if already is not None:
+            return already
+    events = _coalesce_progress(held, incoming)
     events.append(incoming)
     if len(events) > MAX_EVENTS_PER_ITEM:
         events = events[-MAX_EVENTS_PER_ITEM:]
@@ -959,6 +970,7 @@ def _commit_item_locked(
     *,
     status: str | None = None,
     id_salt: str = "",
+    fixed_id: str | None = None,
 ) -> WorkEvent:
     """Persist one item change AND the event that explains it. HOLD THE ITEM LOCK.
 
@@ -975,7 +987,9 @@ def _commit_item_locked(
     _require_record_fits(payload)
     events_path = item_events_path(slot_key, item.item_id)
     log_before = _read_text_or_none(events_path)
-    event = _append_event_locked(slot_key, item.item_id, kind, text, status=status, id_salt=id_salt)
+    event = _append_event_locked(
+        slot_key, item.item_id, kind, text, status=status, id_salt=id_salt, fixed_id=fixed_id
+    )
     try:
         _write_record(item_path(slot_key, item.item_id), payload)
     except BaseException:

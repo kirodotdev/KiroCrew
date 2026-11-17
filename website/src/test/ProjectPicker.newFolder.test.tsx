@@ -107,6 +107,38 @@ describe('ProjectPicker: New folder', () => {
     expect(notice.textContent).toContain(i18nT(`components.projectPicker.${key}`, { name: 'x', path: '/home/u' }))
   })
 
+  it('keeps Create disabled for an empty or spaces-only name', async () => {
+    const create = vi.spyOn(api, 'createBrowseDir')
+    mount()
+    const field = await openField()
+    const button = screen.getByTestId('pp-new-folder-create')
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.change(field, { target: { value: '   ' } })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.keyDown(field, { key: 'Enter' })
+    fireEvent.click(button)
+    expect(create).not.toHaveBeenCalled()
+    fireEvent.change(field, { target: { value: ' a ' } })
+    expect(button.getAttribute('aria-disabled')).toBeNull()
+  })
+
+  it('opens the path the server answers, not the name typed', async () => {
+    // Windows drops a trailing dot: "app." makes "app", and the server answers that path.
+    const create = vi.spyOn(api, 'createBrowseDir').mockResolvedValue({ path: '/home/u/app' })
+    const { onSelect } = mount()
+    const field = await openField()
+    fireEvent.change(field, { target: { value: 'app.' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith('/home/u', 'app.'))
+    await waitFor(() => expect(api.browseDirs).toHaveBeenCalledWith('/home/u/app'))
+    expect(api.browseDirs).not.toHaveBeenCalledWith('/home/u/app.')
+    const path = screen.getByPlaceholderText('/path/to/project') as HTMLInputElement
+    await waitFor(() => expect(path.value).toBe('/home/u/app/'))
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Select' }))
+    expect(onSelect).toHaveBeenCalledWith('/home/u/app')
+  })
+
   it('closes only the field on Escape and hands focus back to the path field', async () => {
     const { onOpenChange } = mount()
     const field = await openField()

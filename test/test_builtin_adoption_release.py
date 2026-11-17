@@ -722,15 +722,25 @@ def test_a_marked_manifest_declaring_default_enabled_is_still_refused(tmp_path):
     assert pinned_tree_refusal(pin, manifest, tree) == "pinned_feature_unsupported"
 
 
-def test_a_name_a_core_table_keys_on_is_refused(tmp_path):
+def test_a_name_a_core_table_keys_on_is_refused(tmp_path, monkeypatch):
     from kiro_crew import webhook_sources
     from kiro_crew.apps.builtin_adoption_checks import core_named_apps, pinned_tree_refusal
 
-    # The webhook source ids are a core table that still keys a capability on an app.
-    keyed = webhook_sources.SOURCE_OPS_MISSION_CONTROL
+    # A ``SOURCE_*`` constant naming an app would key a capability on it in core.
+    keyed = "fixture-keyed"
+    monkeypatch.setattr(webhook_sources, "SOURCE_FIXTURE_KEYED", keyed, raising=False)
     assert keyed in core_named_apps()
     pin, manifest, tree = _pin_and_manifest(tmp_path, name=keyed)
     assert pinned_tree_refusal(pin, manifest, tree) == "pinned_feature_unsupported"
+
+
+def test_an_app_keyed_webhook_source_names_no_app_in_core():
+    from kiro_crew import webhook_sources
+    from kiro_crew.apps.builtin_adoption_checks import core_named_apps
+
+    # An app's webhook source is its manifest's ``permissions.webhookSource``, so the
+    # only source ids core holds are its own, and E10 refuses no app on them.
+    assert core_named_apps() == webhook_sources.CORE_SOURCES
 
 
 def test_a_shipped_version_unlike_the_pin_is_refused(tmp_path):

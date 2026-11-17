@@ -2,13 +2,12 @@
 
 The dashboard answers some commands itself (``/workflow``, ``/goal``, ``/agent``,
 ``/prompts``, a harness command the backend cannot run) and writes the answer to
-the same assistant row a model reply goes to. That text can hold a credential or
-a suspicious link: an error string, a prompt description, or the user's own
+the same assistant row a model reply goes to. That text can hold a credential,
+inside a link or not: an error string, a prompt description, or the user's own
 argument echoed back. Each such row must be redacted AND carry the records
-(``meta.redactions`` / ``meta.blocked_links``) the dashboard renders the lock tag,
-the blocked-link chip and the one-time coach from -- a placeholder with no record
-is a value removed without telling the reader. Each test fails when its site
-stops going through ``_append_command_reply``.
+(``meta.redactions``) the dashboard renders the lock tag and the one-time coach
+from -- a placeholder with no record is a value removed without telling the
+reader. Each test fails when its site stops going through ``_append_command_reply``.
 """
 
 from __future__ import annotations
@@ -20,13 +19,14 @@ from unittest.mock import MagicMock
 import pytest
 from prompts_helpers import _isolate_home  # noqa: F401
 from prompts_helpers import _ss
+from redaction_structured_cases import github_classic
 
 import kiro_crew.dashboard.chat_runner as chat_runner
-from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX
 
-# Built at runtime so no literal token shape sits in the source.
-_GH = "ghp_" + "k7qmz2x9wv4tb8ncr6yd3fj5hs1gpl0aeuo2"
-_LINK = "https://collect.example.com/x?token=" + "A" * 250
+# Built at runtime so no literal token shape sits in the source; its checksum is
+# valid, so the credential pass redacts it.
+_GH = github_classic(seed=23)
+_LINK = "https://collect.example.com/x?ref="
 _TAG = "[REDACTED: credential]"
 
 
@@ -85,10 +85,10 @@ def _quiet_sel(_floor_monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return audit
 
 
-def test_workflow_error_records_its_credential_and_link() -> None:
+def test_workflow_error_records_its_credential_and_keeps_the_link() -> None:
     class _Service:
         async def start_definition(self, ref, **_kw):
-            return {"error": f"bad token {_GH} see {_LINK}"}
+            return {"error": f"bad token, see {_LINK}{_GH}"}
 
     state, slot = _State(), _Slot()
     state.workflow_service = _Service()
@@ -99,8 +99,10 @@ def test_workflow_error_records_its_credential_and_link() -> None:
 
     row = _reply(slot)
     _assert_credential_explained(row)
-    assert EXFILTRATION_REDACTION_TAG_PREFIX in row["content"]
-    assert [r["domain"] for r in row["meta"]["blocked_links"]] == ["collect.example.com"]
+    # Only the value is masked: the link around it stays readable, and no
+    # blocked-link record is written.
+    assert f"{_LINK}{_TAG}" in row["content"]
+    assert "blocked_links" not in row["meta"]
 
 
 def test_goal_objective_echo_records_its_credential(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,7 +143,8 @@ def test_answer_without_channel_records_an_echoed_credential() -> None:
     slot = _Slot()
 
     asyncio.run(
-        chat_runner._answer_slash_without_channel(_State(), slot, "dashboard:main", f"/x{_GH}")
+        # A blank after the command: a token glued to a letter is no token by its format.
+        chat_runner._answer_slash_without_channel(_State(), slot, "dashboard:main", f"/x {_GH}")
     )
 
     _assert_credential_explained(_reply(slot))
@@ -196,25 +199,3 @@ def test_a_clean_command_reply_carries_no_meta() -> None:
     chat_runner._append_command_reply(slot, "No saved workflows yet.")
 
     assert _reply(slot)["meta"] is None
-
-
-def test_a_command_reply_vouches_the_order_of_its_links() -> None:
-    """A command reply is redacted in one pass, so its records are in reply order
-    and the row says so: two different links on one allowed host both come back."""
-    from kiro_crew.dashboard.chat_utils import (
-        BLOCKED_LINKS_ORDERED_KEY,
-        with_allowed_links_restored,
-    )
-    from kiro_crew.security.exfil import scoped_exempt_hosts
-
-    first = "https://collect.example.com/a?q=" + "a" * 250
-    second = "https://collect.example.com/b?q=" + "b" * 250
-    slot = _Slot()
-
-    chat_runner._append_command_reply(slot, f"one {first} two {second} end")
-
-    row = _reply(slot)
-    assert row["meta"][BLOCKED_LINKS_ORDERED_KEY] is True
-    with scoped_exempt_hosts(frozenset({"collect.example.com"})):
-        shown = with_allowed_links_restored(row)
-    assert shown["content"] == f"one {first} two {second} end"

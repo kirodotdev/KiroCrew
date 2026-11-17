@@ -10,10 +10,10 @@ The instance store is two modules and one route, each with one job:
 | Piece | Where | What it owns |
 |---|---|---|
 | registry | `dashboard_templates/catalog.py` | the built-in templates and the operator's own, one loader |
-| instance | `dashboard_templates/instance.py` | the copy, its versions, rollback, state, history |
+| instance | `dashboard_templates/instance.py`, with `instance_adopt.py` for the adopt-only-while-empty form and `instance_read.py` for the link-refusing opens of a reader without the lock | the copy, its versions, rollback, state, history |
 | route | `dashboard/handlers/member_dashboard.py` | what the frame reads |
 
-The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel_dashboard.py`, behind the `dashboard/handlers/agent_panel.py` facade, serves the `/api/agent-panel/dashboard/{fields,write,templates,preview,apply,rollback}` routes, `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
+The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel_dashboard.py`, behind the `dashboard/handlers/agent_panel.py` facade, serves the `/api/agent-panel/dashboard/{fields,types,write,save,templates,preview,apply,rollback}` routes (`record` and `snapshot` have their own modules, `agent_panel_record.py` and `agent_panel_snapshot.py`), `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
 
 An array or object field is emptied with `dashboard_write` `clear: true` and no
 `value`. The MCP server (`mcp_panel.py`) reads the field's declared type from the
@@ -267,53 +267,35 @@ directory per slug, so for a colliding slug the instance belongs to neither Bot,
 serving it to both -- with an editor -- would let them overwrite each other's dashboard.
 The exact name must derive this slug, exist in config, and be the only name that does.
 
-Both the READ and every WRITE are owner-gated, the same boundary `work_ledger_board`
-draws: the body carries this Bot's work-ledger and crew-log data (task titles,
-summaries, PR links), so arriving as rendered html does not make it a wider audience's. A
-non-owner is refused rather than served an empty read, which would show its numbers as
-stale when the truth is that they were withheld. A write mutates a stored page the
-gateway later renders. App tokens are denied outright -- an app
+Every WRITE is owner-gated, and so is the READ for everyone but one caller -- the same
+boundary `work_ledger_board` draws: the body carries this Bot's work-ledger and crew-log
+data (task titles, summaries, PR links), so arriving as rendered html does not make it a
+wider audience's. Any other non-owner is refused rather than served an empty read, which
+would show its numbers as stale when the truth is that they were withheld. A write
+mutates a stored page the gateway later renders. App tokens are denied outright -- an app
 token scoped to `/api/members` reaches these by prefix.
+
+The one caller is a team Crew teammate the Kiro relay verified, on a Bot in their roster
+(`member_dashboard._teammate_reader`, which calls `members_access._teammate_admitted` and
+audits `members.dashboard` under `resources="relay_teammate"`). They already run that
+Bot's turns and can ask it for any value its page shows, so they read the APPLIED page
+only: a staged page (`?preview=1`) and its Keep and Discard stay owner-only. Their read is
+one-shot. It never arms, replaces or evicts the live page the owner's tabs are pushed
+from, so the owner keeps its own language and version counter; the teammate's page is
+armed and disarmed in one worker call. A teammate's tab therefore gets no pushed frames
+and refreshes through its own timed re-read, and `/refetch`, which recovers a gap in
+those pushes, stays owner-only.
 
 All five rules live in one `_resolve` chokepoint, so a route added later cannot forget
 one of them, and a test reads the handlers' own syntax trees to assert every one calls it
 and every write calls the owner gate.
 
 The page is scrubbed before it is served, in both halves of the body (the raw `html` and the
-composed `rendered_html`), by `_template_text_safe`. Markup, attributes and prose get every
-redaction pass. The text of a `<script>` or `<style>` element gets every pass but the
-bare-secret guess for two shapes, so a page's code arrives as its author wrote it (a long alphabet to index
-into, a base64 data URI) while a key id, PEM block, JWT or prefixed token written into that
-code is still masked.
-
-`dashboard_frame.map_page_text` takes the full pass over the whole page as its baseline, and the
-one change it allows is to put the code pass's result for a script or style element's text where
-the baseline had the full pass's. So the page differs from the baseline only inside that text,
-and only by an ordered alphabet and a data URI payload, the two shapes the code pass spares. The baseline is cut at that text and the pieces are
-scrubbed one by one; a rule that reaches across a cut (a PEM block, a labelled value) makes them
-differ from the baseline, and then the baseline is the answer. The browser reads the page that
-comes out, so the result is scanned again, and unless the kept text is still exactly its script
-and style text the baseline is the answer as well. A page the full pass leaves alone, or with no
-such text, is the baseline.
-
-`dashboard_frame.code_spans` finds that text, and what it finds is a licence to apply a
-weaker rule, so it reads the page the way the HTML tokenizer does where that decides what is
-code: a `<script` inside a comment, a quoted attribute value or a `<textarea>` opens nothing,
-a `>` inside a quoted value does not end its tag, a bare value runs to white space or `>`, a
-script that holds `<!--` ends where the tokenizer's escape states end it (a `</script>` that
-closes a nested `<script>` does not), and names fold ASCII case and split on ASCII white space
-only. Where the tree builder decides
-instead, the scan reads a simple `<svg>` or `<select>` (text and ordinary tags up to its end
-tag) whole and goes on; any other `<svg>` or `<select>`, and every `<math>` and `<template>`
-(a column group inside one ignores a `<style>`), ends the scan.
-A frame may run with scripting on or off, and `<noscript>` holds text in one and markup in the
-other, so the scan ends at it too. It also ends at anything it cannot read (an element or tag
-that never ends, `<script/>` in HTML, `<plaintext>`) and after `_MAX_SCAN_STEPS` constructs.
-Everything after that point keeps every pass, as does every element past the first
-`MAX_CODE_PIECES`, so a page the scan doubts gets more masking, never less. A key in any other shape, labelled or not, is masked as it is anywhere. A key-shaped window inside
-a data URI payload of 64 characters or more is served as written, and a shuffled table is rewritten
-as before. A base64 data URI in an attribute (an `img` `src`) is markup, so it still gets every
-pass.
+composed `rendered_html`), by `_template_text_safe`: `redact_via_context` over the whole page,
+markup, attributes, prose and the text of every `<script>` and `<style>` element alike. The rule
+table masks only values that are credentials by themselves, so a page's code arrives as its author
+wrote it (a long alphabet to index into, a base64 data URI) while a PEM block, a signed JWT or a
+vendor token written into that code is masked.
 
 ## The staged preview is beside the record, never in it
 
@@ -548,7 +530,7 @@ the page and the read below both refuse a slug alone (`missing_member`).
 To fill the frame, the tab reads
 `GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
 page through the same renderer, the same masking pass and the same owner gate as the
-live one, with `preview: true` in the body and `instance_version` left at the current
+live one (a relay teammate admitted to the live page is refused the staged one), with `preview: true` in the body and `instance_version` left at the current
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 

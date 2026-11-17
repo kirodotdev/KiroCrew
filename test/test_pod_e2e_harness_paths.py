@@ -20,7 +20,6 @@ import shutil
 import string
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
@@ -1528,10 +1527,23 @@ def test_handle_mode_answers_at_once_instead_of_sitting_out_the_deadline(stub_cl
     Without the loop's handle-mode break an unhealthy handle would burn the whole
     poll deadline -- 60s here, and the default on a real host -- before printing a
     verdict it already had at the first iteration.
+
+    The poll's only wait is ``sleep``, so a ``sleep`` on PATH ahead of the real one
+    records each call and ends the fragment at once: a handle-mode run must reach
+    its verdict without calling it.
     """
-    started = time.monotonic()
-    res = _run(_health_snippet(stub_cli("200"), timeout="60", handle="0"), str(tmp_path))
-    elapsed = time.monotonic() - started
+    shim = tmp_path / "sleep-shim"
+    shim.mkdir()
+    sleeps = tmp_path / "sleep-calls.log"
+    (shim / "sleep").write_text(
+        f"#!/bin/sh\necho \"$@\" >> '{sleeps}'\nkill -KILL $PPID\n", encoding="utf-8"
+    )
+    (shim / "sleep").chmod(0o755)
+    res = _run(
+        _health_snippet(stub_cli("200"), timeout="60", handle="0"),
+        str(tmp_path),
+        extra_path=str(shim),
+    )
+    assert not sleeps.exists(), f"slept {sleeps.read_text()!r} for a code it was handed"
     assert res.returncode == 0, res.stdout + res.stderr
     assert "HEALTHY=0" in res.stdout, res.stdout
-    assert elapsed < 15, f"waited {elapsed:.1f}s for a code it was handed"

@@ -80,7 +80,7 @@ describe('feedbackTracker seam', () => {
     const { setFeedbackTracker } = await freshSeam()
     setFeedbackTracker({ prompt: PROMPT, issueUrl: ISSUE_URL })
     const { falsePositiveIssueUrl } = await import('../prompts/redactionReport')
-    const url = new URL(falsePositiveIssueUrl('rule-x', 'link'))
+    const url = new URL(falsePositiveIssueUrl('rule-x'))
     expect(url.origin + url.pathname).toBe(ISSUE_URL)
     expect(url.searchParams.get('title')).toBe('Redaction false positive: rule-x')
   })

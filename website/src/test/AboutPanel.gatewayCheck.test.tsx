@@ -26,6 +26,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import { i18nT } from '../i18n/t'
+import { __resetErrorJournalForTests, consumeChatHandoff } from '../utils/errorReport'
 
 type Answer = { status: number; body: unknown }
 
@@ -131,6 +132,7 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('says so when taking the armed update back fails', async () => {
+    __resetErrorJournalForTests()
     const spy = stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
     const base = spy.getMockImplementation()!
     spy.mockImplementation(async (input: unknown, init?: RequestInit) => {
@@ -151,6 +153,75 @@ describe('AboutPanel gateway update check', () => {
 
     const note = await screen.findByTestId('about-update-cancel-armed-error')
     expect(note.textContent).toContain(i18nT('components.updateFoundModal.cancel_update_failed'))
+    // The notice is worded from the catalog, so it carries the failed request's
+    // report itself: the transport filed it under the gateway's message.
+    fireEvent.click(within(note).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('disarm_failed')
+    expect(prompt).toContain('disk full')
+  })
+
+  it('hands the agent the report of a check request that failed', async () => {
+    __resetErrorJournalForTests()
+    const spy = stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    const base = spy.getMockImplementation()!
+    spy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/api/update/check')) {
+        const body = { error: 'feed timed out', code: 'check_crashed' }
+        return {
+          ok: false, status: 500,
+          json: async () => body,
+          text: async () => JSON.stringify(body),
+          headers: new Headers({ 'content-type': 'application/json' }),
+        } as Response
+      }
+      return base(input, init)
+    })
+    mountWeb()
+    await pressCheck()
+
+    const failed = await screen.findByTestId('check-failed')
+    expect(failed.textContent).toContain("Couldn't check for updates")
+    fireEvent.click(within(failed).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('check_crashed')
+  })
+
+  it('hands over no older check report once a channel switch has answered', async () => {
+    // The switch's re-check is now the answer on screen; the earlier failed
+    // request's report must not stand in for it.
+    __resetErrorJournalForTests()
+    const spy = stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    const base = spy.getMockImplementation()!
+    const reply = (status: number, body: unknown) => ({
+      ok: status < 400, status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    } as Response)
+    spy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/update/check')) return reply(500, { error: 'feed timed out', code: 'check_crashed' })
+      if (url.includes('/api/update/channel')) {
+        return reply(200, {
+          ok: true, channel: 'insider', check_status: 'failed', update_available: null,
+          error_code: 'feed_unreachable', last_checked_at: 200,
+        })
+      }
+      return base(input, init)
+    })
+    store.dispatch(sseStatus({ ...BLANK_STATUS, update_channel: 'stable' } as never))
+    mountWeb()
+    await pressCheck()
+    await screen.findByTestId('check-failed')
+
+    fireEvent.click(within(await screen.findByTestId('gateway-channel-switcher')).getByTitle('Insider'))
+    await waitFor(() => expect(screen.getByTestId('check-failed').textContent).toContain('release feed'))
+    fireEvent.click(within(screen.getByTestId('check-failed')).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).not.toContain('check_crashed')
   })
 
   it('an unrecognised error code falls back to the generic reason', async () => {
@@ -520,6 +591,45 @@ describe('AboutPanel gateway update check', () => {
     expect(note.textContent).toContain(phrase)
     expect(screen.queryByTestId('up-to-date')).toBeNull()
     expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
+  it('a container names the newer pullable image and links its notes, with no Update button', async () => {
+    stubFetch({
+      check_status: 'deferred',
+      update_available: null,
+      error_code: null,
+      unavailable_reason: 'managed_by_image',
+      managed_by: 'container',
+      can_apply: false,
+      image_available_version: '0.12.2',
+      image_release_notes_url: 'https://github.com/kirodotdev/KiroCrew/releases/tag/v0.12.2',
+    })
+    mountWeb()
+    await pressCheck()
+
+    const note = await screen.findByTestId('container-image-available')
+    expect(note.textContent).toContain('0.12.2')
+    const link = within(note).getByRole('link', { name: /release notes/i })
+    expect(link.getAttribute('href')).toBe('https://github.com/kirodotdev/KiroCrew/releases/tag/v0.12.2')
+    // The action stays "pull a newer image"; nothing offers to apply.
+    expect((await screen.findByTestId('check-not-applicable')).textContent).toContain('newer image')
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
+  })
+
+  it('a container with no confirmed image keeps only today\'s line, and an off-site notes link is dropped', async () => {
+    stubFetch({
+      check_status: 'deferred',
+      update_available: null,
+      unavailable_reason: 'managed_by_image',
+      managed_by: 'container',
+      image_release_notes_url: 'https://evil.example/notes',
+    })
+    mountWeb()
+    await pressCheck()
+
+    await screen.findByTestId('check-not-applicable')
+    expect(screen.queryByTestId('container-image-available')).toBeNull()
+    expect(screen.queryByRole('link', { name: /release notes/i })).toBeNull()
   })
 
   it('a git checkout still gets the Update button', async () => {

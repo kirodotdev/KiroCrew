@@ -52,14 +52,19 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew import mate_worker
 from kiro_crew import members as members_mod
 from kiro_crew.apps import permissions as app_permissions
+from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.dashboard.chat_utils import (
     _history_key_for,
     effective_session_key,
     slot_history_key,
 )
 from kiro_crew.dashboard.state import SlotOrigin, load_window_off_loop
+from kiro_crew.execution_context import is_bot_own_execution
+from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -163,9 +168,78 @@ def slot_route_policy(method: str, canonical: str) -> SlotRoutePolicy | None:
     return decision[1] if decision is not None else None
 
 
+#: Why an app's request or turn that would run its session as a Bot is refused.
+BOT_IDENTITY_DENIED = "an app's session cannot run as a Bot"
+
+
 def slot_not_found() -> web.Response:
     """The one 404 an app gets for a slot it may not act on, or that does not exist."""
     return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+
+def selects_bot_identity(bindings: Any) -> bool:
+    """Whether resolved *bindings* would run a session on what is a Bot's own.
+
+    A Bot's own is its memory store, its chat and its own file. Bindings that
+    run a Bot's own file (``mate_worker.is_mate_owned_agent``), in either
+    namespace, take that Bot's prompt, servers and tools. Bindings that carry an
+    execution record are judged on that record alone, by the one test every
+    path uses (``execution_context.is_bot_own_execution``): a record on a store
+    other than the shared one counts whatever its kind. Bindings with no record
+    are a ``config.agents`` row judged the same way: bound to a store other than
+    the shared one, or chatting on the conductor (a Bot with its own file: that
+    chat takes the Bot's Permissions and dispatches its workers). A row on the
+    shared store with a plain template (the reserved ``default`` row, a row the
+    agent sync wrote) has nothing of its own to give: it names a template with a
+    workspace and a model pin, on the memory a template session already has.
+    """
+    if bindings is None:
+        return False
+    if mate_worker.is_mate_owned_agent(str(getattr(bindings, "kiro_agent", "") or "")):
+        return True
+    execution = getattr(bindings, "execution_context", None)
+    if execution is not None:
+        return is_bot_own_execution(execution)
+    if getattr(bindings, "selection_kind", "") != "member":
+        return False
+    store = getattr(bindings, "memory_store_name", "") or DEFAULT_MEMORY_STORE
+    return store != DEFAULT_MEMORY_STORE or bindings.kiro_agent == MATE_CONDUCTOR_AGENT
+
+
+async def app_names_bot(
+    request_app: str, agent: object, agent_kind: object, operation: str, slot_key: str
+) -> bool:
+    """True, audited, when *request_app* names a Bot as the agent of its session.
+
+    *agent* is resolved as a turn on the session would resolve it, in the
+    *agent_kind* namespace the slot is stamped in, so a ``template`` stamp on a
+    name a Bot shares still names the template; :func:`selects_bot_identity`
+    judges the result. The caller answers with the 404 an app gets for anything
+    it may not reach. Turn admission
+    (``chat_turn.app_agent_binding.app_session_selects_bot``) refuses the same
+    selection whichever route stamped it; this answers the request itself. A
+    dashboard caller (no app) and an empty name are never refused, and a
+    selection that cannot be resolved here is left to turn admission.
+    """
+    if not request_app or not isinstance(agent, str) or not agent:
+        return False
+
+    def _selects_bot() -> bool:
+        kind = str(agent_kind) if agent_kind in ("member", "template") else ""
+        return selects_bot_identity(
+            resolve_agent_bindings(
+                KiroCrewConfig.load(), agent, validate_memory_files=False, selection_kind=kind
+            )
+        )
+
+    try:
+        selects_bot = await asyncio.to_thread(_selects_bot)
+    except Exception:  # noqa: BLE001 - turn admission still refuses the turn
+        logger.warning("could not resolve the agent an app named for its session", exc_info=True)
+        return False
+    if selects_bot:
+        _record_isolation_denial(request_app, operation, f"slot={slot_key}", BOT_IDENTITY_DENIED)
+    return selects_bot
 
 
 def _record_isolation_denial(caller: str, operation: str, resources: str, reason: str) -> None:

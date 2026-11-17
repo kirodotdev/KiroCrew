@@ -9,6 +9,18 @@ import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
 import { boundSlotWindow, parkActiveTranscript, setPagingCursor } from './slotCache'
 
+/** A new parent turn on *slot* adopts its still-running subagents again, so the
+ *  "parent stopped" mark a Stop left on them is lifted. Both maps, as
+ *  `sseParentStopped` marks both. */
+function clearParentStopped(state: ChatState, slot: string) {
+  if (isUnsafeKey(slot)) return
+  const key = safeKey(slot)
+  const maps = [state.slotActivity[key]?.subagents, key === state.activeSlot ? state.subagents : undefined]
+  for (const subs of maps) {
+    for (const a of Object.values(subs ?? {})) if (a.parentStopped) delete a.parentStopped
+  }
+}
+
 export function pushHistory(history: string[], key: string): string[] {
   const deduped = history.filter(k => k !== key)
   deduped.push(key)
@@ -30,12 +42,16 @@ export function syncOriginRun(state: ChatState, slot: string, runState: SlotStat
   o.run = { state: runState, running: runState !== 'idle', stopping: runState === 'stopping' }
 }
 
-/** Count one turn START for `slot` (see `ChatState.runEpoch`). */
+/** Count one turn START for `slot` (see `ChatState.runEpoch`). Every detected
+ *  turn start comes through here (a local send, an inject frame, a cron or
+ *  Slack turn seen by the slots sync), so it also lifts the "parent stopped"
+ *  mark: the new parent turn owns the slot's subagents again. */
 export function bumpRunEpoch(state: ChatState, slot: string | null): void {
   if (!slot || isUnsafeKey(slot)) return
   if (!state.runEpoch) state.runEpoch = {}
   const k = safeKey(slot)
   state.runEpoch[k] = (state.runEpoch[k] ?? 0) + 1
+  clearParentStopped(state, slot)
 }
 
 /** The ONE writer of an OBSERVED `slotRun` state transition (see the field's
@@ -305,6 +321,9 @@ export const runStateReducers = {
     state.pendingTurnSlot = null
   },
   setSlotRunning(state: ChatState, action: PayloadAction<boolean>) {
+    // Only an idle -> running flip is a new parent turn; a repeat `true` while a
+    // Stop is still settling must not lift the parent-stopped mark.
+    if (action.payload && !state.slotRunning && state.activeSlot) clearParentStopped(state, state.activeSlot)
     state.slotRunning = action.payload
     if (!action.payload) state.pendingTurnSlot = null
   },

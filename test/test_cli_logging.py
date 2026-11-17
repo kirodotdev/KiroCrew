@@ -13,10 +13,13 @@ Covers:
 """
 
 import ast
+import contextlib
 import errno
 import io
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -27,6 +30,7 @@ import pytest
 
 import kiro_crew.cli as cli_mod
 from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.cli import (
     _CliLogQueueHandler,
     _fd_targets_file,
@@ -900,8 +904,8 @@ class TestSetupCliLoggingDetached:
         assert "[PID" in text
 
     def test_third_party_warning_still_lands_in_file(self):
-        # Before the fix these reached the file only via the accidental
-        # stderr echo; the root-attached handler must keep them flowing.
+        # The root-attached handler must carry these to the file; the stderr
+        # echo is not a path to rely on.
         _setup_cli_logging("gateway", 1)
         logging.getLogger("somelib.test_doublewrite").warning("thirdparty-record")
         _stop_log_queue_listener()  # deterministic drain to disk
@@ -1151,6 +1155,76 @@ class TestGatewayConsoleEchoOffLoop:
         _setup_cli_logging("chat", 1)
         logging.getLogger("kiro_crew.test_console").info("chat-record")
         assert "chat-record" in self.console.getvalue()  # no drain needed
+
+    def test_drain_that_gives_up_leaves_logging_shutdown_list(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 0.1, raising=False)
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.test_console").warning("stuck-record")
+        assert self.console.entered.wait(10)  # the listener now holds the handler lock
+        moved = {id(h) for h in cli_mod._CONSOLE_QUEUE_LISTENER.handlers}
+        _stop_log_queue_listener()  # gives up on the console
+        # logging.shutdown takes every listed handler's lock; the stuck one must be gone.
+        assert not [ref for ref in logging._handlerList if id(ref()) in moved]
+
+    def test_console_stays_off_loop_when_the_log_file_cannot_open(self, _floor_monkeypatch):
+        def _deny(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        _floor_monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        _setup_cli_logging("gateway", 1)
+        assert self.console.entered.wait(10)  # the "unavailable" warning is stuck in write
+        logging.getLogger("kiro_crew.test_console").warning("next-record")
+        assert threading.get_ident() not in self.console.writer_threads
+        self.console.release.set()
+        _stop_log_queue_listener()
+        assert "next-record" in self.console.getvalue()
+
+
+_STUCK_STDERR_CHILD = """
+import logging, sys
+from kiro_crew.cli import _setup_cli_logging
+_setup_cli_logging("gateway", 1)
+log = logging.getLogger("kiro_crew.test_stuck_stderr")
+for i in range(4000):
+    log.warning("filler %05d %s", i, "x" * 80)
+sys.exit(0)
+"""
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX, reason="needs a POSIX pipe that blocks a full writer"
+)
+def test_gateway_exits_cleanly_while_its_stderr_pipe_is_never_read(tmp_path):
+    """A foreground gateway whose stderr nobody reads still exits with 0.
+
+    The parent never reads the pipe, so the child's console write blocks. Without
+    the fix the exit waits on that write in ``logging.shutdown``, then in the
+    interpreter's final flush of ``sys.stderr``.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    env = dict(os.environ, KIROCREW_HOME=str(home), KIROCREW_TELEMETRY="0")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _STUCK_STDERR_CHILD],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,  # never read: the pipe fills and the console write blocks
+        env=env,
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    try:
+        rc = proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        rc = None
+    finally:
+        if proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):  # it may exit before the kill
+                platform_compat.kill_process_tree(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=30)
+        assert proc.stderr is not None
+        proc.stderr.close()
+    assert rc == 0, f"child exit code {rc} (None means it hung)"
 
 
 class TestChatConsoleShowsErrorsOnly:
@@ -1512,26 +1586,51 @@ class TestQueueOffLoop:
         assert cli_mod._LOG_QUEUE_LISTENER is None
 
     def test_bounded_stop_gives_up_on_wedged_handler(self):
-        """A wedged disk must not hang the force exit: the bounded stop
-        returns within the deadline and skips flush/close."""
-        import time
-
+        """A wedged disk must not hang the force exit: the bounded stop joins
+        the listener thread for the caller's timeout only, returns while the
+        handler is still wedged, and skips flush/close."""
         _setup_cli_logging("gateway", 1)
-        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        listener = cli_mod._LOG_QUEUE_LISTENER
+        (fh,) = listener.handlers
+        thread = listener._thread
         release = threading.Event()
+        entered = threading.Event()
         orig_emit = fh.emit
 
         def wedged_emit(record):
-            release.wait(5.0)  # simulate blocking handler I/O
+            entered.set()
+            release.wait(30.0)  # simulate blocking handler I/O
             orig_emit(record)
 
+        join_timeouts: list[float | None] = []
+        real_join = thread.join
+
+        def recording_join(timeout=None):
+            join_timeouts.append(timeout)
+            real_join(timeout)
+
+        closed_while_wedged: list[bool] = []
+        real_close = fh.close
+
+        def recording_close():
+            closed_while_wedged.append(not release.is_set())
+            real_close()
+
         fh.emit = wedged_emit  # type: ignore[method-assign]
+        fh.close = recording_close  # type: ignore[method-assign]
+        thread.join = recording_join  # type: ignore[method-assign]
         logging.getLogger("kiro_crew.wedged").warning("wedged-record")
-        t0 = time.monotonic()
-        _stop_log_queue_listener(timeout=0.2)
-        elapsed = time.monotonic() - t0
-        release.set()  # unblock the daemon thread so teardown closes cleanly
-        assert elapsed < 2.0
+        assert entered.wait(5.0), "listener never reached the wedged handler"
+        try:
+            _stop_log_queue_listener(timeout=0.2)
+            # Still inside the wedged emit: the stop did not wait for it.
+            assert thread.is_alive()
+        finally:
+            release.set()  # unblock the daemon thread so teardown closes cleanly
+            real_join(5.0)
+        assert not thread.is_alive()
+        assert join_timeouts == [0.2]
+        assert not any(closed_while_wedged), "flush/close ran on the wedged handler"
         assert cli_mod._LOG_QUEUE_LISTENER is None
 
 
@@ -1579,25 +1678,43 @@ class TestDrainBeforeHardExit:
     @pytest.mark.asyncio
     async def test_wedged_handler_does_not_delay_the_exit(self):
         """A wedged disk must not hold the loop past the deadline: the drain
-        returns bounded, and the exit proceeds without it."""
-        import time
+        hands its timeout to the listener join and returns while the handler
+        is still wedged, so the exit proceeds without it."""
+        import asyncio
 
         _setup_cli_logging("gateway", 1)
-        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        listener = cli_mod._LOG_QUEUE_LISTENER
+        (fh,) = listener.handlers
+        thread = listener._thread
         release = threading.Event()
+        entered = threading.Event()
         orig_emit = fh.emit
 
         def wedged_emit(record):
-            release.wait(10.0)  # simulate blocking handler I/O
+            entered.set()
+            release.wait(30.0)  # simulate blocking handler I/O
             orig_emit(record)
 
+        join_timeouts: list[float | None] = []
+        real_join = thread.join
+
+        def recording_join(timeout=None):
+            join_timeouts.append(timeout)
+            real_join(timeout)
+
         fh.emit = wedged_emit  # type: ignore[method-assign]
+        thread.join = recording_join  # type: ignore[method-assign]
         logging.getLogger("kiro_crew.wedged").warning("wedged-shutdown-record")
-        t0 = time.monotonic()
-        await drain_log_queue_before_hard_exit(timeout=0.2)
-        elapsed = time.monotonic() - t0
-        release.set()  # unblock the daemon thread so teardown closes cleanly
-        assert elapsed < 3.0
+        assert entered.wait(5.0), "listener never reached the wedged handler"
+        try:
+            await asyncio.wait_for(drain_log_queue_before_hard_exit(timeout=0.2), 30.0)
+            # Still inside the wedged emit: the drain did not wait for it.
+            assert thread.is_alive()
+        finally:
+            release.set()  # unblock the daemon thread so teardown closes cleanly
+            real_join(5.0)
+        assert not thread.is_alive()
+        assert join_timeouts == [0.2]
 
     @pytest.mark.asyncio
     async def test_no_listener_is_a_silent_no_op(self):

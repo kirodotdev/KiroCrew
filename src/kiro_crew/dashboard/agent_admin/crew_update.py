@@ -135,7 +135,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
@@ -332,6 +332,23 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    from kiro_crew.config.sections_session import BOT_MAX_WORKERS_MAX, BOT_MAX_WORKERS_MIN
+
+    if "max_workers" in body and (
+        isinstance(body["max_workers"], bool)
+        or not isinstance(body["max_workers"], int)
+        or not BOT_MAX_WORKERS_MIN <= body["max_workers"] <= BOT_MAX_WORKERS_MAX
+    ):
+        return web.json_response(
+            {
+                "error": (
+                    f"max_workers must be an integer from {BOT_MAX_WORKERS_MIN} "
+                    f"to {BOT_MAX_WORKERS_MAX}"
+                ),
+                "code": "invalid_max_workers",
+            },
+            status=400,
+        )
     if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
         return web.json_response(
             {
@@ -349,13 +366,22 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
                 status=400,
             )
-    if "dashboard_card_send" in body and not isinstance(body["dashboard_card_send"], bool):
+    for _bool_field in ("dashboard_card_send", "show_sessions_in_list"):
+        if _bool_field in body and not isinstance(body[_bool_field], bool):
+            return web.json_response(
+                {"error": f"{_bool_field} must be a boolean", "code": f"invalid_{_bool_field}"},
+                status=400,
+            )
+    # Imported here, not at module level: every global an owner function reads
+    # must be bound on the agents facade, which has no line to spare.
+    from kiro_crew.config.sections_limits import crew_autocompact_pct_refusal
+
+    autocompact_reason = (
+        crew_autocompact_pct_refusal(body["autocompact_pct"]) if "autocompact_pct" in body else None
+    )
+    if autocompact_reason is not None:
         return web.json_response(
-            {
-                "error": "dashboard_card_send must be a boolean",
-                "code": "invalid_dashboard_card_send",
-            },
-            status=400,
+            {"error": autocompact_reason, "code": "invalid_autocompact_pct"}, status=400
         )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
@@ -600,11 +626,20 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if "max_workers" in body:
+            # Validated above. Only this owner route writes it: no Bot tool does.
+            agent.max_workers = body["max_workers"]
+            changed.append("max_workers")
         if pending_backend is not None:
             # Validated above. "" clears the pin: the crewmate inherits again.
             harness_changed = pending_backend != (agent.acp_backend or "")
             agent.acp_backend = pending_backend
             changed.append("acp_backend")
+        if "autocompact_pct" in body:
+            # Validated above. 0 inherits; the crew's sessions read it live
+            # (``crew_autocompact_pct``), a session's own override still wins.
+            agent.autocompact_pct = float(body["autocompact_pct"])
+            changed.append("autocompact_pct")
         if "dynamic_capabilities" in body:
             # The per-crewmate preview (``kiro_crew.crewmate_dynamic_capabilities``);
             # validated above as a strict bool.
@@ -796,6 +831,9 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.dashboard_card_send = body["dashboard_card_send"]
             changed.append("dashboard_card_send")
+        if "show_sessions_in_list" in body:
+            agent.show_sessions_in_list = body["show_sessions_in_list"]
+            changed.append("show_sessions_in_list")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store

@@ -9,7 +9,7 @@
  *  - the USER ROW. A message whose handling nobody decided carries no record, which
  *    is every send on a default install, so the absent-field path is the common
  *    path: the row must render exactly as it does today.
- *  - the MODE. `Auto (Jev)` is offered only while the host says the seam is
+ *  - the MODE. `Auto (decision model)` is offered only while the host says the seam is
  *    available, and a stored `auto` resolves back to Steer while it is not --
  *    otherwise a withdrawn consent leaves a mode on screen whose send the gateway
  *    refuses to decide.
@@ -208,10 +208,10 @@ describe('a chosen steer the running turn did not take', () => {
   // A steer the turn ended before reading runs as its own turn. "interrupt this
   // turn" on that row reads as a decision about the NEW turn, which nobody made.
   const STEER_RECEIPT = { ...WIRE, choice: 'steer' }
-  const SAID_STEER = 'Jev chose: interrupt this turn'
-  const SAID_SHORT = 'Jev chose to interrupt'
-  const SAID_FULL = 'Jev chose to interrupt, but this runs as its own message'
-  const SAID_QUEUE = 'Jev chose: run after this turn'
+  const SAID_STEER = 'The decision model chose: interrupt this turn'
+  const SAID_SHORT = 'The decision model chose to interrupt'
+  const SAID_FULL = 'The decision model chose to interrupt, but this runs as its own message'
+  const SAID_QUEUE = 'The decision model chose: run after this turn'
   const renderRow = (meta: Record<string, unknown>) =>
     render(
       <UserMessage
@@ -325,7 +325,7 @@ describe('the split send button’s third mode', () => {
     )
     const fire = screen.getByTestId('busy-send-button')
     expect(fire.getAttribute('data-mode')).toBe('auto')
-    expect(fire.getAttribute('aria-label')).toContain('Jev')
+    expect(fire.getAttribute('aria-label')).toContain('decision model')
     fireEvent.click(fire)
     expect(onFire).toHaveBeenCalledTimes(1)
   })

@@ -31,15 +31,13 @@ export default memo(function CrewDispatchNoticeCard({
   slot?: string | null
   onOpenCrewTab?: (slot: string) => void
 }) {
-  // Crew Mode ships behind a default-off feature preview
-  // (docs/decisions/2026-10-29-crew-mode-ships-behind-a-default-off-feature-preview.md).
+  // An LTS build offers no conductor mode (as when it was a Feature Preview).
   // The gateway writes this notice whenever a session is genuinely a turned-on
-  // Crew Mode root (`crew_dispatch_notice.py`), which is server state and does
-  // not know a given browser's preview flag. A browser with the preview OFF
-  // must not render the row at all: it would expose a Crew Mode surface, claim
-  // workers are absent from the session list, and offer a button whose target
-  // panel the preview withholds. Gate on the reactive flag and render nothing
-  // while off; the renderer match is retained upstream so the row never falls
+  // conductor mode root (`crew_dispatch_notice.py`), whatever the dashboard
+  // shows. A dashboard without conductor mode must not render the row at all:
+  // it would expose a conductor mode surface, claim workers are absent from the
+  // session list, and offer a button whose target panel it withholds. Gate on
+  // the reactive read and render nothing while off; the renderer match is retained upstream so the row never falls
   // back to a generic notice.
   const crewMode = useCrewMode()
   // This memo() boundary renders i18nT() strings, so a language switch must

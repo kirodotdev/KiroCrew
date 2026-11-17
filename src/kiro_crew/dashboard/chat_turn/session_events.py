@@ -1,18 +1,21 @@
 """What a dashboard turn's session reports about itself mid-turn: a compaction's progress
 (``_on_compaction_status``), a native clear (``_on_clear_status``), an agent switch
-(``_on_agent_switched``) and its todo list (``_on_todo_update``)."""
+(``_on_agent_switched``), its todo list (``_on_todo_update``) and a notice its harness
+reported (``_on_harness_notice``, with the end-of-turn ``_finish_harness_notices``)."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import NOTICE_KIND_ADAPTER
 from kiro_crew.crew_mode import slot_is_crew_mode_root as crew_mode_is_root
 from kiro_crew.dashboard.chat_utils import (
     _broadcast_compaction_result,
     drained_to_thread,
     has_leaked_tool_call,
 )
+from kiro_crew.dashboard.harness_notice_rows import notice_row
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.runtime_ownership import is_shared_chat_runtime
@@ -29,7 +32,11 @@ if TYPE_CHECKING:
         restore_agent_selection,
         sel,
     )
-    from kiro_crew.dashboard.chat_turn.segment_flush import _cleared_segment_text, _flush_segment
+    from kiro_crew.dashboard.chat_turn.segment_flush import (
+        _TOOL_GROUP_ROLES,
+        _cleared_segment_text,
+        _flush_segment,
+    )
     from kiro_crew.dashboard.chat_turn.turn_admission import (
         _current_binding,
         _require_current_binding,
@@ -498,6 +505,84 @@ async def _on_todo_update(turn: _ChatTurn, event) -> None:
             _crew_log_turn_no,
             items=(event.todo or {}).get("tasks"),
         )
+
+
+#: Harness notice rows a turn holds while a reply segment is open. A notice past it
+#: is counted (``_held_harness_notices_dropped``) and said once, when the held rows land.
+MAX_HELD_HARNESS_NOTICES = 32
+
+
+def _segment_open(turn: _ChatTurn) -> bool:
+    """Whether the reply's current text segment is open: its text, or chunk rows of it."""
+    if turn.has_assistant_text:
+        return True
+    for row in reversed(turn.slot.messages):
+        role = row.get("role", "")
+        if role == "chunk":
+            return True
+        if role not in _TOOL_GROUP_ROLES:
+            return False
+    return False
+
+
+def _release_harness_notices(turn: _ChatTurn) -> None:
+    """Append the turn's held harness notice rows, oldest first, and forget them."""
+    held = list(turn._held_harness_notices)
+    turn._held_harness_notices.clear()
+    if turn._held_harness_notices_dropped:
+        logger.warning(
+            "%d harness notice(s) for %s past the %d held during a reply segment " "were dropped",
+            turn._held_harness_notices_dropped,
+            turn.slot.key,
+            MAX_HELD_HARNESS_NOTICES,
+        )
+        turn._held_harness_notices_dropped = 0
+    for content, meta in held:
+        append_and_surface(turn.state, turn.slot, "notice", content, "msg msg-info", meta=meta)
+
+
+def _on_harness_notice(turn: _ChatTurn, event) -> bool:
+    """A notice the session's harness reported mid-turn, as a notice row.
+
+    True when *event* carried one and this took it. An adapter's advisory reaches here
+    on the text chunk it rides, and is shown as a notice row instead of reply text. It
+    counts as the turn's visible output, as its text form does for every text reader
+    (``acp.harness_notices.text_chunk``): a turn a hook ended with only that advisory
+    answered the prompt, so it is not an empty response to replay. A mode change is
+    not the turn's output and counts as nothing.
+
+    A row lands between text segments only. One appended while a segment is open
+    would end up above the segment's reply and strand its chunk rows, because
+    ``_flush_segment`` walks back only to the first other row; so it is held, and
+    appended with the next notice that lands between segments, or after the reply's
+    last segment (``_finish_harness_notices``).
+    """
+    notice = getattr(event, "harness_notice", None)
+    row = notice_row(notice) if notice is not None else None
+    if notice is None or row is None:
+        return False
+    if notice.kind == NOTICE_KIND_ADAPTER:
+        turn._produced_visible_output = True
+    if len(turn._held_harness_notices) < MAX_HELD_HARNESS_NOTICES:
+        turn._held_harness_notices.append(row)
+    else:
+        turn._held_harness_notices_dropped += 1
+    if not _segment_open(turn):
+        _release_harness_notices(turn)
+    return True
+
+
+def _finish_harness_notices(turn: _ChatTurn) -> None:
+    """Append the harness notices still held once the reply's last segment is flushed.
+
+    Called after ``_turn_settle_answer``, so the rows are saved with the turn, and
+    again from the turn's teardown for an exit that skipped it; the second call finds
+    nothing held. Never raises: in the teardown an exception would mask the one that
+    ended the turn."""
+    try:
+        _release_harness_notices(turn)
+    except Exception:  # noqa: BLE001 - teardown must not raise
+        logger.warning("harness notice rows failed for %s", turn.slot.key, exc_info=True)
 
 
 def _announce_channel_pinned_veto(slot, new_agent: str, pinned: str, gn) -> None:

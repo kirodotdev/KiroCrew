@@ -743,8 +743,8 @@ class TestTerminalReservationOwnership:
                     assert not task.done()
                 assert (await terminal.api_terminal_delete(o.request)).status == 409
                 expire.set()
-                # Observation must not cancel-and-wait for the old unbounded
-                # implementation: a regression should fail, not hang the worker.
+                # Bound the wait so a delete that waits without limit fails
+                # here instead of hanging the worker.
                 (result,) = await await_until(
                     asyncio.gather(task, return_exceptions=True),
                     what="setup finishing at the close deadline",

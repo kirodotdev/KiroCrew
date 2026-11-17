@@ -544,8 +544,8 @@ class TestAcpErrorIsTransient:
     def test_unflagged_5xx_message_falls_back_to_string(self) -> None:
         from kiro_crew.llm_helpers import acp_error_is_transient
 
-        # The regression: _format_acp_error's friendly 5xx string is
-        # now recognised by the string fallback even with no flag set.
+        # _format_acp_error's friendly 5xx string is recognised by the string
+        # fallback even with no flag set.
         msg = (
             "The model backend hit a transient error (HTTP 5xx). This is usually "
             "momentary — retry in a moment. If it keeps happening, switch to a "

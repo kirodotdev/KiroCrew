@@ -11,10 +11,11 @@
  * order reproduces what React commits when Back lands before the push does.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { useLayoutEffect } from 'react'
 import { act, render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { Routes, Route, UNSAFE_createBrowserHistory, unstable_HistoryRouter as HistoryRouter } from 'react-router-dom'
+import { Routes, Route, UNSAFE_createBrowserHistory, unstable_HistoryRouter as HistoryRouter, useLocation } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { switchSlot } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
@@ -78,6 +79,17 @@ const THIRD = slot('chat-3-300', 'Gamma')
 
 type BrowserHistory = ReturnType<typeof UNSAFE_createBrowserHistory>
 
+/** The path of the location the router has COMMITTED. `window.location` moves
+ *  the moment a write is issued; this moves when React commits it, which is the
+ *  only point from which a later write is not "on top of an uncommitted one".
+ *  Written in an effect: a render that is thrown away commits nothing. */
+let committedPath = ''
+function CommittedLocation() {
+  const { pathname } = useLocation()
+  useLayoutEffect(() => { committedPath = pathname }, [pathname])
+  return null
+}
+
 /** A real browser history whose listener calls can be held back, standing in
  *  for the router's not-yet-committed transition. */
 function heldBrowserHistory() {
@@ -123,6 +135,7 @@ function renderOnBrowserHistory() {
       <Provider store={store}>
         <ThemeProvider>
           <HistoryRouter history={router.history}>
+            <CommittedLocation />
             <Routes>
               <Route path="/chat/:slug?" element={<ChatPage />} />
             </Routes>
@@ -156,16 +169,21 @@ async function traverseTo(store: ReturnType<typeof createTestStore>, step: 'back
   expect(liveSid()).toBe(key)
 }
 
-/** Open the origin session and let its URL settle on a committed entry. */
+/** Open the origin session and let its URL settle on a committed entry. The
+ *  open takes a turn of its own after the list is known, so its slug replace is
+ *  issued outside the mount's act: the address bar shows it before the router
+ *  has committed it, and each test below starts from the committed entry. */
 async function openOrigin() {
   const env = renderOnBrowserHistory()
   await waitFor(() => expect(env.store.getState().chat.activeSlot).toBe(ORIGIN.key))
   await waitFor(() => expect(window.location.pathname).toBe('/chat/alpha'))
+  await waitFor(() => expect(committedPath).toBe('/chat/alpha'))
   return env
 }
 
 beforeEach(() => {
   localStorage.clear()
+  committedPath = ''
   window.history.replaceState(null, '', `/chat?sid=${ORIGIN.key}`)
 })
 

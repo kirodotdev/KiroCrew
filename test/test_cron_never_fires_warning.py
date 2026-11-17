@@ -260,3 +260,27 @@ async def test_dashboard_create_names_an_interval_raised_to_the_minimum(tmp_path
         assert resp.status == 200, fine
         assert "warnings" not in fine
     assert sorted(j.schedule.every_secs for j in svc.list_jobs()) == [60, 120]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_create_names_a_cron_dropped_for_every(tmp_path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    async with TestClient(TestServer(_app(svc))) as client:
+        resp = await client.post(
+            "/api/crons", json={"name": "n", "message": "m", "every": 300, "cron": "0 9 * * *"}
+        )
+        body = json.loads(await resp.text())
+        assert resp.status == 200, body
+        assert body.get("warnings") == [
+            "'cron' ('0 9 * * *') was ignored because 'every' was also given; "
+            "this job runs on the 'every' interval"
+        ]
+
+        resp = await client.post(
+            "/api/crons", json={"name": "k", "message": "m", "cron": "0 9 * * *"}
+        )
+        alone = json.loads(await resp.text())
+        assert resp.status == 200, alone
+        assert "warnings" not in alone
+    kinds = sorted((j.schedule.kind, j.schedule.every_secs) for j in svc.list_jobs())
+    assert kinds == [("cron", None), ("every", 300)]

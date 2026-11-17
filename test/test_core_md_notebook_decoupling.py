@@ -46,7 +46,7 @@ _LEGACY_TEMP_SWEEP = (
 _POSTURE_REASON = (
     "Every md-notebook API error body. Handlers drive git and filesystem work over "
     "caller-supplied vault URLs, ids and note paths, so an unmodeled exception carries "
-    "absolute paths and git stderr; `_safe_error` scrubs credentials, exfiltration URLs and "
+    "absolute paths and git stderr; `_safe_error` scrubs credentials (inside URLs too) and "
     "host paths before the JSON reaches the browser \N{EM DASH} the same output-boundary "
     "reason as the dashboard error sinks."
 )
@@ -80,13 +80,12 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         ("sandbox_staging.py", "could not resolve $HOME for the md-notebook mask"),
         ("sandbox_staging.py", "could not resolve the crew data home for the md-notebook sweep"),
         ("sandbox_staging.py", "could not resolve $HOME for the md-notebook sweep"),
-        # -- The shipped backend refuses to start while ``workspace/md-notebook`` is reached
-        #    through a link, because the old layout's degraded mask would swallow its writes.
-        (
-            "apps/backend.py",
-            "App %s: not starting: workspace/md-notebook is reached through a link, so its "
-            "writes would be lost on restart; replace the link with a real directory",
-        ),
+        # -- The row key binding that move to the app in the adoption machinery's table
+        #    ``apps/legacy_state_moves``: adoption and the backend spawn wait for the move
+        #    on the former built-in's provenance. Core's own move out of core's own layout,
+        #    not a capability the app asks for (app-kit-platform.md § 33, "A legacy state
+        #    move holds the swap"); it goes with the old layouts above.
+        ("apps/legacy_state_moves.py", "md-notebook"),
         # -- The security-posture tables classify named files of the package, built-in
         #    apps included: the core's audit of the app's code, not a reach into it.
         ("security_posture_sinks_gateway.py", "md-notebook error middleware"),

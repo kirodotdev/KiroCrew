@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, SlidersHorizontal, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
+import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { RemoteControlCard } from './settings/RemoteControlCard'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { PeoplePanel } from './settings/PeoplePanel'
@@ -38,6 +39,9 @@ import ErrorNotice from '../components/ErrorNotice'
  * chooser, which no other Settings tab needs, so the chunk is fetched when the
  * Agent Harness tab is first opened rather than on every Settings visit.
  */
+const AdvancedPanel = lazy(() =>
+  import('./settings/AdvancedPanel').then(m => ({ default: m.AdvancedPanel })),
+)
 const AgentBackendTab = lazy(() =>
   import('./developer/AgentBackendTab').then(m => ({ default: m.AgentBackendTab })),
 )
@@ -122,6 +126,7 @@ function buildTabs() {
     { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
     { key: 'session-environments', tile: 'var(--tile-blue)', label: i18nT('sessionEnvironments.title'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('sessionEnvironments.settingsDescription') },
     { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description'), hostsSubNav: true },
+    { key: 'advanced', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.advanced.label'), icon: <SlidersHorizontal size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.advanced.description') },
     // The trailing divider fences off About, the one entry that is not a
     // setting at all. About stays last, where every platform puts it.
     { key: 'about', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, dividerBefore: true, description: i18nT('settings.tabs.about.description'), drillInParams: [RELEASE_PARAM] },
@@ -145,6 +150,7 @@ export default function SettingsPage() {
   useSettingHighlight()
   const navigate = useNavigate()
   const location = useLocation()
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
 
   // Legacy query-param translation: Settings navigation used to live in query
   // params (?tab=X&sub=Y, with the per-host `channel`/`section` aliases, and
@@ -219,8 +225,11 @@ export default function SettingsPage() {
         ? `${SETTINGS_BASE_PATH}/${tabSeg}/${subSeg}`
         : `${SETTINGS_BASE_PATH}/${tabSeg}`
       : SETTINGS_BASE_PATH
+    // A newer navigation still pending means this location is no longer the
+    // one to translate; the effect runs again when the router renders it.
+    if (!renderedLocationIsCurrent()) return
     navigate({ pathname: target, search: rest ? `?${rest}` : '' }, { replace: true })
-  }, [search, pathname, navigate])
+  }, [search, pathname, navigate, renderedLocationIsCurrent])
 
   // Remote Crew is reachable inside an embedded pane: a pane may connect a
   // further crew, and the gateway showing this dashboard adds it as a top-level
@@ -394,6 +403,11 @@ export default function SettingsPage() {
           </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
+        {tab === 'advanced' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <AdvancedPanel />
+          </Suspense>
+        )}
         {tab === 'about' && (
           <Suspense fallback={<ContentSkeleton rows={6} />}>
             <AboutPanel />

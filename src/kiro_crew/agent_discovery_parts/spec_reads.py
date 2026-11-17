@@ -78,7 +78,12 @@ class _SpecReadRefused(OSError):
 _SpecReadRefused.__module__ = "kiro_crew.agent_discovery"
 
 
-def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None) -> bytes:
+def _read_spec_bytes(
+    real: Path,
+    *,
+    fence: Callable[[Path], bool] | None = None,
+    admit_hardlinked: Callable[[str, bytes], bool] | None = None,
+) -> bytes:
     """Read a resolved, fence-judged spec path pinned to the descriptor it opens.
 
     :func:`pinned_fs.open_fenced_for_read` refuses a link at the final
@@ -94,6 +99,12 @@ def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None)
     A consumer *fence* judges *real* before the open and the opened inode's
     kernel path alongside :func:`_fence_refuses`; a refusal raises
     :class:`_SpecReadRefused`.
+
+    *admit_hardlinked* is the one exception to the hardlink refusal, decided on
+    content as :func:`kiro_crew.hooks.safe_read_file_bytes_nolink` decides it: a
+    multi-link inode passes every other check, is read whole under the cap, and
+    is returned only when the callback accepts *real* and the exact bytes read.
+    Without it, or when it answers False, the refusal is the plain one.
     """
     if fence is not None and fence(real):
         raise _SpecReadRefused(f"consumer fence refused {str(real)!r}")
@@ -104,22 +115,33 @@ def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None)
 
     cap = hooks.MAX_FILE_BYTES
 
-    def read_once() -> bytes:
+    def read_once() -> tuple[bytes, bool]:
         # Local import: a module-level name would be served by this module's facade.
         from kiro_crew.bounded_read import bounded_read
 
-        fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
+        # The keyword is passed only when set, so the plain read keeps the call
+        # shape every other caller of the fenced open makes.
+        extra = {"allow_hardlinked": True} if admit_hardlinked is not None else {}
+        fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused, **extra)
         with os.fdopen(fd, "rb") as fh:
-            return bounded_read(fh, cap + 1)
+            # Observed on both sides of the read: a link added while the bytes
+            # are read still counts as a hardlinked read. ``> 1``, not ``!= 1``:
+            # a writer's os.replace leaves the open inode at 0 links, and that
+            # read is a valid one.
+            linked_before = os.fstat(fh.fileno()).st_nlink > 1
+            data = bounded_read(fh, cap + 1)
+            return data, linked_before or os.fstat(fh.fileno()).st_nlink > 1
 
     # On Windows a read that lands while a writer replaces the spec (the
     # dashboard's MCP enable, disable and remove paths rewrite kirocrew.json)
     # fails with a sharing violation. That spec is present and valid, so the
     # pinned open and read are retried with read_bytes_with_retry's budget,
     # off the event loop only; POSIX keeps the single attempt.
-    data = retry_read_sharing_window(read_once, real)
+    data, hardlinked = retry_read_sharing_window(read_once, real)
     if len(data) > cap:
         raise FileTooLargeError(f"File exceeds {cap // (1024 * 1024)} MB safety cap")
+    if hardlinked and not (admit_hardlinked is not None and admit_hardlinked(str(real), data)):
+        raise _SpecReadRefused(f"refusing to read a hardlinked file: {real}")
     return data
 
 
@@ -220,6 +242,7 @@ def _read_agent_spec(
     operation: str = "list_agents",
     source: str = "list_agents",
     fence: Callable[[Path], bool] | None = None,
+    admit_hardlinked: Callable[[str, bytes], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Parse an agent config file, or ``None`` when it is not usable.
 
@@ -256,6 +279,13 @@ def _read_agent_spec(
     *fence* is an optional consumer policy judged on the resolved target and on
     the opened inode's kernel path. A refusal is audited as ``consumer fence
     rejected`` and the spec reads as unusable.
+
+    *admit_hardlinked* is passed to :func:`_read_spec_bytes`: the content check
+    that lets a hardlinked file through. Its callers are the app-owner lookup
+    and the command-agent containment, which pass
+    :func:`kiro_crew.skills_discovery._builtin_app_file_admission` for a shipped
+    built-in app's ``app.json`` and declared agent specs. Every other read
+    refuses a hardlink.
     """
     if path.name.startswith("._"):
         return None
@@ -334,9 +364,14 @@ def _read_agent_spec(
         return refused
 
     try:
-        raw = (
-            _read_spec_bytes(real) if fence is None else _read_spec_bytes(real, fence=audited_fence)
-        )
+        # Each keyword is passed only when set: tests stand in for the reader
+        # with the narrower call shape.
+        extra: dict[str, Any] = {}
+        if fence is not None:
+            extra["fence"] = audited_fence
+        if admit_hardlinked is not None:
+            extra["admit_hardlinked"] = admit_hardlinked
+        raw = _read_spec_bytes(real, **extra)
     except FileTooLargeError:
         logger.debug("Skipping oversized agent config: %r", path)
         return None

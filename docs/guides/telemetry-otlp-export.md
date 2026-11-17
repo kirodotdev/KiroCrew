@@ -7,22 +7,24 @@ pushing the same metrics to an **OpenTelemetry Collector**, and from there to
 whatever backend you already run (Amazon CloudWatch, Datadog, or any service that
 accepts OTLP).
 
-Local recording is on by default; export is not. Sending metrics anywhere takes
-two separate decisions: an explicit opt-in to collection, then egress.
+Local recording is on by default; export to a collector of your own is not.
+Sending metrics to it takes two separate decisions: an explicit opt-in to
+collection, then egress. The one destination the public build ships is the
+exception, described in [The Kiro telemetry destination](#the-kiro-telemetry-destination).
 
 ## Default posture
 
 | | Default | What it means |
 |---|---|---|
-| `telemetry.enabled` | `true` | Metrics are recorded to the local JSONL sink only. The default alone never permits export: egress needs `"enabled": true` written in a config file, or `KIROCREW_TELEMETRY=1`. Turning it off (`false`, `KIROCREW_TELEMETRY=0`, `DO_NOT_TRACK=1`, or `kirocrew telemetry disable`) makes metric call sites cheap no-ops. |
+| `telemetry.enabled` | `true` | Metrics are recorded to the local JSONL sink. The default alone never permits export to your own collectors: that needs `"enabled": true` written in a config file, or `KIROCREW_TELEMETRY=1`. The public build's `kiro-telemetry` destination is the exception (see below). Turning it off (`false`, `KIROCREW_TELEMETRY=0`, `DO_NOT_TRACK=1`, or `kirocrew telemetry disable`) makes metric call sites cheap no-ops. |
 | `telemetry.otlp_endpoint` | `""` (empty) | Nothing leaves the machine. Local JSONL sink only. |
 | `telemetry.otlp_endpoints` | `[]` (empty) | Same: no extra collectors. See [Several collectors](#several-collectors-otlp_endpoints). |
-| OTLP exporter package | not installed | The OTLP exporter is not importable until installed separately. |
+| OTLP exporter package | installed | A base dependency. Installing it starts no egress. |
 
-Collection and egress are deliberately separate switches. Collection gives you
-the local sink and the Telemetry panel; it does **not** send anything anywhere.
-Egress needs the endpoint set, the exporter package installed, *and* collection
-turned on explicitly rather than by default.
+Collection and egress to your own collector are deliberately separate switches.
+Collection gives you the local sink and the Telemetry panel and does **not** send
+anything to a collector of yours. That egress needs the endpoint set *and*
+collection turned on explicitly rather than by default.
 
 The local sink is never replaced by OTLP — it is additive. When you configure an
 endpoint you get both readers, so the dashboard keeps working and you keep a
@@ -32,8 +34,9 @@ local copy.
 
 ### 1. Install the exporter
 
-From a source checkout, install the declared extra without replacing the editable
-Kiro Crew install:
+The exporter is a base dependency, so a current install already has it. An
+install from before it became one can add it. From a source checkout, install the
+declared extra without replacing the editable Kiro Crew install:
 
 ```bash
 pip install -e ".[otlp]"
@@ -130,7 +133,7 @@ as above; the list adds to it.
 | `headers_env` | no | Header name -> environment variable name. The value is read from the gateway's environment when the exporter is built, so a secret is never in `config.json`. If the variable is unset or blank, that entry sends nothing and a warning names the variable. There is no key for a literal header value: an entry with a `headers` key is skipped with a warning that points here. |
 | `temporality` | no | `""` (the default described in [Temporality](#temporality-the-setting-that-decides-whether-your-backend-accepts-the-data)), `"cumulative"` or `"delta"`. A value here pins every instrument kind for this entry only, and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` does not move it. `"delta"` is the OpenTelemetry delta preset: counters and histograms delta, up-down counters cumulative. |
 | `allow` | no | A list of full metric names, or the preset name `"PRODUCT_METRICS"` (the reviewed list in `src/kiro_crew/metrics/product_metrics.py`). Without it the entry gets every metric. An unknown preset name refuses the entry rather than sending everything. |
-| `point_attributes` | no | Fixed labels added to every data point of this entry. Keys come from a reviewed set (`ClientType` today); values are short constants (letters, digits, `.`, `_`, `-`). |
+| `point_attributes` | no | Fixed labels added to every data point of this entry. Keys come from a reviewed set (`ClientType` and `machineId` today); values are short constants (letters, digits, `.`, `_`, `-`). |
 | `resource_allow` | no | Keep only these resource keys on this entry's batches. |
 
 An entry sends only the headers it names in `headers_env`. The process-wide
@@ -165,7 +168,8 @@ feedback survey, and does not show the first-run Privacy chapter.
 
 A build of Kiro Crew can ship a collector of its own. It does so in code, through
 its telemetry provider (`TelemetryProvider.otlp_destinations`), not as an entry in
-your `config.json`; the public build ships none. What that means for you:
+your `config.json`. The public build ships one, `kiro-telemetry`, described in
+[The Kiro telemetry destination](#the-kiro-telemetry-destination). What that means for you:
 
 - Your own entries still work next to it, as long as the build keeps them (the
   public provider's list is `otlp_endpoints.config_destinations(cfg)`, which a
@@ -178,6 +182,50 @@ your `config.json`; the public build ships none. What that means for you:
 An LTS build ignores `otlp_endpoint` and `otlp_endpoints` from local
 config; collectors the build ships still
 apply, under the policy.
+
+#### The Kiro telemetry destination
+
+The public build sends the reviewed [`PRODUCT_METRICS`](#the-product_metrics-preset)
+list to the Kiro telemetry endpoint (`https://telemetry.us-east-1.kiro.dev/v1/metrics`),
+next to any collector of your own. It is listed as `kiro-telemetry` in Settings ->
+Privacy and in `kirocrew telemetry status`.
+
+Unlike your own collectors, it exports while recording is on by default: no
+`"enabled": true` has to be written. It waits for one thing first: the privacy
+notice that names it has been shown. That is the dashboard's Privacy chapter at
+notice version 3 showing the line that names it (Keep on, or
+`kirocrew telemetry enable`, records `dashboard.kiro_telemetry_ack_version`), or
+the one-line notice that names it, printed on a terminal by a start with no
+dashboard (`gateway --no-dashboard`, `run`, `chat`). A line that goes to a log or
+a pipe does not count, and neither does a notice from before version 3, which
+said metrics stay on this machine.
+
+Because the notice names it, it does not stop the Settings switch or
+`kirocrew telemetry enable` from turning recording on. Only your own collectors
+do that.
+
+| Host | Sent? |
+|---|---|
+| Recording on (by default or by choice), notice version 3 shown | Yes |
+| Recording on, notice version 3 not shown yet | No |
+| Off only by a written `"enabled": false` (see below) | No, unless Turn on is chosen |
+| A dashboard gateway nobody opens (its stderr line goes to a log and does not count) | No, until someone clicks Keep on |
+| An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |
+| A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
+| LTS build (the policy names the collector, or none) | No: not part of that build's list |
+| CI runner (`CI`, `GITHUB_ACTIONS`, ...) | No: not listed, same rule as the daily heartbeat |
+| A non-default `KIROCREW_HOME` (a dev home, a pod, a worktree preview) | Yes, by the same rules as any other home; the daily heartbeat still skips it |
+
+Builds before recording was on by default wrote `telemetry.enabled: false` into every new config, so a public-build install that is off only because of that written `false` (the heartbeat on, no env pin, no policy, not CI, the default data home) is shown the version 3 notice once, in an off form that names Kiro telemetry and offers Turn on performance metrics or Keep off. Until Turn on is chosen, only the daily heartbeat and official app install receipts are sent and no performance metrics are recorded; Keep off is not asked again. A start with no dashboard prints one line pointing at `kirocrew telemetry enable`, once, on a terminal.
+
+Each data point carries `ClientType=kiro-crew` and `machineId`, the same
+SHA-256 of the install id that every request carries as `x-kiro-machineid`
+(the endpoint does not copy the header onto the points it stores, and a point
+with no identity is dropped before product analytics). The batch's resource keeps
+only service name and version, Python runtime, `kirocrew.harness` and
+`kirocrew.process.role`: no install id, no pid, no OS type, nothing under `host.*`.
+No sign-in token or other credential is sent. The process-wide `OTEL_EXPORTER_OTLP_*` header,
+credential and certificate variables are never applied to it.
 
 ### Other settings worth knowing
 
@@ -420,7 +468,7 @@ too:
 - `allow` -- only metrics whose name is in this set are sent. Unset means
   everything, which is what your endpoint gets.
 - `point_attributes` -- fixed key/value pairs added to every data point of that
-  destination. The one reviewed key today is `ClientType`.
+  destination. The reviewed keys today are `ClientType` and `machineId`.
 - `resource_allow` -- that destination's batches carry a resource reduced to these
   keys, so a destination that may see only `service.name` and `service.version`
   does not receive `service.instance.id`.
@@ -487,6 +535,28 @@ length are bucket attributes, because the preset takes no histograms.
 | `kirocrew.voice.stt.errors` | `provider`, `code` (a dictation error code or `other`) |
 | `kirocrew.voice.unavailable` | `reason` (`forbidden_origin` / `stt_disabled` / `provider_off` / `streaming_off` / `provider_not_streaming` / `busy` / `other`) |
 | `kirocrew.voice.tts.replies` | `provider`, `outcome` (`ok` / `cancelled` / `busy` / `invalid` / `unavailable` / `sandbox_refused` / `error`), `first_audio` (`lt_500ms` … `gt_5s` / `none`) |
+
+The chat runtime sharing group (`src/kiro_crew/metrics/chat_runtime_share.py`)
+answers whether the `chat_runtime_sharing` preview is ready to be on by default:
+who turned it on, what it saved, whether a shared chat's turn starts later, and
+how many chats one crash takes down. Adoption is
+`kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. `tenants` is
+the chat lease count on the process (`0` / `1` / `2` / `3` / `4-7` / `8-10` /
+`11+`; `8-10` holds the default per-process cap of 10); `2` and up is a shared
+process. Releases before this split reported every count from 4 up as `4+`.
+
+| Metric | Attributes |
+|---|---|
+| `kirocrew.chat_runtime_share.toggled` | `state` (`on` / `off`) |
+| `kirocrew.chat_runtime_share.placed` | `outcome` (`spawned` / `joined` / `refused`), `reason` (a refusal branch name or `none`), `tenants` (after the placement, or `none` on a refusal), `tree` (`chat` / `bot`, or `none` on a refusal), `harness` (the chat's harness; `reason=harness_switched_off` is that harness's own switch off; `reason=auto_permission_mode` is a claude chat in Auto permission mode, kept on its own process) |
+| `kirocrew.chat_runtime_share.processes`, `.tenants` | none; gauges over live processes placed by sharing, so `tenants - processes` is processes saved |
+| `kirocrew.chat_runtime_share.rss_sampled` | `tenants`, `rss` (`le_512m` … `gt_8g`); one per shared process per RSS watchdog tick |
+| `kirocrew.chat_runtime_share.reclaimed` | `reason` (`rss`) |
+| `kirocrew.chat_runtime_share.process_died` | `expected` (`true` / `false`), `tenants` |
+| `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `shared` (`true` / `false`: whether the process was placed by sharing; every unshared turn, preview off included, reads `false`), `harness` |
+| `kirocrew.chat_runtime_share.turn_ended` | `tenants`, `outcome` (the `kirocrew.turn.completed` outcome set), `harness` |
+| `kirocrew.chat_runtime_share.kas_queued` | `tenants` |
+| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) |
 
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;

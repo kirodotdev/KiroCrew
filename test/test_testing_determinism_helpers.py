@@ -1410,9 +1410,13 @@ class _FakeSocket:
 
 @pytest.fixture
 def audit(request, monkeypatch):
-    """A fresh, active audit state the live hook writes to instead of this test's own."""
+    """A fresh, active audit state the live hook writes to instead of this test's own.
+
+    It records this test's thread alone: a thread an earlier test left running (a
+    hostname lookup, say) would otherwise land in the exact findings asserted here."""
     conftest = _root_conftest(request)
     state = conftest._AuditState()
+    state.thread = threading.get_ident()
     state.active = True
     state.pid = os.getpid()
     state.parent_pid = os.getppid()
@@ -1628,6 +1632,25 @@ class TestTheAuditFloor:
         sys.audit("socket.connect", sock, ("192.0.2.1", 80))
         assert audit.seen == {}
 
+    def test_another_threads_lookup_is_the_floors_but_not_a_scoped_states(self, audit):
+        # The floor (no thread set) takes every thread's traffic; the state this class
+        # asserts on takes its own thread's alone.
+        def lookup():
+            sys.audit("socket.getaddrinfo", "example.invalid", 443, 0, 0, 0, 0)
+
+        def run_on_another_thread():
+            other = threading.Thread(target=lookup)
+            other.start()
+            other.join(timeout=60)
+            assert not other.is_alive()
+
+        run_on_another_thread()
+        assert audit.seen == {}
+        # Unscoped, any thread may add to the findings, so only membership is exact.
+        audit.thread = None
+        run_on_another_thread()
+        assert ("network", "name lookup 'example.invalid'") in audit.seen
+
     def test_end_of_test_reports_and_strict_returns_the_refusal(self, request, audit, monkeypatch):
         conftest = _root_conftest(request)
         findings: list = []
@@ -1756,6 +1779,41 @@ class TestThePackageAttributeFloor:
         assert not table.intact()
         assert "kiro_crew._determinism_floor_value rebound" in table.restore()
         assert package._determinism_floor_value is original
+
+    def test_a_submodule_bound_mid_rebuild_does_not_break_the_snapshot(self, request, monkeypatch):
+        # A thread a test left running can import a submodule while rebuild() reads
+        # the package's attributes. Stand in for that thread with a tracer that binds
+        # a new package attribute on every line event of the read, which includes
+        # each turn of a Python-level loop over the package dict.
+        conftest = _root_conftest(request)
+        package = types.ModuleType("kiro_crew")
+        package.kept = object()
+        monkeypatch.setitem(sys.modules, "kiro_crew", package)
+        lines, start = inspect.getsourcelines(conftest._PackageTable.rebuild)
+        read_line = start + next(i for i, s in enumerate(lines) if "vars(self.root)" in s)
+        code = conftest._PackageTable.rebuild.__code__
+        inserted = []
+
+        def tracer(frame, event, _arg):
+            # Match by file, not code object: before 3.12 the comprehension runs
+            # in a frame of its own.
+            if frame.f_code.co_filename != code.co_filename:
+                return None
+            if event == "line" and frame.f_lineno == read_line:
+                key = f"bound_{len(inserted)}"
+                inserted.append(key)
+                vars(package)[key] = None
+            return tracer
+
+        table = conftest._PackageTable()
+        previous = sys.gettrace()
+        sys.settrace(tracer)
+        try:
+            table.rebuild()
+        finally:
+            sys.settrace(previous)
+        assert inserted, "the tracer never reached the attribute read"
+        assert ("kept", package.kept) in table.root_items
 
     def test_a_loaded_module_its_parent_lost_is_bound_back(self, request, monkeypatch):
         import kiro_crew

@@ -325,6 +325,7 @@ def _disabled_provider_slugs() -> set[str]:
 def warm_spec_providers() -> list[Provider]:
     """The spec UNIVERSE: every provider the shared process ENUMERATES at spawn."""
     from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import keeps_user_client
 
     disabled = _disabled_provider_slugs()
     # A Crew-owned sign-in (``dashboard.feature_previews.crew_oauth``) binds the provider's
@@ -333,7 +334,10 @@ def warm_spec_providers() -> list[Provider]:
     return [
         provider
         for provider in get_visible_providers()
-        if provider["slug"] not in disabled and _warm_mintable_entry(provider, None) is not None
+        if provider["slug"] not in disabled
+        # A client that never leaves the vault cannot be put in this process's spec.
+        and not keeps_user_client(str(provider["slug"]))
+        and _warm_mintable_entry(provider, None) is not None
     ]
 
 

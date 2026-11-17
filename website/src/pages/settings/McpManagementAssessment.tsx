@@ -26,6 +26,7 @@ import {
   sharedWithoutSupport,
 } from './mcpManagementModel'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { reportForError } from '../../utils/errorReport'
 
 /** One reason line: a translated sentence, and the server's own verbatim detail.
  *
@@ -260,6 +261,9 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
       <ErrorNotice
         variant="inline"
         message={failed || start.isError ? i18nT('pages.mcpManagement.assessment.measure_failed') : null}
+        // A pass that died is no request; only a start that failed has a report,
+        // and a later pass failure is not that start's.
+        report={start.isError && !failed ? reportForError(start.error) : undefined}
         askAgent={!handoffWouldLoseEdits}
         handoffHint={handoffHint}
       />
@@ -269,6 +273,7 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
       <ErrorNotice
         variant="inline"
         message={progress.isError ? i18nT('pages.mcpManagement.assessment.measure_progress_failed') : null}
+        report={progress.isError ? reportForError(progress.error) : undefined}
         askAgent={!handoffWouldLoseEdits}
         handoffHint={handoffHint}
       />

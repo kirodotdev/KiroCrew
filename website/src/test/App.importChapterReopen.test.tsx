@@ -21,7 +21,7 @@
  * completion paths (`onComplete`, `onSkipAll`) already close it themselves, so
  * the `false` branch was redundant for every case except the one it broke.
  */
-import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
@@ -72,7 +72,10 @@ beforeEach(() => {
   themeState.privacyAcked = true
   themeState.onboarded = true
   themeState.privacyAckVersion = null
+  // First run opens only for the owner (`useViewerIsNotOwner`).
+  vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
 })
+afterEach(() => { vi.mocked(api.viewerOwnerOk).mockRestore() })
 
 describe('Import chapter, reopened by hand', () => {
   it('survives the derive effect re-running after theme boot resolves', async () => {

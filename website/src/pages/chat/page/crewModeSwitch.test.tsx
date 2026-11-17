@@ -11,7 +11,6 @@ import { createTestStore } from '../../../test/helpers'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
 import { useCrewModeSwitch } from './crewModeSwitch'
-import { crewModePreviewOn, turnOnCrewModePreview } from '../../../test/crewModePreview'
 import { __resetPanelTabs, dropPanelViews, openPanelView, type ViewKind } from '../../../hooks/usePanelTabs'
 import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
@@ -141,7 +140,7 @@ describe('useCrewModeSwitch turning conductor mode off', () => {
 })
 
 describe('useCrewModeSwitch turning conductor mode on fails', () => {
-  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear(); localStorage.clear(); turnOnCrewModePreview(); __resetPanelTabs() })
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear(); localStorage.clear(); __resetPanelTabs() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
   it('closes the panel it opened and drops the Crew and Dashboard tabs', async () => {
@@ -184,7 +183,7 @@ describe('useCrewModeSwitch turning conductor mode on fails', () => {
 })
 
 describe('useCrewModeSwitch entering a conductor mode root', () => {
-  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear(); turnOnCrewModePreview() })
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear() })
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 
   const enter = () => {
@@ -305,6 +304,3 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     expect(openView).toHaveBeenCalledWith('workers')
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

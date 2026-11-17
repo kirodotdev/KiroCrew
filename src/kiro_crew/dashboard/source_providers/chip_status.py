@@ -411,6 +411,7 @@ def schedule_visibility_refresh(
         try:
             ref = links.parse_source_url(url)
         except Exception:
+            # A URL that does not parse names no repo to refresh.
             continue
         if ref.provider not in _VISIBILITY_PROVIDERS:
             continue

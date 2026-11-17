@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _VENDOR_PREFLIGHT_MAX_AGE_SECS,
         _WORKER_ASSET_MARKER,
         _WORKER_CACHE_CONTROL,
+        _app_frame_src_extra,
         _cookie_port_from_host,
         frame_ancestors_value,
         token_embed_parent_port,
@@ -219,10 +220,19 @@ def _apply_security_headers(
 
     state = app.get("state")
     instances_mgr = getattr(state, "instances_manager", None) if state else None
-    # Loopback preview origins are always framable (Web Preview panel); the
-    # *.localhost tunnel wildcard is added only when instances mode is active.
-    frame_src_extra = _LOOPBACK_FRAME_SRC + (
-        _INSTANCES_FRAME_SRC_EXTRA if instances_mgr is not None else ""
+    # Loopback preview origins are always framable (Web Preview panel), and so are
+    # app web origins (apps/app_web_origin.py), which are also connectable for an
+    # app's no-cors reachability probe on its frame; the *.localhost tunnel
+    # wildcard is added only when instances mode is active.
+    from kiro_crew.apps.app_web_origin import APP_WEB_ORIGIN_CSP_SOURCE
+
+    frame_src_extra = (
+        _LOOPBACK_FRAME_SRC
+        + APP_WEB_ORIGIN_CSP_SOURCE
+        + (_INSTANCES_FRAME_SRC_EXTRA if instances_mgr is not None else "")
+        # Origins enabled, trusted apps declare in ui.frameSources: a cached
+        # string, republished on app lifecycle changes (apps/frame_sources.py).
+        + _app_frame_src_extra()
     )
     # frame-ancestors: ``'self'`` plus the EXACT parent origin carried in the
     # request token's embed_parent_port claim (see _extra_frame_ancestors) — never
@@ -238,7 +248,7 @@ def _apply_security_headers(
     resp.headers.setdefault(
         "Content-Security-Policy",
         _BASE_CSP.format(
-            connect_src_extra=_LOOPBACK_FRAME_SRC,
+            connect_src_extra=_LOOPBACK_FRAME_SRC + APP_WEB_ORIGIN_CSP_SOURCE,
             frame_src_extra=frame_src_extra,
             frame_ancestors=frame_ancestors,
         ),

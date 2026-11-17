@@ -67,7 +67,6 @@ vi.mock('../api/client', () => ({
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
 import { createTestStore } from './helpers'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 const CHAT_ENTRIES = SETTINGS_REGISTRY.filter(e => e.tab === 'chat')
 const RAIL_KEYS = [...new Set(CHAT_ENTRIES.map(e => String(e.params?.sub)))].sort()
@@ -79,8 +78,6 @@ describe('ChatPanel — registry entries resolve on their tagged rail page', () 
   })
 
   it.each(RAIL_KEYS)('every entry tagged %s is on that page', async key => {
-    // Conductor mode preview on: Start New Chats in Conductor Mode renders only under it.
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <MemoryRouter initialEntries={[`/settings/chat/${key}`]}>

@@ -14,15 +14,16 @@ Two surfaces:
 """
 import json
 import os
-import pathlib
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
+
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
 if str(_APP_ROOT) not in sys.path:
@@ -59,13 +60,18 @@ def _iso(dt):
 
 class TestRunGhJson(unittest.TestCase):
     def test_parses_jsonl_and_skips_blank_lines(self):
-        out = ('{"type": "PushEvent", "repo": "a/b"}\n'
-               '\n'
-               '   \n'
-               '{"type": "PullRequestEvent", "repo": "c/d"}\n')
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
-             unittest.mock.patch.object(discovery.subprocess, "run",
-                                        return_value=_proc(stdout=out)):
+        out = (
+            '{"type": "PushEvent", "repo": "a/b"}\n'
+            "\n"
+            "   \n"
+            '{"type": "PullRequestEvent", "repo": "c/d"}\n'
+        )
+        with (
+            unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH),
+            unittest.mock.patch.object(
+                discovery.subprocess, "run", return_value=_proc(stdout=out)
+            ),
+        ):
             rows = discovery.run_gh_json("users/x/events", jq=".[]")
         self.assertEqual([r["repo"] for r in rows], ["a/b", "c/d"])
 
@@ -77,8 +83,12 @@ class TestRunGhJson(unittest.TestCase):
             captured["kwargs"] = kwargs
             return _proc(stdout='{"repo": "a/b"}\n')
 
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
-             unittest.mock.patch.object(discovery.subprocess, "run", side_effect=_fake_run):
+        with (
+            unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH),
+            unittest.mock.patch.object(
+                discovery.subprocess, "run", side_effect=_fake_run
+            ),
+        ):
             discovery.run_gh_json("users/x/events", jq=".[]")
         self.assertIsInstance(captured["argv"], list)
         self.assertEqual(captured["argv"][:3], [_FAKE_GH, "api", "users/x/events"])
@@ -88,26 +98,42 @@ class TestRunGhJson(unittest.TestCase):
         self.assertNotEqual(captured["kwargs"].get("shell"), True)
 
     def test_raises_on_wholly_unparseable_output(self):
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
-             unittest.mock.patch.object(discovery.subprocess, "run",
-                                        return_value=_proc(stdout="not json\nstill not json")):
+        with (
+            unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH),
+            unittest.mock.patch.object(
+                discovery.subprocess,
+                "run",
+                return_value=_proc(stdout="not json\nstill not json"),
+            ),
+        ):
             with self.assertRaises(discovery.GhError):
                 discovery.run_gh_json("users/x/events", jq=".[]")
 
     def test_raises_on_non_zero_exit(self):
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
-             unittest.mock.patch.object(discovery.subprocess, "run",
-                                        return_value=_proc(returncode=1, stderr="boom")):
+        with (
+            unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH),
+            unittest.mock.patch.object(
+                discovery.subprocess,
+                "run",
+                return_value=_proc(returncode=1, stderr="boom"),
+            ),
+        ):
             with self.assertRaises(discovery.GhError):
                 discovery.run_gh_json("users/x/events", jq=".[]")
 
     def test_auth_failure_maps_to_setup_error(self):
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
-             unittest.mock.patch.object(
-                discovery.subprocess, "run",
-                return_value=_proc(returncode=1,
-                                   stderr="gh: To get started with GitHub CLI, "
-                                          "please run: gh auth login")):
+        with (
+            unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH),
+            unittest.mock.patch.object(
+                discovery.subprocess,
+                "run",
+                return_value=_proc(
+                    returncode=1,
+                    stderr="gh: To get started with GitHub CLI, "
+                    "please run: gh auth login",
+                ),
+            ),
+        ):
             with self.assertRaises(discovery.GhSetupError):
                 discovery.run_gh_json("users/x/events", jq=".[]")
 
@@ -154,8 +180,13 @@ class TestListContributedRepos(unittest.TestCase):
 
 
 class TestPinnedRepos(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         store.ensure_layout()
@@ -165,7 +196,6 @@ class TestPinnedRepos(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_read_repos_missing_file(self):
         # ensure_layout does not create repos.json, so it is genuinely absent
@@ -195,12 +225,14 @@ class TestPinnedRepos(unittest.TestCase):
 class TestPinnedRepoReadIsGuarded(unittest.TestCase):
     """`read_repos` feeds the sidebar straight from a worker-writable file."""
 
-    def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp())
-        store.ensure_layout(self.root)
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
 
-    def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+    def setUp(self):
+        self.root = self._tmp_path
+        store.ensure_layout(self.root)
 
     def _write(self, payload):
         path = discovery.repos_path(self.root)
@@ -208,10 +240,16 @@ class TestPinnedRepoReadIsGuarded(unittest.TestCase):
         return path
 
     def test_a_credential_in_a_field_is_redacted(self):
-        cred = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
-        self._write(json.dumps({"repos": [
-            {"owner": "acme", "repo": "widgets", "note": "token " + cred},
-        ]}))
+        cred = github_classic(seed=101)
+        self._write(
+            json.dumps(
+                {
+                    "repos": [
+                        {"owner": "acme", "repo": "widgets", "note": "token " + cred},
+                    ]
+                }
+            )
+        )
         rows = discovery.read_repos(self.root)
         self.assertEqual(len(rows), 1)
         self.assertNotIn(cred, json.dumps(rows))
@@ -239,20 +277,39 @@ class TestPinnedRepoReadIsGuarded(unittest.TestCase):
 
     def test_a_credential_in_a_key_is_redacted(self):
         """A worker writing this file controls key names as well as values."""
-        cred = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
-        self._write(json.dumps({"repos": [
-            {"owner": "acme", "repo": "widgets", cred: "planted in the key"},
-        ]}))
+        cred = github_classic(seed=101)
+        self._write(
+            json.dumps(
+                {
+                    "repos": [
+                        {
+                            "owner": "acme",
+                            "repo": "widgets",
+                            cred: "planted in the key",
+                        },
+                    ]
+                }
+            )
+        )
         rows = discovery.read_repos(self.root)
         self.assertNotIn(cred, json.dumps(rows))
 
     def test_a_credential_nested_in_a_value_is_redacted(self):
         """A dict or list value must not smuggle a string past a str check."""
-        cred = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
-        self._write(json.dumps({"repos": [
-            {"owner": "acme", "repo": "widgets",
-             "meta": {"inner": ["see " + cred]}},
-        ]}))
+        cred = github_classic(seed=101)
+        self._write(
+            json.dumps(
+                {
+                    "repos": [
+                        {
+                            "owner": "acme",
+                            "repo": "widgets",
+                            "meta": {"inner": ["see " + cred]},
+                        },
+                    ]
+                }
+            )
+        )
         rows = discovery.read_repos(self.root)
         self.assertNotIn(cred, json.dumps(rows))
 

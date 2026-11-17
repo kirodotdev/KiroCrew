@@ -101,8 +101,8 @@ class TestHostsAliasPublicationWindow:
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         monkeypatch.setattr(_argv_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
         # Post-publication the hosts table is authoritative again: a remote
-        # alias answers allowed same-call with no worker (the round-21
-        # ``ssh dev-dsk`` shape).
+        # alias answers allowed same-call with no worker (the ``ssh dev-dsk``
+        # shape).
         assert _denied_by("ssh farbox uptime") is None
         assert started == []
 

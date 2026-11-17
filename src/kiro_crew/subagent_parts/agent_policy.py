@@ -323,6 +323,7 @@ def _vet_spawn_governance(
                 "subagent_spawn",
                 session_key=parent_session_key,
                 scope="capabilities.spawn",
+                app=app,
                 failed_closed=True,
             )
         except Exception:

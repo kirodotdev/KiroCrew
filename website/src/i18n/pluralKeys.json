@@ -214,6 +214,7 @@
   "pages.chat.subagentProgressBar.chip_queued",
   "pages.chat.subagentProgressBar.chip_done",
   "pages.chat.subagentProgressBar.chip_failed",
+  "pages.chat.subagentProgressBar.chip_parent_stopped",
   "pages.chat.subagentProgressBar.chip_stopped",
   "pages.chat.subagentProgressBar.chip_stalled",
   "pages.chat.subagentCompletionCard.chip_ok",
@@ -531,7 +532,7 @@
   "apps.designCritique.designCritiquePage.rail_flow",
   "components.pastedChip.collapse_pasted_lines",
   "components.pastedChip.expand_pasted_lines",
-  "pages.settings.instancesPanel.warm_cap_count",
+  "pages.settings.instancesPanel.warm_cap_tune_with",
   "pages.settings.postureDisclosure.show_more_count",
   "apps.designCritique.designCritiquePage.entry_meta_screens",
   "apps.designCritique.designCritiquePage.findings_count",
@@ -559,5 +560,12 @@
   "pages.settings.aboutPanel.what_you_d_get_more",
   "pages.settings.releases.earlier_count",
   "pages.settings.releases.show_more",
-  "pages.capabilitiesPage.mcp_servers_waiting"
+  "pages.capabilitiesPage.mcp_servers_waiting",
+  "pages.chatPage.mcp_sign_in_needed_more",
+  "pages.overview.skillsTab.also_dismiss_older_updates",
+  "components.grillCard.minutes",
+  "components.notifications.systemNote.moved_to_history_startup_body",
+  "components.notifications.systemNote.moved_to_history_idle_body",
+  "pages.overview.usageTab.period_messages",
+  "pages.overview.usageTab.period_tool_calls"
 ]

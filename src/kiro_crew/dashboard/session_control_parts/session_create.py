@@ -74,7 +74,11 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     SlotOrigin,
     _safe_folder_tree,
+    count_restored_workers,
     creator_slot_cap_refusal,
+    note_new_worker,
+    own_worker_member,
+    worker_cap_refusal,
 )
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.execution_context import (
@@ -90,7 +94,7 @@ from kiro_crew.execution_context import (
 )
 from kiro_crew.history import metadata_now_iso
 from kiro_crew.memory_stores import named_store_or_empty
-from kiro_crew.security import redact
+from kiro_crew.security import redact, refuses
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -831,6 +835,8 @@ async def create_session(
         raise SessionControlError(
             "selected execution context is unavailable", code="memory_unavailable"
         ) from None
+    if own_worker_member(child_execution):
+        await count_restored_workers(state)
 
     # ONE authorization for the child's PRIVATE binding, at the single point where
     # every branch above has already produced its final route. A per-branch check
@@ -1194,6 +1200,10 @@ async def create_session(
     # everyone's 500.
     if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
         raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
+    # Then the Bot's own limit (`max_workers`, owner-set): asked of the child's
+    # own record, so a worker's own create is held to it too.
+    if (worker_reason := worker_cap_refusal(state, child_execution)) is not None:
+        raise SessionControlError(worker_reason, code="bot_worker_cap_reached", status=409)
     # The dry run ends HERE, after the last refusal and before the first write.
     # Any new refusal gate belongs above this line, or the preview would pass a
     # create the real call then refuses, and the MCP path walk would leave the
@@ -1227,6 +1237,9 @@ async def create_session(
         # unattributed, so ordinary human use never consumes an automated caller's
         # share.
         slot._created_by = caller_key
+        # Counted now, in the cap test's synchronous window, so parallel creates
+        # cannot both pass it.
+        note_new_worker(slot.key, child_execution)
         # Freeze the creator's ACP session id HERE, at mint, from the live caller
         # handle we just authorized -- not later at the child's first turn. The
         # creator slot can be closed and replaced between this mint and that turn,
@@ -1674,7 +1687,7 @@ def _model_pin_refusal(model_name: str, backend: str) -> str | None:
     if len(model_name) > MAX_SHORT_STRING or not _MODEL_NAME_RE.fullmatch(model_name):
         return "model id is too long or contains characters outside the model-id charset"
     # Never persist or broadcast a value the security scrubber classifies.
-    if redact(model_name) != model_name:
+    if refuses(model_name, redact):
         return "model id looks like a credential and was refused"
     # circular import: chat_handlers imports session_control lazily, and this
     # module is imported by the dashboard package before chat_handlers loads.

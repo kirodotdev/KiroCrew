@@ -17,7 +17,12 @@ from typing import Any, NamedTuple
 
 from kiro_crew.agent_discovery import expand_skill_uri, parsed_agent_specs
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.dashboard.handlers._shared_skill_roots import _edition_skill_roots
+from kiro_crew.dashboard.handlers._shared_skill_catalog import package_skill_catalog
+from kiro_crew.dashboard.handlers._shared_skill_roots import (
+    _edition_skill_roots,
+    resolved_skill_file,
+    split_package_key,
+)
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
@@ -512,7 +517,45 @@ def collect_skills_blocking(
         workspace_rows.extend(project_rows)
     result.extend(workspace_rows)
     annotate_skills_with_agents(result, project_dir=project_dir)
+    _qualify_colliding_package_rows(result, project_dir)
     return _one_row_per_skill_file(result)
+
+
+def _qualify_colliding_package_rows(rows: list[dict[str, Any]], project_dir: Path | None) -> None:
+    """Give each package row whose skill name another file shares its own key.
+
+    Two package roots bundling the same relative path list two rows the
+    resolver cannot tell apart, whether both are keyed ``package/<rel>`` or one
+    by its leaf name. Rows are grouped by that leaf, so either form is caught.
+    It runs before rows are merged by inode, so hardlinked copies keep each
+    other's key as an alias. Each such row is rekeyed, in place, to the key the
+    agent catalog offers for its file. A row whose file the catalog does not
+    list keeps its key.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = row.get("key") or ""
+        if row.get("source") == "package" and key.startswith("package/"):
+            rel = split_package_key(key[len("package/") :])[1]
+            groups.setdefault(rel.rsplit("/", 1)[-1], []).append(row)
+    colliding = [
+        group
+        for group in groups.values()
+        if len({resolved_skill_file(row.get("path")) for row in group} - {None}) > 1
+    ]
+    if not colliding:
+        return
+    key_for_file: dict[Path, str] = {}
+    for key, catalog_file in package_skill_catalog(project_dir).items():
+        resolved = resolved_skill_file(catalog_file)
+        if resolved is not None:
+            key_for_file.setdefault(resolved, key)
+    for group in colliding:
+        for row in group:
+            skill_md = resolved_skill_file(row.get("path"))
+            qualified = key_for_file.get(skill_md) if skill_md is not None else None
+            if qualified is not None:
+                row["key"] = qualified
 
 
 def _skill_file_identity(row: dict[str, Any]) -> tuple[int, int] | None:

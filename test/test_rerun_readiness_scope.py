@@ -10,7 +10,7 @@ is refused before the cut.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -19,6 +19,7 @@ from chat_regenerate_cov80_helpers import _make_regen_app
 from chat_test_helpers import pin_harness_choice
 
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
@@ -166,3 +167,41 @@ async def test_a_choice_the_watcher_has_not_applied_keeps_the_gate_before_the_cu
     assert payload["code"] == "kiro_prerequisite_required"
     assert slot.messages == before
     state.sessions.discard_conversation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reuses_live", "expected"), [(False, False), (True, True)])
+async def test_only_a_turn_that_reuses_the_live_provider_is_gated_by_it(
+    state, reuses_live, expected
+) -> None:
+    # The config now selects claude; a kiro-cli provider is still registered.
+    _pin_applied(state, acp_backend=ACP_BACKEND_CLAUDE)
+    slot = state.get_or_create_slot("s1")
+    provider = MagicMock()
+    provider.capabilities = capabilities_for(ACP_BACKEND_KIRO)
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.is_provider_alive = AsyncMock(return_value=True)
+
+    got = await kiro_readiness.rerun_signs_in_via_kiro_cli(
+        state.sessions, slot, reuses_live=reuses_live
+    )
+
+    assert got is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("route", "body"), [_EDIT_RESEND, _REWIND])
+async def test_a_rerun_that_discards_a_live_kiro_cli_provider_is_not_gated_by_it(
+    state, route, body
+) -> None:
+    _pin_applied(state, acp_backend=ACP_BACKEND_CLAUDE)
+    state.kiro_prerequisite_service = object.__new__(_SignedOutKiroCli)
+    _answered_slot(state)
+    provider = MagicMock()
+    provider.capabilities = capabilities_for(ACP_BACKEND_KIRO)
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.is_provider_alive = AsyncMock(return_value=True)
+
+    got, payload = await _post(state, route, body)
+
+    assert got == 200, payload

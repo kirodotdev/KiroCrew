@@ -220,7 +220,12 @@ class ResourcePressureNotifier:
                     self._inflight = False
                 return
             if self._slice_oom_reports or self._slice_oom_dropped:
-                self._deliver_slice_oom()
+                # A push failure leaves its reports for the next tick and must not
+                # cost this sample its pressure check.
+                try:
+                    self._deliver_slice_oom()
+                except Exception:
+                    logger.debug("agents-slice OOM push failed", exc_info=True)
             self.observe(status, now)
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)

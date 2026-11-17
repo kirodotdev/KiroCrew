@@ -171,6 +171,9 @@ Examples:
   kirocrew eval                         # smoke test (~30s)
   kirocrew eval memory_recall_basic     # specific scenario
   kirocrew eval --all                   # all scenarios (slow)
+  kirocrew eval --dir ./evals           # your own scenario files (.json, .yaml, .yml)
+  kirocrew eval --file ./evals/a.yaml --agent reviewer --model my-model-id --repeat 3
+  kirocrew eval --dir ./evals --baseline eval_results/main.json --max-drop 0.05 --junit eval.xml
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -185,6 +188,45 @@ Examples:
         "--all", action="store_true", dest="all_scenarios", help="Run all scenarios"
     )
     eval_parser.add_argument("--judge", action="store_true", help="Enable LLM judge scoring")
+    eval_parser.add_argument(
+        "--dir",
+        dest="eval_dir",
+        metavar="PATH",
+        help="Run every scenario file (.json, .yaml, .yml) in this folder instead of the bundled ones",
+    )
+    eval_parser.add_argument(
+        "--file",
+        dest="eval_file",
+        metavar="PATH",
+        help="Run one scenario file instead of the bundled ones",
+    )
+    eval_parser.add_argument(
+        "--agent", metavar="NAME", help="Crew member or agent that answers (default: from config)"
+    )
+    eval_parser.add_argument(
+        "--model", metavar="ID", help="Model that answers (default: the agent's or the config's)"
+    )
+    eval_parser.add_argument(
+        "--repeat",
+        type=positive_int,
+        default=1,
+        metavar="N",
+        help="Run the scenarios N times; a scenario passes only when all N runs pass (pass^k)",
+    )
+    eval_parser.add_argument(
+        "--baseline",
+        metavar="PATH",
+        help="A saved eval_<timestamp>.json to compare with; exit 1 when a scenario's score drops",
+    )
+    eval_parser.add_argument(
+        "--max-drop",
+        dest="max_drop",
+        metavar="FRACTION",
+        help="With --baseline, how far (0 to 1) a scenario's score may fall before it is named a regression (default 0)",
+    )
+    eval_parser.add_argument(
+        "--junit", metavar="PATH", help="Also write the results as a JUnit XML file at PATH"
+    )
 
 
 def register_tailnet_parser(sub: _Commands) -> None:

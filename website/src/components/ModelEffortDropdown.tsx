@@ -6,7 +6,7 @@ import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
-import UltracodeToggle from './UltracodeToggle'
+import SessionSwitchToggle from './SessionSwitchToggle'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -71,9 +71,13 @@ interface Props {
   /** See ReasoningEffortDropdown's `onWriteError`. */
   onWriteError?: (message: string) => void
   /** This gateway's slot's ultracode switch, when its session advertises one
-   *  (`UltracodeToggle`). Omitted, no switch renders: a crew window's peer slot
+   *  (`SessionSwitchToggle`). Omitted, no switch renders: a crew window's peer slot
    *  is not this gateway's to write. */
   ultracode?: boolean
+  /** The same for the slot's Fast mode switch (the `fast` field). */
+  fastMode?: boolean
+  /** Why that switch cannot be turned on (the `fast_unavailable` field). */
+  fastUnavailable?: string
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -114,7 +118,7 @@ export default function ModelEffortDropdown({
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
   modelsFailed = false, modelsFailedMessage, onRetryModels, retryingModels = false,
-  writeEffort, onWriteError, ultracode,
+  writeEffort, onWriteError, ultracode, fastMode, fastUnavailable,
 }: Props) {
   const ime = useImeGuard()
   const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
@@ -209,7 +213,8 @@ export default function ModelEffortDropdown({
               </div>
             )}
             {!hasEffort && effortOffOnAuto && <EffortOffOnAutoNote />}
-            {typeof ultracode === 'boolean' && slot && <UltracodeToggle key={slot} slot={slot} enabled={ultracode} />}
+            {typeof ultracode === 'boolean' && slot && <SessionSwitchToggle key={`ultracode:${slot}`} slot={slot} option="ultracode" enabled={ultracode} />}
+            {typeof fastMode === 'boolean' && slot && <SessionSwitchToggle key={`fast:${slot}`} slot={slot} option="fast" enabled={fastMode} unavailable={fastUnavailable} />}
             {onPinToAgent && agentName && (
               <Btn
                 type="button"

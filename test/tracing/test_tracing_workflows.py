@@ -253,7 +253,7 @@ async def test_a_three_phase_replay_reproduces_the_live_tree(spans):
     await _run("wf_000103")
     _assert_shape(spans)
     assert _tree(spans) == live
-    assert len(live) == 1 + 3 + 4 * 4 + 1  # root, phases, 4 spans per turn, outcome
+    assert len(live) == 1 + 3 + 5 * 4 + 1  # root, phases, 5 spans per turn, outcome
 
 
 @pytest.mark.asyncio
@@ -377,6 +377,29 @@ async def test_the_completion_turn_joins_the_run_and_links_to_its_launcher(spans
     (link,) = turn.links
     assert link.context.trace_id == launch_turn.turn_span.get_span_context().trace_id
     assert link.context.span_id == launch_turn.turn_span.get_span_context().span_id
+
+
+@pytest.mark.asyncio
+async def test_the_run_links_to_the_workflow_run_tool_call_that_launched_it(spans):
+    launcher = SimpleNamespace(
+        session_id="acp-tool", _session_key=ORIGIN, _model="auto", _resolved_model_id=""
+    )
+    launch_turn = turns.start_turn(launcher)
+    turns.tool_started("acp-tool", "tc-wf", kind="other", tool_name="mcp_core_workflow_run")
+    trace_workflows.pin_launcher("wf_000116", ORIGIN)
+    turns.tool_finished("acp-tool", "tc-wf", status="completed")
+    launch_turn.finish(None)
+    await _run("wf_000116")
+    (tool,) = _named(spans, "execute_tool")
+    assert tool.attributes["kirocrew.launched_workflow_run_id"] == "wf_000116"
+    (root,) = _named(spans, "workflow triage")
+    (link,) = root.links
+    assert (link.context.trace_id, link.context.span_id) == (
+        tool.context.trace_id,
+        tool.context.span_id,
+    )
+    # A separate trace: the run is asynchronous to the turn that launched it.
+    assert root.context.trace_id != tool.context.trace_id
 
 
 def test_a_cause_is_taken_once_and_only_where_it_was_handed_over():

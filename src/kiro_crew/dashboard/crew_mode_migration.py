@@ -440,6 +440,7 @@ def _closed_roots(log: Any) -> list[str]:
         try:
             meta = log.get_metadata(key)
         except Exception:
+            # A row whose metadata cannot be read is left out; one bad row must not stop the rest.
             continue
         if isinstance(meta, dict) and crew_mode.saved_row_is_root(meta):
             found.append(history_slot_key(key))

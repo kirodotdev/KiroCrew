@@ -1035,7 +1035,7 @@ class TestRunnerReadsTheCallerFromParams:
 
 
 class TestScheduledPathFallsBackToTheVerifiedProfile:
-    """Finding 2: `resolve_account_profile_cached` serves only from the warm
+    """`resolve_account_profile_cached` serves only from the warm
     snapshot and returns None once it is past `_PROBE_TTL_SECS`. `start_async` is
     fire-and-forget, so the runner resolves later than the loop's live probe; a gap
     longer than the TTL would audit a just-verified nightly as failed. The loop
@@ -1205,7 +1205,7 @@ class TestScheduledFailureFeedsTheBackoff:
         assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT) is None
 
     def test_a_withheld_scheduled_run_does_not_feed_the_backoff(self, sdk):
-        # Finding 1: the owner withdrawing the unattended grant (or turning
+        # The owner withdrawing the unattended grant (or turning
         # redaction on) mid-build raises ScheduledUploadWithheld from the gate --
         # a policy "do not upload", not a fault. Counting it would grow the
         # schedule's backoff for a run the owner chose to stop. This is the rule

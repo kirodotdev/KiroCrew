@@ -55,7 +55,7 @@ from kiro_crew import security
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.subprocess_pool import OP_REALPATH_MANY, SubprocessPoolTimeout
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 
 def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> None:
@@ -71,18 +71,42 @@ def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> No
 
 
 def test_a_stalled_resolution_is_refused_within_the_budget(monkeypatch) -> None:
+    from kiro_crew.security import paths_resolver
+
     stalled = _StalledResolver()
-    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    granted: list[float] = []
+    armed: list[bool] = []
+    real_resolve_here = paths_resolver._resolve_on_calling_thread
+
+    def _recording_resolve_here(worker, expanded: str, timeout: float):
+        # The allowance the call hands the deadline it arms: the whole of the
+        # caller's wait, read as a value rather than off a clock.
+        granted.append(timeout)
+        return real_resolve_here(worker, expanded, timeout)
+
+    def _recording_stall(expanded: str) -> set[str]:
+        armed.append(getattr(security.paths._child_budget, "deadline", None) is not None)
+        return stalled(expanded)
+
+    monkeypatch.setattr(paths_resolver, "_resolve_on_calling_thread", _recording_resolve_here)
+    monkeypatch.setattr(security, "_resolved_spellings", _recording_stall)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled) as info:
             security._candidate_forms("/home/someone/ws/../ws/file")
-        elapsed = time.monotonic() - started
     finally:
         stalled.release.set()
-    # Bounded: well under a second against a 0.2s budget, where the unbounded
-    # call would have sat for as long as the mount did.
-    assert elapsed < 1.5, f"caller blocked {elapsed:.2f}s on a stalled resolver"
+    # Bounded: the one stalled resolution ran under a deadline no later than the
+    # (scaled-down) budget plus its grace, where an unbounded call would sit for as
+    # long as the mount did.
+    budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS
+    entitled = budget + min(
+        budget * security.paths._PATH_RESOLVE_GRACE_FACTOR,
+        security.paths._PATH_RESOLVE_GRACE_MAX_SECS,
+    )
+    assert armed == [True], f"the stalled resolution ran without a deadline: {armed!r}"
+    assert len(granted) == 1, f"expected one bounded resolution: {granted!r}"
+    assert 0.0 < granted[0] <= entitled, f"granted {granted[0]:.3f}s past budget+grace {entitled}"
+    assert entitled < 1.0, "the autouse fixture's scaled-down budget is in force"
     assert info.value.prefix == os.path.normpath("/home/someone")
     assert len(stalled.calls) == 1
 
@@ -357,17 +381,32 @@ def test_the_grace_is_a_fraction_of_the_budget_so_a_tight_budget_stays_tight(
     the loosest caller's tail.
     """
     stalled = _StalledResolver()
+    granted: list[float] = []
+    real_resolve_here = security.paths._resolve_on_calling_thread
+
+    def _recording_resolve_here(worker, expanded: str, timeout: float):
+        # The deadline the stalled resolution runs under, read as the value the
+        # gate hands it: the whole of the caller's wait, budget and grace.
+        granted.append(timeout)
+        return real_resolve_here(worker, expanded, timeout)
+
+    # Through the facade: its mirror writes the name into the owner that reads it.
+    monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _recording_resolve_here)
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/home/someone/ws/file")
-        elapsed = time.monotonic() - started
     finally:
         stalled.release.set()
     budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS  # 0.2 under the autouse fixture
     ceiling = budget * (1 + security.paths._PATH_RESOLVE_GRACE_FACTOR)
-    assert elapsed < ceiling + 0.6, f"blocked {elapsed:.2f}s against a {budget:.2f}s budget"
+    # The grace scales with this budget: well under the fixed cap, the deadline is
+    # the budget plus its fraction, not the cap's multi-second tail.
+    assert ceiling < security.paths._PATH_RESOLVE_GRACE_MAX_SECS
+    assert len(granted) == 1, f"expected one bounded resolution: {granted!r}"
+    assert (
+        0.0 < granted[0] <= ceiling + 1e-6
+    ), f"granted {granted[0]:.3f}s against a {budget:.2f}s budget"
 
 
 def test_the_stall_prefix_counts_components_past_the_drive(monkeypatch) -> None:
@@ -1149,14 +1188,37 @@ def _count_child_requests(monkeypatch) -> list[int]:
 def test_a_stalled_root_anchor_refuses_within_the_budget(monkeypatch, tmp_path) -> None:
     _clear_override_roots(monkeypatch)
     security._home_targets_cache.clear()
-    security._resolved_root_key()  # a warm, canonical resolution must NOT be served later
+    # A warm, canonical resolution must NOT be served later. The warm-up is a real
+    # resolution, so it gets the lost-run bound rather than the fixture's 0.2 s: a
+    # slow or loaded host must not turn the setup itself into a stall.
+    with monkeypatch.context() as mp:
+        mp.setattr(security, "_PATH_RESOLVE_TIMEOUT_SECS", default_timeout())
+        mp.setattr(security.paths, "_PATH_RESOLVE_REBUILD_TIMEOUT_SECS", default_timeout())
+        security._resolved_root_key()
     stalled = _StalledRealpath()
     monkeypatch.setattr(security.paths, "_realpaths_or_none", stalled)
+    # "Within the budget" is asserted as the deadline the call arms, not as
+    # seconds: the stall stub waits out exactly that deadline, so the caller's
+    # wait is the deadline it was granted. A grant past the anchor budget and
+    # its grace is refused before the stub sleeps through it.
+    resolver = security.paths_resolver
+    budget = resolver._PATH_RESOLVE_TIMEOUT_SECS
+    entitled = budget + min(
+        budget * resolver._PATH_RESOLVE_GRACE_FACTOR, resolver._PATH_RESOLVE_GRACE_MAX_SECS
+    )
+    granted: list[float] = []
+    real_resolve = resolver._resolve_on_calling_thread
+
+    def resolve(worker, expanded, timeout):
+        granted.append(timeout)
+        assert timeout <= entitled, f"granted {timeout}s against a {entitled}s anchor budget"
+        return real_resolve(worker, expanded, timeout)
+
+    monkeypatch.setattr(resolver, "_resolve_on_calling_thread", resolve)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled):
             security._resolved_root_key()
-        elapsed = time.monotonic() - started
+        root_grants = list(granted)
         # ...and every gate turns that into a refusal, exactly as it does for a
         # stalled candidate: an ordinary workspace file is denied, not passed on
         # a stale or lexical anchor set.
@@ -1165,7 +1227,9 @@ def test_a_stalled_root_anchor_refuses_within_the_budget(monkeypatch, tmp_path) 
     finally:
         stalled.release.set()
         security._home_targets_cache.clear()
-    assert elapsed < 1.0
+    # One bounded wait for the anchors, no retry. (The gates' own candidate
+    # resolutions afterwards are held to the same grant by ``resolve``.)
+    assert root_grants == [entitled], root_grants
     logical_home = str(security.Path.home())
     assert stalled.calls == [logical_home]
     # The stall was recorded against the home's prefix, the same bookkeeping a

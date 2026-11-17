@@ -205,6 +205,45 @@ class TestTriggerCronJob:
         assert ok is False
         assert msg == "Error: HTTP 409"
 
+    @pytest.mark.parametrize(
+        "body",
+        [b"<html><body>ok</body></html>", b"", b'["ok"]', b"\xff\xfe"],
+        ids=["html", "empty", "json-list", "not-utf8"],
+    )
+    def test_unreadable_success_answer_is_reported_not_raised(self, mock_dashboard, body):
+        """A 200 whose body is not a JSON object fails cleanly and says the job may have run."""
+        port, cfg_dir = mock_dashboard
+        _MockDashboardHandler.forced_response = (200, body)
+        try:
+            outcome: object = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+        except (ValueError, AttributeError) as exc:
+            outcome = f"escaped as {type(exc).__name__}"
+        assert outcome == (
+            False,
+            "Error: gateway returned an unreadable answer; the trigger may have run",
+        )
+
+    def test_success_answer_cut_off_mid_read_is_reported_not_raised(self, tmp_path):
+        """A 200 whose body breaks while being read is the same unreadable answer."""
+        import http.client
+        import io
+
+        class _CutOff(io.BytesIO):
+            def read(self, *_args):
+                raise http.client.IncompleteRead(b'{"ok": tr')
+
+        secret_path = tmp_path / ".local_secret"
+        secret_path.write_text("fake")
+        with patch("kiro_crew.cron_trigger.loopback_urlopen", return_value=_CutOff()):
+            try:
+                outcome: object = trigger_cron_job("abc12345", 19999, secret_path)
+            except http.client.HTTPException as exc:
+                outcome = f"escaped as {type(exc).__name__}"
+        assert outcome == (
+            False,
+            "Error: gateway returned an unreadable answer; the trigger may have run",
+        )
+
     def test_body_cut_off_mid_read_keeps_the_bare_status(self, tmp_path):
         """A body that breaks while being read cannot turn the refusal into a crash."""
         import http.client

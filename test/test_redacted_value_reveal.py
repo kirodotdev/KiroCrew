@@ -24,8 +24,9 @@ import kiro_crew.dashboard.chat_runner as chat_runner
 from kiro_crew.dashboard.handlers import redacted_reveal
 from kiro_crew.security import reveal_store
 from kiro_crew.security.credential_sources import bounded_credential_records
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-_GH = "ghp_" + "k7qmz2x9wv4tb8ncr6yd3fj5hs1gpl0aeuo2"
+_GH = github_classic(seed=45)
 _SLOT = "slot-1"
 
 
@@ -245,11 +246,11 @@ def test_only_the_saved_records_keep_a_value(_fresh_store) -> None:
 
     slot = _Slot()
     # A pass with no pending map (the per-delta check) mints no handle at all.
-    _, _, records = segment_flush._redact_segment_text(slot, f"token {_GH}")
+    _, records = segment_flush._redact_segment_text(slot, f"token {_GH}")
     assert records and "reveal_id" not in records[0]
     assert len(_fresh_store) == 0
     # A whole-segment save keeps exactly the one value its one record names.
-    _, _, saved = segment_flush._redact_segment(slot, f"token {_GH}")
+    _, saved = segment_flush._redact_segment(slot, f"token {_GH}")
     assert len(_fresh_store) == 1
     assert _fresh_store.reveal(saved[0]["reveal_id"], scope=_SLOT) == _GH
 
@@ -261,7 +262,7 @@ def test_a_flush_that_fails_closed_keeps_nothing(_fresh_store) -> None:
     slot.segment_raw_text = None  # past the raw-copy cap: the flush fails closed
     slot.segment_shown_sha = __import__("hashlib").sha256()
     slot.segment_removed = {}
-    text, links, records = segment_flush._redact_segment(slot, f"token {_GH}")
+    text, records = segment_flush._redact_segment(slot, f"token {_GH}")
     assert records == [] and _GH not in text
     assert len(_fresh_store) == 0
 

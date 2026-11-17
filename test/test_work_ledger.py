@@ -579,6 +579,7 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
         "pr",
         "reason",
         "wake_at",
+        "discussion",
     }
     assert not names & {"verdict", "state", "acceptance", "decision", "fails", "round_number"}
 
@@ -1651,6 +1652,14 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # ``apply_remote_report``, on an item already bound to that crew. It takes
         # no supplied identity; ``create_bound`` binds the caller's own item.
         "dashboard/handlers/remote_ingest.py",
+        # ``remote_ingest``'s owner of the report filing, split out of it with no logic
+        # change: it reads the bound item and writes it only through
+        # ``apply_remote_report``, exactly as ``remote_ingest.py`` did before the split.
+        "dashboard/handlers/remote_ingest_report.py",
+        # Its peer-report selection: which peer reports a pull files, from the peer
+        # event ids the crew log holds. It reads the conductor's board's work fold
+        # and the store's caps and id shape, takes no identity and writes nothing.
+        "dashboard/handlers/remote_ingest_peer.py",
         # Its background puller (rfc-conductor-remote-dispatch open question 1). It
         # takes no identity and writes nothing itself: it lists the boards holding an
         # open crew-bound item (``boards_with_open_remote``) and hands each to

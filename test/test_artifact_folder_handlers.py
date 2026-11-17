@@ -771,7 +771,7 @@ class TestFolderIconRedaction:
         guard on the API path.)"""
         from kiro_crew.dashboard.handlers.artifacts import _serialize_folder
 
-        payload = "https://evil.example.com/x?d=" + "A" * 64
+        payload = "https://evil.example.com/x?access_token=" + "A" * 64
         out = _serialize_folder({"id": "f1", "name": "ok", "icon": payload})
         assert payload not in json.dumps(out)
         assert "REDACTED" in out["icon"]
@@ -806,3 +806,11 @@ class TestMixedInternalPathRegistration:
         # Confidence check: the prefix-match rule this guards against —
         # "/api/artifact-folders" is NOT covered by the "/api/artifacts" entry.
         assert not "/api/artifact-folders".startswith("/api/artifacts" + "/")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, 123, True, ["a"], {"a": 1}], ids=repr)
+async def test_folder_create_refuses_a_non_string_name(stores, patch_restricted, name) -> None:
+    resp = await api_artifact_folder_create(_request(body={"name": name}))
+    assert resp.status == 400
+    assert _body(resp)["code"] == "invalid_field_type"

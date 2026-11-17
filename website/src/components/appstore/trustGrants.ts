@@ -2,14 +2,21 @@ import type { TrustAppTarget } from './TrustAppModal'
 
 /** The manifest `permissions` fields the trust prompt discloses. */
 export interface DisclosedPermissions {
+  api?: string[]
   sessionApproval?: boolean
   memberThreads?: boolean
   workerAutoApprove?: boolean
   chatSlots?: boolean
+  hiddenSessions?: boolean
   reachableByUserSessions?: string[]
+  desktopCapabilities?: string[]
+  webhookSource?: boolean
 }
 
-type TrustGrants = Pick<TrustAppTarget, 'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'reachableByUserSessions'>
+type TrustGrants = Pick<
+  TrustAppTarget,
+  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'hiddenSessions' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api' | 'webhookSource'
+>
 
 /**
  * The declared grants a trust prompt shows, read off an app's manifest
@@ -23,6 +30,10 @@ export function trustGrants(permissions: DisclosedPermissions | undefined): Trus
     memberThreads: permissions?.memberThreads === true,
     workerAutoApprove: permissions?.workerAutoApprove === true,
     chatSlots: permissions?.chatSlots === true,
+    hiddenSessions: permissions?.hiddenSessions === true,
     reachableByUserSessions: permissions?.reachableByUserSessions,
+    desktopCapabilities: permissions?.desktopCapabilities,
+    api: permissions?.api,
+    webhookSource: permissions?.webhookSource === true,
   }
 }

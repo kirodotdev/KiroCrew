@@ -72,7 +72,6 @@ import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
   capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
-import { crewModePreviewOn } from './crewModePreview'
 import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
 import { DICTATION_NOTE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
 import { queryClient as globalQueryClient } from '../api/queryClient'
@@ -1110,7 +1109,8 @@ describe('CrewChatWindow', () => {
     // THIS hub's session roster, where a peer's session keys mean nothing: a
     // peer's window draws that row through the store-free default too.
     // A restart's Trust reset row picks a mode through THIS hub's route, never the peer's.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice'])
+    // The sign-in notice links to THIS hub's MCP Servers page, where a peer's servers are not listed.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice', 'mcp_sign_in_needed'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
@@ -1511,6 +1511,3 @@ describe('CrewChatWindow', () => {
     expect(FakeEventSource.all[0].close).toHaveBeenCalled()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

@@ -44,11 +44,13 @@ to see, not a shape this module will write.
 from __future__ import annotations
 
 import contextvars
+import errno
 import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -65,6 +67,7 @@ from kiro_crew.atomic_write import (
     pinned_parent_replace_supported,
     read_bytes_with_retry,
     refuse_linked_parent,
+    retry_read_sharing_window,
 )
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
@@ -72,7 +75,7 @@ from kiro_crew.crew_log.entry_types import (
     DASHBOARD_INSTANCE_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.store import log_exception_text
-from kiro_crew.dashboard_templates import catalog
+from kiro_crew.dashboard_templates import catalog, instance_read
 from kiro_crew.dashboard_templates.manifest import (
     ManifestError,
     check_parity,
@@ -480,8 +483,32 @@ def _refuse_linked_session_dir(directory: Path) -> None:
         raise InstanceError("this session's dashboard directory is outside the session pages")
 
 
+def _is_page_dir(directory: Path) -> bool:
+    """Whether *directory* is a session's page folder or a member's: the two this module pins."""
+    home = data_home()
+    return directory.parent == home / _SESSION_DASHBOARDS_DIR or (
+        directory.name == "dashboard" and directory.parent.parent == home / "members"
+    )
+
+
+def _refuse_linked_member_dir(directory: Path) -> None:
+    """Refuse a member page folder reached through a link or junction.
+
+    The same ``lstat`` walk :func:`_refuse_linked_session_dir` starts with, over
+    ``members``, ``<slug>`` and ``dashboard``; the pinned open in :func:`_locked`
+    closes the window this walk leaves.
+    """
+    try:
+        refuse_linked_parent(directory / _LOCK_FILE)
+    except OSError as exc:
+        raise InstanceError(
+            "this member's dashboard directory is a link or sits behind one; "
+            "refusing to write through it"
+        ) from exc
+
+
 def _refuse_linked_versions_dir(versions_dir: Path) -> None:
-    """Refuse a session page's ``versions`` directory that is a link or junction.
+    """Refuse a page's ``versions`` directory that is a link or junction.
 
     The guard where the platform cannot pin (Windows): a junction there could point at
     another dashboard's retained versions, and a commit through it would overwrite the
@@ -492,7 +519,7 @@ def _refuse_linked_versions_dir(versions_dir: Path) -> None:
         refuse_linked_parent(versions_dir / "1.json")
     except OSError as exc:
         raise InstanceError(
-            "this session's dashboard versions directory is a link or sits behind one; "
+            "this dashboard's versions directory is a link or sits behind one; "
             "refusing to write through it"
         ) from exc
 
@@ -506,31 +533,158 @@ _PINNED_DIR: contextvars.ContextVar[int | None] = contextvars.ContextVar(
 
 
 def _pinned_session_dir(directory: Path) -> int | None:
-    """Create and open *directory* one ``O_NOFOLLOW`` component at a time.
+    """Create and open a page directory one ``O_NOFOLLOW`` component at a time.
 
-    ``None`` where the platform cannot open relative to a directory descriptor, which
-    leaves the ``lstat`` walk in :func:`_refuse_linked_session_dir` as the guard.
+    *directory* is a session's page folder (two levels below the data home) or a
+    member's (three). ``None`` where the platform cannot open relative to a directory
+    descriptor, which leaves the ``lstat`` walk in :func:`_refuse_linked_session_dir`
+    and :func:`_refuse_linked_member_dir` as the guard.
     """
     if not (pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported()):
         return None
-    root = data_home() / _SESSION_DASHBOARDS_DIR
+    first, *rest = directory.relative_to(data_home()).parts
     mkdirs_owner_only(data_home())
     try:
-        root_fd = pinned_fs.create_and_open_dir_pinned(
-            root, what="session dashboard pages", refusal=InstanceError
+        fd = pinned_fs.create_and_open_dir_pinned(
+            data_home() / first, what="dashboard pages", refusal=InstanceError
         )
         try:
-            # Relative to root_fd, never by name: a session-pages root swapped for a
-            # link after it was opened cannot move where the page directory lands.
-            return pinned_fs.create_and_open_dir_at(
-                root_fd, directory.name, what="session dashboard page", refusal=InstanceError
-            )
-        finally:
-            os.close(root_fd)
+            for name in rest:
+                # Relative to the descriptor above, never by name: a level swapped for a
+                # link after it was opened cannot move where the next one lands.
+                child = pinned_fs.create_and_open_dir_at(
+                    fd, name, what="dashboard page", refusal=InstanceError
+                )
+                os.close(fd)
+                fd = child
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
     except InstanceError:
         raise
     except OSError as exc:
-        raise InstanceError("this session's dashboard directory could not be opened") from exc
+        raise InstanceError("the dashboard folder could not be opened") from exc
+
+
+def _refuse_linked_versions(directory: Path, pinned: int | None) -> None:
+    """Refuse a linked ``versions`` folder before any entry point works in the page folder."""
+    if pinned is None:
+        _refuse_linked_versions_dir(directory / _VERSIONS_SUBDIR)
+        return
+    try:
+        linked = stat.S_ISLNK(os.lstat(_VERSIONS_SUBDIR, dir_fd=pinned).st_mode)
+    except FileNotFoundError:
+        return
+    if linked:
+        raise InstanceError(
+            "this dashboard's versions directory is a link; refusing to write through it"
+        )
+
+
+def _read_once(fd: int, names: tuple[str, ...]) -> bytes:
+    """One read attempt of ``names`` below the held descriptor *fd*, never by name.
+
+    Each folder is opened relative to the one before it and the leaf with ``O_NOFOLLOW``,
+    so a link at any of them fails the open.
+    """
+    *folders, leaf = names
+    opened: list[int] = []
+    try:
+        parent = fd
+        for folder in folders:
+            parent = os.open(folder, pinned_fs.dir_flags(), dir_fd=parent)
+            opened.append(parent)
+        leaf_fd = os.open(leaf, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
+        with os.fdopen(leaf_fd, "rb") as handle:
+            return handle.read()
+    finally:
+        for descriptor in opened:
+            os.close(descriptor)
+
+
+#: Whether the current context holds a page lock. A read with neither a lock nor a pinned
+#: descriptor is a reader of its own (:func:`_reads_unlocked`).
+_LOCK_HELD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "dashboard_instance_lock_held", default=False
+)
+
+
+def _reads_unlocked(slug: str) -> bool:
+    """Whether a read of *slug* is a member page reader outside :func:`_locked`."""
+    return _PINNED_DIR.get() is None and not _LOCK_HELD.get() and not is_session_key(slug)
+
+
+def _can_pin() -> bool:
+    return pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported()
+
+
+def _open_page_dir(slug: str) -> int:
+    """The page folder of *slug* for a reader, opened without creating or following anything."""
+    return instance_read.open_page_dir(
+        data_home(), instance_dir(slug).relative_to(data_home()).parts, InstanceError
+    )
+
+
+def _read_file(slug: str, *names: str) -> bytes:
+    """Read ``names`` under *slug*'s page folder, through a pinned descriptor.
+
+    Inside the lock that is the descriptor the lock holds, so a level replaced after the
+    open cannot hand the next version number a record from somewhere else. A reader with
+    no lock opens the folder itself, creating nothing, and answers "not set" for a link
+    at any level. The descriptor read runs inside the same sharing-violation retry as a
+    by-name read.
+    """
+    path = instance_dir(slug).joinpath(*names)
+    if _reads_unlocked(slug):
+        if not _can_pin():
+            instance_read.refuse_linked_for_read(path.parent, _LOCK_FILE, names[-1])
+            return read_bytes_with_retry(path)
+        opened = _open_page_dir(slug)
+        try:
+            return retry_read_sharing_window(lambda: _read_once(opened, names), path)
+        except OSError as exc:
+            # A link at the file itself fails the ``O_NOFOLLOW`` open with ELOOP, and
+            # answers "not set" like a link at any folder level. A link at ``versions``
+            # fails the folder open (``O_DIRECTORY``) with ENOTDIR instead; no reader
+            # without the lock reaches that open through here, so it is not caught. Any
+            # other error (a folder where the file should be, a denied read) is raised
+            # as before.
+            if exc.errno == errno.ELOOP:
+                raise instance_read.LinkedLevel("no dashboard page here") from None
+            raise
+        finally:
+            os.close(opened)
+    fd = _PINNED_DIR.get()
+    if fd is None:
+        return read_bytes_with_retry(path)
+    return retry_read_sharing_window(lambda: _read_once(fd, names), path)
+
+
+def _list_versions(slug: str) -> list[str]:
+    """The names in *slug*'s ``versions`` folder, through the pinned descriptor when held."""
+    if _reads_unlocked(slug):
+        versions_dir = instance_dir(slug) / _VERSIONS_SUBDIR
+        if not _can_pin():
+            instance_read.refuse_linked_for_read(versions_dir, _LOCK_FILE)
+            return instance_read.without_links(versions_dir, os.listdir(versions_dir))
+        opened = _open_page_dir(slug)
+        try:
+            versions_fd = os.open(_VERSIONS_SUBDIR, pinned_fs.dir_flags(), dir_fd=opened)
+            try:
+                return instance_read.without_links(versions_fd, os.listdir(versions_fd))
+            finally:
+                os.close(versions_fd)
+        finally:
+            os.close(opened)
+    fd = _PINNED_DIR.get()
+    if fd is None:
+        return os.listdir(instance_dir(slug) / _VERSIONS_SUBDIR)
+    versions_fd = os.open(_VERSIONS_SUBDIR, pinned_fs.dir_flags(), dir_fd=fd)
+    try:
+        return os.listdir(versions_fd)
+    finally:
+        os.close(versions_fd)
 
 
 def _write(directory: Path, name: str, body: str) -> None:
@@ -554,22 +708,29 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
     the two pages is lost with nothing recorded.
     """
     pinned: int | None = None
-    if directory.parent == data_home() / _SESSION_DASHBOARDS_DIR:
-        _refuse_linked_session_dir(directory)
+    page = _is_page_dir(directory)
+    if page:
+        if directory.parent == data_home() / _SESSION_DASHBOARDS_DIR:
+            _refuse_linked_session_dir(directory)
+        else:
+            _refuse_linked_member_dir(directory)
         pinned = _pinned_session_dir(directory)
     if pinned is None:
         mkdirs_owner_only(directory)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
+        if page:
+            _refuse_linked_versions(directory, pinned)
         if pinned is not None:
             fd = open_create_or_existing(lock_file, os.O_RDWR | nofollow, 0o600, dir_fd=pinned)
         else:
             fd = open_create_or_existing(directory / lock_file, os.O_RDWR | nofollow, 0o600)
-    except OSError:
+    except (OSError, InstanceError):
         if pinned is not None:
             os.close(pinned)
         raise
     token = _PINNED_DIR.set(pinned)
+    held = _LOCK_HELD.set(True)
     try:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
         while not try_acquire_lock(fd, exclusive=True):
@@ -583,6 +744,7 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
         finally:
             release_lock(fd)
     finally:
+        _LOCK_HELD.reset(held)
         _PINNED_DIR.reset(token)
         os.close(fd)
         if pinned is not None:
@@ -673,9 +835,8 @@ def _read_record(slug: str) -> dict[str, Any] | None:
     error and is reported as one by the caller -- read as :data:`STATE_ERROR` rather
     than as "never adopted", because the two need opposite answers from a human.
     """
-    path = instance_dir(slug) / _RECORD_FILE
     try:
-        raw = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        raw = json.loads(_read_file(slug, _RECORD_FILE).decode("utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -803,26 +964,24 @@ def _instance_from_raw(slug: str, raw: dict[str, Any] | None) -> Instance:
 
 def versions(slug: str) -> tuple[int, ...]:
     """Instance versions still on disk, oldest first. What a rollback may reach."""
-    directory = instance_dir(slug) / _VERSIONS_SUBDIR
     found: list[int] = []
     try:
-        children = list(directory.iterdir())
+        children = _list_versions(slug)
     except OSError:
         return ()
     for child in children:
-        if child.suffix != ".json":
+        if not child.endswith(".json"):
             continue
         try:
-            found.append(int(child.stem))
+            found.append(int(child[: -len(".json")]))
         except ValueError:
             continue
     return tuple(sorted(found))
 
 
 def _read_version(slug: str, version: int) -> dict[str, Any]:
-    path = instance_dir(slug) / _VERSIONS_SUBDIR / f"{version}.json"
     try:
-        raw = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        raw = json.loads(_read_file(slug, _VERSIONS_SUBDIR, f"{version}.json").decode("utf-8"))
     except FileNotFoundError:
         kept = versions(slug)
         raise InstanceRefused(
@@ -872,9 +1031,8 @@ def _history_step(state: dict[str, Any], data: Mapping[str, Any]) -> None:
 
 
 def _read_history_state(slug: str) -> dict[str, Any] | None:
-    path = instance_dir(slug) / _HISTORY_FILE
     try:
-        raw = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        raw = json.loads(_read_file(slug, _HISTORY_FILE).decode("utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     if not isinstance(raw, dict) or raw.get("schema") != SCHEMA_VERSION:
@@ -1040,12 +1198,12 @@ def _commit(
     directory = instance_dir(slug)
     versions_dir = directory / _VERSIONS_SUBDIR
     pinned = _PINNED_DIR.get()
-    unpinned_session = pinned is None and directory.parent == data_home() / _SESSION_DASHBOARDS_DIR
-    if unpinned_session:
+    unpinned_page = pinned is None and _is_page_dir(directory)
+    if unpinned_page:
         _refuse_linked_versions_dir(versions_dir)
     if pinned is None:
         mkdirs_owner_only(versions_dir)
-    if unpinned_session:
+    if unpinned_page:
         _refuse_linked_versions_dir(versions_dir)
     current = _read_record(slug) or {}
     previous = current.get("instance_version")
@@ -1078,12 +1236,9 @@ def _commit(
     if pinned is not None:
         # The versions subdirectory is opened from the pinned page directory, so it
         # is never reached by name either.
-        try:
-            os.mkdir(_VERSIONS_SUBDIR, 0o700, dir_fd=pinned)
-        except FileExistsError:
-            pass
-        flags = pinned_fs.dir_flags()
-        versions_fd = os.open(_VERSIONS_SUBDIR, flags, dir_fd=pinned)
+        versions_fd = pinned_fs.create_and_open_dir_at(
+            pinned, _VERSIONS_SUBDIR, what="dashboard versions folder", refusal=InstanceError
+        )
         try:
             atomic_write(
                 versions_dir / f"{next_version}.json", body, fsync=True, parent_dir_fd=versions_fd
@@ -1238,7 +1393,7 @@ def _referenced_digests(slug: str) -> set[str]:
     found: set[str] = set()
     raws: list[Any] = [_read_record(slug)]
     try:
-        names = os.listdir(instance_dir(slug) / _VERSIONS_SUBDIR)
+        names = _list_versions(slug)
     except FileNotFoundError:
         names = []
     for name in names:
@@ -1458,10 +1613,9 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
         if not isinstance(html, str) or not isinstance(manifest, dict):
             raise InstanceError(f"instance version {to_version} holds no page to restore")
         checked = _check(manifest, html)
-        # THE VERSION'S OWN PAGE IN FORCE comes back with it: a package version
-        # restores its pinned package, and a template version -- including one written
-        # before packages could be applied -- restores the template, releasing any
-        # package. That is what makes one rollback the way back from either page.
+        # The version's own page comes back with it: a package version restores its
+        # pinned package; a template version (an old one included) restores the
+        # template and releases any package. So one rollback undoes either kind of page.
         slug_v, version_v, digest_v, _released = _package_field(payload)
         return _commit(
             slug,
@@ -1481,20 +1635,17 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
 
 #: The staged page, beside the record and never inside it.
 #:
-#: A preview is a page somebody is being SHOWN before anything is recorded, so it
-#: cannot be a version: a version is what a rollback can reach, and staging one would
-#: put a page the person then declined into their history as a change they made. It
-#: also means a preview never moves ``instance_version``, so a client that caches by
-#: version is not invalidated by a page that was only looked at.
+#: A preview is SHOWN before anything is recorded, so it is not a version: a version is
+#: what a rollback can reach, and a page the person then declined must not enter their
+#: history as a change they made. So a preview never moves ``instance_version``, and a
+#: client caching by version is not invalidated by a page that was only looked at.
 _PREVIEW_FILE: Final[str] = "preview.json"
 
 #: How long a staged preview stays applicable.
 #:
 #: Staging and applying are two agent cycles with a PERSON between them, so the window
-#: is minutes rather than seconds. Past it the preview is dropped rather than applied:
-#: "yes" to a page somebody looked at an hour ago is a yes to a page whose fold values
-#: have since moved, and applying it would install what they saw rather than what they
-#: agreed to.
+#: is minutes, not seconds. Past it the preview is dropped, not applied: a "yes" to a page
+#: seen an hour ago answers for fold values that have moved since.
 MAX_PREVIEW_AGE_MS: Final[int] = 30 * 60 * 1000
 
 
@@ -1653,7 +1804,7 @@ def _preview_payload(slug: str) -> dict[str, Any] | None:
     :func:`staged_preview` lists.
     """
     try:
-        raw = json.loads(read_bytes_with_retry(_preview_path(slug)).decode("utf-8"))
+        raw = json.loads(_read_file(slug, _PREVIEW_FILE).decode("utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     if not isinstance(raw, dict) or raw.get("schema") != SCHEMA_VERSION:

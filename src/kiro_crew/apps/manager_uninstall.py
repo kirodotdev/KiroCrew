@@ -495,7 +495,25 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.set_owner_disabled(name, False)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's disable record", exc_info=True)
+    try:
+        protected_app_state.forget_deleted_app_crons(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
+    # The Bots the owner ticked go only once the uninstall committed, so a failed one
+    # keeps them. A record left by a failure here grants nothing to a later install:
+    # it names this install's ``installedAt`` (``bot_grant_store.read_granted_bots``).
+    # Deferred: an MCP server lists its tools without loading the Bot grant store.
+    from kiro_crew.apps.bot_grant_store import remove_granted_bots
+
+    try:
+        remove_granted_bots(name)
+    except (OSError, ValueError):
+        logger.warning("could not remove an uninstalled app's ticked Bots", exc_info=True)
     refresh_app_config_keys()
+    # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
+    refresh_frame_sources()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
     # Withdraw the grant a SECOND time, now that the files are actually gone.
@@ -565,6 +583,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     # The orphan set may have named this app; a successor installed under the
     # same name must not inherit its stale `orphaned` flag.
     invalidate_orphan_cache()
+    # An uninstalled app hides none of its open chats.
+    from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+    request_hiding_refresh()
     return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
 
 

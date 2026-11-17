@@ -369,6 +369,7 @@ async def _await_identity_write(
                 try:
                     writer.result()
                 except Exception:
+                    # Reading the result only marks a failure as retrieved; nothing here acts on it.
                     pass
         finally:
             info._state_drain_active = False

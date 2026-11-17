@@ -92,6 +92,8 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # (the profile card's own read), not here, so the crew editor does not
         # round-trip it.
         "dashboard_card_send",
+        # The Profile tab's "Show in my Sessions list" switch: the same home.
+        "show_sessions_in_list",
         # Shipped on GET /api/members (the profile card's own read), not here:
         # the crew editor echoes this row back, and must not round-trip it.
         "approval_mode",
@@ -99,6 +101,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # read by `session_create`, which the crew editor never shows.
         "worker_model",
         "worker_reasoning_effort",
+        # Same home and same reason: the profile card's Workers at once limit,
+        # read by `session_create`.
+        "max_workers",
         # The .crewmate provenance stamp (rfc-crewmate-share.md §5.4 step 5):
         # written once by the import's create, rendered by nothing yet.
         "imported",
@@ -270,7 +275,7 @@ class TestRosterRowIsAnAllowlistNotASpread:
         unclassified = record_fields - ROSTER_ROW_KEYS - WITHHELD_RECORD_FIELDS
         assert not unclassified, (
             f"KiroCrewAgentConfig grew {sorted(unclassified)}. GET /api/agents is an "
-            "explicit allowlist (#8454), so decide deliberately: add the field to "
+            "explicit allowlist, so decide deliberately: add the field to "
             "_agent_roster_row AND ROSTER_ROW_KEYS if the dashboard needs it, or to "
             "WITHHELD_RECORD_FIELDS if it must not leave the process."
         )

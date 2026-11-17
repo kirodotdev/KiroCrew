@@ -95,6 +95,33 @@ const WINDOWS_TITLEBAR_MENU_IDS = new Set([
 ]);
 
 /**
+ * The dashboard session's request headers with the Referer cut down.
+ *
+ * The dashboard URL can carry its sign-in token, so no request sends it. A frame
+ * the page embeds keeps the referring page's origin, never its path or query:
+ * an embed host such as YouTube refuses to play without one (its Error 153), and
+ * the dashboard CSP `frame-src` already limits frames to the origins it admits
+ * (an app's are the `ui.frameSources` the owner approved). Every other request
+ * sends no Referer. Chromium never sends one a page's policy withholds, so this
+ * only ever narrows.
+ */
+function dashboardRequestHeaders(details) {
+  const headers = { ...details.requestHeaders };
+  const referer = headers.Referer;
+  delete headers.Referer;
+  if (referer && details.resourceType === "subFrame") {
+    let origin = "null";
+    try {
+      origin = new URL(referer).origin;
+    } catch {
+      /* no usable referrer: send none */
+    }
+    if (origin !== "null") headers.Referer = `${origin}/`;
+  }
+  return headers;
+}
+
+/**
  * Own every dashboard window and the security policy of the sessions they use.
  *
  * Electron is injected so node:test can load this module without a live
@@ -627,12 +654,11 @@ function createWindowLifecycle(options) {
     };
     armWindowOpen(view.webContents);
 
-    // Do not leak the dashboard URL/token as a Referer to resources it embeds.
+    // Do not leak the dashboard URL/token as a Referer (dashboardRequestHeaders).
     // This listener remains attached at the same per-window setup point; moving
     // it to a one-time global policy would be a behavior change.
     view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
-      delete details.requestHeaders.Referer;
-      callback({ requestHeaders: details.requestHeaders });
+      callback({ requestHeaders: dashboardRequestHeaders(details) });
     });
 
     // Give renderer-triggered downloads (e.g. the Portability "Download Export
@@ -1539,28 +1565,46 @@ function createWindowLifecycle(options) {
     return appMenu;
   }
 
-  function menuItems(sender, id) {
+  // senderIsLocal is threaded down from the ipc-registrar boundary the same
+  // way it reaches `executeMenu` — computed once via `assertLocalDashboard`
+  // and cached per WebContents, then handed here. `serializeMenuItems`
+  // marks LOCAL_ONLY leaves `enabled: false` for a remote sender so a
+  // connection window paints a greyed row rather than an enabled one that
+  // silently no-ops when clicked. Strict `=== true` matches the fail-closed
+  // rule executeMenuItem uses.
+  function menuItems(sender, id, senderIsLocal) {
     if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
     if (!item || !item.submenu || !win || win.isDestroyed()) return [];
-    return serializeMenuItems(item.submenu);
+    return serializeMenuItems(item, senderIsLocal === true);
   }
 
-  function executeMenu(sender, id, index) {
+  // Returns whether the click DISPATCHED. `app-menu:execute` answers the
+  // renderer with it, and the renderer refetches its rows on a `false` — so a
+  // bare `return` here (reporting `undefined` for a guard refusal) would
+  // silently become "dispatched" at the strict check on the IPC boundary. Every
+  // exit says so explicitly.
+  function executeMenu(sender, id, index, senderIsLocal) {
     if (
       !IS_WINDOWS
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
-    ) return;
+    ) return false;
     const menu = appMenu || Menu.getApplicationMenu();
     const topLevelItem = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
-    if (!win || win.isDestroyed()) return;
+    if (!win || win.isDestroyed()) return false;
     // sender is the focused dashboard WebContents: titlebar menu interaction
     // itself gives it focus, which is what Electron role items expect.
-    executeMenuItem(topLevelItem, index, win, sender);
+    //
+    // `senderIsLocal` is computed once at the IPC boundary in
+    // ipc-registrar.js via `assertLocalDashboard` (origin + local-gateway +
+    // primary-port-owner). Forwarded here with strict `=== true` so any
+    // non-boolean (undefined from a caller that forgot the arg, a truthy
+    // proxy, a stringy value) drops to the LOCAL_ONLY refusal branch.
+    return executeMenuItem(topLevelItem, index, win, sender, senderIsLocal === true);
   }
 
   function setDevMode(enabled) {
@@ -1838,4 +1882,5 @@ module.exports = {
   HEADER_CSS_PX,
   WINDOWS_TITLEBAR_MENU_IDS,
   createWindowLifecycle,
+  dashboardRequestHeaders,
 };

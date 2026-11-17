@@ -21,7 +21,7 @@ the ids their own account is offered.
 Never behind the owner's back
 -----------------------------
 The point runs only when the owner SELECTED it. The chat model picker carries an
-``Auto (Jev)`` entry -- drawn only while the seam is consented and the governance
+``Auto (decision model)`` entry -- drawn only while the seam is consented and the governance
 ceiling permits it -- and choosing it records :data:`~kiro_crew.dashboard.state`'s
 ``jev_route`` flag on the slot. A manual model pick clears the flag, so a concrete
 pin is never overridden by a tier: the pick IS the answer to the question this

@@ -1,10 +1,10 @@
 ---
 title: A PR item stays open until its pull request lands, the work-ledger probe watches it, and a forced floor wake carries live facts
-status: accepted
+status: withdrawn
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: ee52eacb74
+last-audited: 2026-11-15
+audited-at: f1a5a16cae
 doc-pr: null
 implementation-prs: []
 tracking-issues: [36751]
@@ -14,7 +14,14 @@ superseded-by: []
 
 # RFC: Track a PR item until it lands, and give the forced floor wake facts
 
-Status: accepted. The repository owner asked for this on 2026-11-13 in the
+Status: withdrawn. **Withdrawn 2026-11-15 by the repository owner**, who ruled
+the PR-specific land-tracking machinery "over-engineered; too specific to the
+PR type". Its phase A code PR
+[#36914](https://github.com/kirodotdev/KiroCrew/pull/36914) closed unmerged on
+2026-11-14. Nothing in this document is built, and none of it is a decision to
+build; it stays as a record. The text below is unchanged.
+
+Original status: accepted. The repository owner asked for this on 2026-11-13 in the
 conductor chat and merges this document; it takes effect when it merges.
 Nothing is built and it changes no code. The code lands in the phases of §7,
 each in its own PR rebased onto the base that carries this file. Every code

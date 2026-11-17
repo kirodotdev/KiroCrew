@@ -491,9 +491,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # fixed-argv helper, _probe_interpreter, which is where their single
         # spawn now lives: `<target python> -I -X utf8 -c <fixed probe>` with a
         # neutral cwd, so the answer describes the venv instead of the caller.
-        # The doctor's venv deps check (cli_doctor._venv_deps_ok) and the STT
-        # scripts-dir probe (transcribe._python3_bin_dir) route through the
-        # same helper for the same reason: their argv is equally fixed, and an
+        # The doctor's venv deps check (cli_doctor._venv_deps_ok) routes
+        # through the same helper for the same reason: its argv is equally
+        # fixed, and an
         # unisolated `python -c` would let a decoy on the caller's
         # PYTHONPATH/CWD answer for the interpreter under test.
         "dep_sync.py::_probe_interpreter",
@@ -884,13 +884,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # timeout, no shell, no cwd, no agent-influenced arguments.
         "dashboard/handlers_system.py::_scan_mcp_processes",
         "dashboard/handlers_system.py::_get_static_system_info",
-        # The Windows half of _scan_mcp_processes: PowerShell pinned via
-        # trusted_system_bin, list argv with no shell and no cwd. The query's
-        # only inputs are signature strings, which the function itself refuses
-        # unless they are [A-Za-z0-9_.-]+ (no quote, $, backtick or WQL
-        # wildcard), and its one caller passes two hard-coded literals. Reads
-        # the same Win32_Process data as process_command_line.
-        "dashboard/system_windows_probes.py::windows_process_command_lines",
         "dashboard/port_reclaim.py::_listeners_on_port",
         # Bundle-freshness startup probe: fixed `git rev-parse HEAD:website`
         # list-argv (no shell=True) with git PINNED via trusted_git_bin (fixed
@@ -1091,6 +1084,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # cannot route on its own behalf; _SPAWN_NAMES keeps each caller visible
         # here under its own row. It cannot import the sandbox, which imports it.
         "platform_compat_kill.py::run_killing_tree_on_timeout",
+        "platform_compat_kill.py::stdlib_run_killing_tree_on_timeout",
         "platform_compat_trust.py::reveal_in_file_manager",
         "platform_compat_identity.py::process_command_line",
         # Same class as process_command_line: a read-only process-attribute query

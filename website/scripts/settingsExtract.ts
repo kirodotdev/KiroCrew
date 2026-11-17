@@ -123,6 +123,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   // Task Runner's switch, mounted by DisplayPanel's View page.
   'TaskRunnerSetting.tsx': { tab: 'display', params: { sub: 'view' } },
+  // Channels' switch, mounted by DisplayPanel's View page. Drawn only while Channels
+  // is on, so a search offers it only then (`settingEntryOffered`).
+  'ChannelsSetting.tsx': { tab: 'display', params: { sub: 'view' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
   // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
@@ -142,8 +145,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelTailnet.tsx': 'security',
   'SecurityPanelTrust.tsx': 'security',
   'SecurityPanelRedaction.tsx': 'security',
+  'SecurityPanelSafetySwitches.tsx': 'security',
   'SecurityPanelLayers.tsx': 'security',
   'SecurityPanelGovernance.tsx': 'security',
+  'SecurityPanelBodyFields.tsx': 'security',
   // The review cards for settings files edited outside the dashboard, which
   // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
   // the hand-written `security.config-pending` entry stays anchored to its source.
@@ -197,6 +202,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'WeComPanel.tsx': { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   'FeishuPanel.tsx': { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   'DeveloperPanel.tsx': 'developer',
+  // Settings > Advanced: its rows are drawn from the gateway's config schema
+  // (components/allSettings), so only the page's manual entry is indexed.
+  'AdvancedPanel.tsx': 'advanced',
   // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
   // page. Indexed on purpose: a control visible on a Settings pane that
   // search cannot find is the coverage gap settingsCoverage.test.ts exists to
@@ -208,6 +216,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
   // key deep-links to the row.
   'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
+  // The per-harness switches under ACP runtime sharing, mounted inside that
+  // preview's row while it is on. Their labels come from a table, so the
+  // extractor skips them as dynamic; the parent preview row is the search hit.
+  'ChatRuntimeSharingHarnessRows.tsx': DEVELOPER_PREVIEWS,
   // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
   // The Decision models card, which FeaturePreviewsSection mounts. Its own file
@@ -265,6 +277,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // It has no extractable primitive; mapped so its hand-written search entry
   // (`agent.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
   'KiroSignInCard.tsx': 'agent',
+  'OrchestratorMemoryToggle.tsx': 'agent',
   // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
   // `work_ledger.remote_dispatch` switch is a Developer-tab row.
   'RemoteDispatchCard.tsx': DEVELOPER_PREVIEWS,
@@ -548,6 +561,7 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
     { dir: path.join(srcDir, 'pages', 'overview'), file: 'PortabilityTab.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KiroSignInCard.tsx' },
+    { dir: path.join(srcDir, 'pages', 'developer'), file: 'OrchestratorMemoryToggle.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
     // A Connections card's OAuth app part, opened in place on Settings → Connections.
     { dir: path.join(srcDir, 'pages', 'connections'), file: 'OAuthAppPanel.tsx' },

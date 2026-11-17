@@ -264,6 +264,16 @@ describe('anchors and the tool-row test', () => {
     expect(isBrowserToolMessage({ role: 'assistant', content: '🔧 browser', cls: '' })).toBe(false)
   })
 
+  it('finds the browser row in the mcp__server__tool form an ACP backend names it with', () => {
+    // A Claude Code (ACP) row: no stamped tool_name, and the pill reads the
+    // backend's own MCP spelling.
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 mcp__kirocrew-core__browser', cls: '', meta: { tool_call_id: 'toolu_1' } })).toBe(true)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 x', cls: '', meta: { tool_name: 'mcp__kirocrew-core__browser' } })).toBe(true)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 mcp__kirocrew-core__browser_history', cls: '' })).toBe(false)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 mcp__kirocrew-core__open_browser', cls: '' })).toBe(false)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 x', cls: '', meta: { tool_name: 'mcp__kirocrew-core__open_browser' } })).toBe(false)
+  })
+
   it('anchors on the call id, else the timestamp, and reads seconds as ms', () => {
     expect(browserLiveAnchor({ role: 'tool', content: '', cls: '', ts: '1761000000.5', meta: { tool_call_id: 'tc1' } })).toEqual({ key: 'call:tc1', ts: 1761000000500 })
     expect(browserLiveAnchor({ role: 'tool', content: '', cls: '', ts: '2026-10-22T10:00:00Z' })).toEqual({ key: 'ts:2026-10-22T10:00:00Z', ts: Date.parse('2026-10-22T10:00:00Z') })

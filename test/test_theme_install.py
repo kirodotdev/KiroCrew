@@ -555,7 +555,7 @@ class TestCopyInstalledTheme:
         assert (dst / "styles" / "variables.json").is_file()
 
     def test_symlinked_file_rejected(self, tmp_path: Path) -> None:
-        # TOCTOU (Codex HIGH): a file swapped for a symlink after validation must
+        # TOCTOU: a file swapped for a symlink after validation must
         # be REFUSED by the copy loop, never dereferenced+served. The old
         # copytree(symlinks=False) would have copied the target's bytes.
         secret = tmp_path / "secret.txt"

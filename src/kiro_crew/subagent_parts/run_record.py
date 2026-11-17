@@ -199,6 +199,7 @@ class SubagentInfo:
     # THIS subagent's own child process (by cmdline match) instead of to the
     # whole runtime subtree — which, on a session-shared runtime, is dominated
     # by kiro-cli's own background I/O.
+    #
     # ``_inflight_tool`` (the most recently dispatched call still in flight,
     # None when none is) and ``_active_tool_calls`` (every dispatched call by
     # toolCallId until its terminal result, so a fast call returning first does

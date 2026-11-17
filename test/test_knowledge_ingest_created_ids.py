@@ -399,7 +399,7 @@ class TestSnapshotQueryRatchet:
         assert hits == [], (
             f"ingest_text contains '{_SNAPSHOT_QUERY}' literals at lines "
             f"{hits}; it must contain none. Both the created-ids snapshot "
-            "(#4431) and the inline _old_item_ids resolution (#4441) are "
+            " and the inline _old_item_ids resolution are "
             "retired here: the old-group read lives in _resolve_old_item_ids "
             "and runs inside the off-loop duplicate-gate hop."
         )
@@ -412,7 +412,7 @@ class TestSnapshotQueryRatchet:
         assert hits == [], (
             f"ingest_file contains '{_SNAPSHOT_QUERY}' literals at lines "
             f"{hits}; it must contain none. The _old_item_ids resolution "
-            "(#4441) lives in _resolve_old_item_ids and runs inside the "
+            " lives in _resolve_old_item_ids and runs inside the "
             "off-loop duplicate-gate hop -- an inline read here lands on the "
             "asyncio event loop (~20k rows per read on a large source)."
         )

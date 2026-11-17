@@ -176,6 +176,7 @@ def post_compaction_parts(
         model_window=model_window,
         essentials=_essentials,
         query_text=query_text,
+        session_key=session_key,
     )
     if _lessons_ctx:
         if session_key and ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn:
@@ -243,6 +244,46 @@ def post_compaction_parts(
                 + "\n[END REINJECTED]\n\n"
             )
     return parts
+
+
+def conductor_reread_part(
+    *, agent: str | None, mode: str, session_key: str | None, dispatch_mounted: bool | None
+) -> str:
+    """The goal-conductor re-read pointer for a conductor's post-compaction turn, or ``""``.
+
+    A conductor runs on the ``goal-conductor`` skill, and the compaction dropped the
+    body it read; the skills index re-injected above names the skill but not that it
+    was read and lost. Two kinds get the line: a chat on the conductor whose charter
+    names that skill (``kirocrew-conductor`` and its deprecated aliases; the pipeline,
+    security and team-lead conductors run their own skills) and a crewmate's chat
+    that runs the ledger patrol, under the same gate session start appends
+    ``conductor.patrol`` with (``session_start``: a member DM slot that holds the
+    dispatch tools, on a binding with the ledger tools). Workers and plain chats get
+    nothing.
+    """
+    from kiro_crew import crew_mode
+
+    root = crew_mode.DEFAULT_CREW_MODE_AGENT
+    if agent != root and crew_mode.CONDUCTOR_ALIASES.get(agent or "") != root:
+        from kiro_crew import context as ctx  # circular import: the facade imports this owner
+        from kiro_crew.crewmate_harness import crewmate_for_session
+        from kiro_crew.member_mate_tools import binding_has_ledger_tools
+        from kiro_crew.members import DM_SLOT_MODE
+
+        if mode != DM_SLOT_MODE:
+            return ""
+        cfg = ctx.KiroCrewConfig.load()
+        crewmate = crewmate_for_session(cfg, session_key)
+        if not (
+            ctx._member_dispatch_held(dispatch_mounted, cfg, crewmate)
+            and binding_has_ledger_tools(cfg.agents.get(crewmate))
+        ):
+            return ""
+    return (
+        "[REINJECTED AFTER COMPACTION — goal-conductor]\n"
+        "You were compacted: re-read the goal-conductor skill before your next action.\n"
+        "[END REINJECTED]\n\n"
+    )
 
 
 def ledger_reinjection_part(session_key: str | None, turn_text: str) -> str:
@@ -649,15 +690,23 @@ def interactive_guidance(
                         "Do not enable generation, spawn a builder or publish a duplicate "
                         "status artifact.)"
                     )
+                # A conductor's offer to let workers grill a costly choice, and the
+                # ``[GRILL:]`` card line it answers a pick with: only while the
+                # ``worker_grill`` feature preview is on. Off, nothing is added.
+                from kiro_crew.worker_grill_preview import guidance_for
+
+                _grill = guidance_for(agent, current_config)
+                if _grill:
+                    _interactive_guidance.append(_grill)
             _interactive_guidance.append(
                 "\n\n(The ask_question tool shows a dashboard card and BLOCKS until the "
                 "user responds; the answers are its tool result. "
                 "DEFAULT TO SILENCE: use it only when work cannot continue without a "
-                "human-only decision (permission, irreversible/costly action, or an "
-                "uninferable preference). Decide anything you can read, run, search "
+                "human-only decision (one of the ask cases (a)-(e) in CRITICAL "
+                "RULES). Decide anything you can read, run, search "
                 "or infer yourself; never ask to reconfirm an authorized plan or "
                 "merely because a choice exists. Do not end your turn after calling "
-                "unless the result says so. When ending anyway, [OPTIONS:] is cheaper.)"
+                "unless the result says so.)"
             )
             # A follow-up card is distinct from both: it offers concrete NEXT
             # tasks after work is done, optionally handing one to a worktree.

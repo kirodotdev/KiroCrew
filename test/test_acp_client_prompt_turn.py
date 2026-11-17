@@ -874,7 +874,7 @@ class TestDispatchSubagentEvents:
                         "update": {
                             "sessionUpdate": "tool_call_chunk",
                             "toolCallId": "tc-1",
-                            "title": f"leak {SAMPLE_AWS_SECRET} now",
+                            "title": f"leak aws_secret_access_key={SAMPLE_AWS_SECRET} now",
                         },
                     }
                 ),
@@ -887,7 +887,9 @@ class TestDispatchSubagentEvents:
                         "sessionId": "s1",
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "content": {"text": f"secret {SAMPLE_AWS_SECRET} here"},
+                            "content": {
+                                "text": f"secret aws_secret_access_key={SAMPLE_AWS_SECRET} here"
+                            },
                         },
                     }
                 ),

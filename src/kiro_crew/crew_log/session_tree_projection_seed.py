@@ -360,7 +360,7 @@ def _seed_inner(self: SessionTreeProjection, live_sids: "tuple[str, ...]") -> No
         return
     faults = _ScanFaults()
     records, edges, spawned, marks, incomplete, over_cap = self._replay_tail(
-        loaded[0], loaded[1], loaded[2], loaded[3], faults=faults
+        loaded[0], loaded[1], loaded[2], loaded[3], faults=faults, live_sids=live_sids
     )
     with self._lock:
         self._incomplete = incomplete
@@ -402,6 +402,7 @@ def _replay_tail(
     loaded_marks: "dict[str, ScanIdentity] | None" = None,
     *,
     faults: "_ScanFaults | None" = None,
+    live_sids: "tuple[str, ...]" = (),
 ) -> "_ReplayResult":
     """Reconcile a loaded checkpoint against the store, at the cost of the DELTA.
 
@@ -434,6 +435,7 @@ def _replay_tail(
     )
     from kiro_crew.crew_log.store import (
         _checked_crew_log_root,
+        newest_segment,
         oldest_segment,
         read_head,
     )
@@ -468,8 +470,8 @@ def _replay_tail(
         return records, edges, spawned, marks, True, False
 
     held = {_store_name(sid): sid for sid in records}
-    gone = [sid for name, sid in held.items() if name not in names]
-    for sid in gone:
+
+    def _drop(sid: str) -> None:
         records.pop(sid, None)
         # A unit that is gone is not evidence for its slot's decisions, the same
         # rule ``forget`` applies for the same reason.
@@ -478,10 +480,45 @@ def _replay_tail(
         for key in [k for k, spawn in spawned.items() if spawn.sid == sid]:
             spawned.pop(key, None)
         marks.pop(sid, None)
+
+    for name in [n for n in held if n not in names]:
+        _drop(held.pop(name))
     new = [name for name in names if name not in held]
     # The cap bounds this loop like every other loop over the population. Past it
     # the replay has not seen everything, which is what ``over_cap`` reports.
     over_cap = len(names) > TREE_UNIT_CAP
+    if over_cap:
+        logger.warning(
+            "session tree projection: the store holds %d units, past the %d-unit cap; "
+            "the rest are not read and their children can read as top-level sessions",
+            len(names),
+            TREE_UNIT_CAP,
+        )
+    if len(held) + len(new) > TREE_UNIT_CAP:
+        # ONE population across the checkpoint's units and the new ones, in the scanner's
+        # order: live sessions' units first, then the newest logs. The evidence replay
+        # and the install work on this same set, so a live unit the checkpoint did not
+        # hold is not shut out by older units it did.
+        live_names = {_store_name(sid) for sid in live_sids}
+
+        def _rank(name: str) -> tuple[int, int]:
+            if name in live_names:
+                return (0, 0)
+            try:
+                newest = newest_segment(root / name)
+                return (1, -(newest.stat().st_mtime_ns if newest is not None else 0))
+            except OSError:
+                return (1, 0)
+
+        admitted = set(sorted([*held, *new], key=_rank)[:TREE_UNIT_CAP])
+        for name in [n for n in held if n not in admitted]:
+            # Cap exclusion, not deletion: the unit's log still exists, so only its
+            # opening record and watermark go. Its decisions stay, bounded by the edge
+            # cap, so an adoption it recorded keeps placing the slot.
+            sid = held.pop(name)
+            records.pop(sid, None)
+            marks.pop(sid, None)
+        new = sorted((n for n in new if n in admitted), key=_rank)
     for name in new[:TREE_UNIT_CAP]:
         directory = root / name
         segment = oldest_segment(directory)
@@ -505,7 +542,13 @@ def _replay_tail(
             records[record.sid] = record
 
     # Kept for every unit the records now cover, the re-read heads included.
-    spawned = {key: s for key, s in loaded_spawned.items() if s.sid in records}
+    # A creator the cap left unread keeps its spawns while its unit still exists: the
+    # record is what the install evicts, and the spawns outlive it in the checkpoint.
+    spawned = {
+        key: s
+        for key, s in loaded_spawned.items()
+        if s.sid in records or _store_name(s.sid) in names
+    }
     for dropped in {s.sid for s in loaded_spawned.values() if s.sid not in records}:
         # Evidence dropped here is not covered by the mark any more.
         marks.pop(dropped, None)

@@ -35,8 +35,9 @@ slots are app-scoped. The residual risk is inside what an app is granted:
 - A granted path has no per-resource owner filter. An app granted `/api/crons*`
   can list, update, pause or remove every cron job, including other apps' and
   the user's; the same holds for any other granted resource route.
-- `permissions.mcpTools` is declared and shown at install, but nothing enforces
-  it at runtime.
+- `permissions.mcpTools` narrows only the host-managed tools of the app's own
+  agent (`_enforce_declared_mcp_tools` in `apps/bridges_agents.py`, #22965);
+  `permissions.network` is shown at install with no runtime gate.
 - No quota bounds what a granted app may create (slots, crons, subagents,
   storage, request rate).
 
@@ -60,7 +61,7 @@ app's state or degrade the user's Kiro Crew experience.
 | Slots | App can only send/delete/inject into slots it created | Shipped |
 | API surface | App token confined to its own namespace (`/apps/<name>/*`, `/api/apps/<name>/*`) + its manifest `permissions.api` allowlist; everything else denied (CWE-269). Enforced centrally in `token_auth_middleware` at every grant point (main flow + loopback/mixed internal branches) so app tokens can't escalate via mixed-internal paths. Reverse proxy re-checks `token.app == <name>`. | Shipped |
 | WebSocket events | App token on `/api/ws` receives only its own slots' events and the global events listed in `permissions.events` (`dashboard/ws_event_scope.py`) | Shipped |
-| Granted resources | Residual risk: a granted path (for example `/api/crons*`) has no per-resource owner filter, and `permissions.mcpTools`, `cron` and `network` are stored and shown at install with no runtime gate | Open (Phase 2) |
+| Granted resources | Residual risk: a granted path (for example `/api/crons*`) has no per-resource owner filter, `permissions.mcpTools` scopes only the app agent's host-managed tools (#22965), `cron` is checked only at install (#19231), and `network` has no runtime gate | Open (Phase 2) |
 | Audit | `request["app"]` logged in SEL for all API calls | Shipped |
 
 ### Phase 2 — Resource Ownership
@@ -138,8 +139,10 @@ None. The SDK already sends the `app` field in the token. All enforcement is gat
 ### Manifest `permissions` Field
 
 `docs/app-kit/manifest-reference.md` owns the full permissions list. Of these
-keys, `api` and `events` are enforced at runtime; `mcpTools`, `cron` and
-`network` are stored and shown at install with no runtime gate. Mochi's
+keys, `api` and `events` are enforced at runtime; `mcpTools` narrows the app
+agent's host-managed tools (#22965); `cron` is checked at install, where a
+manifest that declares `crons` without it is refused (#19231); `network` is
+stored and shown at install with no runtime gate. Mochi's
 `app.json` declares:
 
 ```json

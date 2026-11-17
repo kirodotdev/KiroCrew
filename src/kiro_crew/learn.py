@@ -681,6 +681,22 @@ class LessonStore:
         return outcome
 
     @named_store_operation
+    def remove_row(self, row: Lesson, occurrence: int = 0) -> bool:
+        """Remove ONE stored row: the *occurrence*-th (0-based) equal to *row*, field for field.
+
+        For a caller holding a listed row rather than a text selector, so deleting it
+        never reaches a same-text row of another scope, tier or clause.
+        """
+        with self._lock:
+            lessons = self._load_for_write()
+            matches = [n for n, le in enumerate(lessons) if le == row]
+            if occurrence >= len(matches):
+                return False
+            n = matches[occurrence]
+            self._write_all(lessons[:n] + lessons[n + 1 :])
+        return True
+
+    @named_store_operation
     def remove(
         self,
         rule_substring: str,
@@ -983,8 +999,8 @@ class LessonStore:
             directive_room,
             omission_kind=context_omissions.LESSON_RULES,
             header=(
-                "[Learned corrections — user-taught rules from past mistakes.\n"
-                "ALWAYS follow these. They override default behavior.]"
+                "[Learned corrections — retained rules from past mistakes.\n"
+                "Each binds under CRITICAL RULES but adds no ask case.]"
             ),
             footer="[End of learned corrections]",
             omission=(

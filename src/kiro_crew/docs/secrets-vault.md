@@ -18,6 +18,21 @@ verb rather than per tool. That covers a file read, a `cat`, and a scripted
 a route the policy anticipated. The protection is enforced by Kiro Crew, not by
 the operating system: another program running as you can still open the files.
 
+## Seeing which code read a secret
+
+Turn on `dashboard.audit_secret_reads` (off by default) to have the gateway write
+a security log row whenever it reads a vault secret, including the reads that
+resolve an MCP server's `secret://` references. The row names the secret,
+the module that read it and the function that asked, and never holds the value.
+A read handed to a worker thread as a bare method has no calling code on that
+thread, so its row names `unknown`. A name longer than 128 characters is
+clipped in the row and marked with the start of its digest.
+Repeat reads of one secret by the same code share one row per 10 minutes, which
+counts them, so the log does not grow with every turn. A process with no live
+config, such as the MCP gateway process, rereads the setting at most every 30
+seconds, so a change reaches it within that time. See
+[Configuration](configuration.md#dashboard).
+
 ## Adding a secret
 
 Use **Settings → Secrets** in the dashboard. The panel lists the names it holds,

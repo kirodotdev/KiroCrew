@@ -669,8 +669,8 @@ class TestSupersededOAuthBanners:
         retiring on the stored name could pop a live `oauth_url`. Nothing is retired
         once redaction fired: a digest of the raw name would leak a credential verifier.
         """
-        name_a = "ghp_" + "A" * 36
-        name_b = "ghp_" + "B" * 36
+        name_a = github_classic(seed=146)
+        name_b = github_classic(seed=147)
         # Precondition: the redaction really does collapse both onto one value,
         # otherwise this test would pass for the wrong reason.
         assert chat_runner._redact_acp_string(name_a) == chat_runner._redact_acp_string(name_b)
@@ -702,7 +702,7 @@ class TestSupersededOAuthBanners:
         banner stays. Documented in the PR body and on the issue: narrow, confined
         to credential-shaped names, and no worse than main.
         """
-        name = "ghp_" + "C" * 36
+        name = github_classic(seed=148)
         slot = _ChatSlot("s1")
         _emit_mcp_oauth_request(MagicMock(), slot, name, "https://mcp.c.example/a?port=1")
         state = MagicMock()

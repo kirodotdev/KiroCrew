@@ -29,6 +29,7 @@ from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME as _SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
+from kiro_crew.context_assembly.output_contract import ASK_CORE, CONDUCTOR_ASK_TAIL
 
 
 def _conductor_prompt(charter: str) -> str:
@@ -37,6 +38,14 @@ def _conductor_prompt(charter: str) -> str:
     charter does not already state the ledger flow -- the pipeline and security
     conductors; ``_conductor_spec`` keeps the goal conductor's charter as is."""
     return charter + agent_mod._CONDUCTOR_WORK_LEDGER_PROTOCOL
+
+
+def with_conductor_ask(charter: str) -> str:
+    """*charter* followed by the shared ask core and conductor tail
+    (``context_assembly.output_contract``), the ask policy the team lead and the
+    goal conductors carry at agent rank. Appended here, at install, because an
+    ``agent_parts`` owner may not import a project module."""
+    return f"{charter.rstrip()}\n\n{ASK_CORE}{CONDUCTOR_ASK_TAIL}"
 
 
 def _conductor_shipped(
@@ -713,7 +722,7 @@ def _conductor_spec(
     config["description"] = description
     # The charter already states the work-ledger flow in detail, so the shared
     # protocol block (``_conductor_prompt``) is not appended here.
-    config["prompt"] = agent_mod._CONDUCTOR_SYSTEM_PROMPT
+    config["prompt"] = with_conductor_ask(agent_mod._CONDUCTOR_SYSTEM_PROMPT)
     # The skills this prompt names: ``goal-conductor`` carries the operating
     # procedure it says to read first, ``dashboard`` is how it changes the page
     # it reports on, and ``WIDGET_POINTER_SKILLS`` are how it draws the

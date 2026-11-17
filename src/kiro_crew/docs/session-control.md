@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, leave it a no
 one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 41 of its tools, written for the agent that is about to use them.
+for every one of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -16,7 +16,7 @@ owner modules. Two halves:
   `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
   `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
-  `session_move_to_column`, `work_dispatch`. These reach another session.
+  `session_move_to_column`, `work_dispatch`, `crew_list`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -504,6 +504,10 @@ same gate as the other session tools: an archived session is not open
 (`target_not_found`), and scheduled-run, incognito, app-scoped, channel-linked
 and mirrored sessions are refused.
 
+### `crew_list`
+
+Takes no arguments. Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), and its agent and model names. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
+
 ### `session_adopt` and `session_release`
 
 Both take only `target`. They change where a session sits in the sidebar and
@@ -712,7 +716,7 @@ running or queued sub-agent by id and state, and says when some could not be
 checked. The tool never stops anything itself. To force the change, call
 `session_stop`, then retry once the target is idle.
 
-Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
+Also refused: `auto` and `Auto (decision model)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
 owner may arm; and a read-only relay archive (`relay_archive_read_only`).
 
@@ -940,6 +944,12 @@ tabs are refused to them (`not_creator`). Archived, scheduled-run, incognito,
 app-scoped, channel-linked and mirrored sessions are refused with the same codes
 the other session tools use. The scheduled-run refusal (`unattended_target`)
 covers the caller too: a cron run's own session is not renamable, even by itself.
+An agent without this server renames its own session with the core `chat_rename`
+tool instead. It follows the same title rules, works in incognito and temporary
+sessions too, renames only on a turn you sent yourself, is not available in a
+conductor mode chat or a Bot's own chat, and never replaces a title someone set
+by hand. It runs inside the chat turn, so its credential redaction follows the
+Settings → Security → Redaction switch, as the rest of the turn does.
 
 A title over 200 characters, an empty title, one made only of invisible
 characters, or one containing control characters, text-direction controls or
@@ -949,7 +959,7 @@ rather than cut down (`invalid_title`). The
 zero-width joiner and non-joiner and the tag characters stay allowed, because
 emoji sequences, flag emoji and scripts such as Persian need them. The stored title
 passes through `_scrub_text`, the scrub the dashboard applies to stored fields.
-It redacts credentials and exfiltration URLs, and a secret split by an
+It redacts credentials, inside URLs too, and a secret split by an
 invisible character (such as a zero-width joiner) is still redacted. A title
 that redaction lengthens past 200 characters is refused (`invalid_title`)
 rather than cut, so a stored title never holds a torn `[REDACTED]` marker.
@@ -1205,7 +1215,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `memory_delegation_denied` | HTTP 403: session_create named a Bot's agent the caller may not bind (a cron, a fenced deputy, a peer member, a member thread on the shared store naming a member with private memory). The member's memory binding cannot be changed in Settings. Re-send with `agent_kind: "template"` to run that name's shared template on your own memory (a `kirocrew-worker` needs no memory of its own), or ask the owner to make the create from their own tab. The tool reply says the same |
 | `agent_kind_requires_agent` | `agent_kind` was given without `agent`. The namespace qualifies an explicit selection, not an inherited caller agent |
 | `invalid_agent_kind` | `agent_kind` is not `template`, the one value it takes |
-| `model_owner_only` | HTTP 403: `auto` and **Auto (Jev)** can only be picked by the owner from the model picker |
+| `model_owner_only` | HTTP 403: `auto` and **Auto (decision model)** can only be picked by the owner from the model picker |
 | `model_rejected` | The model id is missing, malformed, looks like a credential, or is one the target's backend would refuse |
 | `effort_rejected` | session_create or session_set_model: `reasoning_effort` is not one of the five standard levels (low, medium, high, xhigh, max). On session_set_model `""` is refused too; set it from the target's effort dropdown |
 | `target_replaced` | HTTP 409: the target was replaced by another session under the same key while the call ran (or, for title generation, closed); nothing was changed. Try again |
@@ -1245,7 +1255,7 @@ are blocked and refused at dispatch in the same way, because they rearrange the
 person's board.
 `session_broadcast` is blocked for that reason multiplied by the fleet, and
 `session_status` because its rows carry other sessions' titles — the names of the
-user's private work, in front of whoever is in the thread.
+user's private work, in front of whoever is in the thread, and `crew_list` for the same reason: it names the person's machines and their agents.
 
 A session linked to a messaging thread (Slack, Telegram, Discord and the rest)
 is refused when it calls `session_create`: `linked_session_caller`, or
@@ -1272,6 +1282,18 @@ the default of `session.max_per_creator`: the owner raises it, up to 450, in
 Settings > Chat > Sessions > Sessions per creator, and the change applies to
 the next create with no restart. An agent can only propose the change on a
 card that you apply.
+
+A Bot also has its own limit: how many of its own worker sessions may be open
+at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit).
+Its own worker sessions are the ones that run on its worker template. Its owner
+sets it on the Bot's settings page under **Workers at once**; no Bot tool can
+change it. A `session_create`, `session_revive` or `session_fork` that would
+leave one more of those worker sessions open past it, from the Bot's chat or
+from one of its workers, is refused with `bot_worker_cap_reached` (HTTP 409),
+and nothing is created. A session that a worker opens on another template is
+not counted here; the per-creator cap above still bounds it. A worker keeps its
+seat until it is closed, even after its work is done: close one that has
+finished (`session_close`), then try again.
 
 ## Combining two chats
 

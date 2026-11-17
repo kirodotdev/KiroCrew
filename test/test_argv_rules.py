@@ -138,6 +138,7 @@ def test_ssh_batchmode_is_not_refused(monkeypatch):
         f"echo $({_CM} 600 /etc/shadow)",
         f"cat <({_CM} 600 /etc/shadow)",
         f"echo `{_CM} 600 /etc/shadow`",
+        f'echo "`{_CM} 600 /etc/shadow`"',
         f"echo \"$(bash -c '{_CM} 600 /etc/shadow')\"",
         f"sh <<EOF\n{_CM} 600 /etc/shadow\nEOF",
         f"echo '{_CM} 600 /etc/shadow' | bash",

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -79,6 +80,7 @@ _SHARD_COUNTED_PROVIDERS = frozenset({PROVIDER_CLAUDE_CODE})
 #: ``harness`` (written before the field) or one outside the set counts as before.
 _SHARD_COUNTED_HARNESSES = frozenset(
     {
+        ACP_BACKEND_ANTIGRAVITY,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_COPILOT,

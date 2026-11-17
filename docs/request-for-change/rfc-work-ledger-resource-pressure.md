@@ -1,12 +1,12 @@
 ---
 title: Host resource pressure goes on the work ledger and wakes the conductor, which pauses dispatch
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: 9b32941be6
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-14
+audited-at: 16e11a1870
+doc-pr: 36304
+implementation-prs: [36481, 37164]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,11 +14,29 @@ superseded-by: []
 
 # RFC: Host resource pressure goes on the work ledger and wakes the conductor
 
-Status: accepted. The repository owner asked for this on 2026-11-13 in the
-conductor chat and chose the design below (option C of the design study). It
-takes effect when this document merges; the code change follows in its own PR
-and rebases onto the base that carries this document. Nothing is built. Every
-code reference was read at `9b32941be6`.
+Status: implemented, narrowed. **Withdrawn 2026-11-14 by the repository owner:**
+the `host_pressure` record (§3.1, §3.2), the conductor wake (§3.3), the
+conductor pause rule (§3.4, the tight advice in §3.5) and the §12 amendment.
+The owner's words: "我的想法是缩小，其实只要给个简单指示，说明派活要先查资源，然后给AI工具查资源不就好了？为什么改那么多代码"
+and "开精简 PR，只留 critical 拒绝。" So the conductor checks `resource_status`
+before it dispatches (the existing tool), and only one piece of code stays: a
+work-ledger `create` is refused 409 `host_memory_critical` while
+`admission_check()` refuses (critical memory). All of it shipped in
+[#36481](https://github.com/kirodotdev/KiroCrew/pull/36481). The trim
+[#37164](https://github.com/kirodotdev/KiroCrew/pull/37164) (`05aab93d27`) removes the
+withdrawn parts and renames the refusal code from `host_pressure_critical` to
+`host_memory_critical`, since nothing named `host_pressure` is left. This
+withdrawal lands first in its own PR, so that trim rebases onto it.
+
+What stays, as shipped in #36481: `_refuse_if_host_critical` in
+`src/kiro_crew/work_ledger_writes.py`, called from `_create_item` only (a
+remote peer's `create_bound_item` keeps its own `crew_busy` gate). It calls the
+live `admission_check()`, not `cached_admission_check()` as §3.5 says: that
+cache refreshes only when asked, so the first `create` after recovery could be
+refused on a stale verdict.
+
+The text below is the original design, kept as the record. Read it with the
+withdrawal above: only the critical refusal of §3.5 and §5 test 6 are in force.
 
 This document lands on its own because it changes what the goal conductor does
 by default (it pauses dispatch on host pressure) and which `create` the work
@@ -53,7 +71,7 @@ itself based on current use.
 | Episode model | `ResourcePressureNotifier` in `src/kiro_crew/notifications/resource_pressure.py` | Samples every 30 s (`SAMPLE_INTERVAL_SECS`). An episode runs from the first non-ample probe to the first ample one. Alerts critical at once (re-alert every 30 min, `CRITICAL_REALERT_SECS`), tight after 600 s sustained (`SUSTAINED_TIGHT_SECS`), one recovery note. `unknown` is not a signal. | Talks to the notification bus (the person), not to conductors. |
 | Push to conductor | `_fire(svc, conductor_slot_key, item_id)` in `src/kiro_crew/conductor_wake.py`; boards from `_watched_boards` | `fire_now` on the conductor's work-ledger loop, batched, hourly budget per item. | Only a worker report in `WORK_WAKE_STATUSES` triggers it. |
 | Wake gate | `WorkLedgerProbe.observe` in `src/kiro_crew/probes/work_ledger.py` | Per-conductor dedupe by token and a 12/h budget per entry. A synthetic entry (`_ALL_CLOSED_ENTRY`) already carries the "all closed" wake. | No pressure observation. |
-| Conductor rules | goal-conductor skill, "Rounds are not gated, but spend is bounded" | Concurrency cap and no-progress check. | Nothing on pressure. |
+| Conductor rules | goal-conductor skill, "Rounds are not gated, but they are bounded" | Concurrency cap and no-progress check. | Nothing on pressure. |
 
 The signal exists and already has hysteresis. Three wires are missing: signal
 to a record the conductor can read, signal to a conductor wake, and a rule for
@@ -92,6 +110,12 @@ torn or missing file reads as absent and never raises. So a gateway that died
 or restarted mid-episode cannot leave a stale `critical` behind. Absent means
 proceed, the same as `admission_check` on `unknown`.
 
+A `clear` record is written once and never refreshed, so it reads for 900 s
+(three patrol ticks) instead. A conductor that was mid-turn when memory
+recovered, or whose push was refused, still reads `clear` on its next tick and
+gets its resume wake. A `clear` that outlives the episode is harmless: it means
+proceed, the same as absent.
+
 The conductor writes its response on its own ledger with the existing actions
 (`decide` on each held item), so the board shows the cause and the pause.
 
@@ -115,7 +139,7 @@ token `pressure:<episode>:<level>`, charged to a new synthetic entry
 ### 3.4 What the conductor does
 
 A short section in the goal-conductor skill after "Rounds are not gated, but
-spend is bounded", and the same rule in the Bot conductor text (parity with
+they are bounded", and the same rule in the Bot conductor text (parity with
 `test/test_mate_conductor_parity.py`):
 
 - `tight`: start nothing new (`create`, `bind`, `session_create`); let
@@ -238,13 +262,17 @@ Exit criteria:
   `work_ledger_read` and wakes each watched conductor once.
 - At critical, `create` is refused `host_pressure_critical` and writes nothing.
 - On recovery each conductor gets one wake, and the record reads `clear`, then
-  absent after 90 s with no refresh.
+  absent after 900 s.
 
 ## 11. Open questions
 
 None open.
 
 ## 12. Amendment (2026-11-13): a level change releases a person-wait hold once
+
+**Withdrawn 2026-11-14 by the repository owner**, with the record and the
+wake it relied on (see the status above). Its code PR
+[#36657](https://github.com/kirodotdev/KiroCrew/pull/36657) closed unmerged.
 
 This section reverses the pin in §5 item 7 and the "held boards stay held"
 limit in §7. It builds on this document (on main) and on its code PR

@@ -209,10 +209,13 @@ async def bind_work_item(
         if dirty is not None:
             return dirty
         try:
+            settings = await asyncio.to_thread(remote_dispatch_headroom.remote_dispatch_settings)
             # Drained, not shielded: a cancellation waits for the write to finish,
-            # so the create's unwind sees the binding it must undo.
-            await _drain_before_cancelling(
-                asyncio.to_thread(mailbox.open_mailbox, parsed, slot_key)
+            # so the create's unwind sees the binding it must undo. The headroom is
+            # measured again under the admission lock with the write, so a create
+            # bound meanwhile is counted (RFC §2b).
+            headroom, short = await _drain_before_cancelling(
+                asyncio.to_thread(remote_dispatch_headroom.bind_if_room, settings, parsed, slot_key)
             )
         except work_ledger.WorkLedgerError as exc:
             _audit(
@@ -228,6 +231,15 @@ async def bind_work_item(
                 "remote work item %s: mailbox write failed", parsed.item_id, exc_info=True
             )
             return _refuse_503("ledger_write_failed", "ledger write failed; try again")
+        if short:
+            _audit(
+                _caller(request),
+                "chat_slot_create.work_item",
+                "denied",
+                resources=parsed.item_id,
+                error="crew_busy",
+            )
+            return remote_dispatch_headroom.crew_busy_response(short, headroom)
     _audit(_caller(request), "chat_slot_create.work_item", "ok", resources=parsed.item_id)
     return None
 

@@ -675,10 +675,14 @@ describe('MdNotebookPage', () => {
 
   it('changes the sort order, remembers it, and closes the menu', async () => {
     await renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: 'Sort and view' }))
+    const sortButton = await screen.findByRole('button', { name: 'Sort and view' })
+    expect(sortButton).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(sortButton)
+    expect(sortButton).toHaveAttribute('aria-expanded', 'true')
     await userEvent.click(screen.getByRole('button', { name: 'Modified — new to old' }))
     expect(localStorage.getItem('mdnb-sort')).toBe('"modified-desc"')
     expect(screen.queryByRole('button', { name: 'Flat list' })).toBeNull()
+    expect(sortButton).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('falls back to the default sort when the stored one no longer exists', async () => {

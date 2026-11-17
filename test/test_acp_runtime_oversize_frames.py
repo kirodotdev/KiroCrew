@@ -16,6 +16,7 @@ from acp_runtime_helpers import _feed, _make_runtime, _next, _register, _start_r
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -115,7 +116,7 @@ def test_the_oversize_marker_from_the_wire_is_still_redacted():
     from kiro_crew.acp.structured_error_data import OVERSIZE_REPLY_DATA
     from kiro_crew.acp.transport_errors import _format_acp_error_worded
 
-    secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    secret = github_classic(seed=136)
     error = {"code": -32603, "message": f"leak {secret}", "data": OVERSIZE_REPLY_DATA}
     shown, worded = _format_acp_error_worded(error, [])
     assert secret not in shown

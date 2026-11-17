@@ -47,6 +47,7 @@ from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
 )
+from kiro_crew.dashboard.handlers_cloud_paused import mark_cloud_stopped
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.defaults import RecipientMoved
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
@@ -1575,7 +1576,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # ``KeyError`` for a provider id with no launch engine. The row exists and
         # the request is well formed, so this is a 400, not an unaudited 500 that
         # would also leave the running crew undeletable from the panel. Same arm
-        # ``api_launch_task`` carries for the same resolution.
+        # ``api_cloud_launch_task`` carries for the same resolution.
         _audit(op, "denied", request_id=tag, error=f"no engine for lane {lane!r}")
         return web.json_response(
             {"error": f"lane {lane!r} has no teardown engine", "code": "unknown_provisioner"},
@@ -1592,6 +1593,13 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
     except SandboxUnavailableError as exc:
         return _sandbox_unavailable_response(op, exc, "The AWS call", request_id=tag)
+    if op in ("stop", "start"):
+        unsaved = await mark_cloud_stopped(
+            state, str(result.get("instance_id") or ""), tag, op == "stop"
+        )
+        if unsaved is not None:
+            _audit(op, "failure", request_id=tag, error="cloud state not saved")
+            return unsaved
     _audit(op, "success", request_id=tag)
     return web.json_response(result)
 

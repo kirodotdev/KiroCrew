@@ -1,20 +1,18 @@
-import { it } from 'vitest'
+import { it, expect } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import fixture from './fixtures/credInUrl.json'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
-// A row saved by a build that stored each streamed delta's own redaction (the
-// deltas of TestBlockedLinkCardRecords._key_split_presigned_deltas in
-// test/test_chat_runner_coverage.py; the save now redacts the whole reply, but
-// rows like this stay in history): S3 presigned URLs split
-// at &X-Amz-Date (placeholders with no record of their own) plus same-host
-// URLs whose credential was redacted per delta (records with no placeholder in
-// the text). The counts can match; the card lists every record under its own
-// address and presents none as the clicked link.
-it('a key-split link beside presigned starts lists every address and marks none', () => {
-  const { getAllByTestId, getByTestId } = render(
+// Four links on one S3 host: two the decision passed render live, and two
+// carrying a credential it blocked draw chips. Whichever chip is clicked, the
+// card lists every record under its own address and presents none as the
+// clicked link.
+it('two credential links beside two live links on one host: the card lists every record and marks none', () => {
+  const { getAllByTestId, getByTestId, container } = render(
     <MarkdownRenderer content={fixture.content} blockedLinks={fixture.blocked_links} slotKey="s1" />)
-  fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+  expect(getAllByTestId('blocked-link-inspect')).toHaveLength(2)
+  expect(container.querySelectorAll('a[href*="X-Amz-Algorithm"]')).toHaveLength(2)
+  fireEvent.click(getAllByTestId('blocked-link-inspect')[1])
   expectCardListsHostRecords(getByTestId('blocked-link-card'), fixture.blocked_links, fixture.blocked_links[0].domain)
 })

@@ -20,11 +20,11 @@ from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.portability_archive import (
     _MAX_IMPORT_MEMBERS,
-    _MAX_IMPORT_UNCOMPRESSED,
     _MAX_SETTINGS_DOCUMENT_BYTES,
     MEMORY_EXPORT_MANIFEST_VERSION,
     _is_link_entry,
     _unsafe_member_name,
+    import_size_problem,
     manifest_is_memory_only,
 )
 from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION
@@ -86,7 +86,8 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                 if _unsafe_member_name(name):
                     return False, f"Rejected path traversal: {name}", {}
 
-            # Zip-bomb guard: bound entry count and total uncompressed size.
+            # Zip-bomb guard: bound entry count, each member's size, and the total
+            # against the ceiling, the compression ratio and the free disk space.
             infos = zf.infolist()
             if len(infos) > _MAX_IMPORT_MEMBERS:
                 return (
@@ -94,16 +95,9 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                     f"Rejected: archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})",
                     {},
                 )
-            total_uncompressed = sum(i.file_size for i in infos)
-            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
-                return (
-                    False,
-                    (
-                        f"Rejected: uncompressed size {total_uncompressed} exceeds cap "
-                        f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
-                    ),
-                    {},
-                )
+            size_problem = import_size_problem(infos, os.path.getsize(zip_path))
+            if size_problem is not None:
+                return False, size_problem, {}
 
             # Link members can redirect a later write outside the extraction root
             # even when every name passes the traversal check above.

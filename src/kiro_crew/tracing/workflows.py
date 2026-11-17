@@ -127,13 +127,17 @@ def run_root(run_id: str, name: str, session_key: str) -> Iterator[surfaces.Surf
 
     Set the yielded surface's ``status`` to say how the run ended. *session_key*
     is the launching session, whose ``session.id`` every span of the run wears.
+    The anchor links to what launched the run (:func:`pin_launcher`).
     """
+    with _lock:
+        launcher = _launchers.get(run_id)
     with surfaces.root(
         KIND,
         run_name=label(name),
         run_key=(run_id,),
         root_session_key=session_key,
         attrs=_common(run_id),
+        links=(runs.link(*launcher),) if launcher is not None else (),
     ) as surface:
         if surface.run is not None:
             _put(_runs, run_id, _Run(run_id, surface.run))
@@ -281,12 +285,21 @@ def release_agent(call: _Call | None) -> None:
 
 
 def pin_launcher(run_id: str, session_key: str) -> None:
-    """Remember the turn launching *run_id*: the one open now for *session_key*."""
+    """Remember what launched *run_id*: the ``workflow_run`` tool call open now for
+    *session_key*, which also gets ``kirocrew.launched_workflow_run_id``; else that turn.
+    The run's anchor and its completion turn link to it."""
     if not run_id or provider.peek() is None:
         return
     turn = turns.open_turn_of_session(session_key)
-    if turn is not None:
-        _put(_launchers, run_id, (turn.trace_id, turn.span_id))
+    if turn is None:
+        return
+    from kiro_crew.tracing import correlation
+
+    tool = turns.role_span(turn, turns.ROLE_WORKFLOW)
+    if tool is not None:
+        tool.set_attributes(correlation.clean({"kirocrew.launched_workflow_run_id": run_id}))
+    context = (tool or turn.turn_span).get_span_context()
+    _put(_launchers, run_id, (f"{context.trace_id:032x}", f"{context.span_id:016x}"))
 
 
 class _Cause:

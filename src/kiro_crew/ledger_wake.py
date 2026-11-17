@@ -78,8 +78,8 @@ _MAX_TRACKED_ITEMS = 4 * _MAX_ITEMS_PER_CONDUCTOR
 #: Tokens remembered per item. They are the item's SEEN set: :func:`already_woke`
 #: answers from them, and the probe never re-reports a token found there. Derived, not
 #: guessed: every token the probe can still re-read must fit, and that is one per
-#: report in its eight-event tail plus the newest silence (``note_wake``'s
-#: *replaces* drops the older ones). The hourly budget dominates both that and
+#: report in its eight-event tail plus the newest silence and the last delivered
+#: wait's cause (``note_wake``'s *replaces* and *cause* drop the older ones). The hourly budget dominates both that and
 #: everything one window can charge. A smaller bound evicts a token the tail still
 #: holds, and the probe then wakes its conductor again for a report it already
 #: delivered.
@@ -408,6 +408,76 @@ def repeats_status(
     return (previous_status or "").strip() == (status or "").strip()
 
 
+#: The waits whose repeat stays no news across the conductor's own writes: a worker
+#: answered with a ``decide`` that says the same ``blocked`` again has nothing new to
+#: say. ``done`` keeps :func:`repeats_status`'s back-to-back rule.
+_WAIT_STATUSES = frozenset({"blocked", "question"})
+
+#: Seen-set prefix of the CAUSE (status and reason) of the last delivered wait.
+CAUSE_KEY = "cause:"
+
+
+def cause_token(status: str | None, reason: str | None) -> str:
+    """The seen-set token naming a delivered wait's cause: its status and reason."""
+    return f"{CAUSE_KEY}{(status or '').strip()}:{(reason or '').strip()}"
+
+
+def previous_report(events: list[Any], index: int) -> Any:
+    """The newest WORKER report before ``events[index]``, or ``None``.
+
+    The conductor's own writes (``decision``, ``verdict``, ``ask``) are skipped: they
+    are things the conductor already knows, so a worker saying the same wait on
+    either side of one has still said nothing new.
+    """
+    for prior in reversed(events[:index]):
+        if (getattr(prior, "kind", "") or "").strip() in WORKER_EVENT_KINDS:
+            return prior
+    return None
+
+
+def repeats_wait(
+    previous_status: str | None, previous_text: str | None, status: str | None, text: str | None
+) -> bool:
+    """Whether a ``blocked`` / ``question`` report repeats the worker report before it.
+
+    The same status, and for a ``question`` the same summary too: a re-worded
+    question is a new ask, while a ``blocked`` re-worded is the same wait. The
+    REASON is not on an event, so the caller checks it against the cause it last
+    delivered (:func:`cause_token`) before it treats the newest report as a repeat.
+    """
+    current = (status or "").strip()
+    if current not in _WAIT_STATUSES or (previous_status or "").strip() != current:
+        return False
+    return current == "blocked" or (previous_text or "") == (text or "")
+
+
+def stall_episode(item: Any, events: list[Any], *, closed: bool, handed_back: str | None) -> str:
+    """What one stall wake is ABOUT, so the same silence wakes the conductor once.
+
+    The item's status, the newest worker report whose status differs from it (the
+    status run's anchor), a ``decide`` the worker has not answered (*handed_back*),
+    a ``wake_at`` the worker declared, and whether its session is gone. A
+    ``progress`` report that keeps the status moves none of these, so a worker that
+    says "still waiting" and stops again is not a second stall; a status change, a
+    new unanswered decide, a new ``wake_at`` or the session ending is.
+
+    The anchor is read from the event tail: an anchor rolled out of it reads as
+    none, which costs one repeated stall rather than a lost one. The stale flag on
+    the board and the patrol's floor turn still show an item that stays quiet.
+    """
+    status = item.status or "none"
+    anchor = ""
+    for event in reversed(events):
+        if (event.kind or "").strip() in WORKER_EVENT_KINDS and (event.status or "") != (
+            item.status or ""
+        ):
+            anchor = event.id
+            break
+    return ":".join(
+        (status, anchor, handed_back or "", item.wake_at or "", "closed" if closed else "open")
+    )
+
+
 def _rate_path(conductor_key: str):
     """Where this conductor's wake budget lives: under the WATCH state root.
 
@@ -537,12 +607,15 @@ def note_wake(
     token: str = "",
     replaces: str = "",
     watcher: str = "",
+    cause: str = "",
     now: float | None = None,
 ) -> bool:
     """Spend one wake from *item_id*'s budget; whether the write landed.
 
     The budget is shared by every watch on the ledger, because the item it would
-    wake is the same item. *token* joins *watcher*'s seen set only.
+    wake is the same item. *token* joins *watcher*'s seen set only. *cause*
+    (:func:`cause_token`) joins it beside *token* and replaces the older cause,
+    because only the last delivered wait's cause is compared against.
 
     *replaces* is a token prefix whose older tokens can never be read again once
     *token* exists, so they are dropped from the seen set rather than kept. The
@@ -572,6 +645,10 @@ def note_wake(
         # Newest first, bounded by what the probe can still re-read; see
         # ``_MAX_REMEMBERED_TOKENS``.
         kept = [t for t in remembered if t != token and not (replaces and t.startswith(replaces))]
+        head = [token]
+        if cause:
+            kept = [t for t in kept if not t.startswith(CAUSE_KEY)]
+            head.append(cause)
         stored = entry.get("seen")
         seen = {
             str(key): value
@@ -579,7 +656,7 @@ def note_wake(
             if key != watcher and isinstance(value, list)
         }
         # Re-inserted last, so dict order is write order and the oldest set goes first.
-        seen[watcher] = [token] + kept[: _MAX_REMEMBERED_TOKENS - 1]
+        seen[watcher] = head + kept[: _MAX_REMEMBERED_TOKENS - len(head)]
         entry["seen"] = dict(list(seen.items())[-_MAX_WATCHERS_PER_ITEM:])
     current[item_id] = entry
     if len(current) > _MAX_TRACKED_ITEMS:

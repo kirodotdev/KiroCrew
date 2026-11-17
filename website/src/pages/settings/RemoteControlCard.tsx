@@ -96,13 +96,12 @@ export function RemoteControlCard() {
           )}
           {!shown && (
             <p className="m-0 text-[13px]" role="status">
-              {i18nT('pages.settings.remoteControlCard.off_saved')}{' '}
               {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}
               {data.locked ? (
-                i18nT('pages.settings.remoteControlCard.locked')
+                i18nT('pages.settings.remoteControlCard.off_saved_locked')
               ) : (
                 <Trans
-                  i18nKey="pages.settings.remoteControlCard.turn_on_hint"
+                  i18nKey="pages.settings.remoteControlCard.off_saved_turn_on_hint"
                   components={{ command: <TurnOnCommand /> }}
                 />
               )}

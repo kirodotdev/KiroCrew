@@ -133,9 +133,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A goal check-in skips its run rather than land on a slot a send
                 # has already reserved; it asks again after reading the ledger.
                 ("goal_reminder.py", "_idle_thread"),
-                # A worker report or the upgrade notice waits for the crewmate's
-                # thread to be free, reservation included.
+                # A worker report, the upgrade notice or an app's wake waits for
+                # the crewmate's thread to be free, reservation included.
                 ("mate_thread_wakes.py", "_idle"),
+                # The app's Bot list reports a reserved thread as busy, like the
+                # owner's roster does.
+                ("handlers/members_app.py", "app_bot_list"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
                 ("chat_turn/session_reset.py", "_arm_pending_reset_retry"),
@@ -166,7 +169,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # registered yet.
                 ("chat_api/session_relaunch.py", "api_chat_slot_project"),
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
-                ("chat_api/slot_effort.py", "api_chat_slot_ultracode"),
+                # The ultracode and Fast mode routes' shared writer.
+                ("chat_api/slot_effort.py", "_write_session_switch"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),

@@ -80,7 +80,7 @@ class TestSkillsShProvider:
     @pytest.mark.asyncio
     async def test_search_handles_malformed_payload(self):
         # A scalar JSON body (string/number) is not a list and has no .get()
-        # (AttributeError pre-fix); {"skills": null} yields items=None ->
+        # (not an AttributeError); {"skills": null} yields items=None ->
         # items[:limit] TypeError. Both must degrade to [] rather than crash.
         for payload in ("maintenance", 42, {"skills": None}, {"skills": "x"}, {"nope": 1}):
             with patch(
@@ -446,7 +446,7 @@ class TestSkillsShBundleMalformedInput:
     @pytest.mark.asyncio
     async def test_non_string_path_or_contents_are_dropped(self):
         # A JSON number in path (TypeError at `".." in path`) or in contents
-        # (survives pre-fix, then 500s the install handler at c.encode()).
+        # (which would otherwise 500 the install handler at c.encode()).
         payload = {
             "files": [
                 {"path": 5, "contents": "x"},  # non-str path

@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, MessagesSquare, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
+import { Code2, EyeOff, GitBranch, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -34,6 +34,7 @@ import { i18nT } from '../../i18n/t'
 import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../../utils/errorReport'
 import { safeHref } from '../../utils/safeHref'
 import { sourceLabel, type RegistryApp } from './types'
+import { desktopCapabilityLine, knownDesktopCapabilities } from './desktopCapabilities'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
 export const APP_EXECUTION_DENIED = 'app_execution_denied'
@@ -69,10 +70,21 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   workerAutoApprove?: boolean
   /** The app declares `permissions.chatSlots`: it runs chat sessions of its own. */
   chatSlots?: boolean
+  /** The app declares `permissions.hiddenSessions`: its own chats stay out of the session lists. */
+  hiddenSessions?: boolean
   /** The `permissions.reachableByUserSessions` verbs: what your chats may do to the sessions it runs. */
   reachableByUserSessions?: string[]
   /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
   desktop?: DesktopRequest
+  /** The `permissions.desktopCapabilities`: what its desktop windows may ask the desktop app for. */
+  desktopCapabilities?: string[]
+  /** The app declares `permissions.webhookSource`: it takes inbound webhooks under its own name. */
+  webhookSource?: boolean
+  /**
+   * The manifest's `permissions.api` entries. The dialog lists the ones outside
+   * the app's own namespace (`hostApiPaths`): the Kiro Crew endpoints it calls.
+   */
+  api?: string[]
   /**
    * True when the manifest widens `sessionApproval` to the owner's member
    * threads (`permissions.memberThreads`). Shown only inside the session
@@ -467,6 +479,36 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
 export { safeHref }
 
 /**
+ * The `permissions.api` entries that reach past the app's own namespace: the Kiro
+ * Crew endpoints the app calls. `/apps/<name>/...` (its own backend) and
+ * `/api/apps/<name>/...` (its own routes) are left out, because the gateway's
+ * app-token check admits them without any declaration (`_app_owns_path`), so
+ * listing them would name nothing the user is asked to allow. Blank and
+ * non-string entries grant nothing and are dropped; a repeat is shown once.
+ */
+export function hostApiPaths(name: string, api: unknown): string[] {
+  if (!Array.isArray(api)) return []
+  const own = [`/apps/${name}`, `/api/apps/${name}`]
+  const owned = (entry: string) => own.some(base => entry === base || entry.startsWith(base + '/'))
+  const entries = api
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map(entry => entry.trim())
+    .filter(entry => entry && !owned(entry))
+  return [...new Set(entries)]
+}
+
+/**
+ * Whether a listed host path names the chat endpoints (`/api/chat` or a path below
+ * it, plain or `=` exact), so the box can say in plain words what that reach is.
+ */
+export function callsChat(paths: string[]): boolean {
+  return paths.some(entry => {
+    const path = entry.startsWith('=') ? entry.slice(1) : entry
+    return path === '/api/chat' || path.startsWith('/api/chat/')
+  })
+}
+
+/**
  * The three capabilities a trust grant confers, each paired with its icon.
  *
  * The label is a RESOLVED STRING, not a key: `check-i18n-keys.mjs` can only
@@ -628,8 +670,10 @@ export default function TrustAppModal({
 }) {
   const name = app ? (app.displayName || app.name) : ''
   // Only the verbs the gateway knows; anything else in a manifest grants nothing.
+  const hostApi = app ? hostApiPaths(app.name, app.api) : []
   const reachVerbs = (Array.isArray(app?.reachableByUserSessions) ? app.reachableByUserSessions : [])
     .filter(verb => verb === 'read' || verb === 'send')
+  const desktopCaps = knownDesktopCapabilities(app?.desktopCapabilities)
   // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
   const localInstall = !app?._registry && app?.origin === 'local'
   const state = terminalState({ failed, granted, detail, detailCode })
@@ -801,6 +845,17 @@ export default function TrustAppModal({
               </p>
             </div>
           )}
+          {app.hiddenSessions && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-hidden-sessions">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <EyeOff size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.hidden_sessions_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.hidden_sessions_desc')}
+              </p>
+            </div>
+          )}
           {/* The other direction from session approval: the owner's chats reaching the
               app's sessions, not the app reaching the owner's chats. */}
           {reachVerbs.length > 0 && (
@@ -821,6 +876,54 @@ export default function TrustAppModal({
           {/* Shown with the grants because the windows run the app's own code on the
               desktop, over every other program, while the app is on. */}
           <TrustAppDesktopBox request={app.desktop} />
+          {desktopCaps.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-desktop-capabilities">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Monitor size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.desktop_capabilities_heading')}</span>
+              </div>
+              {desktopCaps.map(cap => (
+                <p key={cap} className="text-text leading-relaxed">{desktopCapabilityLine(cap)}</p>
+              ))}
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.desktop_capabilities_note')}</p>
+            </div>
+          )}
+          {/* The Kiro Crew endpoints the manifest declares beyond the app's own
+              namespace, listed as declared: the reach a page or backend of this
+              app has into the host's API. */}
+          {hostApi.length > 0 && (
+            <div
+              data-testid="trust-app-host-api"
+              className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3"
+            >
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Plug size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.host_api_heading')}</span>
+              </div>
+              {callsChat(hostApi) && (
+                <p className="text-text leading-relaxed">{i18nT('components.appstore.trustAppModal.host_api_chat')}</p>
+              )}
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.host_api_paths')}</p>
+              <ul className="flex flex-wrap gap-1">
+                {hostApi.map(path => (
+                  <li key={path}>
+                    <code className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text break-all">{path}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {app.webhookSource && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Webhook size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.webhook_source_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.webhook_source_desc', { source: app.name })}
+              </p>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">

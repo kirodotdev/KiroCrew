@@ -255,8 +255,12 @@ def _tool_call_cache_overflow_for_wire(self: AcpSessionHandle) -> set[str] | Non
     return None
 
 
-def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent]:
-    """Process a session/update notification and return events."""
+def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent]:
+    """Process a session/update notification and return events.
+
+    Read through ``session_handle_harness_surfaces._handle_update``, which adds the
+    harness surfaces of this session's own frames.
+    """
     params = msg.params or {}
     update = params.get("update") or {}
     if not isinstance(update, dict):
@@ -459,6 +463,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                     identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                     cache_scope=self._session_id,
                     cache_overflow=self._tool_call_cache_overflow_for_wire(),
+                    harness_backend=getattr(self._runtime, "acp_backend", "") or "",
                 )
                 self._note_child_calls(update, "kas-child")
                 self._release_settled_tool_call(update, self._session_id)

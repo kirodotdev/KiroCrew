@@ -600,7 +600,7 @@ class TestTheGrantIsATransaction:
             if not any(_attribute_calls(stmt, "_reset_state") for stmt in node.finalbody):
                 continue
             for stmt in node.body:
-                for call in _attribute_calls(stmt, "_discard_claude_settings_seed"):
+                for call in _attribute_calls(stmt, "_discard_settings_seed"):
                     paired.add(id(call))
 
         unpaired: list[str] = []
@@ -611,12 +611,12 @@ class TestTheGrantIsATransaction:
                 continue  # nothing to pair with in this function
             unpaired += [
                 f"{fn.name}:{call.lineno}"
-                for call in _attribute_calls(fn, "_discard_claude_settings_seed")
+                for call in _attribute_calls(fn, "_discard_settings_seed")
                 if id(call) not in paired
             ]
 
         assert unpaired == [], (
-            "await _discard_claude_settings_seed() must sit in the `try` of a "
+            "await _discard_settings_seed() must sit in the `try` of a "
             "try/finally whose `finally` calls _reset_state(), or a cancelled "
             f"teardown skips the reset entirely: {unpaired}"
         )
@@ -631,7 +631,7 @@ class TestTheGrantIsATransaction:
         path.write_text("crew-bytes", encoding="utf-8")
         expectation = (len(b"crew-bytes"), sp.digest("crew-bytes"))
 
-        claimed = acp_client.AcpClient._claim_pathname_if_ours(path, expectation)
+        claimed = acp_client.ClaudeAcpClient._claim_pathname_if_ours(path, expectation)
         assert claimed is not None
         aside, moved_ident = claimed
         assert aside.read_text(encoding="utf-8") == "crew-bytes"
@@ -641,7 +641,7 @@ class TestTheGrantIsATransaction:
 
         # A file that is NOT Crew's is left exactly in place, not moved or removed.
         path.write_text("USER-OWNED", encoding="utf-8")
-        assert acp_client.AcpClient._claim_pathname_if_ours(path, expectation) is None
+        assert acp_client.ClaudeAcpClient._claim_pathname_if_ours(path, expectation) is None
         assert path.read_text(encoding="utf-8") == "USER-OWNED"
 
     def test_a_replacement_that_races_the_teardown_delete_survives(self, tmp_path, monkeypatch):

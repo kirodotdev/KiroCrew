@@ -11,8 +11,6 @@ The binding resolver, slug and preview rules are in
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import string
 from pathlib import Path
@@ -45,7 +43,7 @@ from kiro_crew.artifact_store import dashboard_package as dp
 from kiro_crew.dashboard.handlers import artifacts as artifacts_handler
 from kiro_crew.dashboard.handlers import member_dashboard as md
 from kiro_crew.dashboard.handlers import member_dashboard_fields as mdf
-from kiro_crew.platform.context import redact_via_context
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.mark.asyncio
@@ -68,17 +66,17 @@ async def test_the_route_serves_a_script_as_written_and_still_masks_visible_text
 ) -> None:
     """The scrub that runs before the page is framed must not rewrite the page's code.
 
-    A long palette string in a script looks like a credential; masking it breaks the page
-    silently. A key-shaped run in the VISIBLE text is still masked in the same response.
+    A long palette string in a script is no credential; masking it would break the page
+    silently. A token in the VISIBLE text is still masked in the same response.
     """
     palette = string.ascii_lowercase + string.ascii_uppercase + string.digits + "#$%&*+-=?@^_~:;<>!"
-    key = base64.b64encode(hashlib.sha256(b"kc-bare-0").digest()).decode()[:40]
+    # A token by its published format: a bare 40-character run is no credential.
+    key = github_classic(seed=144)
     page = (
         '<p data-dashboard-field="goal"></p>'
         f"<script>var ART_CHARS = '{palette}'; window.kirocrew.subscribe('goal', (v) => v);</script>"
         f"<p>{key}</p>"
     )
-    assert redact_via_context(page) != page, "the premise: the whole-page pass rewrites it"
     wired.store.content = dp.dump_package(_package(html=page))
     status, body = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
     assert status == 200

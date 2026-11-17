@@ -239,8 +239,38 @@ host must also pass the security policy's `capabilities.telemetry` `otlp_hosts`
 list (`otlp_governance.governed_destinations` before the reader is built and `otlp_governance.gate_exporter` before each export; see [governance.md](governance.md)), and a
 policy that pins `capabilities.telemetry` off drops every destination. The public
 `DefaultTelemetryProvider` turns a non-empty `otlp_endpoint` into exactly one
-destination and returns none when it is empty, so a standalone build behaves as it
-did when this module constructed that exporter itself. Readers are appended AFTER
+destination, so a standalone build behaves as it
+did when this module constructed that exporter itself. It then adds each
+`otlp_endpoints` entry and the built-in `kiro-telemetry` destination
+(`metrics/kiro_export.py`): the `PRODUCT_METRICS` preset to a fixed Kiro telemetry
+endpoint, with `ClientType=kiro-crew` and `machineId` (the header's hash) on every point, a reduced resource (no
+install id, pid, `os.type` or `host.*`), delta temporality, no process-wide OTel credentials,
+and a session that adds only `x-kiro-machineid` (a hash of the install id). It is
+the one destination that exports under the recording default
+(`kiro_export.exported`, applied in `_build_recorder`): an operator entry still
+needs `outbound_consented`, while this one needs recording on plus
+`kiro_export.notice_shown` -- `dashboard.kiro_telemetry_ack_version` at least
+`kiro_export.NOTICE_VERSION` (3), written only when the chapter's or
+`kirocrew telemetry enable`'s text named this destination, or the separate
+`kiro_telemetry_notice_shown` stamp that `metrics/notice.py` writes only when a
+start with no dashboard printed the Kiro line to a terminal. `privacy_ack_version`
+alone does not count, nor does a notice of version 2 or lower, which said metrics
+stay on this machine. Whether the notice was shown is part of
+`_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
+consent recheck. It is not returned in an LTS build or on a CI runner; a
+non-default `KIROCREW_HOME` gets it like any other home. Because the notice names it, the enable refusals (the
+dashboard's `telemetry.enabled` PATCH and `kirocrew telemetry enable`) ask
+`kiro_export.egress_needs_written_opt_in`, which ignores it, and the collection
+status reports that as `enable_refused`. `kiro_export.off_offer_due` names the
+one off case that is asked again: a written `telemetry.enabled: false` (what
+builds before the recording default wrote into every new config), the heartbeat
+on, no env pin, no policy, no `config.local.json` entry, no collector of the
+user's own, and notice version 3 not yet acknowledged. The theme boot payload then
+reports the stored notice version, the collection status reports `off_offer`, and
+the chapter's off form offers Turn on performance metrics (writes `telemetry.enabled: true` and the
+Kiro acknowledgement) or Keep off (writes `telemetry.enabled: false`, already the
+stored value, then `privacy_ack_version`). A start with
+no dashboard prints `notice.OFFER_TEXT` once on a terminal. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a
@@ -582,7 +612,7 @@ the wrapper sits:
 
 **A point-attribute key is refused, not dropped.** Keys are checked at
 construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
-(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+(`ClientType` and `machineId` today), and an unreviewed key raises. `_build_otlp_reader`
 turns that into "this destination gets no reader", so the cost is one
 destination's egress and local collection continues. Dropping the label instead
 would publish a series the receiving side cannot route, with only a debug line to
@@ -761,6 +791,16 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.mcp_gateway.backends.live` | gauge (1) | `class` (`first_party` / `third_party` / `other`) | `metrics/mcp_gateway_gauges.py::register_mcp_gateway_gauges`, callbacks run only at reader collection and observe only in the process that called `bind_pool` (gatewayd, in `run_gatewayd`). Live pooled backend processes, read through `BackendPool.live_pooled_backends`: the same population the dashboard's pool snapshot (`BackendPool.metrics_snapshot_async`, served by `daemon/control.py`) counts, so the two saving figures agree. Draining backends (an old process finishing calls after a credential rotation) and connection-private backends (never shared) are excluded: no session can be pooled onto either. `class` is `first_party` for a name in `mcp_discovery_managed._MANAGED_SERVER_NAMES`, `third_party` for any other name, `other` when the name is missing; the name is dropped after classifying. `first_party` and `third_party` are always published (0 is a real reading), `other` only when non-zero. |
 | `kirocrew.mcp_gateway.sessions.attached` | gauge (1) | `class` | Same module and population: the summed stub attachments (`Backend.refcount`) on those backends. `sessions.attached - backends.live` is the number of backend processes pooling avoided. One runtime opens one stub per server however many sessions it hosts, so this is a lower bound on sessions and the saving derived from it is a lower bound too. |
 | `kirocrew.mcp_gateway.backends.rss_bytes` | gauge (By) | `class` | Same module and population: summed current RSS of each backend through `mcp_gateway/pool.py::backend_rss_kb`, the probe the dashboard's pool snapshot uses (the backend pid AND its descendants, so a launcher that forks the real server is measured with it; KiB, exported as bytes). A pid with no reading (it died, or the platform has no `/proc` subtree walk: macOS and Windows) adds 0 and is skipped; a class where no backend could be read publishes nothing, a gap rather than a fake zero. `bytes_saved ~= (sessions.attached - backends.live) * backends.rss_bytes / backends.live`. gatewayd's own RSS is `kirocrew.process.memory.rss_bytes` where the resource has `kirocrew.process.role=gatewayd`; the main process's has no `kirocrew.process.role`. |
+| `kirocrew.chat_runtime_share.toggled` | counter | `state` (`on` / `off`) | `dashboard/server_runtime/config_watch.py` live-config applier on `dashboard.feature_previews` -> `metrics/chat_runtime_share.py::record_toggled`: one count when the `chat_runtime_sharing` preview flips between two applied documents, from any writer (Settings, CLI, a hand edit). Both sides are read by `acp.chat_runtime_sharing.chat_runtime_sharing_enabled`, through `agent_sdk/chat_runtime_sharing.py`, the same reader the inventory gauge uses. Whether it is on NOW is `kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. |
+| `kirocrew.chat_runtime_share.placed` | counter | `outcome` (`spawned` / `joined` / `refused`), `reason` (`chat_sharing_ineligible_reason`'s branch names plus `native_subagents` and `auto_permission_mode`, `none` on a placement, `other`), `tenants` (`1` / `2` / `3` / `4-7` / `8-10` / `11+` after the placement, `none` on a refusal), `tree` (`chat` / `bot`: whether the process serves a Bot's session tree, `none` on a refusal), `harness` (`metrics.harness.harness_for_backend` of the chat's backend; with `reason=harness_switched_off` it names the harness whose own switch is off) | `providers/chat_share.py`: `resolve_chat_share` counts a refusal (preview on, start refused); `ChatSharePlacement._accept` counts the confirmed placement, beside its WARNING line. Nothing counts while the preview is off: `resolve_chat_share` returns before either. |
+| `kirocrew.chat_runtime_share.processes` / `.tenants` | gauge (1) | none | `metrics/chat_runtime_share.py::register_chat_runtime_share_gauges` (registered from `metrics/shared_process_gauges.py` beside the MCP gateway pool gauges), read at collection from `RuntimeOwnership.keyed_lease_counts`: live runtimes placed under a compatibility key (a `ChatRuntimeKey`; registration leases are keyed by the runtime itself and are left out), and the chat leases on them. `tenants - processes` is processes saved. Publishes nothing until this process has placed or refused a chat with the preview on, so no other process exports zeros. |
+| `kirocrew.chat_runtime_share.rss_sampled` | counter | `tenants` (`2` / `3` / `4-7` / `8-10` / `11+`), `rss` (`le_512m` / `le_1g` / `le_2g` / `le_4g` / `le_8g` / `gt_8g`, MiB, each edge inclusive) | `session_cleanup_spare.py::note_rss_measured`, called where the RSS watchdog tick first measures a pid's tree (`session_cleanup.py::_rss_threshold_check`, `session_cleanup_leftovers.py`), so a shared process is counted once per tick. Only pids holding two or more chat leases. No sample while `session.watchdog_rss_max_mb` is 0. |
+| `kirocrew.chat_runtime_share.reclaimed` | counter | `reason` (`rss`) | `session_cleanup_spare.py::rss_limit_for`, when a shared process over its scaled ceiling is newly closed to joins (`RuntimeOwnership.close_to_joins` returned non-zero), once per process. |
+| `kirocrew.chat_runtime_share.process_died` | counter | `expected` (`true` / `false`), `tenants` (`0` / `1` / `2` / `3` / `4-7` / `8-10` / `11+` chat leases at death) | `runtime_death.py::announce`, the one place every ACP runtime death is classified. `tenants` is the larger of the kill gate's live count and `RuntimeOwnership.held_leases_on_runtime` (by identity, alive or not), so a process the exit watcher reaped before `_mark_dead` still counts the chats it held. `expected=false, tenants>=2` is a shared crash; `tenants` is its blast radius. |
+| `kirocrew.chat_runtime_share.turn_started` | counter | `tenants` (chat leases on the process when the prompt went out, `0` unless this turn's own session holds one of them: a subagent on its host chat's process or a background runtime reads `0`), `delay` (`le_1s` / `le_2s` / `le_5s` / `le_10s` / `le_20s` / `le_30s` / `le_60s` / `gt_60s`, each edge inclusive), `shared` (`true` when the process was placed by chat runtime sharing, `RuntimeOwnership.placed_by_sharing`, founder or joiner; `false` otherwise, preview off included), `harness` (`metrics/harness.py::harness_for_backend`, as on `kirocrew.turn.completed`) | `acp/session_handle_turn.py::_run_turn`: prompt written to the turn's first own event (a co-tenant's fanned `runtime_global` frame and a watchdog-synthesized terminal are skipped, so a turn the backend never answered records no start). `acp/client_turn.py::stream_events` counts the same span on the `AcpClient` arm (a claude, goose or deepseek chat that does not share, and every other per-process harness) with `tenants` `1` for a session the gateway registered (any channel, the one tenant of its own process: `runtime_ownership.acquire_session_lease` marks the client where a runtime-backed session takes its lease) and `0` for an unregistered one (a subagent, a worker-pool client), `shared=false`, skipping a synthesized terminal. Every ACP turn a provider streams. |
+| `kirocrew.chat_runtime_share.turn_ended` | counter | `tenants` (as read at start), `outcome` (`metrics/turns.py::turn_outcome`, the classifier `kirocrew.turn.completed` uses), `harness` | Same function, once per turn at the first `EVENT_COMPLETE` it hands its consumer. `tool_stall` and `stale_recover` are the watchdog terminals. |
+| `kirocrew.chat_runtime_share.kas_queued` | counter | `tenants` | `acp/session_handle_kas.py::_handle_kas_session_info` on a `session_info_update` with `_meta.kiro.kind == "queued"`: KAS parked the prompt behind another session's turn (`AgentExecutionWaitingForActiveSlot`). From engine 0.66.104 a chat turn never waits there, so on a shared process this stays at about zero. |
+| `kirocrew.kas.engine_install` | counter | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) | `acp/kas_engine_install.py::install_pinned_engine`, one per download attempt that ran (an engine already present counts nothing). A failed spawn-time install fails that spawn; there is no relay fallback. |
 | `kirocrew.skill.lazy_load.count` / `.duration` | counter + histogram (ms) | `hit` (bool); the counter also `skill` (closed, see the usage metrics section) | `skills_body_reads.py::load_skill` (bound as `SkillsLoader.load_skill`) via `_emit_lazy_load_metric` (best-effort; never breaks skill loading). |
 | `kirocrew.subagent.spawned` | counter | `concurrency` (int — the live running count INCLUDING this spawn, bounded by the manager's own concurrency cap, so a MAX over it is the high-water mark without a second instrument), `batched` (bool — the spawn is a member of a fan-out wave rather than a lone one) | `subagent_manager/admission/pump.py::_PumpMixin._log_spawned_impl` — the confirmed-start funnel, reached only after a spawn is admitted, so a rejected or never-started spawn is not counted (a promise an admission-time increment could not make). The `emit_counter` import is function-local, not module-level: `bind_component_globals` rebinds each `*_impl`'s `__globals__` to the owning namespace, where a module-level import here would not be visible. |
 | `kirocrew.subagent.completed` | counter | `outcome` (`completed` / `failed` / `stopped` / `unknown` -- `SubagentInfo.outcome`'s own canonical three-way classification, restated as `metrics/events.py::SUBAGENT_OUTCOMES` because `metrics` sits below the sub-agent manager in the dependency order, and folded through `subagent_outcome` so a record whose outcome cannot be read lands on `unknown` rather than being guessed as `failed`) | `subagent_manager/terminal.py::TerminalCoordinator._record_terminal_metric`, called from `_report_terminal_impl` past the point its finalize claim has been granted. That point, rather than either crew-log closer, is what makes one increment per run true: the reaper and the run loop's own `finally` both race to report and exactly one is let through, whereas a counter on `subagent/completed` and a second on `subagent/failed` would count a run twice on the paths that reach both. Gated on `telemetry.enabled` alone and NOT on the crew-log emitter, so the population is not narrowed to installs that happen to keep a crew log. The `emit_counter` import is function-local for the reason the row above gives. |
@@ -1740,9 +1780,51 @@ instead: `cost_breakdown` reports `unit: "usd"`, keeps every amount under its `c
 key at four decimals, and the tab writes each amount as money under **Cost** labels.
 Any credit-bearing session turn inside the window keeps it in credits; the window before
 it is read in the same unit, so a credit-billed week before a harness switch reads as no
-prior spend. The per-session
+prior spend. A window holding both credit-billed and dollar-billed session turns is the
+credits view with the same view over `cost` nested under `usd`, which the tab renders as
+a second card. Each view counts only its own unit's turns (the dollar view keeps the turns
+billed in dollars, the credits view the rest; a turn billed in both units would show on
+both cards, and no harness writes one), the Context tab titles and links its rows from both
+views' sessions, and the dollar card remembers its own state under the same keys with a
+`:usd` suffix. The per-session
 table sits under a **Full table** disclosure that starts closed and remembers its state
 in `telemetry:spend-table-open`.
+**What a session delivered.** For the 50 costliest conversations in the window,
+`dashboard.handlers.usage_outcome` reads the conversation's own transcript (through the
+derivation seam, `ConversationLog.derive_messages_chained_full_with_keys`, memoised by the
+file's mtime and reread at most once a minute while the file keeps changing) and attaches an
+`outcome` to each row that delivered something: `commits`, `lines_added`, `lines_removed`,
+`prs`, and for the owner `merged`, `unchecked` and `per_merged`. `outcome_scan` on the cost
+block says how many rows were read; a window that delivered nothing returns the block
+unchanged. A row's command is the `command` argument in its `meta.input`, or its title when
+there is none, since a long title can arrive cut short. A commit counts when a shell tool
+row ran `git commit` and its `meta.output` holds git's `[branch sha]` summary line (the line
+after it gives the changed lines). A `git commit -q` prints no summary line, so a quiet
+commit is not counted: nothing else in the row says which commit, if any, that call made.
+An amend, a preview (`--dry-run` and the
+formats that imply it: `--short`, `--porcelain`, `--long`, `-z`/`--null`) or any other
+output does not count. Commands are read by the shared shell reader
+(`security.shell_commands.read_commands`, the batch guard's own), so quoting is the shell's
+and a here-document body is data; a command with a quote left open, or longer than 16,384
+characters, counts nothing. An incognito or temporary transcript, or one whose line cannot be
+read, is refused by the seam (`TranscriptWithheld`) and its row gets no outcome. The scan
+records each delivering row's chain; `usage_outcome.respond_with_session_outcomes` then,
+off the loop, takes the lock stems of every contributing chain in one sorted acquire, enters
+each chain's `ConversationLog.publication_hold` in sorted transcript order, drops the outcome
+of any it refuses from both spend units, and builds the `web.json_response` before any hold
+is let go. A session tightened after its scan (a channel `!incognito`) is not published, and
+none can be tightened while the response is built. A busy lock, or more than 256 transcripts
+(`_PUBLICATION_HOLD_MAX`) across the chains, sends no outcome. No hold spans an await. The memo
+keeps every transcript the chained read covered and asks each one's line on every poll
+before it is served, because tightening a line keeps the mtime. A chain longer than 64
+transcripts (`_MEMO_CHAIN_MAX`) is not memoised, so each poll reads it through the seam again.
+A pull request counts when a row ran `gh pr create` or `glab mr create` and its output holds
+the change's URL on its own line, parsed by `parse_source_url`, unless the output says the
+pull request already exists. Each is counted once by sha or URL, and only inside the
+window. `merged` is read from the chip-status cache (`get_cached_check_status`), never
+refreshed here, so a URL the cache has not seen is `unchecked` rather than open, and a caller
+that is not the dashboard owner gets no merge figures. `per_merged` is the session's spend
+divided by `merged`. The Spend table shows the five columns only once a row has an outcome.
 **Stamping boundary:** rows are stamped at the two write sites that can run
 app-owned work — the dashboard chat runner (the slot's `_app`) and the
 subagent completion path (`info.app`, an app-dispatched subagent's spend).
@@ -1782,11 +1864,12 @@ from fields the row store already carries — no new instrumentation:
 | sub-block | derivation |
 |-----------|-----------|
 | totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
-| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show. The stored model is keyed through `model_registry.canonicalize_for_provider` with the row's `provider`, the same reading the daily chart and the series use, so a model stored under two ids across a provider's id migration is one row |
 | `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
 | `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
+| `advice` | measured recommendations from `telemetry_spend_advice.spend_advice`, largest share first, `[]` when none applies. Each is `{id, share_pct, ...}` with ids and numbers only; the dashboard words it. `high_context`: the share of the window's credits on turns whose `context_used` is at least 600k. `costly_model`: the share on the model with the highest credits per turn, listed only when a second model has 5 or more turns and costs at most half as much per turn. A share under 10% is left out, and a sub-agent row reaches none of it, as with every figure in this block |
 
 **Channel comes from the slot key, not from `surface`.** New writes now derive
 `surface` from the effective session identity, but historical rows may contain a
@@ -1891,7 +1974,7 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_ultra_mode` or a `traces_otlp_*` key, the worker
+moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode`, `accept_traceparent` or a `traces_otlp_*` key, the worker
 thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
@@ -1984,6 +2067,36 @@ replay) is dropped; a tool still open when its turn ends is ended with it. An MC
 call is named `mcp`, and so is any tool name spelled like an MCP one; with no
 harness-authored name the tool kind stands in.
 
+**Steps inside a turn.** Each is a child of the turn span and carries no spend.
+
+| Span | Opened by | Carries |
+|---|---|---|
+| `kirocrew.step` | `TurnTrace.observe`: the first at the turn's start, the next at text after a tool group (the boundary the crew log derives in `chat_turn/stream_chunks.py`), the last ended with the turn | `kirocrew.step.index` (1-based), `kirocrew.step.derived=true` |
+| `kirocrew.compaction` | `observe`, on this session's own `compaction_status` events (a fanned-out `runtime_global` frame is not the turn's): `started` to `completed`/`failed`, or zero-length at a result with no start seen | `kirocrew.compaction.outcome`; `failed` is an error |
+| `kirocrew.approval` | `tracing/steps.py::approval_opened`/`approval_closed`, from the moment the prompt can be answered (`asked_now`, taken before a cancellable post) to its decision; a wait cancelled or failed with no answer is the host's (`policy`): the dashboard's `chat_turn/permission_prompt.py::_on_permission_prompt`, a channel's decider wait (`messaging/driver.py::TurnDriver._approve`), a sub-agent's tool prompt (`subagent_manager/run.py::_ApprovalPrompt`, under the child's own turn) and its spawn approval (`admission/pump.py`, under the parent's spawn tool span) | `kirocrew.approval.wait_ms`, `kirocrew.approval.decided_by` (`person`; `policy` when the host decided with no answer: undeliverable, no budget, cancelled, stopped; `timeout`; absent on a sub-agent tool prompt whose approver does not say who answered), `kirocrew.approval.outcome` (`approved`/`rejected`), `kirocrew.tool_call_id` |
+| `kirocrew.steer` | `steps.steered`, zero-length: an interrupt where it is written (`acp/session_handle_steering.py::steer`, the funnel for kiro and Kiro Agent; `acp/client_turn_control.py::steer`), into the turn open on that ACP session; a sub-agent follow-up (`continuation.py::follow_up_run_impl`) into the run's open turn | `kirocrew.steer.mode` (`interrupt`, `follow_up`); never the text |
+
+A tool the harness auto-approves never reaches Crew, so it has no approval span; nor
+does a Crew policy that answers before a prompt is shown. The dashboard and channel
+approvals find their turn through the root bound in the task that streams it.
+
+**Queue wait and senders.** `SlotQueueRepository.queue_append` notes each entry's
+append time in memory (`steps.note_queued`; not on the entry, whose dict shape is
+compared wholesale). The drain (`queue_drain._start_next_queued_turn`) hands the
+drained entries to the turn's task (`steps.drained`), and `bind_turn` takes them once
+for a top-level turn: `kirocrew.queue.wait_ms`, from the oldest entry's append to the
+drain, on the turn span only. A `session_send` or broadcast delivery
+(`session_deliver._deliver_peer`, given the sender's session key by
+`session_messaging.send_to_target`) names the sender's open `session_send` /
+`session_broadcast` tool span, else its turn span: on the queued entry as
+`meta.trace_sender` (`<trace id>:<span id>`), and in the context a turn started at once
+copies. The receiving turn takes one link per sender. After a restart, entries keep
+their senders and lose their wait.
+
+**Workflow launch.** `pin_launcher` keeps the open `workflow_run` tool span (else the
+launching turn), sets `kirocrew.launched_workflow_run_id` on it, and the run's anchor
+links to it (`surfaces.root(links=)`); the run is a separate trace.
+
 **Trace id.** `dashboard/chat_runner.py::_run_chat` binds `turn._recovery_turn_id`
 through `dashboard/trace_binding.py::bind_turn` around the turn, and that id is the
 trace id of each stream the same task opens; the n-th stream is `kirocrew.attempt=n`.
@@ -2026,6 +2139,36 @@ to it (`turns.adopt_root`). A root opened inside another root bound in the
 same task (a one-liner a dashboard turn awaits) owns its turns until it closes, then
 the outer binding is back. Off, a root is one context-variable write.
 
+**Inbound traceparent** (`tracing/inbound.py`). `telemetry.accept_traceparent`, default
+`false`, read with the switch (`provider.accepts_traceparent()` never reads), lets a
+service that calls Kiro Crew over HTTP put its turn in the caller's trace. Only two
+routes read the header, `POST /v1/chat/completions` (`dashboard/openai_compat.py`) and
+`POST /api/hooks/agent` (`dashboard/handlers/hooks.py`), and only after the caller has
+authenticated, at the point the turn is about to start. `begin(headers)` binds nothing
+unless the setting and tracing are both on and exactly one `traceparent` header was
+sent; `ids.parse_traceparent` accepts only a version `00` value of 55 characters (four
+`-` separated lowercase hex fields of 2, 32, 16 and 2 digits, the trace and parent ids
+not all zero), and anything else is ignored with a debug line, never refused. The
+sampled flag and `tracestate` are ignored: the gateway's own switch decides whether a
+turn is recorded. `begin` mints the turn id, so the turn span's id
+(`H(turn, turn_id, 1)`) is known before the turn runs, and the response carries
+`traceparent` built from the caller's trace id and that span id, never an echo of the
+request; the header names the first attempt, and nothing is sent with tracing off. The
+turn takes the minted id through `claim_turn_id`, once: `dashboard/chat_turn/turn_entry.py::_turn_open`
+for a dashboard turn, `surfaces.root` for a webhook turn that roots itself, and a
+`/prompts get` expansion hands it on to the nested turn with `hand_back`, because the
+outer turn returns before it binds a root and the nested one is the turn that produces
+the reply. The bound turn joins the caller's span (`join_for`, a `runs.RunRef` of kind
+`caller` that is never emitted as a span, with no root session, so the spans keep the
+turn's own `session.id`) and `trace_binding.bind_turn` lets it override any join the
+turn would otherwise take (a Bot or conductor round, a run); only the join is replaced,
+so a conductor round's `rollup_key` stays and the round's roll-up still receives the
+turn's spend. An attempt retried within the turn is another child of the caller's span
+with the same `kirocrew.turn_id`. A turn that ends and queues a recovery turn is
+different: the recovery turn mints its own turn id and runs outside the caller's trace.
+Tests: `test/tracing/test_tracing_inbound.py`, `test_tracing_inbound_routes.py`,
+`test/test_trace_inbound_prompt_expansion.py`.
+
 **Workflow runs** (`tracing/workflows.py`). The `workflow` root above opens the anchor,
 named by the script's `META["name"]`, and the outcome: `finished`, `failed` or
 `cancelled`, from the run's own result. Between them:
@@ -2050,8 +2193,9 @@ named by the script's `META["name"]`, and the outcome: `finished`, `failed` or
 - A run authored from an intent (`start_from_intent`) has an `Authoring` phase first;
   the author's model turns are one call under it, `invoke_agent Authoring:author`,
   bound in the task the runner starts for the author.
-- `WorkflowRunner.run_background` pins the turn open for the launching session
-  (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled.
+- `WorkflowRunner.run_background` pins the launcher for the launching session
+  (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled: its
+  open `workflow_run` tool span, else the turn (see Workflow launch above).
 - The completion turn: `workflow_startup`'s auto-turn starts it inside
   `delivering(run_id)`, or queues it with `meta.workflow_run_id`, which the queue
   drain hands over (`run_of`). `bind_turn` takes the run once (top-level turns
@@ -2110,16 +2254,16 @@ on an outcome, `kirocrew.run.status`.
 
 **Crew attributes** (`tracing/crew.py`). A dashboard turn on a conductor mode or Bot
 conductor, or on one of their workers, nested `/prompts get` turns included, carries `kirocrew.crew.root` (hashed root slot
-key), `kirocrew.crew.root_kind` (`ultra` for conductor mode, or `mate`) and, for a worker,
+key), `kirocrew.crew.root_kind` (`conductor_mode` or `mate`) and, for a worker,
 `kirocrew.crew.dispatcher` (hashed). The stamps come from
 `crew_mode.live_stamp_rows`, the slot list's own rule, with no I/O. A worker bound to
 a work item also carries `kirocrew.work.item_id`, `kirocrew.work.round` and
 `kirocrew.work.conductor_hash`, read from the work ledger binding on a worker thread
 before the turn binds. No goal, title, acceptance or other ledger text.
 
-**Conductor mode rounds** (`tracing/work.py`). With `telemetry.traces_ultra_mode` `run`
-(default), one round of a conductor's board (conductor mode or Bot) is one trace: an
-`ultra round N` anchor keyed `(conductor ledger key, goal key, round)`, where the goal
+**Conductor mode rounds** (`tracing/work.py`). With `telemetry.traces_conductor_mode` `run`
+(default), one round of a conductor's board (conductor mode or Bot) is one trace: a
+`conductor_mode round N` anchor keyed `(conductor ledger key, goal key, round)`, where the goal
 key is the header's `goal_id` (minted with the board and by each `new_goal`) or
 `<generation>.<goal_items_base>` on a header from before it. The conductor's turns join
 the anchor; each item open in the round has a `work_item <item id>` anchor under it,
@@ -2130,11 +2274,11 @@ kept open and a restart re-derives the same ids; a turn a delivered run joins (a
 sub-agent completion) keeps that join. Anchors are written only by the ledger write
 that brings their key into being, so nothing is written twice: the board's first
 write, a goal write that changes the goal key or the round (it re-emits each item
-still open under the new round, and ends the old round `ultra outcome advanced`), and
+still open under the new round, and ends the old round `conductor_mode outcome advanced`), and
 an item's create. A `close` writes `work_item outcome <state>` with
 `kirocrew.work.verdict`, `kirocrew.work.fails` and the item's roll-up. A round ends
-once, at the goal write that moves the board on: `ultra outcome closed` when no item is
-open, `ultra outcome advanced` when items carry over, with the conductor turns'
+once, at the goal write that moves the board on: `conductor_mode outcome closed` when no item is
+open, `conductor_mode outcome advanced` when items carry over, with the conductor turns'
 roll-up. Both outcome markers wait until the acting turn has ended
 (`turns.after_turn`), so that turn's spend is in them. A write span sits in its acting
 turn only when that turn is in the write's round trace; otherwise (the turn that opens
@@ -2175,13 +2319,15 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `invoke_agent` | `turn, turn_id, attempt` |
 | `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
 | `execute_tool` | `tool, acp_session_id, tool_call_id` |
+| `kirocrew.step`, `kirocrew.compaction`, `kirocrew.steer` | `step` / `compaction` / `steer`, `turn_id, attempt, n` (n counts that kind in the turn from 1) |
+| `kirocrew.approval` | `approval, acp_session_id, tool_call_id` (the request id when there is none); a spawn approval `approval, subagent_id, request_id` |
 | sub-agent `invoke_agent` | `turn, turn_id, attempt`, in the parent's trace under its spawn span |
 | run anchor (`subagent`, `cron`, `workflow`) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
 | `<kind> outcome <status>` | `<kind>.outcome, *key, cont, outcome_key` |
 | `cron run <kind>` step | `cron.step, *key, cont, run <kind>` |
 | `phase <title>` | `workflow.phase, run_id, cont, phase_index` |
 | workflow `invoke_agent` | `turn, turn_id, attempt`, turn id `H(workflow.agent, run_id, agent_id)`, under its phase |
-| `ultra round N` | `ultra, conductor, goal key, round, cont`; trace `trace.ultra`, the same inputs |
+| `conductor_mode round N` | `conductor_mode, conductor, goal key, round, cont`; trace `trace.conductor_mode`, the same inputs |
 | `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
 | `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
 
@@ -2189,7 +2335,8 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
 contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`,
 `kirocrew.tool_call_id`, `kirocrew.subagent_id`, `kirocrew.work.item_id`,
-`kirocrew.cron.job_id`, `kirocrew.workflow_run_id` and `kirocrew.agent_id` raw;
+`kirocrew.cron.job_id`, `kirocrew.workflow_run_id`, `kirocrew.launched_workflow_run_id`
+and `kirocrew.agent_id` raw;
 `kirocrew.parent_session_key_hash`, `kirocrew.crew.root`, `kirocrew.crew.dispatcher`
 and `kirocrew.work.conductor_hash` hashed like the session key; `kirocrew.session_key_hash` and `session.id` a
 keyed HMAC-SHA256 (32 hex) under `SecretVault.derive_subkey("trace-correlation")`;
@@ -2651,7 +2798,8 @@ consent flow:
   it goes, then offers **Keep on** and **Turn off**, in the
   `OnboardingChapterShell` layout, so a new user sees what is recorded and sent
   and can turn it off before reaching the product. Every path out of chapter 1
-  routes through it, including "Skip all", and it offers no skip and no Escape.
+  routes through it, including "Skip all", and it offers no skip, and no Escape
+  until a save has failed (below).
   The text follows the effective state read from `GET /api/telemetry/beacon` and
   `GET /api/telemetry/collection`: with local recording on, "Performance metrics
   are on" and the recording list; with only the heartbeat on, "A daily heartbeat
@@ -2676,7 +2824,11 @@ consent flow:
   re-reads both effective states; only when both are off does it write the ack
   fields. An env var or a `config.local.json` entry that keeps either on leaves
   the chapter open, naming that setting. A failed write keeps the chapter open
-  with an `ErrorNotice` and marks nothing as seen.
+  with an `ErrorNotice` and marks nothing as seen. From then on the chapter
+  offers Close in its eyebrow row, and Escape does the same: both hide it
+  without recording a choice, as the Ask the agent hand-off does, so it opens
+  again at the next load (`onClose`). A Turn off held by a pin offers no Close,
+  since Keep on still saves.
 - **The notice is versioned.** `dashboard.privacy_ack_version` (int, default 0,
   never seeded from `privacy_acked`, `onboarded` or localStorage) means "told that
   local recording is on", and both writers apply that one rule: the chapter writes
@@ -2685,7 +2837,7 @@ consent flow:
   recording on (not on `disable`, and not when it leaves recording off because an
   export destination is configured); the dashboard's
   `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
-  `beacon.PRIVACY_NOTICE_VERSION` are both 2 and a backend test pins them
+  `beacon.PRIVACY_NOTICE_VERSION` are both 3 and a backend test pins them
   together. An existing user whose stored version is lower sees the chapter once
   at the next dashboard load, decided once per page load, and only while local
   recording is on; a heartbeat-only or already-off user does not see it. A user
@@ -2956,7 +3108,7 @@ needed because a same-day backfill's 23:59 is in the future and
 **Model CDN.** `embeddings_settings.py::_DEFAULT_MODEL_URL` points at
 `kirocrew-models` (distribution E2UX23B48LKM6V, OAC-only bucket access). The
 `_GGUF_SHA256` pin remains the sole integrity gate, so a tampered CDN object can
-only fail verification. Because `_ensure_downloaded()` returns early when
+only fail verification. Because `ModelDownloadManager.ensure_model()` (`embeddings_download.py`) returns early when
 `model_ready()`, a CDN request is a **first-install** signal, not a DAU signal —
 the dashboard shows it as "downloads", deliberately separate from DAI.
 

@@ -29,8 +29,13 @@ HEADROOM_FIELDS = {
     "posture",
     "disk_free_gb",
     "open_workers",
+    "tags",
+    "logins",
     "measured_at",
 }
+
+#: A create reply's snapshot: no login check runs on a create.
+CREATE_HEADROOM_FIELDS = HEADROOM_FIELDS - {"logins"}
 
 _REAL_CHECK_MEMORY = subagent_facade.check_memory_available
 
@@ -53,7 +58,14 @@ def _status(**overrides) -> resource_status.ResourceStatus:
 @pytest.fixture
 def host(monkeypatch):
     """A stub host with ample everything; tests turn one resource short."""
-    reading = SimpleNamespace(status=_status(), memory_ok=True, cap=4, running=1, disk_gb=500.0)
+    reading = SimpleNamespace(
+        status=_status(), memory_ok=True, cap=4, running=1, disk_gb=500.0, logins={}
+    )
+
+    async def peer_logins() -> dict:
+        return dict(reading.logins)
+
+    monkeypatch.setattr(headroom_mod, "peer_logins", peer_logins)
     monkeypatch.setattr(resource_status, "probe", lambda cfg=None: reading.status)
     monkeypatch.setattr(
         subagent_facade, "check_memory_available", lambda min_gb=2.0, **_: (reading.memory_ok, 1.0)
@@ -309,7 +321,7 @@ async def test_short_work_item_create_is_crew_busy_and_creates_nothing(
         body = await resp.json()
     assert body["error"] == body["code"] == "crew_busy"
     assert body["short"] == short
-    assert set(body["headroom"]) == HEADROOM_FIELDS
+    assert set(body["headroom"]) == CREATE_HEADROOM_FIELDS
     assert set(state._slots) == before
 
 
@@ -323,7 +335,7 @@ async def test_create_without_work_item_is_not_gated(tmp_path, monkeypatch, host
         resp = await client.post("/api/chat/slots", json={"name": "plain"})
         assert resp.status == 200
         body = await resp.json()
-    assert set(body["headroom"]) == HEADROOM_FIELDS
+    assert set(body["headroom"]) == CREATE_HEADROOM_FIELDS
     assert "plain" in state._slots
 
 
@@ -405,7 +417,7 @@ async def test_admitted_work_item_create_carries_headroom(tmp_path, monkeypatch,
         resp = await client.post("/api/chat/slots", json={"work_item": bindable})
         assert resp.status == 200, await resp.text()
         body = await resp.json()
-    assert set(body["headroom"]) == HEADROOM_FIELDS
+    assert set(body["headroom"]) == CREATE_HEADROOM_FIELDS
     assert body["key"] in state._slots
 
 
@@ -502,5 +514,377 @@ def test_no_field_holds_credential_content_or_a_path(monkeypatch, host):
     text = json.dumps(snap)
     assert secret not in text and "/" not in text
     for key, value in snap.items():
-        assert value is None or isinstance(value, (int, float)) or key == "posture"
+        assert value is None or isinstance(value, (int, float)) or key in ("posture", "tags")
     assert snap["posture"] in ("ample", "tight", "critical", "unknown")
+    assert snap["tags"] == []
+
+
+# -- open hub workers reserve an estimate each (D3) ----------------------------------
+
+
+def _hub_worker(n: int, *, board: str = "chat-hub") -> tuple[str, str]:
+    """Open one ``hub:`` mailbox item bound to worker slot ``chat-w<n>``."""
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+
+    request = mailbox.parse_work_item(
+        {**WORK_ITEM, "item_id": f"it_{n:08x}", "conductor_key": board}
+    )
+    mailbox.open_mailbox(request, f"chat-w{n}")
+    return request.board, request.item_id
+
+
+def _memory_is(monkeypatch, free_gb: float) -> None:
+    """A host whose memory check compares *free_gb* against what it is asked for."""
+    monkeypatch.setattr(
+        subagent_facade,
+        "check_memory_available",
+        lambda min_gb=2.0, **_: (free_gb >= min_gb, free_gb),
+    )
+
+
+@pytest.mark.parametrize("n", [0, 1, 3])
+@pytest.mark.parametrize(("delta", "short"), [(0.01, ""), (-0.01, "memory")])
+def test_each_open_hub_worker_reserves_one_memory_estimate(monkeypatch, host, n, delta, short):
+    for i in range(n):
+        _hub_worker(i + 1)
+    _memory_is(monkeypatch, (n + 1) * 5.0 + delta)
+    snap, got = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 5.0, 1.0))
+    assert snap["open_workers"] == n
+    assert got == short
+
+
+@pytest.mark.parametrize(("delta", "short"), [(0.01, ""), (-0.01, "disk")])
+def test_each_open_hub_worker_reserves_one_disk_estimate(monkeypatch, host, delta, short):
+    for i in range(2):
+        _hub_worker(i + 1)
+    host.disk_gb = 3 * 10.0 + delta
+    _, got = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0))
+    assert got == short
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("delta", "status"), [(0.01, 200), (-0.01, 503)])
+async def test_a_create_is_admitted_or_refused_on_reserved_memory(
+    tmp_path, monkeypatch, host, delta, status
+):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    for i in range(2):
+        _hub_worker(i + 1)
+    _memory_is(monkeypatch, 3 * 5.0 + delta)
+    state = _make_state(tmp_path)
+    before = set(state._slots)
+    bindable = {**WORK_ITEM, "item_id": "it_000000ff", "conductor_key": "chat-hub"}
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json={"work_item": bindable})
+        body = await resp.json()
+    assert resp.status == status, body
+    assert body["headroom"]["open_workers"] == 2
+    if status == 503:
+        assert body["code"] == "crew_busy" and body["short"] == "memory"
+        assert set(state._slots) == before
+    else:
+        assert body["key"] in state._slots
+
+
+@pytest.mark.asyncio
+async def test_a_create_without_work_item_ignores_reservations(tmp_path, monkeypatch, host):
+    _flag(monkeypatch, True, memory_gb=5.0)
+    for i in range(2):
+        _hub_worker(i + 1)
+    _memory_is(monkeypatch, 5.0)
+    state = _make_state(tmp_path)
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json={"name": "plain"})
+        assert resp.status == 200
+        assert (await resp.json())["headroom"]["open_workers"] == 2
+    assert "plain" in state._slots
+
+
+def test_closed_accepted_and_non_hub_items_reserve_nothing(monkeypatch, host):
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+    from kiro_crew import work_ledger as wl
+
+    _hub_worker(1)  # the one that counts
+    _hub_worker(2)
+    assert mailbox.close_mailbox("chat-w2") is not None  # its slot was deleted
+    board, item_id = _hub_worker(3)
+    wl.apply_worker_report(board, item_id, status="done", summary="x", artifacts={"pr": "1"})
+    wl.apply_conductor_action(board, "verdict", item_id=item_id, verdict="pass")
+    wl.apply_conductor_action(board, "close", item_id=item_id, state="accepted")
+    board, _ = _hub_worker(5)
+    wl.apply_worker_report(board, "it_00000005", status="progress", summary="x")
+    assert mailbox.close_mailbox("chat-w5") is not None  # reported, so kept abandoned
+    wl.ensure_conductor("chat-local")
+    wl.create_bound_item(
+        "chat-local",
+        "it_0000aaaa",
+        title="t",
+        acceptance={"kind": "manual"},
+        decision="",
+        worker_session_key="chat-w4",
+    )
+    snap, _ = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0))
+    assert snap["open_workers"] == 1
+
+
+def test_a_torn_binding_counts_nothing(monkeypatch, host):
+    from kiro_crew import work_ledger as wl
+
+    _hub_worker(1)
+    wl.bindings_dir().joinpath("torn.json").write_text("{not json", encoding="utf-8")
+    snap, _ = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0))
+    assert snap["open_workers"] == 1
+
+
+def test_an_unreadable_store_reserves_nothing(monkeypatch, host):
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+
+    def boom():
+        raise OSError("store unreadable")
+
+    monkeypatch.setattr(mailbox, "open_mailbox_workers", boom)
+    _memory_is(monkeypatch, 5.0)
+    snap, short = headroom_mod.measure(headroom_mod.RemoteDispatchSettings(True, 5.0, 1.0))
+    assert snap["open_workers"] is None
+    assert short == ""
+
+
+def _bindable(n: int) -> dict:
+    return {**WORK_ITEM, "item_id": f"it_{n:08x}", "conductor_key": "chat-hub"}
+
+
+_ROOM_FOR_ONE = headroom_mod.RemoteDispatchSettings(True, 5.0, 1.0)
+
+
+def _open() -> int:
+    return headroom_mod.measure(_ROOM_FOR_ONE)[0]["open_workers"]
+
+
+async def _post(state, body) -> tuple[int, dict]:
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json=body)
+        return resp.status, await resp.json()
+
+
+def test_the_bind_measures_again_and_the_second_of_two_is_refused(monkeypatch, host):
+    """Room for one: the first bind is stored, the second sees it and stores nothing."""
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    first = mailbox.parse_work_item(_bindable(1))
+    second = mailbox.parse_work_item(_bindable(2))
+    assert headroom_mod.bind_if_room(_ROOM_FOR_ONE, first, "chat-w1")[1] == ""
+    snap, short = headroom_mod.bind_if_room(_ROOM_FOR_ONE, second, "chat-w2")
+    assert (snap["open_workers"], short) == (1, "memory")
+    assert not mailbox.item_exists(second)
+    assert _open() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_worker_bound_after_the_early_gate_refuses_the_create(tmp_path, monkeypatch, host):
+    """Two creates pass the early gate together; the bind refuses the later one."""
+    from kiro_crew import remote_dispatch_mailbox as mailbox
+    from kiro_crew.dashboard.handlers import remote_work_item
+
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    real = remote_work_item.work_item_for_create
+
+    async def another_hub_binds_meanwhile(request, body):
+        got = await real(request, body)
+        _hub_worker(9)
+        return got
+
+    monkeypatch.setattr(remote_work_item, "work_item_for_create", another_hub_binds_meanwhile)
+    state = _make_state(tmp_path)
+    before = set(state._slots)
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 503, body
+    assert body["code"] == "crew_busy" and body["short"] == "memory"
+    assert set(state._slots) == before
+    assert not mailbox.item_exists(mailbox.parse_work_item(_bindable(1)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [{"name": "w1"}, {"memory_mode": "temporary"}, {"work_item": {**WORK_ITEM, "title": 5}}],
+    ids=["name-refused", "memory-mode-refused", "bad-work-item"],
+)
+async def test_a_create_refused_after_admission_reserves_nothing(
+    tmp_path, monkeypatch, host, extra
+):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    state = _make_state(tmp_path)
+    got, body = await _post(state, {"work_item": _bindable(1), **extra})
+    assert got == 400, body
+    assert _open() == 0
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 200, body
+
+
+@pytest.mark.asyncio
+async def test_a_failed_mint_reserves_nothing(tmp_path, monkeypatch, host):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    _memory_is(monkeypatch, 5.0 + 0.01)
+    state = _make_state(tmp_path)
+    real = state.get_or_create_slot
+
+    def boom(*a, **k):
+        raise RuntimeError("mint failed")
+
+    monkeypatch.setattr(state, "get_or_create_slot", boom)
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots", json={"work_item": _bindable(1)})
+        assert resp.status == 500
+    assert _open() == 0
+    monkeypatch.setattr(state, "get_or_create_slot", real)
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 200, body
+
+
+@pytest.mark.asyncio
+async def test_a_created_worker_counts_once(tmp_path, monkeypatch, host):
+    _flag(monkeypatch, True, memory_gb=5.0, disk_gb=1.0)
+    state = _make_state(tmp_path)
+    got, body = await _post(state, {"work_item": _bindable(1)})
+    assert got == 200, body
+    assert _open() == 1
+
+
+# -- tags and logins (audit D2) --------------------------------------------------
+
+
+def test_config_tags_keep_only_plain_words(monkeypatch):
+    tags = [
+        "gpu",
+        "docker",
+        "gpu",
+        "/home/u",
+        "lab.example.com",
+        "123456789012",
+        "GPU",
+        7,
+        "x" * 33,
+        "gpu\n",
+        "glpat-" + "a" * 20,
+    ]
+    _config_load(monkeypatch, remote_dispatch=True, remote_dispatch_tags=tags)
+    assert headroom_mod.remote_dispatch_settings().tags == ("gpu", "docker")
+    _config_load(monkeypatch, remote_dispatch=True, remote_dispatch_tags="gpu")
+    assert headroom_mod.remote_dispatch_settings().tags == ()
+    assert _build_work_ledger_config({}).remote_dispatch_tags == []
+
+
+@pytest.mark.asyncio
+async def test_route_carries_the_tags_and_one_word_per_login(tmp_path, monkeypatch, host):
+    settings = headroom_mod.RemoteDispatchSettings(True, 2.0, 10.0, tags=("gpu",))
+    monkeypatch.setattr(headroom_mod, "remote_dispatch_settings", lambda: settings)
+    host.logins = {"gh": "valid", "az": "expired"}
+    async with TestClient(TestServer(_app(_make_state(tmp_path)))) as client:
+        body = await (await client.get("/api/chat/headroom")).json()
+        created = await (await client.post("/api/chat/slots", json={"name": "w"})).json()
+    assert body["tags"] == ["gpu"]
+    assert body["logins"] == {"gh": "valid", "az": "expired"}
+    assert "logins" not in created["headroom"]
+    assert created["headroom"]["tags"] == ["gpu"]
+
+
+def _git(monkeypatch, states: dict, *, refusal: str = "", delay: dict | None = None):
+    """Stub ``git_gateway``'s readiness pieces; returns the hosts asked."""
+    from kiro_crew.remote_session import git_gateway
+
+    asked: list[str] = []
+
+    async def lending_refusal() -> str:
+        return refusal
+
+    async def login_status(host: str) -> str:
+        asked.append(host)
+        gate = (delay or {}).get(host)
+        if gate is not None:
+            await gate.wait()
+        answer = states.get(host, "unchecked")
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(git_gateway, "lending_refusal", lending_refusal)
+    monkeypatch.setattr(git_gateway, "login_status", login_status)
+    monkeypatch.setattr(headroom_mod, "_login_cache", {})
+    monkeypatch.setattr(headroom_mod, "_login_tasks", {})
+
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_login_words_come_from_the_git_proxy_readiness_probe(monkeypatch):
+    asked = _git(
+        monkeypatch,
+        {"github.com": "signed_in", "gitlab.com": "not_signed_in", "dev.azure.com": RuntimeError()},
+    )
+    # gitlab's "unchecked" (helper fallback) and az's failure are absent, never valid.
+    assert await headroom_mod.peer_logins() == {"gh": "valid", "glab": "expired"}
+    # bitbucket.org has no status-command source, so it is never asked.
+    assert sorted(asked) == ["dev.azure.com", "github.com", "gitlab.com"]
+
+
+def test_each_host_maps_to_the_tool_its_readiness_asks():
+    from kiro_crew.remote_session import git_gateway
+
+    tools = {h: git_gateway.readiness_tool(h) for h in git_gateway.HOSTS}
+    assert tools == {
+        "github.com": "gh",
+        "gitlab.com": "glab",
+        "bitbucket.org": None,
+        "dev.azure.com": "az",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["withheld", "unsupported"])
+async def test_a_crew_that_lends_no_login_reports_none_even_from_cache(monkeypatch, refusal):
+    import time
+
+    asked = _git(monkeypatch, {"github.com": "signed_in"}, refusal=refusal)
+    # A fresh reading taken before the sandbox went strict must not answer.
+    monkeypatch.setattr(
+        headroom_mod, "_login_cache", {"github.com": (time.monotonic(), "signed_in")}
+    )
+    assert await headroom_mod.peer_logins() == {}
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_git_readiness_reads_the_same_gate(monkeypatch):
+    from kiro_crew.remote_session import git_gateway
+
+    async def refusal() -> str:
+        return "withheld"
+
+    monkeypatch.setattr(git_gateway, "lending_refusal", refusal)
+    assert set((await git_gateway.git_readiness()).values()) == {"withheld"}
+
+
+@pytest.mark.asyncio
+async def test_readings_are_cached_and_one_slow_check_hides_no_other(monkeypatch):
+    import asyncio
+
+    slow = asyncio.Event()
+    asked = _git(
+        monkeypatch,
+        {"github.com": "signed_in", "gitlab.com": "signed_in", "dev.azure.com": "signed_in"},
+        delay={"dev.azure.com": slow},
+    )
+    monkeypatch.setattr(headroom_mod, "LOGINS_WAIT_S", 0.05)  # flake-ok: az never ends first
+    # Cold cache and az hangs: gh and glab still answer, az reads as still checking.
+    assert await headroom_mod.peer_logins() == {"gh": "valid", "glab": "valid", "az": "unknown"}
+    slow.set()
+    await headroom_mod._login_tasks["dev.azure.com"]
+    assert await headroom_mod.peer_logins() == {"gh": "valid", "glab": "valid", "az": "valid"}
+    assert len(asked) == 3  # fresh readings: nothing asked twice
+    stamp, state = headroom_mod._login_cache["github.com"]
+    headroom_mod._login_cache["github.com"] = (stamp - headroom_mod.LOGINS_TTL_S, state)
+    await headroom_mod.peer_logins()
+    assert asked.count("github.com") == 2

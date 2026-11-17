@@ -646,6 +646,28 @@ async def test_grants_are_walked_in_order_and_the_first_admitted_hit_answers():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_held_bot_limit_skips_every_grant_and_asks_the_person(monkeypatch, held):
+    """A call under a moved Bot's held limit (``mate_held_rules``) is never answered by a grant."""
+    from kiro_crew import mate_held_rules
+
+    monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: ["deny shell"] if held else [])
+    log: list = []
+    policy = _policy(
+        log,
+        gate=Judges(log, Hit("hook_auto_approve", Evidence.IDENTITY)),
+        grants=(GATE_GRANT, Offers(log, "parent", Hit("parent_policy_auto", Evidence.NONE))),
+        responders=(Scripted(log, "callback", False),),
+    )
+    settled = await settle(Ask(_event(), RecordingWire(log), "k"), policy)
+    if held:
+        assert ("ask", "callback", "Run: ls -la") in log
+        assert settled.outcome != "auto_approved"
+    else:
+        assert settled == Settled("auto_approved", "hook_auto_approve", "rule")
+
+
+@pytest.mark.asyncio
 async def test_a_refused_program_name_downgrades_to_the_next_stage(names):
     names.verdicts["Run: ls -la"] = _SHADOWED
     log: list = []
@@ -1953,3 +1975,24 @@ def test_the_ladder_answers_the_wire_in_exactly_one_adapter():
         ("_refuse", "refuse"),
     ]
     assert tool_permission._steer_host_deny is llm_helpers._steer_host_deny
+
+
+@pytest.mark.asyncio
+async def test_a_held_bot_limit_asks_the_responder_as_a_persons_call(monkeypatch):
+    """The responder sees the call marked held, so an approver that would answer on its
+    own (an auto source, YOLO) asks a person instead (``mate_held_rules.held_call``)."""
+    from kiro_crew import mate_held_rules
+
+    monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: ["deny shell"])
+    seen: list = []
+
+    class _Sees(Scripted):
+        async def ask(self, ask: Ask) -> Answer:
+            seen.append(mate_held_rules.call_is_held())
+            return await super().ask(ask)
+
+    log: list = []
+    policy = _policy(log, responders=(_Sees(log, "callback", False),))
+    await settle(Ask(_event(), RecordingWire(log), "taskrunner:1:task1", "zxc"), policy)
+
+    assert seen == [True]

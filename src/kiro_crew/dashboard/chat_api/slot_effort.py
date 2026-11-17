@@ -1,6 +1,6 @@
 """Reasoning effort: the selection-capabilities read,
-``POST /api/chat/slots/{slot}/reasoning-effort`` and the ultracode switch beside it
-(``POST /api/chat/slots/{slot}/ultracode``).
+``POST /api/chat/slots/{slot}/reasoning-effort`` and the on/off switches beside it
+(``POST /api/chat/slots/{slot}/ultracode`` and ``POST /api/chat/slots/{slot}/fast``).
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
@@ -54,10 +56,19 @@ async def _configured_backend_for_slot(
     """
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
+    return configured_backend_for_session(effective_session_key(slot), config)
+
+
+def configured_backend_for_session(session_key: str | None, config: Any) -> str:
+    """The backend a cold start on *session_key* selects under *config*.
+
+    The session's own pick outranks a crewmate's harness pin, which outranks the
+    member backend. A pin this gateway cannot start raises
+    ``CrewmateHarnessUnavailable``.
+    """
     from kiro_crew.crewmate_harness import crewmate_backend_pin
     from kiro_crew.members import select_provider_backend, session_backend_pick
 
-    session_key = effective_session_key(slot)
     # A session created on a harness reads as that harness before it starts.
     pick = session_backend_pick(session_key)
     return select_provider_backend(
@@ -168,6 +179,9 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             source="local fallback",
         )
     ultracode = provider.ultracode_enabled()
+    fast = provider.fast_mode_enabled()
+    # Asked only of a switch that reads off: the harness names no blocker for one on.
+    fast_unavailable = provider.fast_mode_unavailable() if fast is False else None
     return web.json_response(
         {
             "known": True,
@@ -176,8 +190,11 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             "effort_levels": levels,
             "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
             **await _own_models_field(backend),
-            # Present only while the session advertises the switch.
+            # Each present only while the session advertises that switch.
             **({} if ultracode is None else {"ultracode": ultracode}),
+            **({} if fast is None else {"fast": fast}),
+            # The harness's own words for why the Fast mode switch would not stay on.
+            **({} if fast_unavailable is None else {"fast_unavailable": fast_unavailable}),
         }
     )
 
@@ -603,19 +620,58 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
 async def api_chat_slot_ultracode(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/ultracode — turn the session's ultracode switch on or off.
 
-    Body: ``{"enabled": true | false}``; answers the value the session reads back.
-    Only a live session that advertises the switch takes it (409
-    ``ultracode_not_offered``), and never while a turn runs (409 ``turn_in_flight``):
-    the write's response wait would read the harness's output beside the streaming
-    turn, the hazard the effort route defers its live push for. Nothing is persisted
-    here: the switch is the adapter's own per-session state.
+    Body: ``{"enabled": true | false}``; answers ``{"ok": true, "ultracode": <read-back>}``.
+    The refusals are :func:`_write_session_switch`'s, with the ``ultracode_`` codes.
+    """
+    return await _write_session_switch(
+        request,
+        "ultracode",
+        "ultracode",
+        read=lambda provider: provider.ultracode_enabled(),
+        write=lambda provider, enabled: provider.set_ultracode(enabled),
+    )
+
+
+async def api_chat_slot_fast_mode(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/fast — turn the session's Fast mode switch on or off.
+
+    Body: ``{"enabled": true | false}``; answers ``{"ok": true, "fast": <read-back>}``.
+    The refusals are :func:`_write_session_switch`'s, with the ``fast_`` codes.
+    """
+    return await _write_session_switch(
+        request,
+        "fast",
+        "Fast mode",
+        read=lambda provider: provider.fast_mode_enabled(),
+        write=lambda provider, enabled: provider.set_fast_mode(enabled),
+    )
+
+
+async def _write_session_switch(
+    request: web.Request,
+    key: str,
+    switch_name: str,
+    *,
+    read: Callable[[LLMProvider], bool | None],
+    write: Callable[[LLMProvider, bool], Awaitable[bool | None]],
+) -> web.Response:
+    """Write one of the session's on/off switches and answer the value it reads back.
+
+    *key* is the switch's ``selection-capabilities`` key, the key of the answer and
+    the prefix of its error codes; *switch_name* is how an error names it. *read*
+    and *write* reach the provider's reader and writer. Only a live session that
+    advertises the switch takes it (409 ``<key>_not_offered``), and never while a
+    turn runs (409 ``turn_in_flight``): the write's response wait would read the
+    harness's output beside the streaming turn, the hazard the effort route defers
+    its live push for. A write the adapter rejects answers 502 ``<key>_refused``.
+    Nothing is persisted here: the switch is the adapter's own per-session state.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if slot is None:
         return slot_not_found()
-    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_ultracode")
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, f"slot_{key}")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -631,21 +687,21 @@ async def api_chat_slot_ultracode(request: web.Request) -> web.Response:
     # session must not run its own config write beside this one.
     async with contextlib.AsyncExitStack() as _stack:
         await _stack.enter_async_context(slot._lock)
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_ultracode"):
+        if _slot_replaced_while_queued(state, slot, name, request, f"chat.slot_{key}"):
             return slot_not_found()
         session_key = effective_session_key(slot)
         await _stack.enter_async_context(_slot_switch_session_lock(session_key))
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_ultracode"):
+        if _slot_replaced_while_queued(state, slot, name, request, f"chat.slot_{key}"):
             return slot_not_found()
-        denied = _app_cancel_denied(request, slot, "chat.slot_ultracode", session_key)
+        denied = _app_cancel_denied(request, slot, f"chat.slot_{key}", session_key)
         if denied is not None:
             return denied
         provider = state.sessions.get_provider(session_key)
-        if not isinstance(provider, LLMProvider) or provider.ultracode_enabled() is None:
+        if not isinstance(provider, LLMProvider) or read(provider) is None:
             return web.json_response(
                 {
-                    "error": "this session offers no ultracode switch",
-                    "code": "ultracode_not_offered",
+                    "error": f"this session offers no {switch_name} switch",
+                    "code": f"{key}_not_offered",
                 },
                 status=409,
             )
@@ -660,17 +716,18 @@ async def api_chat_slot_ultracode(request: web.Request) -> web.Response:
                 {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
             )
         try:
-            value = await provider.set_ultracode(enabled)
+            value = await write(provider, enabled)
         except Exception as exc:
             logger.warning(
-                "set_ultracode(%s) failed for slot %s: %s: %s",
+                "%s write (%s) failed for slot %s: %s: %s",
+                key,
                 enabled,
                 name,
                 type(exc).__name__,
                 exc,
             )
-            return web.json_response({"error": str(exc), "code": "ultracode_refused"}, status=502)
+            return web.json_response({"error": str(exc), "code": f"{key}_refused"}, status=502)
         finally:
             state.sessions.release(lease_key, wake_queue=True)
-    logger.info("Slot %s ultracode switched to %s", name, value)
-    return web.json_response({"ok": True, "ultracode": value})
+    logger.info("Slot %s %s switched to %s", name, key, value)
+    return web.json_response({"ok": True, key: value})

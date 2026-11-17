@@ -271,7 +271,7 @@ class TestEveryCallerThreadsTheClaimToken:
             assert len(call.args) == 6, f"{rel}:{call.lineno} must pass the claim token"
 
     def test_the_monitor_captures_its_token_before_renderer_setup(self) -> None:
-        # The race GPT flagged: the wake claims, then awaits its renderer config.
+        # The race: the wake claims, then awaits its renderer config.
         # The acquire mints the token before the renderer setup, so a Stop +
         # successor claim in the window cannot slip past the fence or baseline.
         text = (_SRC / "messaging/dispatch.py").read_text(encoding="utf-8")
@@ -280,7 +280,7 @@ class TestEveryCallerThreadsTheClaimToken:
         assert acquire < renderer_setup
 
     def test_cron_acquire_mints_the_token_before_the_rebind_await(self) -> None:
-        # The race GPT flagged on cron: _acquire_with_model_fallback awaits
+        # The same race on cron: _acquire_with_model_fallback awaits
         # _rebind_prepared_execution after get_or_create. The token must be minted
         # between the claim and that await, in every arm, so a Stop + successor
         # during the rebind cannot make the token name the successor.

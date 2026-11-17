@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
-import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
+import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerLiveRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
@@ -157,7 +157,7 @@ export function useWebSocket() {
   // The reconnect catch-up window, closed by the new socket's connect snapshot.
   const reconnectSnapshotRef = useRef<ReconnectSnapshotWait | null>(null)
   if (reconnectSnapshotRef.current === null) {
-    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef)
+    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef, queryClient)
   }
   const reconnectSnapshot = reconnectSnapshotRef.current
   const voice = useVoicePlayback(dispatch)
@@ -561,7 +561,11 @@ export function useWebSocket() {
             break
           case 'refresh': {
             const kinds: string[] = Array.isArray(data.kinds) ? data.kinds.filter((k: unknown): k is string => typeof k === 'string') : []
-            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => dispatch(triggerRefresh()))
+            // A turn-end frame inside the window re-reads none of the config caches,
+            // but the page on screen still follows it (`liveRefreshTrigger`).
+            let othersNow = false
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => { othersNow = true; dispatch(triggerRefresh()) })
+            if (!othersNow) dispatch(triggerLiveRefresh())
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break
           }
@@ -731,7 +735,7 @@ export function useWebSocket() {
             break
           }
           case 'subagent_tool':
-            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }))
+            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; is_update?: boolean }))
             break
           case 'subagent_stalled':
             dispatch(sseSubagentStalled(data as { slot: string; id: string; stalled: boolean; idle_secs?: number }))
@@ -940,7 +944,7 @@ export function useWebSocket() {
             break
           }
           case 'chat.side_result':
-            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string }))
+            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown }))
             break
           case 'chat.side_closed': {
             // The slot's side conversation was closed (Refresh context in another

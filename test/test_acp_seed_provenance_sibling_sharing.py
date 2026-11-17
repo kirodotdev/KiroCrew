@@ -36,7 +36,7 @@ from acp_seed_provenance_helpers import (
 from kiro_crew import model_registry as mr
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import ClaudeAcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import default_timeout
@@ -446,7 +446,9 @@ class TestSharedPermissionSurfaceEligibility:
             return real_persist(**kwargs)
 
         monkeypatch.setattr(sp, "_persist", refuse_holder_drops)
-        monkeypatch.setattr(AcpClient, "_settings_path_holds", staticmethod(lambda _p, _e: False))
+        monkeypatch.setattr(
+            ClaudeAcpClient, "_settings_path_holds", staticmethod(lambda _p, _e: False)
+        )
         sibling = _client(tmp_path, permission_mode="default")
         sibling._write_claude_local_settings()
 
@@ -735,7 +737,9 @@ class TestSharedPermissionSurfaceCreateRaces:
             return real_open(p, flags, *args, **kwargs)
 
         monkeypatch.setattr(os, "open", winner_wrote_and_persisted)
-        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+        monkeypatch.setattr(
+            ClaudeAcpClient, "_log_declined_share", lambda self, p: declines.append(p)
+        )
         loser._write_claude_local_settings()
 
         assert fired, "the race window must have been exercised"
@@ -777,7 +781,9 @@ class TestSharedPermissionSurfaceCreateRaces:
             return real_open(p, flags, *args, **kwargs)
 
         monkeypatch.setattr(os, "open", cross_process_winner_landed)
-        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+        monkeypatch.setattr(
+            ClaudeAcpClient, "_log_declined_share", lambda self, p: declines.append(p)
+        )
         loser._write_claude_local_settings()
 
         assert fired, "the race window must have been exercised"

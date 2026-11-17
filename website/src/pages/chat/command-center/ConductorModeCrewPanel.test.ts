@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import type { CrewWorker } from '../../../types'
 import type { WorkBoardItem } from '../../../api/crewBoard'
 import type { SessionSummary } from '../../../types/sessionSummary'
-import { CREW_BOARD_EXPANDED_KEY, crewAncestors, crewRowOpen, crewTree, doneWhen, goalScope, goalSentence, milestoneSentence, milestoneState, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './ConductorModeCrewPanel'
+import { CREW_BOARD_EXPANDED_KEY, crewAncestors, crewRowOpen, crewTree, doneWhen, goalDoneWhen, goalScope, goalSentence, latestChange, milestoneSentence, milestoneState, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './ConductorModeCrewPanel'
 
 const item = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
@@ -31,10 +31,34 @@ describe('Overview', () => {
     expect(goalSentence('Plan a small tea shop launch (UI review demo). Then more.')).toBe('Plan a small tea shop launch.')
   })
 
-  it('cuts a long goal on a word boundary, never mid-word', () => {
-    const out = goalSentence('Plan a small tea shop launch for next month with a drinks menu and an opening poem and a price list', 40)
-    expect(out.endsWith('…')).toBe(true)
-    expect(out.slice(0, -1).split(' ').every(w => 'Plan a small tea shop launch for next month with'.split(' ').includes(w))).toBe(true)
+  it('keeps a long goal whole: the Overview wraps it', () => {
+    const long = 'Plan a small tea shop launch for next month with a drinks menu and an opening poem and a price list and a sign for the door.'
+    expect(goalSentence(`${long} Then more.`)).toBe(long)
+  })
+
+  it('reads the goal\'s own Done when to its sentence end, not to a dot inside a number', () => {
+    expect(goalDoneWhen('Speed up replies. Done when: a reply takes 0.63 s or less on Linux. Plan: profile.')).toEqual({ at: 18, what: 'a reply takes 0.63 s or less on Linux' })
+    expect(goalDoneWhen('Speed up replies. Done when the bench is green Plan: profile')?.what).toBe('the bench is green')
+    expect(goalDoneWhen('Speed up replies.')).toBeNull()
+  })
+
+  it('reads the goal\'s latest Changed entry and its date', () => {
+    const goal = 'Ship it. Done when: merged. Plan: a; b. Changed: 2026-11-12 09:00 first plan; 2026-11-14 10:20Z the owner added three tasks; one merged.'
+    expect(latestChange(goal)).toEqual({ text: '2026-11-14 10:20Z the owner added three tasks; one merged', stamp: '2026-11-14 10:20Z', at: Date.parse('2026-11-14T10:20:00Z') })
+    // Seconds and an offset keep the instant: a UTC stamp never reads as local time.
+    expect(latestChange('Ship it. Changed: 2026-11-14T10:20:30Z review completed.')?.at).toBe(Date.parse('2026-11-14T10:20:30Z'))
+    expect(latestChange('Ship it. Changed: 2026-11-14 18:20+08:00 review completed.')).toMatchObject({ stamp: '2026-11-14 18:20+08:00', at: Date.parse('2026-11-14T10:20:00Z') })
+    expect(latestChange('Ship it. Changed: 2026-11-14T10:20:00.000Z review completed.')).toMatchObject({ stamp: '2026-11-14T10:20:00.000Z', at: Date.parse('2026-11-14T10:20:00Z') })
+    expect(latestChange('Ship it. Changed: 2026-11-14 18:20:00.5+0800 review completed.')?.at).toBe(Date.parse('2026-11-14T10:20:00.500Z'))
+    // A zone it cannot read gives no age rather than a wrong one.
+    expect(latestChange('Ship it. Changed: 2026-11-14 10:20PST review completed.')).toMatchObject({ stamp: '', at: null })
+    expect(latestChange('Ship it. Changed: 2026-11-14T10:20:30,5Z review completed.')).toMatchObject({ stamp: '', at: null })
+    // A bare time carries no date, so no age is drawn from it.
+    expect(latestChange('Ship it. Changed: 10:20 re-planned.')).toEqual({ text: '10:20 re-planned', stamp: '', at: null })
+    expect(latestChange('Ship it. Changed: re-planned after the review.')?.text).toBe('re-planned after the review')
+    // No Changed entry yet: nothing to show.
+    expect(latestChange('Ship it. Done when: merged.')).toBeNull()
+    expect(latestChange('Ship it. Changed: ')).toBeNull()
   })
 
   it('reads a stated scope and nothing else', () => {
@@ -149,9 +173,13 @@ describe('milestoneState', () => {
   it('done and next: as before', () => {
     expect(milestoneState(item({ state: 'accepted' }), false)).toBe('done')
     expect(milestoneState(item({ status: 'done' }), false)).toBe('done')
-    expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('done')
     expect(milestoneState(item({ status: null }), false)).toBe('next')
     expect(milestoneState(item({ status: null, alive: 'closed' }), false)).toBe('next')
+  })
+
+  it('a rejected or abandoned item is not done, whatever its last report said', () => {
+    expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('not_done')
+    expect(milestoneState(item({ status: 'done', terminal: true, state: 'rejected' }), true)).toBe('not_done')
   })
 })
 
@@ -170,10 +198,10 @@ describe('Recap', () => {
     expect(summaryRecap({ ...summary('The drinks menu is ready.'), enabled: false }, titles)).toBe('')
   })
 
-  it('builds the milestone sentence', () => {
-    expect(milestoneSentence(4, 8, ['Disk check', 'Decor team'], ['Launch-day checklist'])).toBe('4 of 8 done; Disk check and Decor team wait on you; Launch-day checklist is running.')
+  it('builds the milestone sentence, counting the running ones instead of naming them', () => {
+    expect(milestoneSentence(4, 8, ['Disk check', 'Decor team'], ['Launch-day checklist'])).toBe('4 of 8 done; Disk check and Decor team wait on you; 1 running.')
     expect(milestoneSentence(5, 6, [], [], ['Supplies list'])).toBe('5 of 6 done; Supplies list is stuck.')
-    expect(milestoneSentence(4, 6, [], ['Poem'], ['Supplies list'], ['Drinks menu'])).toBe('4 of 6 done; Supplies list is stuck; Drinks menu has gone quiet; Poem is running.')
+    expect(milestoneSentence(4, 6, [], ['Poem', 'Menu'], ['Supplies list'], ['Drinks menu'])).toBe('4 of 6 done; Supplies list is stuck; Drinks menu has gone quiet; 2 running.')
   })
 })
 

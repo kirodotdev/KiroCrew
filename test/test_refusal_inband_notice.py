@@ -459,7 +459,7 @@ class TestCauseSpecificWording:
     def test_policy_wording_is_unchanged_by_default(self):
         # Every pre-existing caller passes no cause; the policy text must be
         # byte-identical to what shipped, or the model's correction changes
-        # meaning on a path this change was not meant to touch.
+        # meaning on a path that passes no cause.
         assert build_refusal_steer_notice("bash", "denied") == build_refusal_steer_notice(
             "bash", "denied", cause=DENY_CAUSE_POLICY
         )
@@ -547,7 +547,7 @@ class TestInvalidNameExplainsItself:
         # The card's always-visible summary is keyed on this token. Without it the
         # card reads "safety policy blocked the call" for a deny no policy judged,
         # sending the reader to audit a rule that does not exist -- the same
-        # cause-blind wording this change removes for the model, left for the human.
+        # cause-blind wording the model is spared, left for the human.
         slot = _Slot()
         await _reject_invalid_tool(
             _SteerClient(),

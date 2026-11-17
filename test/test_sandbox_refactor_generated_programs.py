@@ -37,6 +37,7 @@ import pytest
 from test_sandbox_launcher_program import program_on_disk, rendered_payload
 
 from kiro_crew import sandbox, sandbox_launcher, sandbox_plan
+from kiro_crew.apps import credential_masks
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -146,6 +147,10 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: True)
     for name, table in _PINNED_TABLES.items():
         monkeypatch.setattr(sandbox, name, table)
+    # The shipped built-ins' ``credentialMasks`` are a table too: a declaration added to
+    # one leaves these goldens alone, as a leaf added to a core table does.
+    monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
+    credential_masks.clear_cache()
     assert type(sandbox._sandbox_policy()).__name__ == "DefaultSandboxPolicy"
     return pinned
 
@@ -337,6 +342,9 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/op/.kirocrew/mcp",
         "<ROOT>/crew/apps",
         "<ROOT>/crew/mcp",
+        "<ROOT>/op/.kiro/crew/apps/aws-control",
+        "<ROOT>/op/.kirocrew/apps/aws-control",
+        "<ROOT>/crew/apps/aws-control",
     ],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
@@ -623,6 +631,9 @@ _PROFILE_GOLDEN = """\
 (deny file-write* (literal "<ROOT>/op/.kirocrew/mcp"))
 (deny file-write* (literal "<ROOT>/crew/apps"))
 (deny file-write* (literal "<ROOT>/crew/mcp"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/apps/aws-control"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/apps/aws-control"))
+(deny file-write* (literal "<ROOT>/crew/apps/aws-control"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/subagents"))
 (deny file-write* (subpath "<ROOT>/op/.kiro/crew/subagents"))
 (deny file-link (subpath "<ROOT>/op/.kiro/crew/subagents"))

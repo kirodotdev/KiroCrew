@@ -8,8 +8,29 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
-# The ``_session/steering`` readers, re-exported for existing importers.
-from kiro_crew.acp.steering_wire import steering_advertised, steering_outcome  # noqa: F401
+from kiro_crew.acp.provider_labels import (  # noqa: F401 - re-exported for existing importers
+    PROVIDER_LABEL_ANTIGRAVITY,
+    PROVIDER_LABEL_BY_BACKEND,
+    PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_CODEX,
+    PROVIDER_LABEL_COPILOT,
+    PROVIDER_LABEL_DEEPSEEK,
+    PROVIDER_LABEL_DEFAULT,
+    PROVIDER_LABEL_GOOSE,
+    PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_MIMOCODE,
+    PROVIDER_LABEL_OPENCODE,
+    PROVIDER_LABEL_PI,
+    PROVIDER_LABEL_STRANDS,
+)
+
+# The steer-request readers, re-exported for existing importers.
+from kiro_crew.acp.steering_wire import (  # noqa: F401
+    goose_announced_run,
+    goose_steer_echo_id,
+    steering_advertised,
+    steering_outcome,
+)
 
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
@@ -18,6 +39,7 @@ from kiro_crew.acp.steering_wire import steering_advertised, steering_outcome  #
 # existing ``from kiro_crew.acp.types import ACP_BACKEND_*`` call site is
 # unchanged — see the "ACP Backend Identifiers" section below for why they moved.
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -36,6 +58,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_COMPACTION_REPORTED,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
@@ -174,6 +197,9 @@ EVENT_STRUCTURED_STATUS = "structured_status"
 #: (kiro-cli's KAS or V2 engine). Carries an ``engine_fallback.ModelFallbackNotice``
 #: on :attr:`AcpEvent.model_fallback`; see ``acp/engine_fallback.py``.
 EVENT_MODEL_FALLBACK = "model_fallback"
+#: A harness reported something the person should see outside the reply, carried on
+#: :attr:`AcpEvent.harness_notice`: ``acp/harness_notices.py``, ``acp/raw_sdk_tasks.py``.
+EVENT_HARNESS_NOTICE = "harness_notice"
 
 # ── ACP Protocol Methods ──
 
@@ -196,6 +222,14 @@ METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
 # (``ACP_BACKENDS_STEERING_REQUEST``) take a user's mid-turn message on, and the
 # outcomes that decide delivery.
 METHOD_SESSION_STEERING = "_session/steering"
+# goose's own mid-turn steer request, ``{sessionId, expectedRunId, prompt}``,
+# answered ``{runId, messageId}``; spoken by ``AcpClient`` and the shared handle.
+METHOD_GOOSE_SESSION_STEER = "_goose/unstable/session/steer"
+# Members of ``ACP_BACKENDS_STEERING_REQUEST`` whose own steer request a driver
+# speaks in place of ``_session/steering``, which they never advertise: offered a
+# steer without the handshake's ``_meta.steering.supported``. Read by
+# ``AcpClient`` and by the shared runtime's ``AcpSessionHandle`` alike.
+OWN_STEERING_REQUEST_METHODS: dict[str, str] = {ACP_BACKEND_GOOSE: METHOD_GOOSE_SESSION_STEER}
 STEERING_INJECTED = "injected"
 STEERING_STARTED_NEW_TURN = "startedNewTurn"
 # Bounds on what a session holds for steers it has sent and not settled: at most
@@ -283,6 +317,11 @@ METHOD_KAS_CODE_INTELLIGENCE = "_kiro/codeIntelligence"
 #: through kiro-cli 2.27.1 and 2.29.0; captured within one process, KAS 0.66.62
 #: through kiro-cli 2.34.0, in ``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``).
 METHOD_SESSION_CLOSE = "session/close"
+#: The standard ACP delete verb, advertised as ``sessionCapabilities.delete``. A
+#: REQUEST with ``{"sessionId": ...}``, answered ``{}``. pi-acp serves it by
+#: unlinking pi's session file and dropping the id from its own session map
+#: (pi-acp 0.0.34), so it is how a disposable pi session's record goes.
+METHOD_SESSION_DELETE = "session/delete"
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
 METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"
@@ -345,9 +384,9 @@ JSONRPC_METHOD_NOT_FOUND = -32601
 # kiro-cli exposes its task/TODO list as an ordinary tool call whose real name
 # arrives in `_meta.kiro.toolName` (the visible `title` is a prose sentence like
 # "Creating task list: …", so it is NOT a reliable discriminator). Note this is
-# NOT the ACP `plan` session update: kiro-cli 2.14.0 never emits `plan`, so
-# UPDATE_PLAN below stays inert and the TODO list is recovered from this tool's
-# rawOutput instead.
+# NOT the ACP `plan` session update: kiro-cli 2.14.0 never emits `plan` (claude's
+# is read by `acp.plan_checklist`), so the kiro TODO list is recovered from this
+# tool's rawOutput instead.
 KIRO_TOOL_TODO_LIST = "todo_list"
 # Hard cap on tasks retained per slot. The list is agent-authored and reaches
 # the browser on every reconnect, so it is bounded server-side.
@@ -389,10 +428,10 @@ TODO_ID_MAX = 64
 # with fields. opencode's ACP server routes tool permissions through
 # `requestPermission` and never calls the SDK's `unstable_createElicitation`;
 # pi's gated `bash` call is measured in `test_pi_real_adapter.py` under Crew's
-# own handshake and arrives as `session/request_permission`; kiro-cli, KAS,
-# claude-agent-acp and goose never send `elicitation/create`. Both modes are
-# declared because both are rendered: a form from the requested schema, and a
-# URL the person is sent to.
+# own handshake and arrives as `session/request_permission`; kiro-cli, KAS and
+# goose never send `elicitation/create`, and claude-agent-acp sends it for
+# AskUserQuestion, an MCP server's ask and a model-refusal retry. Both modes are
+# declared because both are rendered: a form from the requested schema, and a URL the person opens.
 #
 # `fs` and `terminal` stay false for the same reason, and always have: Kiro Crew
 # does not serve the agent's file or terminal requests over ACP -- the agent uses
@@ -438,49 +477,6 @@ KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
 # for the same reason the backend identifiers do: a consumer outside this package
 # must be able to ask a capability question without importing ``kiro_crew.acp``,
 # whose ``__init__`` pulls in the client and runtime.
-
-# ── Provider labels ──
-# The backend identity key persisted in the session map. It indexes three
-# things, so every producer must agree on it: resume compatibility
-# (detect_provider_switch), session-map persistence, and session-file cleanup
-# routing. Defined here rather than in providers.acp because session.py needs
-# the vocabulary and cannot import that module at module scope.
-#
-# An absent label means kiro-cli, which is the default backend.
-PROVIDER_LABEL_DEFAULT = "acp"
-PROVIDER_LABEL_CLAUDE = "claude_code"
-PROVIDER_LABEL_KAS = "kas"
-PROVIDER_LABEL_CODEX = "codex"
-PROVIDER_LABEL_OPENCODE = "opencode"
-PROVIDER_LABEL_PI = "pi"
-PROVIDER_LABEL_GOOSE = "goose"
-PROVIDER_LABEL_DEEPSEEK = "deepseek"
-PROVIDER_LABEL_COPILOT = "copilot"
-PROVIDER_LABEL_STRANDS = "strands"
-PROVIDER_LABEL_MIMOCODE = "mimocode"
-
-#: Backend id -> its label. The mapping is what ``provider_label`` resolves
-#: through, so a harness's label and the answer a session persists under are one
-#: fact rather than a constant here and a branch in ``providers.acp``. Closed on
-#: purpose: an id absent from it persists as a kiro session, which is why
-#: ``test_harness_parity`` asserts the keys are exactly ``ACP_BACKENDS_KNOWN``.
-#:
-#: kiro-cli's own id is the empty string and its label is the DEFAULT, so it is a
-#: row here like every other harness rather than the value a missing row falls
-#: back to -- the fallback exists for an id this build does not know at all.
-PROVIDER_LABEL_BY_BACKEND: dict = {
-    ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
-    ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
-    ACP_BACKEND_STRANDS: PROVIDER_LABEL_STRANDS,
-    ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
-    ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
-    ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
-    ACP_BACKEND_MIMOCODE: PROVIDER_LABEL_MIMOCODE,
-    ACP_BACKEND_PI: PROVIDER_LABEL_PI,
-    ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
-    ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
-    ACP_BACKEND_COPILOT: PROVIDER_LABEL_COPILOT,
-}
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
@@ -551,6 +547,7 @@ UPDATE_CURRENT_MODE = "current_mode_update"
 UPDATE_CONFIG_OPTION = "config_option_update"
 UPDATE_SESSION_INFO = "session_info_update"
 UPDATE_USAGE = "usage_update"
+UPDATE_NOTICE = "notice"
 
 # Updates we recognise but don't yet surface (plumbing-only). Listed here so the
 # "unhandled session update" log doesn't fire for them.
@@ -567,6 +564,9 @@ KNOWN_SESSION_UPDATES = frozenset(
         UPDATE_CONFIG_OPTION,
         UPDATE_SESSION_INFO,
         UPDATE_USAGE,
+        UPDATE_NOTICE,
+        "compaction_update",
+        "compaction_summary_chunk",
     }
 )
 
@@ -1000,6 +1000,9 @@ class AcpEvent:
     #: Set on ``EVENT_MODEL_FALLBACK``: the engine's fallback decision, an
     #: ``engine_fallback.ModelFallbackNotice``. ``None`` on every other event.
     model_fallback: Any = None
+    #: A ``HarnessNotice``, or a ``raw_sdk_tasks`` ``TaskEndNotice`` / ``RetryNotice``,
+    #: on ``EVENT_HARNESS_NOTICE``; a ``HarnessNotice`` on the chunk an adapter notice rides.
+    harness_notice: Any = None
     #: True when Kiro Crew fabricated this terminal event because the provider
     #: omitted its result frame. Consumers must not treat it as raw completion
     #: evidence even when compatibility requires ``stop_reason=end_turn``.
@@ -1219,6 +1222,12 @@ class AcpEvent:
     #: denies (``AcpSessionHandle.kas_spec_denies``, a
     #: ``platform.spec_denied_grant.SpecDeniedGrant``); ``None`` everywhere else.
     spec_denied_grant: Any = None
+    #: spec_unjudged_denies: on the same requests, a Bot worker's ``deniedCommands``
+    #: entries neither KAS nor the gate can judge
+    #: (``AcpSessionHandle.kas_spec_unjudged_denies``). The gate's
+    #: ``spec-unjudged-denies`` tier then refuses a shell call that is not read-only.
+    #: Empty everywhere else, which refuses nothing.
+    spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = ()
     #: spec_shell_readonly: on the same requests, whether the agent's spec sets
     #: ``autoAllowReadonly: true`` beside ``denyByDefault``
     #: (``AcpSessionHandle.kas_spec_shell_readonly``). The gate's
@@ -1292,6 +1301,9 @@ class AcpEvent:
     # (no previous content). ``diff_path`` is the path from the content block.
     diff_old_text: str | None = None
     diff_path: str = ""
+    #: The argument naming a ``read`` call's file, on a harness whose read tool has one
+    #: (``acp.read_path_arg``); empty everywhere else.
+    read_path_arg: str = ""
     #: The typed status carried by an ``EVENT_STRUCTURED_STATUS`` event, and
     #: attached to a tool-stall ``EVENT_COMPLETE`` when the watchdog classified
     #: the stall (``wait_reason=waiting_input``, ``safe_retry``). ``None`` on

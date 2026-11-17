@@ -180,11 +180,12 @@ class TestSetupElectronOnly:
         out = capsys.readouterr().out
         assert "Desktop App" in out
 
-    def test_electron_only_returns_early(self, monkeypatch):
+    def test_electron_only_returns_early(self, capsys, monkeypatch):
         monkeypatch.setattr("kiro_crew.cli_setup._setup_electron", lambda: True)
         with patch("kiro_crew.agent.install_agent") as mock_agent:
             _setup(electron_only=True)
         mock_agent.assert_not_called()
+        assert "Kiro Crew Setup" not in capsys.readouterr().out
 
 
 class TestSetupDesktopPrompt:

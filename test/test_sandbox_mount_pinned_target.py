@@ -880,6 +880,38 @@ def test_a_leaf_absent_under_a_directory_this_launcher_masked_skips(tmp_path: Pa
     assert _pin(run, leaf, stat.S_ISDIR, require_present=True) == (None, None)
 
 
+def test_a_leaf_under_a_masked_dir_that_a_later_mask_covered_skips(tmp_path: Path) -> None:
+    """A masked directory hidden in turn by a mask placed over its parent still covers.
+
+    The readiness probe hides the whole data home, and the planner lists ``scratch``
+    before it, so ``scratch`` gets its own stand-in first and the data home's stand-in
+    then covers that too. By the file loop, ``scratch/.trees.json`` and ``scratch``
+    itself are both absent, and the pass carried an expectation for the index. The
+    walk must go on past the absent ``scratch`` to the data home's stand-in rather than
+    read the absence as a vanished object. The control: the same absence with
+    nothing masked above ``scratch`` still refuses.
+    """
+    crew = tmp_path / "home" / ".kiro" / "crew"
+    scratch = crew / "scratch"
+    index = scratch / ".trees.json"
+    (scratch / "runtime-a").mkdir(parents=True)
+    index.write_text("{}", encoding="utf-8")
+    seen = os.lstat(index)
+    occupants = {str(index): [seen.st_dev, seen.st_ino, 0, 2, seen.st_dev, seen.st_ino]}
+    dirs = [str(scratch), str(index), str(crew)]
+
+    ran = _run(tmp_path, occupants=occupants, sensitive_dirs=dirs, sensitive_files=dirs)
+
+    assert ran.refusal is None, ran.refusal
+    assert not scratch.exists(), "the data home's stand-in is not over scratch"
+
+    # Control: scratch masked, then removed with no mask above it to explain the absence.
+    run = launch(tmp_path, payload(mask_occupants=occupants))
+    run.masked_names[str(scratch)] = ran.launch.masked_names[str(scratch)]
+    message = refusal(_pin, run, index, stat.S_ISREG)
+    assert message is not None and "has vanished" in message
+
+
 def test_an_absent_leaf_skips_only_when_the_ancestor_still_reaches_its_stand_in(
     tmp_path: Path,
 ) -> None:

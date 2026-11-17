@@ -3,9 +3,9 @@
 
 ``web_fetch.trusted`` under a bare ``web_fetch`` allow, and ``subagent.trustedAgents``
 whose literal names a carried ``subagent`` allow lists, are left out of the copy and
-previewed as ``skipped`` ("Already has") instead of refusing the add. Kit time only:
-the worker merge still refuses either key in a Bot's file (owner decision,
-``docs/decisions``).
+previewed as ``skipped`` ("Already has"). Kit time only: the worker merge still
+refuses ``web_fetch.trusted`` in a Bot's file, and carries a ``trustedAgents`` no
+allow covers as written (owner decisions, ``docs/decisions``).
 """
 
 from __future__ import annotations
@@ -203,11 +203,11 @@ def test_nothing_is_left_out_when_the_template_is_refused_for_something_else(hom
     user, _ = home
     settings = {
         "web_fetch": {"trusted": TRUSTED},
-        "execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]},
+        "fs_write": {"fallbackAction": "deny"},
     }
     _use(user, {**ATLAS, "toolsSettings": settings})
     detail = _refused("toolsSettings.web_fetch.trusted", alone=False)
-    assert "toolsSettings.execute_bash.deniedCommands" in detail
+    assert "toolsSettings.fs_write.fallbackAction" in detail
 
 
 @pytest.mark.parametrize(
@@ -224,7 +224,7 @@ def test_nothing_is_left_out_when_the_template_is_refused_for_something_else(hom
                 "subagent": {"trustedAgents": ["reviewer"]},
                 "use_subagent": {"trustedAgents": ["builder"]},
             },
-            "toolsSettings.subagent.trustedAgents",
+            None,
             "toolsSettings.use_subagent",
             id="subagent",
         ),
@@ -234,13 +234,15 @@ def test_nothing_is_left_out_when_the_tool_is_written_under_two_spellings(
     home, settings, key, dropped
 ):
     """kiro-cli keeps one spelling of a tool and drops the other; leaving a key out
-    must not change which one the worker keeps, so the refusal names both."""
+    must not change which one the worker keeps, so the refusal names the dropped
+    spelling (and a key the worker would not carry anyway)."""
     user, mates = home
     rules = [WEB_FETCH_ALLOW, SUBAGENT_ALLOW]
     _use(user, {**ATLAS, "permissions": {"rules": rules}, "toolsSettings": settings})
     before = _file(mates)
     detail = _refused(dropped, alone=False)
-    assert key in detail
+    if key:
+        assert key in detail
     assert _file(mates) == before
 
 
@@ -273,15 +275,17 @@ def test_trusted_agents_a_carried_allow_names_are_left_out_as_already_has(home, 
         pytest.param(SUBAGENT_ALLOW, [], id="an-empty-list"),
     ],
 )
-def test_trusted_agents_no_carried_allow_covers_stay_refused(home, allow, trusted):
-    user, _ = home
+def test_trusted_agents_no_carried_allow_covers_are_carried_as_written(home, allow, trusted):
+    user, mates = home
     template = {
         **ATLAS,
         "permissions": {"rules": [allow]},
         "toolsSettings": {"subagent": {"trustedAgents": trusted}},
     }
     _use(user, template)
-    _refused("toolsSettings.subagent.trustedAgents")
+    rows = _rows(_add())
+    assert ("toolsSettings", "subagent", "added") in rows
+    assert _file(mates)["toolsSettings"] == {"subagent": {"trustedAgents": trusted}}
 
 
 # --- session start is unchanged ----------------------------------------------------
@@ -289,13 +293,10 @@ def test_trusted_agents_no_carried_allow_covers_stay_refused(home, allow, truste
 
 @pytest.mark.parametrize(
     ("settings", "named"),
-    [
-        ({"web_fetch": {"trusted": TRUSTED}}, "toolsSettings.web_fetch.trusted"),
-        ({"subagent": {"trustedAgents": ["reviewer"]}}, "toolsSettings.subagent.trustedAgents"),
-    ],
+    [({"web_fetch": {"trusted": TRUSTED}}, "toolsSettings.web_fetch.trusted")],
 )
 def test_a_hand_edited_bot_file_holding_the_key_still_fails_closed(settings, named):
-    """The leave-out runs at kit time only: the worker merge refuses either key."""
+    """The leave-out runs at kit time only: the worker merge refuses the key."""
     file_spec = {
         "name": "pixel",
         "prompt": "",

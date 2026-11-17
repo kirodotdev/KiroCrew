@@ -148,6 +148,10 @@ class AcpProvider(LLMProvider):
 
     # Fields an owner member first sets, declared so the class names them.
     _picker_probe_at: float
+    #: A chat-sharing placement resolved before the start chose its arm, for a
+    #: harness shared only for chats (``acp_lifecycle._chat_takes_shared_runtime``),
+    #: consumed by the runtime start. None otherwise.
+    _prejoined_chat_share: Any = None
 
     reports_effort_support = True
     approval_withdrawable = True
@@ -219,6 +223,12 @@ class AcpProvider(LLMProvider):
             kwargs["agent"] = agent
         self.member_context = member_context
         self.memory_mode = memory_mode
+        # Allocation sets the session's own mode; ``None`` leaves it to the runtime,
+        # which disables KAS memory only while orchestrator memory is on. After a
+        # start it holds the mode the session actually stated.
+        self.kas_memory_mode: str | None = None
+        # A failed load creates a SID under the new request, not the saved policy.
+        self.kas_memory_new_mode: str | None = self.kas_memory_mode
         # The account era this start read and the reader it came from, written by
         # the allocator immediately before ``start()``. The chat-sharing placement
         # keys a shared process on the era and re-reads it after acquiring
@@ -522,12 +532,19 @@ class AcpProvider(LLMProvider):
     @property
     def tested_version_notice(self) -> str:
         """The notice when this session's harness reports a release outside the one
-        Crew tested it on (goose, codex, claude and pi today), else ``""``. A warning, never a refusal.
+        Crew tested it on (goose, codex, claude, pi and kiro-cli today, and the kiro-cli
+        a KAS relay runs under), else ``""``. A warning, never a refusal.
         """
         from kiro_crew.acp.client_turn_control import untested_version_issue
 
-        backend = str(getattr(self._client, "backend", "") or "")
-        return untested_version_issue(backend, self.agent_version)
+        # No default: a client with no backend is not kiro-cli, whose id is "".
+        backend = getattr(self._client, "backend", None)
+        if isinstance(backend, str) and (
+            notice := untested_version_issue(backend, self.agent_version)
+        ):
+            return notice
+        notice = getattr(self._client, "kas_untested_version_notice", "")
+        return notice if isinstance(notice, str) else ""
 
     @property
     def known_limitation_notice(self) -> str:
@@ -1022,6 +1039,11 @@ class AcpProvider(LLMProvider):
             return self._client.native_context_documents
         return {}
 
+    @property
+    def session_head_held(self) -> bool:
+        # Only the shared runtime's session records a head (KAS, kiro_crew.session_head).
+        return isinstance(self._client, AcpSessionProvider) and self._client.session_head_held
+
     def note_user_message(self, text: str) -> None:
         # Only the shared runtime's session starts a KAS sign-in; the direct
         # client gets the engine's own OAuth requests and has no trigger.
@@ -1227,7 +1249,8 @@ class AcpProvider(LLMProvider):
         """Whether a fresh conversation can start on this session's live process now.
 
         True on the shared runtime of a backend whose session teardown evicts
-        (``ACP_BACKENDS_SESSION_EVICTION``), and not for a session placed on a remote
+        (``ACP_BACKENDS_SESSION_EVICTION``), unless a closed session leaves its MCP
+        servers running (``AcpSessionProvider.close_leaves_mcp_servers``), and not for a session placed on a remote
         or cloud workspace, whose session start records its placement
         (``record_cloud_session``) where :meth:`new_conversation` does not. A dead
         process is not read here: ``AcpSessionProvider.new_conversation`` refuses it
@@ -1240,6 +1263,7 @@ class AcpProvider(LLMProvider):
         return (
             isinstance(client, AcpSessionProvider)
             and client.backend in ACP_BACKENDS_SESSION_EVICTION
+            and not client.close_leaves_mcp_servers
             and remote_workspace_for(self._owning_session_key()) is None
         )
 
@@ -1421,6 +1445,9 @@ class AcpProvider(LLMProvider):
     _apply_initial_effort = _acp_model_effort._apply_initial_effort
     ultracode_enabled = _acp_model_effort.ultracode_enabled
     set_ultracode = _acp_model_effort.set_ultracode
+    fast_mode_enabled = _acp_model_effort.fast_mode_enabled
+    fast_mode_unavailable = _acp_model_effort.fast_mode_unavailable
+    set_fast_mode = _acp_model_effort.set_fast_mode
     # A cold start on a shared ``AcpRuntime``: ``kiro_crew.providers.acp_runtime_start``.
     _start_kiro_runtime = _acp_runtime_start._start_kiro_runtime
     _emit_kiro_startup_metric = _acp_runtime_start._emit_kiro_startup_metric
@@ -1450,7 +1477,6 @@ class AcpProvider(LLMProvider):
     steer = _acp_turns.steer
     _inline_turn_finished_cleanly = _acp_turns._inline_turn_finished_cleanly
     wait_for_compaction = _acp_turns.wait_for_compaction
-    hold_chat_turn_gate = _acp_turns.hold_chat_turn_gate
 
 
 def is_claude_backend(provider: Any) -> bool:

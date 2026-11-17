@@ -1,6 +1,7 @@
 """The gates and checks every Crew Members route shares.
 
-The existence-hiding 404 for an app-token caller, the SEL row a granted owner read
+The existence-hiding 404 for an app-token caller, the one scope gate an app token
+passes to reach a Bot (``_app_bot_gate``), the SEL row a granted owner read
 leaves, the late-bound SEL accessor, and the name questions the routes ask of a slug:
 which addressable crew names derive it, and whether any registered crew still owns it.
 
@@ -10,6 +11,7 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
@@ -55,6 +57,54 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     return web.json_response({"error": "not found", "code": "not_found"}, status=404)
 
 
+def _not_found() -> web.Response:
+    return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+
+
+async def _app_bot_gate(
+    request: web.Request, scope: str, operation: str, slug: str | None = None
+) -> tuple[str, tuple[str, ...]] | web.Response:
+    """``(app, ticked Bot slugs)`` for an app token holding *scope*, else the 404 to send.
+
+    The one door an app token has into the Bots (``apps.bot_grants``): the app's
+    approved ``permissions.bots`` must hold *scope*, and, when *slug* is given, the
+    owner must have ticked that Bot for the app. Every refusal is the same 404 the
+    app-caller guard sends, so an app cannot tell a Bot it was not given from one
+    that does not exist. Only call it for an app-token request.
+    """
+    from kiro_crew.apps.bot_grants import app_bot_scopes, app_granted_bots
+
+    request_app = request.get("app", "")
+    if not request_app:
+        return _not_found()
+    scopes = await asyncio.to_thread(app_bot_scopes, request_app)
+    if not scopes:
+        # An app with no Bot scope at all is refused, and audited, exactly as before
+        # the scopes existed.
+        denied = await _deny_app_caller(request, operation)
+        return denied if denied is not None else _not_found()
+    ticked = await asyncio.to_thread(app_granted_bots, request_app) if scope in scopes else ()
+    reason = ""
+    if scope not in scopes:
+        reason = f"permissions.bots does not grant {scope!r}"
+    elif slug is not None and slug not in ticked:
+        reason = "the owner has not given this Bot to the app"
+    try:
+        _sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied" if reason else "allowed",
+            source="app_bot_scope",
+            resources=slug or "",
+            error=reason,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+    if reason:
+        return _not_found()
+    return request_app, ticked
+
+
 def _audit_owner_read(request: web.Request, operation: str) -> None:
     """Record an owner gate grant, as the briefing and rules reads do.
 
@@ -75,10 +125,10 @@ def _audit_owner_read(request: web.Request, operation: str) -> None:
 
 
 def _audit_teammate_read(request: web.Request, operation: str) -> None:
-    """Record a relay teammate's granted read, as :func:`_audit_owner_read` records the owner's.
+    """Record a relay teammate's granted request, as :func:`_audit_owner_read` records the owner's.
 
     Filed under the relay caller's own audit label (``relay:<Kiro user ID>``), so the
-    trail says which teammate read the roster. Best effort, like the owner's row.
+    trail says which teammate read or changed which Bot. Best effort, like the owner's row.
     """
     from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 
@@ -93,6 +143,75 @@ def _audit_teammate_read(request: web.Request, operation: str) -> None:
         )
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _audit_teammate_denied(request: web.Request, operation: str, resources: str) -> None:
+    """Record a relay teammate's refused request, under their relay label. Best effort."""
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+
+    relayed = published_relay_caller(request)
+    try:
+        _sel().log_api_access(
+            caller=relayed.audit_label if relayed is not None else "",
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=resources,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _teammate_reaches_bot(*, slug: str | None = None, name: str | None = None) -> bool:
+    """Whether a relay teammate may reach the Bot *slug* (or crew *name*) names.
+
+    The teammate's roster (``members_roster._teammate_roster``) lists only Bots a
+    person created here, so these routes admit exactly those: every addressable name
+    deriving the slug must be one, and at least one must exist. Blocking (it loads
+    the config); call it off the event loop.
+    """
+    cfg = KiroCrewConfig.load()
+    if name is not None:
+        agent_cfg = cfg.agents.get(name)
+        return agent_cfg is not None and members_mod.is_person_created_crewmate(name, agent_cfg)
+    try:
+        members_mod.validate_slug(slug or "")
+    except MemberSlugError:
+        return False
+    names = _member_names_for_slug(cfg, slug or "")
+    return bool(names) and all(
+        members_mod.is_person_created_crewmate(n, cfg.agents[n]) for n in names
+    )
+
+
+async def _teammate_admitted(
+    request: web.Request,
+    operation: str,
+    *,
+    slug: str | None = None,
+    name: str | None = None,
+) -> bool:
+    """Whether *request* is a team Crew teammate this Bot route admits; audits the grant.
+
+    On a team Crew a Bot is shared like a session: a teammate the Kiro relay verified
+    may use a person-created Bot as they may use a session. A route that admits them
+    calls this before its owner gate and skips the gate when it answers ``True``.
+    ``False`` for everyone else, the owner included, with no config read, so the
+    owner's path through the route is unchanged. A teammate on a Bot outside their
+    roster also gets ``False`` and meets the owner gate's refusal. A route that
+    names no Bot yet (create) passes neither *slug* nor *name*, and only the
+    caller is checked.
+    """
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if not _relay_teammate(request):
+        return False
+    if (slug is not None or name is not None) and not await asyncio.to_thread(
+        _teammate_reaches_bot, slug=slug, name=name
+    ):
+        return False
+    _audit_teammate_read(request, operation)
+    return True
 
 
 def _member_name_is_addressable(value: object) -> bool:

@@ -26,6 +26,16 @@ from kiro_crew.config.sections_defaults import (
 # hand; it only bounds a hand-edited or hostile value.
 STAR_ORDER_MAX = 10_000
 
+# How many worker sessions one Bot may have open at once (``max_workers``). The
+# owner sets it on the Bot's settings page; no Bot tool writes it. 0, the
+# default, sets no limit of the Bot's own: the bound on parallel work comes from
+# the host's resources unless the owner chooses a number
+# (rfc-work-ledger-concurrency-cap.md section 7). The ceiling is the work
+# ledger's own open bound (``work_ledger_records.MAX_ITEMS_PER_CONDUCTOR``).
+BOT_MAX_WORKERS_DEFAULT = 0
+BOT_MAX_WORKERS_MIN = 0
+BOT_MAX_WORKERS_MAX = 32
+
 
 def _archive_retention_days(session_data: dict) -> int:
     """Resolve session.archive_retention_days, normalizing the disable sentinel.
@@ -372,6 +382,18 @@ class KiroCrewAgentConfig:
             "standard levels. An explicit effort on the call wins.",
         ),
     )
+    max_workers: int = field(
+        default=BOT_MAX_WORKERS_DEFAULT,
+        metadata=_meta(
+            "Workers at once",
+            "How many of this Bot's own worker sessions (on its worker template) "
+            "may be open at once. A session_create, session_revive or "
+            "session_fork past it is refused with bot_worker_cap_reached until "
+            "one of them is closed. Set by the owner on the Bot's settings page; "
+            "the Bot cannot change it. 0 (the default) sets no limit; otherwise "
+            "1 to 32.",
+        ),
+    )
     acp_backend: str = field(
         default="",
         metadata=_meta(
@@ -467,6 +489,19 @@ class KiroCrewAgentConfig:
             "every card did before. A card-sent turn is tagged '[Dashboard "
             "card]', is never an approval, and is refused while the thread has an "
             "open approval or question.",
+        ),
+    )
+    # Off by default: the sessions this crewmate's thread opens are listed on its
+    # profile's Sessions tab and left out of the person's own session list
+    # (``crew_mode.list_view`` and the dashboard's ``crewModeView``). On puts them
+    # back in that list too; the Sessions tab lists them either way.
+    show_sessions_in_list: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show in my Sessions list",
+            "Off by default. The chats this crewmate opens are listed on its "
+            "profile's Sessions tab and left out of your Sessions list. Turn it "
+            "on to list them in your Sessions list too.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``

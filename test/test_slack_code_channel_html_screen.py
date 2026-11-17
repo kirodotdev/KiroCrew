@@ -19,8 +19,10 @@ from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by nam
 )
 
 from kiro_crew.slack.code_channels import tools
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-TOKEN = "ghp_" + "A" * 36
+#: A GitHub token with a valid checksum; ``\\67`` below is its first letter escaped.
+TOKEN = github_classic(seed=127)
 HEAD, TAIL = TOKEN[:18], TOKEN[18:]
 
 
@@ -71,8 +73,8 @@ def test_a_nested_document_or_data_url_is_refused(env: Any, content: str) -> Non
         f'<p data-a="{HEAD}" data-b="{TAIL}"></p>',
         f'<style>p::before{{content:"{HEAD}" "{TAIL}"}}</style><p></p>',
         f"<p style=\"--x:1; con\\74 ent: '{HEAD}'\">x</p>",
-        "<style>p{color:red}/* \\67 hp_" + "A" * 36 + " */</style>",
-        '<style>p{background:url("\\67 hp_' + "A" * 36 + '")}</style>',
+        "<style>p{color:red}/* \\67 " + TOKEN[1:] + " */</style>",
+        '<style>p{background:url("\\67 ' + TOKEN[1:] + '")}</style>',
         # other properties that render author strings
         f'<q style=\'quotes:"{HEAD}" "{TAIL}"\'></q>',
         f"<li style='list-style-type:\"{HEAD}\";list-style-position:inside'>{TAIL}</li>",
@@ -86,8 +88,8 @@ def test_a_nested_document_or_data_url_is_refused(env: Any, content: str) -> Non
         "<style>p{background:url(http://example.test/x.png)}</style>",
         "<style>p{background:src(http://example.test/x.png)}</style>",
         # an abruptly closed comment does not hide the style after it
-        "<!--><style>p::before{content:'\\67hp_" + "A" * 36 + "'}</style><p>x</p><!-- -->",
-        "<!---><style>p::before{content:'\\67hp_" + "A" * 36 + "'}</style><p>x</p><!-- -->",
+        "<!--><style>p::before{content:'\\67" + TOKEN[1:] + "'}</style><p>x</p><!-- -->",
+        "<!---><style>p::before{content:'\\67" + TOKEN[1:] + "'}</style><p>x</p><!-- -->",
     ],
 )
 def test_css_that_can_show_text_or_hides_a_credential_is_refused(env: Any, content: str) -> None:

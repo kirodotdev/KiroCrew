@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, previewFlagsLocked, readPreviewFlag,
+  PREVIEW_EXPLORE, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, previewFlagsLocked, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
+import { LOCKED_FEATURE_PREVIEWS, useControlLocked, useFeaturePreviewLockKnown } from '../utils/editionLocks'
 
 /**
  * Reactive read of a preview flag (see `utils/previewFlags.ts`).
@@ -48,18 +49,13 @@ export function useRemoteCrewChat(): boolean {
 }
 
 /**
- * The Crew Mode preview, reactively: the same key `crewModeEnabled()` reads
- * (`lib/crewMode.ts`). For a component or memo that must redraw when the switch
- * flips; the decision itself stays in the `lib/crewMode` helpers.
+ * Whether this build offers conductor mode, reactively: the same answer
+ * `crewModeEnabled()` gives (`lib/crewMode.ts`), redrawn when the gateway's
+ * edition lock arrives. Off in an LTS build, and until the lock is known.
  */
 export function useCrewMode(): boolean {
-  return usePreviewFlag(PREVIEW_CREW_MODE)
-}
-
-/** The mate sessions preview, reactively: the key `mateSessionsHidden()` reads
- *  (`lib/crewMode.ts`), for a memo over a person's list. */
-export function useMateSessionsHidden(): boolean {
-  return usePreviewFlag(PREVIEW_MATE_SESSIONS)
+  const known = useFeaturePreviewLockKnown()
+  return !useControlLocked(LOCKED_FEATURE_PREVIEWS) && known
 }
 
 /**

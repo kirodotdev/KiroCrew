@@ -58,15 +58,16 @@ into the kiro agents directory. It derives from `build_agent_config` and then
 narrows, and each narrowing is a permission decision:
 
 - **Tools:** `execute_bash`, `fs_read`, `web_fetch`, `session`, `report`,
-  `tool_search`, plus the `@kirocrew-core` and `@kirocrew-dashboard` servers.
+  `tool_search`, plus the `@kirocrew-core`, `@kirocrew-dashboard` and
+  `@kirocrew-work` servers.
   Neither `fs_write` nor `code` is mounted, which is what makes "never does the
   work" structural.
 - **`allowedTools` is verb by verb, never a whole server.** The conductor ingests
   untrusted content by design (issue text, PR bodies) on unattended cycles, so a
   server-wide grant would let that content start persistent work or spawn
   arbitrary subagents with nobody in the loop.
-- **`mcpServers` is narrowed** to `kirocrew-core` and a hand-built
-  `kirocrew-dashboard` entry. That entry carries `type` in registry mode (a
+- **`mcpServers` is narrowed** (`_conductor_mcp_servers`) to `kirocrew-core`, a
+  hand-built `kirocrew-dashboard` entry and `kirocrew-work`. That entry carries `type` in registry mode (a
   registry-mode client silently drops an entry without it) and the managed MCP
   env (without the data-home pin the shim reads the default home while the
   gateway runs under an override).
@@ -109,9 +110,10 @@ ledger (`session_ledger_read`, `session_ledger_record`), and reporting to the
 owner (`send_message`, `send_notification`, `ask_question`), and the quiet end
 of a patrol cycle with nothing to report (`nothing_to_do`, which mutates
 nothing). Auto-approved
-dashboard verbs are create-or-read only: `chat_folder_tree`,
-`chat_folder_create`, `session_create`, `session_read_message`, and
-`session_status` (a read of the caller's own children).
+dashboard verbs are create-or-read only: `session_create`,
+`session_read_message`, and `session_status` (a read of the caller's own
+children). Every `chat_folder_*` verb is withheld: a dispatcher does not manage
+folders, so the verbs stay mounted behind an approval.
 
 `session_send`, `session_stop` and `spawn_run` are mounted and **never**
 auto-approved, even though the intervention ladder uses all three. They start

@@ -3,14 +3,17 @@
 # Each rule has a shape it refuses and the shape the Determinism contract asks for.
 
 import asyncio
+import contextlib
 import datetime
 import importlib
 import os
 import random
 import sys
+import tempfile
 import time
 import unittest.mock
 from datetime import date, timezone
+from tempfile import TemporaryDirectory, mkdtemp
 from unittest import mock
 from unittest.mock import patch
 
@@ -144,6 +147,85 @@ def test_randomness():
     random.seed(20261005)
     # ok: kirocrew.test-unseeded-random
     random.Random(20261005).randint(1, 6)
+
+
+def test_shared_tmp_dir_mkdtemp(tmp_path, np):
+    # ruleid: kirocrew.test-shared-tmp-dir
+    a = tempfile.mkdtemp()
+    # ruleid: kirocrew.test-shared-tmp-dir
+    b = mkdtemp(prefix="kc-")
+    # ruleid: kirocrew.test-shared-tmp-dir
+    c = np.tempfile.mkdtemp()
+    # ruleid: kirocrew.test-shared-tmp-dir
+    d = tempfile.mkdtemp(dir="/tmp")
+    # ok: kirocrew.test-shared-tmp-dir
+    e = tempfile.mkdtemp(dir=tmp_path)
+    # ok: kirocrew.test-shared-tmp-dir
+    f = tempfile.mkdtemp(dir=str(tmp_path))
+    # ok: kirocrew.test-shared-tmp-dir
+    g = tmp_path / "root"
+    return a, b, c, d, e, f, g
+
+
+def test_shared_tmp_dir_temporary_directory(tmp_path, np, keep):
+    # ruleid: kirocrew.test-shared-tmp-dir
+    held = tempfile.TemporaryDirectory()
+    # ruleid: kirocrew.test-shared-tmp-dir
+    name = tempfile.TemporaryDirectory().name
+    # ruleid: kirocrew.test-shared-tmp-dir
+    entered = tempfile.TemporaryDirectory().__enter__()
+    # ruleid: kirocrew.test-shared-tmp-dir
+    imported = TemporaryDirectory()
+    # ruleid: kirocrew.test-shared-tmp-dir
+    chained = np.tempfile.TemporaryDirectory()
+    # ok: kirocrew.test-shared-tmp-dir
+    with tempfile.TemporaryDirectory() as scoped:
+        # ruleid: kirocrew.test-shared-tmp-dir
+        nested = tempfile.TemporaryDirectory()
+    # ok: kirocrew.test-shared-tmp-dir
+    with TemporaryDirectory(prefix="kc-") as scoped_imported, open(scoped) as fh:
+        pass
+    # ok: kirocrew.test-shared-tmp-dir
+    with tempfile.TemporaryDirectory():
+        pass
+    # ok: kirocrew.test-shared-tmp-dir
+    with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+        pass
+    with mock.patch("os.getcwd"):
+        # ok: kirocrew.test-shared-tmp-dir
+        with tempfile.TemporaryDirectory() as inner:
+            pass
+        # ruleid: kirocrew.test-shared-tmp-dir
+        patched = tempfile.TemporaryDirectory()
+    # ruleid: kirocrew.test-shared-tmp-dir
+    keep.append(tempfile.TemporaryDirectory())
+    with contextlib.ExitStack() as stack:
+        # ok: kirocrew.test-shared-tmp-dir
+        stacked = stack.enter_context(tempfile.TemporaryDirectory())
+    keep.extend([held, name, entered, imported, chained, nested, scoped_imported])
+    keep.extend([fh, stacked, first, second, inner, patched])
+    # ruleid: kirocrew.test-shared-tmp-dir
+    return tempfile.TemporaryDirectory()
+
+
+async def test_shared_tmp_dir_async_with():
+    # ok: kirocrew.test-shared-tmp-dir
+    async with tempfile.TemporaryDirectory() as scoped:
+        return scoped
+
+
+class TestSharedTmpDirSetUp(unittest.TestCase):
+    def setUp(self):
+        # ruleid: kirocrew.test-shared-tmp-dir
+        self.root = tempfile.mkdtemp()
+        # ruleid: kirocrew.test-shared-tmp-dir
+        self._td = tempfile.TemporaryDirectory()
+
+    @pytest.fixture(autouse=True)
+    # ok: kirocrew.test-autouse-shared-monkeypatch
+    def _per_test_dirs(self, tmp_path):
+        # ok: kirocrew.test-shared-tmp-dir
+        self.root = tmp_path / "root"
 
 
 @pytest.fixture(autouse=True)

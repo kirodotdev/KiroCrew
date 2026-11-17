@@ -211,6 +211,7 @@ class TestQueueCancelEndpoint:
             "queue_cancel",
             {"slot": "chat-1", "queue_id": qid, "content": "cancel me"},
         )
+        assert list(slot._queue) == []
 
     @pytest.mark.asyncio
     async def test_cancel_with_duplicate_content(self):

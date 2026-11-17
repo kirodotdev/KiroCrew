@@ -34,6 +34,7 @@ import re
 import subprocess as subprocess_mod
 import sys
 from collections import Counter
+from pathlib import Path, PurePosixPath
 from typing import Any, Collection, NamedTuple
 
 from kiro_crew import acp_tool_gate
@@ -45,6 +46,7 @@ from kiro_crew.acp.harness_tool_names import (
     mimocode_rewrites_name,
 )
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_MIMOCODE, launch_for
 from kiro_crew.sandbox import scrub_agent_subprocess_env, wrap_argv, wrap_argv_async
 
@@ -115,6 +117,9 @@ _MIMOCODE_REFUSED_ENV = (
         "it moves MiMo Code's credential to a path Kiro Crew cannot fence",
     ),
 )
+# Each, set on the child, signs it in to Xiaomi's hosted models without the sign-in
+# file: the provider key the harness's catalog reads, and its inline auth document.
+_MIMOCODE_HOSTED_KEY_ENV = ("XIAOMI_API_KEY", "MIMOCODE_AUTH_CONTENT")
 
 
 def _apply_mimocode_env(env: dict[str, str]) -> None:
@@ -628,6 +633,45 @@ def _mimocode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> 
     return json.dumps(config)
 
 
+def _mimocode_config_has_xiaomi_key(resolved: dict) -> bool:
+    """Whether the resolved config gives the ``xiaomi`` provider an ``apiKey``.
+
+    MiMo Code 0.1.17 sends a key set as ``provider.xiaomi.options.apiKey`` in
+    ``mimocode.json`` as the request's bearer, and advertises the same ``xiaomi/``
+    models as a host with no key. PRESENCE ONLY: the value is never logged or kept.
+    """
+    provider = resolved.get("provider")
+    xiaomi = provider.get("xiaomi") if isinstance(provider, dict) else None
+    options = xiaomi.get("options") if isinstance(xiaomi, dict) else None
+    key = options.get("apiKey") if isinstance(options, dict) else None
+    return isinstance(key, str) and bool(key.strip())
+
+
+def _mimocode_hosted_credential_present(env: dict[str, str]) -> bool:
+    """Whether the child *env* would reach Xiaomi's hosted models signed in.
+
+    True on a Xiaomi key in the environment (``XIAOMI_API_KEY``, or the harness's
+    inline ``MIMOCODE_AUTH_CONTENT``) or on the sign-in file the auth declaration
+    names existing where this child resolves it (under ``XDG_DATA_HOME`` when set,
+    else under ``HOME``). PRESENCE ONLY: the file is never opened, its contents never
+    read. Feeds the start-time refusal of an unsigned hosted fallback
+    (``acp/no_model_provider.py``).
+    """
+    if any(env.get(name, "").strip() for name in _MIMOCODE_HOSTED_KEY_ENV):
+        return True
+    declaration = host_auth.declaration_for(ACP_BACKEND_MIMOCODE)
+    data_home = env.get(declaration.home_override_env_vars[0], "")
+    if data_home:
+        leaf = Path(data_home, *PurePosixPath(declaration.override_relative_leaves[0]).parts)
+    else:
+        home = env.get("HOME") or os.path.expanduser("~")
+        leaf = Path(home, *PurePosixPath(declaration.credential_leaves[0]).parts)
+    try:
+        return leaf.is_file()
+    except OSError:
+        return False
+
+
 def _verify_mimocode_routing(
     session: ProcessSession, backend: str, argv: list[str], config_content: str
 ) -> tuple[str, str]:
@@ -712,6 +756,11 @@ def _verify_mimocode_routing(
         return servers_issue, _mimocode_config_mcp_servers_remedy()
     read_back = session._harness_read_back()
     read_back.config_mcp_servers = config_servers
+    configured_model = resolved.get("model")
+    read_back.config_model = configured_model.strip() if isinstance(configured_model, str) else ""
+    read_back.hosted_credential = _mimocode_hosted_credential_present(
+        env
+    ) or _mimocode_config_has_xiaomi_key(resolved)
     seeded_denies = _mimocode_seeded_deny_rules(config_content, setting_key)
     contexts = _mimocode_rule_contexts(resolved, setting_key)
     # Which of Crew's deny rules MiMo Code's own disabled() keeps in force in every

@@ -1851,9 +1851,8 @@ class TestBlockingFindingRegressions:
         assert "_steer_delivery_ids" not in slot_reads
         assert "steer_await_entered" in progress_reads
         # No second progress flag: a field the classifier cannot act on is not a
-        # fact it keeps. ``handover_returned`` was one -- it could only be set
-        # once ``steer_await_entered`` already was, and both answered the same,
-        # so its value never changed a reported outcome.
+        # fact it keeps. A flag set only once ``steer_await_entered`` already is
+        # answers the same, so its value never changes a reported outcome.
         assert progress_reads == {"steer_await_entered"}
 
     def test_an_unauthorized_title_refusal_does_not_disclose_the_resolved_key(self, tmp_path):

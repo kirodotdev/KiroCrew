@@ -324,7 +324,7 @@ def _stored(base: Path, title: object, origin: str | None) -> None:
     (base / f"{_SLACK}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
-@pytest.mark.parametrize("origin", ["user", "member"])
+@pytest.mark.parametrize("origin", ["user", "member", "agent"])
 def test_a_renamed_slack_title_is_kept_as_typed(tmp_path: Path, origin: str) -> None:
     from types import SimpleNamespace
 
@@ -349,8 +349,8 @@ def test_an_auto_or_legacy_slack_title_is_still_read_plain(tmp_path: Path, origi
 
 @pytest.mark.parametrize("origin", [[], {}, 7])
 def test_a_malformed_title_origin_does_not_break_the_listing(tmp_path: Path, origin) -> None:
-    # GPT 6.1 review on fb9677deb: an unhashable origin raised TypeError in the
-    # frozenset membership test and aborted the whole listing.
+    # An unhashable origin would raise TypeError in the frozenset membership
+    # test and abort the whole listing.
     meta = {"_type": "metadata", "title": _STORED, "title_origin": origin}
     rows = [meta, {"role": "user", "content": _RAW}, {"role": "assistant", "content": "ok"}]
     (tmp_path / f"{_SLACK}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))

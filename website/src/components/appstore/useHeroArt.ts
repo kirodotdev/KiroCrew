@@ -343,6 +343,20 @@ export function installedIcon(
 }
 
 /**
+ * An installed app's page icon. It ships inside the app's UI bundle, not at the
+ * repo root, so a relative value resolves against the app's UI asset route --
+ * the same base the rail and the command palette use. A cross-origin value is
+ * refused for the same reason it is everywhere else on this path: the manifest
+ * is untrusted, and requesting it would leak the viewer to whatever host it
+ * names.
+ */
+export function installedPageIcon(iconUrl: unknown, appName: string): string {
+  const kind = classifyManifestArt(iconUrl)
+  if (kind === 'same-origin') return iconUrl as string
+  return kind === 'relative' ? `/apps/${appName}/ui/${iconUrl as string}` : ''
+}
+
+/**
  * True when the app ships ANY art ``useHeroArt`` could render (either theme's
  * hero, or a screenshot). Featured ranking uses this so a dark-only or
  * screenshot-only app is not treated as art-less.

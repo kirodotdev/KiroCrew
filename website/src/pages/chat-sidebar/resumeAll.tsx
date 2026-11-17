@@ -263,8 +263,8 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
     setWait(run)
   }
   const mutation = useMutation({
-    // The count came through `crewModeView`, which reads this tab's preview flag;
-    // the server cannot see it, so the press says it.
+    // The count came through `crewModeView`, which reads whether this build offers
+    // conductor mode; the press says it so the server counts the same rows.
     // It names the sessions it counted, so the run never reaches a session that
     // became interrupted after the press (or while its confirmation was open).
     mutationFn: (keys: string[]) => api.chatSlotsResumeAll(crewModeEnabled(), keys),

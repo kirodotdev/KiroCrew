@@ -610,7 +610,7 @@ def _kernel_program_path(proc_entry: Path) -> str | None:
     # discarding its in-flight work. Stripping it can only NARROW the false-BANNED
     # direction: the name behind the marker still has to be a shell AND still has to
     # sit in a trusted directory, and a deleted ``/usr/bin/pytest`` reduces to
-    # ``pytest``, which is reported exactly as before.
+    # ``pytest``, which is still reported.
     if normalized.endswith(_PROCFS_DELETED_MARKER):
         normalized = normalized[: -len(_PROCFS_DELETED_MARKER)]
     return normalized

@@ -374,7 +374,8 @@ class KiroCrewConfig:
                             "(@server, @server/tool*, Running: @server/*, *), that always "
                             "ask before running. A matching MCP server stays mounted but "
                             "loses its blanket auto-approve grant, and a match outranks an "
-                            "auto_approve_tools grant at the gate. The gate follows a change "
+                            "auto_approve_tools or auto_approve_tool_identities grant at the "
+                            "gate. The gate follows a change "
                             "at once; a grant already in the agent spec is withdrawn at the "
                             "next restart, when the spec is rebuilt."
                         ),
@@ -409,6 +410,22 @@ class KiroCrewConfig:
                             "on the command's program and subcommand words, never on "
                             "argument text. Has no effect unless the batch write guard "
                             "is on."
+                        ),
+                    },
+                },
+                "return_answer": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Webhook answer return",
+                        "help": (
+                            "Off by default. When true, a POST /api/hooks/agent call that "
+                            "sends wait (seconds, at most 300) is held until its run ends "
+                            "or the wait runs out, and a run that finished its turn answers "
+                            "with its outcome and the redacted text delivery sends (a "
+                            "timeout or error run, with its outcome alone). Without it, "
+                            "wait is ignored with a warning and the call returns the "
+                            "accept receipt."
                         ),
                     },
                 },

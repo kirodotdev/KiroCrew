@@ -837,6 +837,92 @@ def _isolate_shared_kiro_paths(_isolation_dirs, _floor_monkeypatch):
         )
 
 
+#: Every module-level binding of ``kiro_cli.known_kiro_cli_dirs``: the defining module
+#: (which ``resolve_kiro_cli``, ``pin_kiro_cli`` and a function-local import read) and
+#: each ``from kiro_crew.kiro_cli import known_kiro_cli_dirs`` that holds its own name.
+#: ``test_floor_operators_kiro_cli.py`` fails when ``src/`` grows a binding not listed.
+_KIRO_CLI_DIR_BINDINGS: tuple[str, ...] = (
+    "kiro_crew.kiro_cli",
+    "kiro_crew.acp.client",
+    "kiro_crew.acp.client_spawn_env",
+    "kiro_crew.kiro_prerequisite_candidate",
+)
+
+
+#: The temp root this process started with (``$TMPDIR`` when set). A test's own
+#: directories live under it even when it sits inside the home, as an agent's scratch
+#: does, so a kiro-cli a test planted there is the test's, never the operator's.
+_TEMP_ROOT_AT_START = pathlib.Path(tempfile.gettempdir()).resolve()
+
+
+def _operators_dirs_dropped(home: pathlib.Path, dirs: list[str]) -> list[str]:
+    """*dirs* without those inside *home*, spelled or resolved, outside every temp root.
+
+    Both spellings count: ``~/.toolbox/bin`` can be a link out of the home and is still
+    the operator's install.
+    """
+    home_resolved = home.resolve()
+    temp_roots = {_TEMP_ROOT_AT_START, pathlib.Path(tempfile.gettempdir()).resolve()}
+    kept = []
+    for directory in dirs:
+        try:
+            spelled = pathlib.Path(os.path.abspath(directory))
+            resolved = spelled.resolve()
+            in_home = spelled.is_relative_to(home) or resolved.is_relative_to(home_resolved)
+            in_temp = any(resolved.is_relative_to(root) for root in temp_roots)
+        except (OSError, RuntimeError, ValueError):
+            in_home = in_temp = False
+        if not in_home or in_temp:
+            kept.append(directory)
+    return kept
+
+
+@pytest.fixture(autouse=True)
+def _hide_the_operators_kiro_cli(_floor_monkeypatch):
+    """Keep the operator's own kiro-cli out of the fixed install directories.
+
+    ``known_kiro_cli_dirs`` lists directories under the home (``~/.local/bin``,
+    ``~/.cargo/bin``, the mise shims), and the pinned resolvers search them without
+    ``PATH``, so a test that never chose a kiro-cli ran the developer's: the version
+    probe, the doctor's login probe, a session launch. CI has none, so the same test
+    there sees "not installed". MEASURED on a developer host: that kiro-cli wrote
+    ``mcs-telemetry-l1-*.log`` / ``kiro-log`` into ``$TMPDIR`` from a different test
+    in every worker (a temp-residue red in each of the eight shards), and its
+    sandboxed ``--version`` sealed ``<data home>/profiles`` in the middle of a
+    capability save.
+
+    Only a call that passes the REAL account home is filtered, and only the entries
+    inside it (spelled or resolved) that are not under a temp root. A test that passes its own home, patches ``Path.home``,
+    or plants a kiro-cli through ``KIROCREW_KIRO_BIN`` or the bundled-directory
+    variable still finds it, and a test of ``known_kiro_cli_dirs`` itself that
+    imported the name before this ran calls the real function.
+
+    shortcut: a kiro-cli the operator installed OUTSIDE the home (``/usr/local/bin``,
+    Homebrew) is still found; widen the filter if a host with one turns up red.
+    """
+    targets = [sys.modules[name] for name in _KIRO_CLI_DIR_BINDINGS if name in sys.modules]
+    if not targets:
+        return
+    real = getattr(sys.modules["kiro_crew.kiro_cli"], "known_kiro_cli_dirs", None)
+    if real is None or getattr(real, "_floor_hides_the_operators", False):
+        return
+
+    def known_kiro_cli_dirs(platform_name, home, environ, **kwargs):
+        dirs = real(platform_name, home, environ, **kwargs)
+        # Read at call time, so a test of this filter can stand in a home of its own.
+        operator_home = _REAL_USER_HOME
+        try:
+            is_real_home = pathlib.Path(home).resolve() == operator_home.resolve()
+        except (OSError, RuntimeError, TypeError):
+            is_real_home = False
+        return _operators_dirs_dropped(operator_home, dirs) if is_real_home else dirs
+
+    known_kiro_cli_dirs._floor_hides_the_operators = True  # type: ignore[attr-defined]
+    for module in targets:
+        if hasattr(module, "known_kiro_cli_dirs"):
+            _floor_monkeypatch.setattr(module, "known_kiro_cli_dirs", known_kiro_cli_dirs)
+
+
 # ── other real host paths a test must not reach ───────────────────────
 #
 # Same test as the data home above: each of these protects something on the

@@ -15,6 +15,7 @@ or above the trust anchor is the operator's own choice.
 from __future__ import annotations
 
 import os
+from pathlib import PureWindowsPath
 
 import pytest
 
@@ -478,3 +479,39 @@ def test_anchored_parent_declines_a_parent_outside_every_owned_root(owned_home, 
     outside.mkdir()
 
     assert aw.anchored_parent(outside) is None
+
+
+_WIN_ANCHOR = PureWindowsPath(r"C:\home")
+_WIN_NAMES = ("members", "fleet-crew", "dashboard")
+_WIN_PARENT = _WIN_ANCHOR.joinpath(*_WIN_NAMES)
+
+
+def _stub_windows_chain(monkeypatch, resolved_parent):
+    """Make the guard see *resolved_parent* for the parent and a plain anchor."""
+    monkeypatch.setattr(aw, "_link_trust_anchor", lambda _parent: (_WIN_ANCHOR, _WIN_NAMES))
+    monkeypatch.setattr(aw, "_refuse_if_link", lambda _path, _component: None)
+    monkeypatch.setattr(
+        aw,
+        "_resolved_or_none",
+        lambda p: resolved_parent if p == _WIN_PARENT else _WIN_ANCHOR,
+    )
+
+
+def test_a_prefixed_resolution_of_the_named_parent_is_not_a_redirect(monkeypatch):
+    """Two first saves at once can leave ``\\\\?\\`` on only the parent's resolution.
+
+    ``ntpath.realpath`` keeps the prefix when its two probes of a missing
+    directory fail with different winerrors, which another thread's concurrent
+    ``mkdir`` causes. The parent is still exactly the directory it was named.
+    """
+    _stub_windows_chain(monkeypatch, PureWindowsPath("\\\\?\\" + str(_WIN_PARENT)))
+
+    aw._refuse_linked_parent(_WIN_PARENT / ".lock")
+
+
+def test_a_prefixed_resolution_of_another_directory_is_still_refused(monkeypatch):
+    """Dropping the prefix must not hide a real redirect."""
+    _stub_windows_chain(monkeypatch, PureWindowsPath(r"\\?\C:\elsewhere\dashboard"))
+
+    with pytest.raises(OSError, match="rather than"):
+        aw._refuse_linked_parent(_WIN_PARENT / ".lock")

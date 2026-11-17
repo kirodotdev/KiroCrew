@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import time
 
 import pytest
+from test_decisions_points import _record_select_waits
 
 from kiro_crew import decisions as core
 from kiro_crew.decisions.points import skills_select as sel
@@ -308,14 +308,14 @@ async def test_an_expired_budget_keeps_the_baseline_and_leaves_no_task(
         return _answers(WIDENED)  # pragma: no cover - the sleep is cancelled
 
     monkeypatch.setattr(core, "decide", _slow)
+    waits = _record_select_waits(monkeypatch, lambda: observed.get("started"))
     builder = _builder(tmp_path, tree)
 
-    started = time.monotonic()
     message = await _message(builder)
-    waited = time.monotonic() - started
 
     assert _bodies(message) == [BASELINE]
-    assert waited < 10, "the message must not wait past the point's own budget"
+    # The fixture's budget is the 0.5s floor; the message waits for it exactly once.
+    assert waits == [sel.MIN_WAIT_SECS], f"the message waited {waits}, not the point's budget"
     await async_wait_until(lambda: observed.get("cancelled"), describe=lambda: observed)
     assert observed == {"started": True, "cancelled": True}
     ours = [

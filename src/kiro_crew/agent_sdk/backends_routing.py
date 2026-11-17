@@ -25,6 +25,7 @@ from enum import Enum
 from typing import FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -201,11 +202,11 @@ ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED: FrozenSet[str] = frozenset(
 
 # The same question for the shared runtime's ``AcpSessionHandle``
 # (``acp.session_handle_permissions._build_permission_event``): a frame under a
-# foreign ``sessionId``, or a native KAS sub-agent's call, told apart by the id its
-# ``agentSubtaskId`` frame recorded. It reads no Claude parent stamp, so Claude is
-# not a member here; kiro-cli and KAS are.
+# foreign ``sessionId``, a native KAS sub-agent's call, told apart by the id its
+# ``agentSubtaskId`` frame recorded, or a Claude child's call on the parent's
+# session, told apart by its ``parentToolUseId`` stamp, as the direct client reads it.
 ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
 )
 
 # Backends whose child may ask THIS host for an access token over the
@@ -313,6 +314,11 @@ ACP_BACKENDS_NATIVE_WORKFLOWS = frozenset({ACP_BACKEND_KAS})
 #: ``history``, ``task``, and an edit under its memory directory; ``cron`` too,
 #: which the launch pins off), so a PreToolUse hook would be skipped on exactly
 #: those calls, the claude and codex ground.
+#:
+#: antigravity is NOT a member, on the same ground: under the ``default`` mode Crew
+#: writes, Antigravity ACP 1.4.4 runs its file reads with no permission request
+#: (``test/fixtures/acp_frames/antigravity/turn-live-tools.jsonl``), so a PreToolUse
+#: hook would be skipped on every read.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
 )
@@ -340,10 +346,14 @@ ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
 #: spec, and codex-acp's ``session/new`` has no hooks field, so Crew firing the
 #: spec's hooks runs none of them twice.
 #:
+#: antigravity is a member of this set alone for the same reason: it is handed no
+#: spec, and its file reads run with no permission request, so its ``preToolUse``
+#: entries get the same notice.
+#:
 #: kiro-cli is NOT a member and must never become one: it runs the field itself,
 #: so membership would run every spec hook twice.
 ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+    {ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
 )
 
 #: Backends on the direct ``AcpClient`` whose session never reads the agent spec's
@@ -501,6 +511,7 @@ ACP_BACKEND_ROUTING: dict = {
     # session spawns. Measured on 0.1.15: every shell and MCP call then sends
     # ``session/request_permission`` (``test/fixtures/acp_frames/mimocode``).
     ACP_BACKEND_MIMOCODE: Routing.VERIFIED_SEEDED_SETTINGS,
+    ACP_BACKEND_ANTIGRAVITY: Routing.SESSION_CONFIG,
 }
 
 
@@ -526,6 +537,7 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
     # the session's directory run without asking, which is the same residual Codex
     # has and the same OS credential mask compensates for.
     ACP_BACKEND_COPILOT: ("allow_all", "off"),
+    ACP_BACKEND_ANTIGRAVITY: ("mode", "default"),
 }
 
 
@@ -661,6 +673,10 @@ ACP_BACKEND_GATE_READBACK: dict = {
 #: ``allow_all`` write at session start (``ACP_BACKEND_PERMISSION_CONFIG``) is the
 #: other half: it is what undoes a value a restored session was left in.
 ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST: dict = {
+    # Antigravity's /plan and /usage are read-only session commands. /logout
+    # clears the operator's credential, so a command-shaped prompt from a channel
+    # or subagent must not reach it.
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"plan", "usage"}),
     ACP_BACKEND_COPILOT: frozenset(
         {
             "compact",
@@ -692,6 +708,7 @@ ACP_BACKEND_FORBIDDEN_MODES: dict = {
     ACP_BACKEND_COPILOT: frozenset(
         {"https://agentclientprotocol.com/protocol/session-modes#autopilot"}
     ),
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"auto_edit", "yolo"}),
 }
 
 

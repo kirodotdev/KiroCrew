@@ -96,8 +96,7 @@ import { openCrewSession } from '../pages/chat/command-center/CrewWorkerList'
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
-import { crewModePreviewOn } from './crewModePreview'
-import { PREVIEW_CREW_MODE } from '../utils/previewFlags'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 type Slot = {
   messages: Msg[]; mode?: string; agent?: string; agentKind?: string; origin?: string; memoryMode?: string; slotKeys?: string[]
@@ -720,11 +719,11 @@ describe('Conductor mode on ChatPage', () => {
   })
 })
 
-describe('ChatPage with the conductor mode preview off', () => {
-  // The gateway still runs Crew Mode; the device has the preview off.
+describe('ChatPage in a build without conductor mode (LTS)', () => {
+  // The gateway still runs conductor mode; the dashboard offers none.
   beforeEach(() => {
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
-    localStorage.removeItem(PREVIEW_CREW_MODE)
+    turnOffCrewModeAsLts()
   })
   afterEach(() => { localStorage.clear(); setCrewModeCatalog(undefined, undefined) })
 
@@ -764,6 +763,3 @@ describe('ChatPage with the conductor mode preview off', () => {
     expect(screen.queryByTestId('crew-steer-composer')).toBeNull()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

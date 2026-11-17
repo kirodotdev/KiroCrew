@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from slack_code_channels_helpers import store_channel_binding
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
@@ -29,6 +30,7 @@ from kiro_crew.slack.code_channels.workspace.diff import MAX_VIEW_BYTES, assembl
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
@@ -53,7 +55,11 @@ def _feature_on(_floor_monkeypatch):
 
 
 def _cfg(on: bool):
-    return SimpleNamespace(slack=SimpleNamespace(code_channels=on))
+    # Every channel at its default activation (a refresh obeys Off and Review).
+    return SimpleNamespace(
+        slack=SimpleNamespace(code_channels=on),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
+    )
 
 
 async def _until(predicate, timeout: float = FALLBACK_TIMEOUT_SECS) -> None:
@@ -112,6 +118,7 @@ class FakeBinding:
     project_dir: str | None = None
     title: str = "Fix the widget"
     archived_at: float = 0.0
+    origin_channel_id: str = ""  # a real Binding always carries it
 
 
 class FakeClient:
@@ -1219,7 +1226,7 @@ class FakeDashboard:
 
     def add_slot(self, key: str, folder_id: str, *, running: bool = False) -> SimpleNamespace:
         slot = SimpleNamespace(
-            folder_id=folder_id, turn_running=running, project="", _turn_generation=0
+            key=key, folder_id=folder_id, turn_running=running, project="", _turn_generation=0
         )
         self._slots[key] = slot
         return slot
@@ -1228,6 +1235,7 @@ class FakeDashboard:
 def _conductor_harness(tmp_path, monkeypatch):
     h = Harness(tmp_path)
     dash = FakeDashboard()
+    store_channel_binding(tmp_path, monkeypatch)
     made: list[tuple[str, str, str]] = []
 
     async def create_folder(state, parent_id, name, project_dir):
@@ -1549,6 +1557,7 @@ def test_core_plan_session_resolves_the_default_project_with_the_cores_own_helpe
     cfg = SimpleNamespace(
         slack=SimpleNamespace(code_channels=True),
         dashboard=SimpleNamespace(default_project=str(repo)),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
     )
     monkeypatch.setattr(cc_binding, "live_config", lambda orch=None: cfg)
     seen: list[str] = []
@@ -1666,7 +1675,7 @@ def test_the_folder_reuse_scan_resolves_paths_off_the_event_loop(tmp_path, monke
 # ── outbound redaction ──────────────────────────────────────────────────────
 
 # A synthetic 40-character AWS secret, split so no source line spells one.
-_FAKE_KEY = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
+_FAKE_KEY = github_classic(seed=141)  # a bare 40-character run is no credential
 
 
 def test_a_credential_written_into_a_file_never_reaches_slack(tmp_path, repo, audits):
@@ -1881,7 +1890,9 @@ def test_the_installed_credential_policy_applies_to_every_slack_bound_string(
     monkeypatch.setattr(context_bar, "redact", policy)
     h = Harness(tmp_path)
     binding, rec = _bound(h, repo)
-    (Path(rec.worktree) / "README.md").write_text(f"token: {house}\n", newline="\n")
+    # No label the base table reads, so only the companion's pattern can mask it: a
+    # ``token:`` label would let the rule table mask the value first.
+    (Path(rec.worktree) / "README.md").write_text(f"see {house}\n", newline="\n")
     (Path(rec.worktree) / "new.txt").write_text(f"{house}\n", newline="\n")
     h.run(h.svc.refresh(binding))
     assert house not in repr(h.client.calls)

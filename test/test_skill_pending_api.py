@@ -175,7 +175,7 @@ async def test_pin_rejects_non_bool_pinned(loader):
     name = loader.approve_pending_skill_checked("deploy-helper")
     assert name == "auto/deploy-helper"
     # JSON string "false" must be rejected, not coerced to truthy (which would
-    # pin instead of unpin) — GPT MEDIUM.
+    # pin instead of unpin).
     resp = await H.api_skill_pin(_Req(loader, body={"name": name, "pinned": "false"}))
     assert resp.status == 400
     resp2 = await H.api_skill_pin(_Req(loader, body={"name": name, "pinned": 1}))

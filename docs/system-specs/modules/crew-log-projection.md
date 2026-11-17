@@ -103,11 +103,11 @@ import too, spelled out even when it is every type: the kernel skips the copy an
 step for an entry a fold does not name, and `None` would leave a reader unable to tell
 "all of them" from "not decided".
 
-**Every fold is eager today, and `LAZY_FOLD_REASONS` is empty.** The two families each
-have their own warm path (section 5.1): the eleven SLOT folds -- `ledger`, `radar`, `work`,
-`panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom` and `workers` -- are continued in the slot memo, and the seven SESSION folds -- the six the
-crew-log panel draws plus the internal `class` -- in the session memo. The internal slot
-fold `worker` is the exception, LAZY with its reason: it is a part of `workers`, folded
+**Every fold but two is eager, and `LAZY_FOLD_REASONS` names those two.** The two families each
+have their own warm path (section 5.1): the twelve SLOT folds -- `ledger`, `radar`, `work`,
+`panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom`, `objects` and `workers` -- are continued in the slot memo, and the ten SESSION folds -- the six the
+crew-log panel draws plus the internal `class`, `outline`, `otel_usage` and `otel_session_tree` -- in the session memo. The tree-keyed `worktree` fold is LAZY (a tree's value goes stale when any member's log grows, and no publisher raises that), and the internal slot
+fold `worker` is LAZY with its reason: it is a part of `workers`, folded
 only when `workers` is read, in a slot-memo cell of its own per worker.
 `EAGER_SLOT_FOLD_NAMES` and `EAGER_SESSION_FOLD_NAMES` name the two halves, and an eager
 fold in neither is refused at import, because it would be woken for and then have
@@ -408,7 +408,7 @@ reopened.
 | `worker` | INTERNAL, bound by no page and served by no route: one worker's `row` and the `parent` its first opener named, folded over that worker's own units (`worker_units`); the per-worker part `workers` merges. Lazy. |
 | `waiting` | What a Bot waits on the person for, from the newest `dashboard/waiting_changed` snapshot: `items` (newest first), `count` (how many wait in all, from the snapshot's `total`), `omitted` (how many the list cut; each item's `options_omitted` likewise for its choices), `newest` (the newest item's text, `""` when nothing waits) and `changes`. It keeps up to `CREWMATE_WAITING_LIMIT` items, the same bound the producer cuts at, and `CREWMATE_OPTION_LIMIT` choices each. |
 | `workers` | The worker sessions a Bot created with `session_create`, newest first: `items` (each with `slot`, `task` -- from the FIRST user message only, `""` when that message carries `chunks` instead of `text`; the line of what it was given that names the ask: a `TASK:` or `GOAL:` heading, else the first line past the relay's provenance line and a leading `You are ...` role preamble --, `state`, `agent`, `started_at`, `last_activity_at`, `last_said` -- the last line of its newest reply, `""` when that reply was too long for one entry and carries `chunks` instead of `text` --, `report` and `report_status` from its own work report, `turns`, `stop_reason`, `closed_reason`), `counts` per state, `total` and `omitted`. Two folds merged at read (`read_slot_projection` → `_read_workers` → `merge_render`): `workers` reads `session/spawned` in the Bot's OWN units (its creates, under the cap), and the internal `worker`, one slot-memo cell per child, reads that child's own units in `previous_sid` succession order (`units_in_succession`), its first unit (which holds the task) and its newest `WORKERS_UNITS_PER_CHILD` while its creator still holds it and every unit once the session tree's current parent is not its creator -- released, or released and then adopted (`worker_units`, `_let_go`) -- so one worker writing continues its own cell, the others answer warm, and a released worker stays `released`. The merged revision is minted fresh whenever any part's moves, and one Bot's whole merged read, parts and revision, runs under its own lock (`_WORKERS_READ_LOCKS`), so a read that captured older parts never gets the higher revision. Until the session tree is seeded for the current store (`tree_seeded`), it names no children and no creator, and the read is served at revision 0, so the provisional value never outranks the one read after the seed. A worker's own `progress` report after a `done` or `blocked` one puts the row back to what its turns say. The children are the newest `2 * WORKERS_LIMIT` the session tree's creation records name, and a worker is drawn when the Bot's log holds its create or its own `session/opened` names the Bot as `parent`. From the worker's log: `turn/started`, `turn/completed`, `message/received`, `message/sent`, `work/recorded` (actor `worker`), `session/closed`, `session/released` and `session/adopted` (one naming a parent other than the worker's creator reads `released`, released first or not). Task, reply, report and close lines keep up to `WORKERS_TEXT_LIMIT` characters and end in "…" when cut. States: `starting`, `running`, `idle` (between turns), `done` and `blocked` (only from the worker's own report), `failed` (a `stop_reason` that `metrics.turns.turn_outcome` classifies as anything but `ok`, `cancelled`, `tool_stall` or `stale_recover` -- a timeout, an error, an interrupt; those four leave it `idle`), `closed`, `released`. Whether a worker FINISHED its task is not in the log without a `done` report, so such a worker reads `idle`. The eager path routes a worker's entry to its creator's cell (`eager._creator_slot`). It keeps up to `WORKERS_LIMIT` rows and `WORKERS_TEXT_LIMIT` characters per cell. |
-| `workstreams` | The project report: every board this slot's own log holds (its own and the sub-boards relayed into it), keyed by `(slot, generation)`, each task costed by the credits of the worker session bound to it. It reads `work/recorded`, `work/charged`, `session/opened` and the three turn closers, and counts board, task and spender overflow rather than dropping it silently. |
+| `workstreams` | The project report: every board this slot's own log holds (its own and the sub-boards relayed into it), keyed by `(slot, generation)`, each task costed by the credits of the worker session bound to it. It reads `work/recorded`, `work/charged`, `session/opened` and the three turn closers, and counts board, task and spender overflow rather than dropping it silently. A board's `needs_you` and each task row's `awaits_person` use the Board's own rule (`work_vocab.waits_on_person`): an open item whose last report is `question` or `blocked` naming a person (`approval` / `needs_human`), not answered by a later `decide` or `steer`. The fold has no live session state, so a worker mid-turn still counts here. |
 
 No fold interprets `card/*` or `guide/*`. They are declared in the type registry, so
 every fold's `known=` vocabulary includes them and a log holding them folds as
@@ -984,7 +984,7 @@ the history.
 
 **One worker, one wake, both families.** The wake names the unit. A slot fold is
 advanced for the slot that unit's entry belongs to (`read_slot_projection`); the unit's
-session folds are advanced for the unit itself (`fold_session_warm`), all seven in one
+session folds are advanced for the unit itself (`fold_session_warm`), all ten in one
 pass over its one file. Slot folds go first and drop before they advance on a closer;
 session folds advance first and drop after, because they READ the closer -- `status`
 reports the session closed -- so the closing value is one a dashboard must be handed.
@@ -1166,7 +1166,7 @@ what is being bounded is resident bytes and not cell count.
 
 **The warm SESSION memos have a ceiling of their own**, `session_fold_cache_bytes()`,
 64 MiB by default, lowered with `KIROCREW_SESSION_FOLD_CACHE_BYTES`. A session cell is
-charged its SERIALIZED size, summed over its seven folds and weighed only for the folds
+charged its SERIALIZED size, summed over its ten folds and weighed only for the folds
 a pass changed. That is affordable here for a reason the slot table does not have: a
 session fold's state is flat and small, and the fold already copies it for every entry
 that moves it (`copy_state`), so weighing it once per pass is the same order of work.

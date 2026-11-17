@@ -16,6 +16,7 @@ const { app, ipcMain } = require("electron");
 const Store = require("electron-store");
 const { seedRenamedStore } = require("../store-rename");
 const { STORE_FILE_MODE, tightenStoreFileMode } = require("../store-file-mode");
+const { openLocalImage } = require("../app-local-files");
 const { sessionCookieHeader } = require("../mochi-session-token");
 const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("./instanceGate");
 const {
@@ -1228,25 +1229,19 @@ function startMochiWatcher() {
    * through core's /api/file-raw, which keeps its own sensitive-path gate.
    */
   ipcMain.handle("mochi-pet:open-image", async (_e, filePath) => {
-    if (typeof filePath !== "string" || filePath === "") return false;
-    const fs = require("fs");
-    const path = require("path");
     const { shell } = require("electron");
     const { openPathHardened } = require("../open-path");
-    const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
-    try {
-      // realpath BEFORE the extension test: a `.png` symlink to a key file must
-      // be judged by what it actually resolves to.
-      const real = fs.realpathSync(filePath);
-      if (!IMAGE_EXTS.has(path.extname(real).toLowerCase())) return false;
-      if (!fs.statSync(real).isFile()) return false;
-      // Non-empty return value means the OS refused to open it.
-      const err = await openPathHardened(shell, real);
-      return err === "";
-    } catch (err) {
-      glog(`Mochi open-image refused: ${err && err.message}`);
-      return false;
-    }
+    // The shell's one copy of the local-file rules, shared with the window host.
+    return openLocalImage(
+      {
+        fs: require("fs"),
+        path: require("path"),
+        shell,
+        openPathHardened,
+        onRefused: (err) => glog(`Mochi open-image refused: ${err && err.message}`),
+      },
+      filePath,
+    );
   });
 
   ipcMain.handle("mochi-shortcuts:apply", (_e, accelerators) => {
@@ -1440,13 +1435,28 @@ function startMochiWatcher() {
  * credential path the shell knows (local secret, SSH remote, then the main
  * window's own already-established session — see main.js's
  * fetchMochiGatewayAuth and mochi-session-token.js) and answers
- * `{ value, viaCookie }`, and the gateway-launch logger.
+ * `{ value, viaCookie }`, and the gateway-launch logger. `hostStores` are the
+ * desktop window host's gateway-choice and binding stores, seeded from Mochi's
+ * own (hostHandOff.js) before main.js creates the host.
  */
 function initMochi(deps) {
   BACKEND_URL = deps.backendUrl;
   fetchGatewayAuth = deps.fetchGatewayAuth;
   glog = deps.glog;
   for (const line of pendingGlogs.splice(0)) glog(line);
+  const hostStores = deps.hostStores || {};
+  try {
+    const written = require("./hostHandOff").seedHostMachinePrefs({
+      machineStore,
+      gatewayStore: hostStores.gatewayStore,
+      prefsStore: hostStores.prefsStore,
+      defaults: require("./shortcuts").ACCELERATORS,
+      log: glog,
+    });
+    if (written.length) glog(`mochi: handed ${written.join(", ")} to the desktop window host`);
+  } catch (error) {
+    glog("mochi: host hand-off failed: " + (error && error.message));
+  }
   try {
     require("./panelWindow").setMainWindowGetter(deps.getMainWindow);
   } catch {

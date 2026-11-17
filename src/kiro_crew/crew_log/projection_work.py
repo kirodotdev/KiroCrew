@@ -24,6 +24,7 @@ from kiro_crew.work_vocab import (
     WorkBoardItem,
     WorkBoardView,
     coerce_ask,
+    coerce_discussion,
     coerce_retired_bindings,
 )
 
@@ -127,6 +128,7 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "artifacts",
     "pr",
     "ask",
+    "discussion",
 )
 
 
@@ -394,9 +396,10 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
         for name in _WORK_BASELINE_FIELDS:
             if name in data:
                 item[name] = _work_field(name, data[name])
-        if item.get("ask") is None:
-            # Held only while set, as the store's record holds it.
-            item.pop("ask", None)
+        for held in ("ask", "discussion"):
+            if item.get(held) is None:
+                # Held only while set, as the store's record holds it.
+                item.pop(held, None)
         # The committed stamps ride along: an item with a report or a close from
         # before the projection keeps them across a rebuild.
         for name in ("last_report_at", "closed_at", "decided_at", "pending_since"):
@@ -564,6 +567,8 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     elif actor == "worker":
         if action != "report" or data.get("mirror") is True:
             return
+        if not _work_peer_report(item, data):
+            return
         if data.get("board_copy") is True:
             item["_board_reported"] = True
         elif item.get("_board_reported"):
@@ -572,15 +577,16 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         for name in _WORK_WORKER_FIELDS:
             if name in data:
                 item[name] = _work_field(name, data[name])
-        # Every report REPLACES the reason and the wake_at, so an absent one is a
-        # cleared one rather than "unchanged". wake_at is held only while set, as the
-        # store's record holds it.
+        # Every report REPLACES the reason, the wake_at and the discussion, so an
+        # absent one is a cleared one rather than "unchanged". wake_at and discussion
+        # are held only while set, as the store's record holds them.
         item["reason"] = _work_reason(data.get("reason"))
-        wake_at = _work_field("wake_at", data.get("wake_at"))
-        if wake_at:
-            item["wake_at"] = wake_at
-        else:
-            item.pop("wake_at", None)
+        for held in ("wake_at", "discussion"):
+            value = _work_field(held, data.get(held))
+            if value:
+                item[held] = value
+            else:
+                item.pop(held, None)
         item["last_report_at"] = _work_stamp(data.get("last_report_at"), stamp_ms)
     else:
         allowed = _WORK_CONDUCTOR_FIELDS.get(action)
@@ -589,6 +595,10 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         for name in allowed:
             if name in data:
                 item[name] = _work_field(name, data[name])
+        if action == "decide":
+            # The decide forward lands as a decision event between two peer
+            # reports, so the peer keeps its next progress apart from the last.
+            item.pop("_peer_tail_progress", None)
         if action in ("decide", "close") or item.get("ask") is None:
             # ``decide`` and ``close`` clear the ask record (the store does the same,
             # and logs no field for it); it is held only while set.
@@ -604,14 +614,59 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
             running = item["verdict"] == "pending" and isinstance(carried, str) and bool(carried)
             item["pending_since"] = _work_stamp(carried, stamp_ms) if running else None
         elif action == "accept":
-            # A pending run belongs to the bar it measured; the new bar starts its own.
+            # A pending run and a verdict belong to the bar they measured; the new
+            # bar starts with neither.
             item["pending_since"] = None
+            item["verdict"] = None
         elif action == "retire":
             # A retire that left the item unbound logs the pair as "", which the
             # cache holds as unset.
             for name in ("worker_session_key", "worker_instance_id"):
                 item[name] = item.get(name) or None
+        if action in ("bind", "retire"):
+            # Where remote ingest stands belongs to one binding.
+            for name in _WORK_PEER_KEYS:
+                item.pop(name, None)
     _work_apply_event(item, data, stamp_ms, action)
+
+
+#: Internal, never rendered: where remote ingest of the item's CURRENT binding
+#: stands, folded from the reports it filed. ``_peer_ids`` holds the peer event ids
+#: filed, oldest first (the newest is the pull cursor), a progress replacing the
+#: progress before it as on the peer (``_peer_tail_progress``); ``_peer_skipped``
+#: sums the places those filings said could not be filed.
+_WORK_PEER_KEYS: Final[tuple[str, ...]] = ("_peer_ids", "_peer_skipped", "_peer_tail_progress")
+
+
+def _work_peer_report(item: dict[str, Any], data: Mapping[str, Any]) -> bool:
+    """Fold an ingested report's peer fields; ``False`` when its peer event id is
+    already filed on this binding, so the repeat is skipped whole. A report with
+    neither field (every local report) changes nothing here."""
+    peer_id = data.get("peer_event_id")
+    if isinstance(peer_id, str) and 0 < len(peer_id) <= TEXT_LIMIT:
+        ids: list[str] = item.get("_peer_ids") or []
+        if peer_id in ids:
+            return False
+        # Ids a binding from before peer ids passed over: filed before, never news.
+        seen = data.get("peer_seen")
+        before = [
+            i
+            for i in (seen if isinstance(seen, list) else [])
+            if isinstance(i, str) and 0 < len(i) <= TEXT_LIMIT and i not in ids and i != peer_id
+        ]
+        progress = data.get("status") == "progress"
+        if progress and not before and ids and item.get("_peer_tail_progress"):
+            # Two progress reports in a row: the peer keeps only the newer
+            # (``_coalesce_progress``), so the fold does too. Progress churn then
+            # never pushes a question, blocked or done id out of the cap below.
+            ids = ids[:-1]
+        # Replaced, never edited: ``_work_copy`` shares an item's lists.
+        item["_peer_ids"] = [*ids, *before, peer_id][-WORK_EVENT_LIMIT:]
+        item["_peer_tail_progress"] = progress
+    skipped = data.get("peer_skipped")
+    if isinstance(skipped, int) and not isinstance(skipped, bool) and skipped > 0:
+        item["_peer_skipped"] = item.get("_peer_skipped", 0) + min(skipped, WORK_EVENT_LIMIT)
+    return True
 
 
 def _work_apply_event(
@@ -664,6 +719,8 @@ def _work_field(name: str, value: Any) -> Any:
         return coerce_retired_bindings(value)
     if name == "ask":
         return coerce_ask(value)
+    if name == "discussion":
+        return coerce_discussion(value)
     if name == "reason":
         return _work_reason(value)
     if name == "wake_at":
@@ -733,7 +790,7 @@ def _work_render(state: dict[str, Any]) -> WorkBoardView:
         rendered = {
             key: value
             for key, value in item.items()
-            if key not in ("events", "_unrecorded", "_board_reported")
+            if key not in ("events", "_unrecorded", "_board_reported", *_WORK_PEER_KEYS)
         }
         rendered["schema"] = 1
         if (

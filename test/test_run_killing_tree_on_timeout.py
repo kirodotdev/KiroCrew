@@ -56,6 +56,14 @@ class _FakePopen:
     def kill(self) -> None:
         self.events.append("kill")
 
+    # The stdlib's own ``subprocess.run`` spawns through ``with Popen(...)``, so a
+    # caller still on it reaches its launcher-only kill through this fake too.
+    def __enter__(self) -> _FakePopen:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
 
 @pytest.fixture
 def windows(monkeypatch: pytest.MonkeyPatch) -> list[_FakePopen]:
@@ -202,4 +210,63 @@ def test_run_limited_routes_its_windows_spawn_through_it(monkeypatch: pytest.Mon
     assert caught.value.cmd == _ARGV
     assert seen == [
         (_ARGV, {"preexec_fn": None, "capture_output": True, "timeout": FALLBACK_TIMEOUT_SECS})
+    ]
+
+
+def test_the_stdlib_form_kills_the_tree_past_a_replaced_subprocess_run(windows) -> None:
+    """A module that binds the stdlib's run is not answered by another caller's stub."""
+
+    def _stub(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the stdlib form must not call a stand-in for subprocess.run")
+
+    _FakePopen.script = [_timeout(FALLBACK_TIMEOUT_SECS), (1, b"", b"")]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(subprocess, "run", _stub)
+        with pytest.raises(subprocess.TimeoutExpired):
+            platform_compat.stdlib_run_killing_tree_on_timeout(
+                _ARGV, capture_output=True, timeout=FALLBACK_TIMEOUT_SECS
+            )
+    assert windows[0].events == ["communicate", "kill_tree", "communicate"]
+
+
+def test_the_stdlib_form_outside_the_tree_arm_is_the_stdlib_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[Any, dict[str, Any]]] = []
+    done = subprocess.CompletedProcess(_ARGV, 0, b"", b"")
+
+    def _stdlib(args: Any, **kw: Any) -> subprocess.CompletedProcess[bytes]:
+        seen.append((args, kw))
+        return done
+
+    def _stub(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the stdlib form must not call a stand-in for subprocess.run")
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(platform_compat, "_STDLIB_RUN", _stdlib)
+    monkeypatch.setattr(subprocess, "run", _stub)
+    kwargs = {"capture_output": True, "timeout": FALLBACK_TIMEOUT_SECS}
+    assert platform_compat.stdlib_run_killing_tree_on_timeout(_ARGV, **kwargs) is done
+    assert seen == [(_ARGV, kwargs)]
+
+
+def test_a_config_hook_scan_that_times_out_on_windows_is_a_bounded_refusal(
+    windows, tmp_path
+) -> None:
+    """The scan's git behind Git for Windows' launcher can outlive a launcher-only kill;
+    the scan kills the tree, drains under the bound, and refuses the call instead of
+    blocking its caller until that git exits."""
+    from kiro_crew import git_config_hooks
+
+    _FakePopen.script = [
+        _timeout(git_config_hooks._SCAN_TIMEOUT_SECS),
+        _timeout(platform_compat._POST_KILL_DRAIN_SECS),
+    ]
+    with pytest.raises(git_config_hooks.ConfigHookScanError):
+        git_config_hooks.config_hook_names(tmp_path)
+    proc = windows[0]
+    assert proc.events == ["communicate", "kill_tree", "communicate"]
+    assert proc.calls == [
+        (None, git_config_hooks._SCAN_TIMEOUT_SECS),
+        (None, platform_compat._POST_KILL_DRAIN_SECS),
     ]

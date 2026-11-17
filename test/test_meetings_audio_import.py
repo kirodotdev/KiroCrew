@@ -1029,7 +1029,7 @@ class TestImport:
 
 
 # ---------------------------------------------------------------------------
-# Snapshot descriptor pinning (GPT review r21)
+# Snapshot descriptor pinning
 # ---------------------------------------------------------------------------
 
 
@@ -1310,7 +1310,7 @@ class TestSnapshotStagingRoot:
 
 @pytest.mark.skipif(
     not supports_pinned_walk(),
-    reason="the pinned copy refuses platforms without dir_fd+O_NOFOLLOW by design (r31)",
+    reason="the pinned copy refuses platforms without dir_fd+O_NOFOLLOW by design",
 )
 class TestSnapshotRecording:
     """The pinned snapshot copy — the real helper against a real filesystem."""

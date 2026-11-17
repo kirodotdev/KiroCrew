@@ -31,7 +31,9 @@ GH_PR = "gh-pr"
 #: ``dashboard/server.py``'s ``_deferred_work_ledger`` defers on purpose
 #: (``no-new-work-on-gateway-boot-path``). The probe's import is deferred into
 #: :func:`build`. Must stay equal to ``work_ledger.WORK_LEDGER_KIND``;
-#: ``test_build_serves_the_work_ledger_kind_and_still_refuses_a_stranger`` pins it.
+#: ``test_build_serves_the_work_ledger_kind_and_still_refuses_a_stranger`` pins this
+#: value to the literal ``"work-ledger"``, and ``test_probe_work_ledger.py`` holds the
+#: ledger's kind to the same literal.
 WORK_LEDGER = "work-ledger"
 
 #: Terminal observation keys that mean the subject finished WELL, across every kind.

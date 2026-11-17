@@ -132,15 +132,13 @@ _COMPATIBILITY_LETTERS_KEPT = frozenset("\u0e33\u0eb3")
 #: break "always visible, one spelling": ``ops`` and ``ops<VS16>`` would be two
 #: stored tags with one look, and a key id with an invisible mark inside it would
 #: pass a credential redactor while reading as the bare key. The table is the
-#: whole published property, not just the subset the category test misses, so it
-#: can be checked line by line against the standard. ``unicodedata`` does not
-#: expose the property, hence the table; it matches the Unicode version Python
-#: 3.12 ships (``unicodedata.unidata_version`` 15.0.0). The ranges already hold
-#: the reserved code points the standard lists, so an assignment inside them
-#: changes nothing; a later Unicode version can still add a range, so refresh
-#: the table from ``DerivedCoreProperties.txt`` when the runtime's version moves
-#: -- on such a runtime ``test_the_invisible_table_matches_the_runtime_unicode_version``
-#: is skipped with a reason naming that step, and it holds on CI's 3.12 runners.
+#: whole published property, so it can be checked line by line against the
+#: standard; ``unicodedata`` does not expose the property. It matches Python
+#: 3.12's Unicode 15.0.0 and already covers the reserved code points in its
+#: ranges. When the runtime's Unicode version moves, refresh it from
+#: ``DerivedCoreProperties.txt``: on such a runtime
+#: ``test_the_invisible_table_matches_the_runtime_unicode_version`` skips and
+#: says so; it runs on CI's 3.12 runners.
 _DEFAULT_IGNORABLE_UNICODE_VERSION = "15.0.0"
 _DEFAULT_IGNORABLE_RANGES: tuple[tuple[int, int], ...] = (
     (0x00AD, 0x00AD),  # SOFT HYPHEN
@@ -405,15 +403,14 @@ def is_document_path(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in DOC_EXTENSIONS
 
 
-# Literal-color detector behind the theme-contrast warning; the gateway handlers
-# and the MCP tool both use it so they give the same verdict. Hex colors are
-# 3/4/6/8 digits: 5 and 7 are left out so id selectors like "#added1" don't fire.
-# The leading [:=(\s"'] anchors the literal to a value position (color:#111).
-# IGNORECASE lets RGB(...) / HSL(...) match. href values are stripped before the
-# scan (_HREF_ATTR_RE) because a fixed-width lookbehind cannot allow the spaces in
-# `href = "#abc"`. A whitespace-preceded id selector ("} #decade {") can still
-# fire; whitespace stays in the prefix so "border: 1px solid #ccc" matches, and
-# the result is only ever a soft warning.
+# Literal-color detector behind the theme-contrast warning, shared by the gateway
+# handlers and the MCP tool so both give one verdict. Hex colors are 3/4/6/8
+# digits; 5 and 7 are left out so id selectors like "#added1" don't fire. The
+# leading [:=(\s"'] anchors the literal to a value position (color:#111). href
+# values are stripped first (_HREF_ATTR_RE): a fixed-width lookbehind cannot
+# allow the spaces in `href = "#abc"`. Whitespace stays in the prefix so
+# "border: 1px solid #ccc" matches, which lets "} #decade {" fire too; that is
+# acceptable for a soft warning.
 _HARDCODED_COLOR_RE = re.compile(
     r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b" r"|\brgba?\(" r"|\bhsla?\(",
     re.IGNORECASE,

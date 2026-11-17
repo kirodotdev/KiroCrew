@@ -105,6 +105,7 @@ from kiro_crew.config.sections_agent import (  # noqa: F401
     _CREW_MODE_AGENT_DEFAULT,
     _YOLO_DURATION_DEFAULT,
     AgentConfig,
+    _chat_runtime_sharing_harness_defaults,
     _read_skip_permissions,
     coerce_fallback_model,
     yolo_duration_to_secs,
@@ -382,9 +383,13 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     AutocompactPctError,
     ResourceLimitsConfig,
     _limit_int,
+    crew_autocompact_pct_refusal,
     parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
+    BOT_MAX_WORKERS_DEFAULT,
+    BOT_MAX_WORKERS_MAX,
+    BOT_MAX_WORKERS_MIN,
     DEFAULT_KIRO_TEMPLATE,
     STAR_ORDER_MAX,
     KiroCrewAgentConfig,

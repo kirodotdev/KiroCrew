@@ -106,7 +106,7 @@ _CONFIRM_DELAY_SECS = 2.0
 # unit sets ``RestartPreventExitStatus=78`` (``LIVE_HOLDER_EXIT_CODE`` in
 # ``gateway_lock``) to make the "another gateway already serves this home" exit
 # TERMINAL, so a persistence watchdog exiting 78 would never be relaunched --
-# the exact opposite of what this fix needs. 72 is restarted like the listener
+# the opposite of what a watchdog needs. 72 is restarted like the listener
 # guard's 69 and the stale-asset watchdog's 75, and a journal histogram tells
 # all four exits apart (69 listener lost, 72 persistence lost, 75 stale assets,
 # 78 live-holder terminal).

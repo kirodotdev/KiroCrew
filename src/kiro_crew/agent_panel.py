@@ -197,8 +197,8 @@ def override_templates_dir() -> Path:
     return _real_dir_under_data_home(TEMPLATES_DIRNAME)
 
 
-#: Mirrors ``members.MEMBERS_DIR_NAME`` and ``members._SLUG_RE`` rather than
-#: importing them, and a test pins the two pairs equal so they cannot drift.
+#: Mirrors ``members._SLUG_RE`` rather than importing it, and a test pins the two
+#: equal so they cannot drift.
 #:
 #: Mirrored because ``members`` reaches ``artifacts -> hooks -> webhooks ->
 #: validation``, which imports ``artifacts`` back. That cycle is LATENT while

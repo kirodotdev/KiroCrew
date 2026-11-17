@@ -23,11 +23,12 @@ import {
   type Context,
   type CostRow,
   type CostConvo,
+  type CostOutcome,
   type Cost,
   PanelWindowCtx,
   usePersistedChoice,
 } from './telemetryPanelModel'
-import { type Col, DataTable, Sums, Histogram } from './TelemetryPanelBlocks'
+import { type Col, DataTable, Sums, Histogram, SpendAdvicePanel } from './TelemetryPanelBlocks'
 
 /**
  * A share that is real but rounds to zero must not read as zero.
@@ -214,7 +215,11 @@ function SessionTurnsDrilldown({ slot, unit }: { slot: string; unit: SpendUnit }
  * whose empty rows — a model with a 0.4% share still drew a full-width rail —
  * made half the section blank.
  */
-function convoCols(navigable: string, unit: SpendUnit): Col<CostConvo>[] {
+function convoCols(
+  navigable: string,
+  unit: SpendUnit,
+  outcomeScan: number | null,
+): Col<CostConvo>[] {
   return [
     {
       key: 'name',
@@ -287,6 +292,7 @@ function convoCols(navigable: string, unit: SpendUnit): Col<CostConvo>[] {
       sort: v => (v.turns ? v.credits / v.turns : null),
       render: v => (v.turns ? fmtSpend(v.credits / v.turns, unit, { maximumFractionDigits: 1 }) : '—'),
     },
+    ...(outcomeScan === null ? [] : outcomeCols(unit, outcomeScan)),
     {
       key: 'peak',
       label: i18nT('pages.telemetryPanel.peak_ctx_col'),
@@ -323,6 +329,73 @@ function convoCols(navigable: string, unit: SpendUnit): Col<CostConvo>[] {
               count: v.turns_to_compaction,
               n: fmtNumber(v.turns_to_compaction),
             }),
+    },
+  ]
+}
+
+/**
+ * The merged cell. A count after `≥` (at least) means more pull requests may be
+ * merged than the gateway has looked up; no count means it has looked up none of
+ * them, which is not the same as none being merged. Not a trailing `+`: the Lines
+ * cell beside it already uses `+` for lines added.
+ */
+function mergedCell(o: CostOutcome): string {
+  if (o.merged === undefined || (o.merged === 0 && (o.unchecked ?? 0) > 0)) return '—'
+  return (o.unchecked ?? 0) > 0 ? `≥${fmtNumber(o.merged)}` : fmtNumber(o.merged)
+}
+
+/**
+ * What each session delivered, beside what it cost. Only shown once the gateway
+ * has found a delivery in the window; a session with none reads `—` rather than
+ * 0, because the transcript proves a commit or a pull request and cannot prove
+ * their absence.
+ */
+function outcomeCols(unit: SpendUnit, scanned: number): Col<CostConvo>[] {
+  return [
+    {
+      key: 'commits',
+      label: i18nT('pages.telemetryPanel.commits_col'),
+      tip: i18nT('pages.telemetryPanel.outcome_tip', { n: scanned }),
+      sort: v => v.outcome?.commits ?? null,
+      render: v => (v.outcome ? fmtNumber(v.outcome.commits) : '—'),
+    },
+    {
+      key: 'lines',
+      label: i18nT('pages.telemetryPanel.lines_col'),
+      hide: 'max-[900px]:hidden',
+      sort: v => (v.outcome ? v.outcome.lines_added + v.outcome.lines_removed : null),
+      render: v =>
+        v.outcome ? (
+          <>
+            <span className="text-[var(--ok)]">{`+${fmtNumber(v.outcome.lines_added)}`}</span>{' '}
+            <span className="text-[var(--danger)]">{`−${fmtNumber(v.outcome.lines_removed)}`}</span>
+          </>
+        ) : (
+          '—'
+        ),
+    },
+    {
+      key: 'prs',
+      label: i18nT('pages.telemetryPanel.prs_col'),
+      hide: 'max-[900px]:hidden',
+      sort: v => v.outcome?.prs ?? null,
+      render: v => (v.outcome ? fmtNumber(v.outcome.prs) : '—'),
+    },
+    {
+      key: 'merged',
+      label: i18nT('pages.telemetryPanel.merged_col'),
+      tip: i18nT('pages.telemetryPanel.merged_tip'),
+      sort: v => v.outcome?.merged ?? null,
+      render: v => (v.outcome ? mergedCell(v.outcome) : '—'),
+    },
+    {
+      key: 'per_merged',
+      label: i18nT('pages.telemetryPanel.per_merged_col'),
+      sort: v => v.outcome?.per_merged ?? null,
+      render: v =>
+        v.outcome?.per_merged == null
+          ? '—'
+          : fmtSpend(v.outcome.per_merged, unit, { maximumFractionDigits: 1 }),
     },
   ]
 }
@@ -523,17 +596,21 @@ function sessionBars(convos: CostConvo[], navigable: string, limit: number): Spe
     }))
 }
 
-export function SpendTab({ c }: { c: Cost }) {
+export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
   const win = useContext(PanelWindowCtx)
+  // The nested dollar card of a mixed window keeps its own remembered state, so
+  // the two cards can be grouped, sorted and opened independently. A window
+  // billed in one unit keeps the keys it always had, whatever that unit is.
+  const keySuffix = nested ? ':usd' : ''
   const [group, setGroup] = usePersistedChoice<SpendGroup>(
-    'telemetry:spend-group',
+    `telemetry:spend-group${keySuffix}`,
     SPEND_GROUPS,
     'session',
   )
   // Closed on first paint. The table answers "which row exactly", which is a
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
-  const [tableOpen, setTableOpen] = usePersistedBool('telemetry:spend-table-open', false)
+  const [tableOpen, setTableOpen] = usePersistedBool(`telemetry:spend-table-open${keySuffix}`, false)
   const bands = c.context_bands
   const unit = spendUnit(c)
   const fmtAmount = (v: number) => fmtSpend(v, unit)
@@ -546,6 +623,7 @@ export function SpendTab({ c }: { c: Cost }) {
       ? fmtNumber(c.conversation_count)
       : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`
   return (
+    <>
     <Card className="mb-4">
       <CardTitle>
         {unit === 'usd' ? i18nT('pages.telemetryPanel.cost') : i18nT('pages.telemetryPanel.credits')}
@@ -612,6 +690,7 @@ export function SpendTab({ c }: { c: Cost }) {
           },
         ]}
       />
+      <SpendAdvicePanel advice={c.advice} />
       {/* Both groupings at once. As a group-by over one table they were mutually
           exclusive: seeing which origin spent the credits meant giving up the
           model split, so no single screen answered where the window went.
@@ -694,9 +773,13 @@ export function SpendTab({ c }: { c: Cost }) {
             {group === 'session' ? (
               <DataTable<CostConvo>
                 rows={c.conversations}
-                key="telemetry-spend-conversation"
-                tableId="telemetry-spend-conversation"
-                cols={convoCols(c.navigable_category, unit)}
+                key={`telemetry-spend-conversation${keySuffix}`}
+                tableId={`telemetry-spend-conversation${keySuffix}`}
+                cols={convoCols(
+                  c.navigable_category,
+                  unit,
+                  c.conversations.some(v => v.outcome) ? (c.outcome_scan ?? 0) : null,
+                )}
                 rowKey={v => v.slot}
                 defaultSort="credits"
                 emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
@@ -705,8 +788,8 @@ export function SpendTab({ c }: { c: Cost }) {
             ) : (
               <DataTable<CostRow>
                 rows={group === 'model' ? c.by_model : c.by_category}
-                key="telemetry-spend-share"
-                tableId="telemetry-spend-share"
+                key={`telemetry-spend-share${keySuffix}`}
+                tableId={`telemetry-spend-share${keySuffix}`}
                 cols={shareCols(
                   group === 'model'
                     ? i18nT('pages.telemetryPanel.model_col')
@@ -747,6 +830,10 @@ export function SpendTab({ c }: { c: Cost }) {
         </div>
       )}
     </Card>
+    {/* A window with both credit-billed and dollar-billed turns: the same view
+        over the dollar turns, so neither unit's spend reads as zero. */}
+    {c.usd && <SpendTab c={c.usd} nested />}
+    </>
   )
 }
 

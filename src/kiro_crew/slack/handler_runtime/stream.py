@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         redact,
         redact_credentials,
         redact_exfiltration_urls,
+        seal_stream,
         split_message,
         strip_control_comments,
         strip_thinking_tags,
@@ -412,6 +413,20 @@ class _AnswerStream:
             return True  # whole delta withheld (partial credential) — nothing to send yet
         return await self._deliver(safe)
 
+    async def release_at_boundary(self) -> None:
+        """Send what only the structured detectors' fixed tail hold kept back.
+
+        A ``wait``, a tool card or the turn's end is where the reader would
+        otherwise wait for the message's last words. The redactor commits what it would commit without
+        that fixed hold, redacted as any streamed text; a run it holds for its own
+        reasons stays held for the next text.
+        """
+        if not self.stream_ts or self.channel_activation == ACTIVATION_REVIEW:
+            return
+        released = self.redactor.release_at_boundary()
+        if released:
+            await self._deliver(released)
+
     async def settle_tail(self, *, redacted: bool) -> None:
         """Send or drop what the redactor still holds, because the turn's text ends here.
 
@@ -427,6 +442,9 @@ class _AnswerStream:
         a turn that goes on gives it back to the message it ended once the joined
         text is cleared (``_give_back``).
         """
+        # What streams before the seal is what main streams: the part only the
+        # detectors' fixed tail hold kept back goes out first, redacted.
+        await self.release_at_boundary()
         if redacted:
             self.redactor.reset()
             return
@@ -853,6 +871,7 @@ class _AnswerStream:
         if self.use_slack_stream:
             # Flush any buffered text before the tool status
             await self.flush()
+            await self.release_at_boundary()
             await self.release_sentence_end()
             # Mark previous task complete, start new one
             if self.active_task_id:
@@ -917,6 +936,7 @@ class _AnswerStream:
             )
             if _released:
                 await self.append(_released)
+            await self.release_at_boundary()
             # Last chance to tell the reader: the seal below drops
             # ``stream_ts`` and ``accumulated``, so a turn that ends with
             # no post-wait text opens no further stream and reaches no
@@ -1033,8 +1053,17 @@ class _AnswerStream:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
             await self.append(self.stream_buffer)
 
-    async def seal(self, clean_text: str, *, redacted: bool) -> None:
+    async def seal(
+        self, clean_text: str, *, redacted: bool, footer_blocks: list[dict] | None = None
+    ) -> bool:
         """Seal the stream with the final text, then overwrite it when redaction ran.
+
+        ``footer_blocks`` asks for the timing footer to ride in the seal itself
+        (``chat.stopStream``'s ``blocks``), so it lands inside the answer message.
+        Returns True only when it did; on False the caller posts the footer as
+        its own message, so it is never lost and never doubled. It is not folded
+        when a ``chat.update`` follows the seal (a demoted stream or a redaction
+        overwrite), because that update rewrites the message the footer is in.
 
         Disclose real answer text Slack refused for good, while the
         stream is still open (an append after the seal is refused).
@@ -1066,12 +1095,17 @@ class _AnswerStream:
             self.debt = False
         if self.debt:
             await self.settle_debt(self.stream_ts)
+        _redact_overwrite = self.had_redaction or redacted
         # The seal is decoration: the answer is already on screen, so a
         # failed stop_stream does not un-deliver it.
-        try:
-            await self.slack.stop_stream(self.channel, self.stream_ts, clean_text or _NO_RESPONSE)
-        except Exception:
-            logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+        _folded = await seal_stream(
+            self.slack,
+            self.channel,
+            self.stream_ts,
+            clean_text or _NO_RESPONSE,
+            None if _demoted or _redact_overwrite else footer_blocks,
+            self.reply_ts,
+        )
         if _demoted:
             # The answer's last text is on no message yet, so this update is what
             # delivers it: a failed send raises and the turn books a failure.
@@ -1084,10 +1118,10 @@ class _AnswerStream:
                 raise_on_primary_failure=True,
             )
             self.delivered = True
-            return
+            return False
         # Redaction overwrite is decoration on an already-delivered stream:
         # it corrects the visible copy, it does not deliver the answer.
-        if self.had_redaction or redacted:
+        if _redact_overwrite:
             fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
             await _safe_final_update(
                 self.slack,
@@ -1096,3 +1130,4 @@ class _AnswerStream:
                 fallback_text or _NO_RESPONSE,
                 self.reply_ts,
             )
+        return _folded

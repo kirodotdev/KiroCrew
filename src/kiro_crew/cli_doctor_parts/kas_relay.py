@@ -552,11 +552,9 @@ def _report_kas_tool_vocabulary(issues: list[str]) -> None:
         print("               the KAS tool-name tables were verified on; not verified against it.")
         print("               A built-in the tables name may be absent or spelled differently.")
         return
-    relation = "newer than every release" if drift == "newer" else "not among the releases"
-    print(f"  tool names:  ⚠️  installed kiro-cli {shown} is {relation} ({verified}) the KAS")
-    print("               tool-name tables were verified on. A renamed or added built-in")
-    print("               would mount or be governed under a name Crew does not know.")
-    print("               Re-measure: test/fixtures/kas_builtin_tool_ids.json (its note says how),")
-    print("               then append the release to its verified_kiro_cli_versions.")
-    print("               The kas backend logs this once per engine version when it spawns the")
-    print("               relay, reading this same pinned binary.")
+    # A newer kiro-cli is the normal state between re-measurements, so it is
+    # informational: there is nothing for the user to do, and the maintainer
+    # steps live in the fixture's note, not in user-facing output.
+    print(f"  tool names:  ➖ not yet checked against kiro-cli {shown}; checked on {verified}")
+    print("               Nothing to do. A built-in tool this kiro-cli renamed would be")
+    print("               missing from the agent until a Kiro Crew update learns the name.")

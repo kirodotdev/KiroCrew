@@ -41,6 +41,7 @@ from kiro_crew.autonudge_authz import MAX_BANNER_CHARS
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_core import _call_tool_inner
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.synthetic_credentials import synth
 from kiro_crew.validation import ValidationError
 
 #: A credential the plan redacts: a GitHub classic token with a valid checksum.
@@ -928,13 +929,13 @@ class TestRestSurface:
     async def test_an_at_cap_banner_redaction_shrinks_is_still_accepted(self, monkeypatch) -> None:
         """Redaction that does NOT grow the value stays accepted.
 
-        The exfiltration placeholder is 39 characters shorter than the URL it replaces.
+        The credential placeholder is shorter than the URL value it replaces.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        # 48-char padded base64: a run of 40+ on its own, not via ``data=``.
-        url = "https://a.co/upload?data=aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgcGF5bG9hZA=="
-        at_cap_with_url = "y" * (MAX_BANNER_CHARS - len(url)) + url
+        value = synth(48, seed=76)
+        url = f"https://a.co/upload?access_token={value}"
+        at_cap_with_url = "y" * (MAX_BANNER_CHARS - len(url) - 1) + " " + url
         assert len(at_cap_with_url) == MAX_BANNER_CHARS, "fixture is not at the cap"
         svc = self._svc()
         async with TestClient(TestServer(self._app(monkeypatch, svc))) as client:
@@ -945,7 +946,7 @@ class TestRestSurface:
             assert resp.status == 200, "a banner that redaction shrinks was wrongly rejected"
         stored = svc.add.await_args.kwargs["banner"]
         assert len(stored) <= MAX_BANNER_CHARS
-        assert "aGVsbG8gd29ybGQ" not in stored, "the exfil payload was stored unredacted"
+        assert value not in stored, "the URL credential was stored unredacted"
 
 
 class TestMonitorToolsCanSetTheBanner:
@@ -1085,8 +1086,9 @@ class TestChannelBoundLoopsRefuseABanner:
     ) -> None:
         """A routable channel session refuses a banner before ``svc.add``.
 
-        The session must be routable: without one the add is refused with a 404 before
-        the banner is looked at, and the test would pin nothing.
+        The session is routable, so the banner guard is the only refusal in play. The
+        guard runs before the session check today; if it moved after it, an unroutable
+        session would answer 404 first and the test would pin nothing.
         """
         channel = object()  # identity-stable: the admission check compares `is`
         state = SimpleNamespace(

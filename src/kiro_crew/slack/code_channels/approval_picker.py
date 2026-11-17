@@ -948,12 +948,7 @@ async def _apply_to_workers(
         ok, error, landed = await _lower_one(state, worker, mode, user, live_for, gates, slot)
         if ok:
             _follows_channel(state, worker)
-        _audit(
-            "allowed" if ok else ("denied" if error == STALE_REASON else "error"),
-            f"{resources} result={'worker_set' if ok else 'worker_refused'}"
-            + (f" landed={landed}" if landed != mode else ""),
-            error,
-        )
+        _audit_lowering(resources, ok, error, landed, mode)
         if ok:
             origin_live = None  # a change committed under the fence
         elif origin_live is not None and error == STALE_REASON and not origin_live():
@@ -975,7 +970,7 @@ async def _lower_one(
 ) -> tuple[bool, str, str]:
     """Lower *worker* to *mode* under the fence ``live_for(mode)``.
 
-    ``(ok, error, landed)``, *landed* the mode written. A lowering to Reads
+    ``(ok, error, landed)``, *landed* the mode it last tried to write. A lowering to Reads
     refused because a gate closed, because the channel itself went below
     Reads meanwhile, or because a slot sharing *worker*'s session sits below
     Reads (:func:`_raises_a_sharer`), falls back to Normal, which needs no gate and is never
@@ -1053,15 +1048,28 @@ async def _lower_deeper(
         ok, error, landed = await _lower_one(state, worker, mode, user, live_for, gates, slot)
         if ok:
             _follows_channel(state, worker)
-        _audit(
-            "allowed" if ok else ("denied" if error == STALE_REASON else "error"),
-            f"{resources} result={'worker_set' if ok else 'worker_refused'}"
-            + (f" landed={landed}" if landed != mode else ""),
-            error,
-        )
+        _audit_lowering(resources, ok, error, landed, mode)
         if not ok and _still_above(state, worker, mode):
             failed.append(_failed_title(worker, slot))
     return failed
+
+
+def _audit_lowering(resources: str, ok: bool, error: str, landed: str, mode: str) -> None:
+    """Audit one worker's lowering: allowed when it took, denied when it was refused
+    as stale (:data:`STALE_REASON`), an error otherwise.
+
+    *landed*, the mode :func:`_lower_one` last tried to write, is named only when it
+    differs from *mode*.
+    """
+    if ok:
+        outcome = "allowed"
+    elif error == STALE_REASON:
+        outcome = "denied"
+    else:
+        outcome = "error"
+    result = "worker_set" if ok else "worker_refused"
+    note = f" landed={landed}" if landed != mode else ""
+    _audit(outcome, f"{resources} result={result}{note}", error)
 
 
 def _still_above(state: Any, worker: Any, mode: str) -> bool:

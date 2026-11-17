@@ -64,6 +64,41 @@ def _live_telemetry_consent_workers() -> list:
     ]
 
 
+def _join_node_compile_prewarm(join_secs: float) -> "BaseException | None":
+    """Join the engine's compile-cache prewarm before this test's pins lift.
+
+    ``acp.node_compile_cache.ensure_engine_bundle_cache`` runs on every spawn of
+    Crew's own engine and hands the prewarm to a daemon thread, which creates the
+    cache directory under the data home and runs the engine once. A test that
+    reaches that spawn path with a stubbed bundle starts the thread and returns; left
+    alone, its ``mkdir`` lands after the test, under the next test's home. Joined here
+    for the reason on :func:`_join_telemetry_consent_worker`, and the per-build
+    "already started" set is emptied so one test's build does not silence the next
+    test's prewarm. The module is looked up, never imported, so a run that does not
+    spawn the engine pays nothing. Each thread gets *join_secs* (the conftest passes
+    its own ``_EXECUTOR_JOIN_SECS``, which tests patch there); one still alive after
+    that is RETURNED as the failure to raise after the yield.
+    """
+    mod = sys.modules.get("kiro_crew.acp.node_compile_cache")
+    if mod is None:
+        return None
+    workers = [
+        t for t in threading.enumerate() if t.name == mod.PREWARM_THREAD_NAME and t.is_alive()
+    ]
+    for worker in workers:
+        worker.join(join_secs)
+    with mod._prewarm_lock:
+        mod._prewarm_started.clear()
+    still_alive = [t.name for t in workers if t.is_alive()]
+    if not still_alive:
+        return None
+    return AssertionError(
+        f"a node compile cache prewarm {still_alive} is still running "
+        f"{join_secs:.0f}s after this test ended; its cache directory would "
+        "land under the next test's KIROCREW_HOME. See _join_node_compile_prewarm."
+    )
+
+
 def _resume_crew_log_eager_fold() -> None:
     """Lift the eager-fold fence for the test about to run.
 
@@ -534,21 +569,44 @@ def _restore_hooks_integration_globals():
 # ── the relay client's published dashboard ingress goes back after every test ──
 
 
-@pytest.fixture(autouse=True)
-def _restore_relay_gateway_ingress():
-    """Put ``relay_client.provider._gateway_ingress`` back.
+#: Module globals production assigns once at boot and never clears: ``(module, attribute)``.
+#: Every entry starts life as ``None``.
+_BOOT_WIRED_GLOBALS: tuple[tuple[str, str], ...] = (
+    # ``_start_aea_tunnel`` publishes the dashboard app's relay ingress.
+    ("kiro_crew.relay_client.provider", "_gateway_ingress"),
+    # ``DashboardState.__init__`` installs these three. Each callable closes over the
+    # state (or its ``sessions``), so the last state a worker built -- usually a
+    # ``MagicMock``-backed one, with every call it recorded -- lived until the next
+    # test built another: up to ~300 MiB for the 2,000-slot scale tests.
+    ("kiro_crew.acp.chat_runtime_sharing", "_tree_root_reader"),
+    # The FACADE, not ``subagent_parts.agent_policy``: ``_facade_compose`` rebinds the
+    # composed setter and reader onto ``kiro_crew.subagent``'s globals, so that is the
+    # dict ``set_parent_project_resolver`` writes. The part module's copy stays ``None``.
+    ("kiro_crew.subagent", "_parent_project_resolver"),
+    ("kiro_crew.decisions.impl_llm", "_runner_factory"),
+)
 
-    ``_start_aea_tunnel`` publishes the dashboard app's relay ingress there, and a
-    gateway sets it once at boot, so every test that builds the real dashboard app
-    would otherwise hand the next test its app's ingress. Reached through
-    ``sys.modules`` for the same reason as the hooks floor above.
+
+@pytest.fixture(autouse=True)
+def _restore_boot_wired_globals():
+    """Put back the module globals production wires once at boot (``_BOOT_WIRED_GLOBALS``).
+
+    A gateway sets each one once, so every test that builds the real dashboard app or a
+    ``DashboardState`` would otherwise hand the next test its ingress or its state. The
+    next test sees the wrong object, and the worker keeps the whole state alive. Reached
+    through ``sys.modules`` for the same reason as the hooks floor above. A module first
+    imported during the test is put back to ``None``, the value it started with.
     """
-    provider = sys.modules.get("kiro_crew.relay_client.provider")
-    before = getattr(provider, "_gateway_ingress", None) if provider is not None else None
+    before = {
+        entry: getattr(sys.modules[entry[0]], entry[1], None)
+        for entry in _BOOT_WIRED_GLOBALS
+        if entry[0] in sys.modules
+    }
     yield
-    provider = sys.modules.get("kiro_crew.relay_client.provider")
-    if provider is not None:
-        provider._gateway_ingress = before
+    for entry in _BOOT_WIRED_GLOBALS:
+        module = sys.modules.get(entry[0])
+        if module is not None:
+            setattr(module, entry[1], before.get(entry))
 
 
 # ── logger levels go back after every test ──────────────────────────

@@ -364,6 +364,24 @@ class TestDoctorKasBundle:
         assert "downloads it at the first chat" in out
         assert issues == []
 
+    def test_the_sharing_preview_route_without_its_engine_is_not_an_issue(
+        self, monkeypatch, capsys
+    ):
+        """The preview picks the bundle with agent.kas_bundle off and the first chat
+        installs it: doctor must not claim the setting is on or fail the summary."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import kas_bundle
+
+        self._automatic_route_without_the_pin(monkeypatch, [], installable=True)
+        preview = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_SHARING_PREVIEW)
+        monkeypatch.setattr(kas_bundle, "kas_route", lambda: preview)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "downloads it at the first chat" in out
+        assert "agent.kas_bundle is on" not in out
+        assert issues == []
+
     @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
     def test_a_pin_this_host_cannot_download_stays_an_issue(self, monkeypatch, capsys, on_disk):
         """A host the engine cannot run on, or a version override the gateway does
@@ -1178,19 +1196,37 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         assert f"{major}.{minor - 1}.{patch}" in out
         assert not any("tool" in i and "vocabul" in i for i in issues)
 
-    def test_a_newer_engine_warns_and_names_both_versions_and_the_fixture(
+    def test_a_newer_engine_is_informational_with_no_maintainer_steps(
+        self, monkeypatch, capsys
+    ) -> None:
+        """A current kiro-cli newer than the last measurement is the normal case,
+        so the row is ➖ in plain words and names no source-tree fixture."""
+        from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
+
+        major, minor, patch = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
+        for version in ((major, minor + 1, patch), (major + 1, 3, 0)):
+            out, issues = self._run(monkeypatch, capsys, version)
+            assert "tool names:  ➖" in out
+            assert "⚠️" not in out.split("tool names:")[1].splitlines()[0]
+            assert ".".join(str(p) for p in version) in out
+            assert f"{major}.{minor}.{patch}" in out
+            assert "Nothing to do" in out
+            assert "kas_builtin_tool_ids.json" not in out
+            assert "verified_kiro_cli_versions" not in out
+            assert "Re-measure" not in out
+            assert not any("tool" in i and "vocabul" in i for i in issues)
+
+    def test_an_unlisted_engine_between_releases_is_informational(
         self, monkeypatch, capsys
     ) -> None:
         from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
 
-        major, minor, patch = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
-        out, issues = self._run(monkeypatch, capsys, (major, minor + 1, patch))
-        assert "tool names:  ⚠️" in out
-        assert f"{major}.{minor + 1}.{patch}" in out
-        assert f"{major}.{minor}.{patch}" in out
-        assert "kas_builtin_tool_ids.json" in out
-        assert "verified_kiro_cli_versions" in out
-        # Advisory: not known to have drifted, only not known not to have.
+        oldest, newest = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[0], KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
+        between = (oldest[0], oldest[1], oldest[2] + 7)
+        assert oldest < between < newest and between not in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
+        out, issues = self._run(monkeypatch, capsys, between)
+        assert "tool names:  ➖" in out
+        assert "test/fixtures" not in out
         assert not any("tool" in i and "vocabul" in i for i in issues)
 
     def test_an_unknown_version_is_its_own_row(self, monkeypatch, capsys) -> None:

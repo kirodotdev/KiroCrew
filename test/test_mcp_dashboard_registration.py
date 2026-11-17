@@ -394,6 +394,10 @@ class TestWhatThisSetGrants:
         # does not already reach, called as the same caller (rfc-work-dispatch.md).
         "work_dispatch",
         "session_queue",
+        # The remote-dispatch crew roster: a session-control read on the same
+        # strict gate and route family; advertised only while
+        # work_ledger.remote_dispatch is on.
+        "crew_list",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | MOVE_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
@@ -403,10 +407,17 @@ class TestWhatThisSetGrants:
         assert {t["name"] for t in mcp_dashboard._tool_definitions()} == self.GRANTED_TOOLS
 
     def test_the_advertised_list_is_the_set(self) -> None:
-        """Reaching the process means the set was assigned; nothing is hidden."""
-        from kiro_crew import mcp_dashboard
+        """Reaching the process means the set was assigned; nothing is hidden but
+        ``crew_list``, which only the remote-dispatch preview advertises."""
+        from kiro_crew import mcp_dashboard, remote_dispatch
 
-        assert {t["name"] for t in mcp_dashboard._list_tools()} == self.GRANTED_TOOLS
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(remote_dispatch, "remote_dispatch_enabled", lambda: False)
+            off = {t["name"] for t in mcp_dashboard._list_tools()}
+            mp.setattr(remote_dispatch, "remote_dispatch_enabled", lambda: True)
+            on = {t["name"] for t in mcp_dashboard._list_tools()}
+        assert off == self.GRANTED_TOOLS - {"crew_list"}
+        assert on == self.GRANTED_TOOLS
 
     def test_session_driving_tools_ship_with_the_folder_tools(self) -> None:
         """This set deliberately bundles two capability classes.
@@ -425,6 +436,8 @@ class TestWhatThisSetGrants:
         # The one dispatch verb: session control's create and send, with the ledger's
         # create and bind, in one call (rfc-work-dispatch.md).
         session |= {n for n in names if n == "work_dispatch"}
+        # The remote-dispatch crew roster, on the session-control strict gate.
+        session |= {n for n in names if n == "crew_list"}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
         assert pins, "the pin and pinned-order tools left this set"

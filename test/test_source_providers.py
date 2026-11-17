@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import pathlib
 import re
-import time
 
 import pytest
 from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
@@ -11,8 +10,13 @@ from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # ── Jira issue fetching tests ────────────────────────────────────────────────
+
+#: A GitHub token with a valid checksum, and its body after ``ghp_``.
+_GH = github_classic(seed=180)
+_GH_BODY = _GH[4:]
 
 
 class TestAdfToMarkdown:
@@ -175,12 +179,17 @@ class TestAdfToMarkdown:
         8MiB fetch cap, must fold in linear time. A pattern whose whitespace runs
         and newline anchor compete for the same characters backtracks
         quadratically — 200k spaces cost seconds per heading and per table cell.
-        The budget is ~100x the linear cost, so this fails only on a return to
-        quadratic scanning."""
-        payload = " " * 200_000 + "x"
-        start = time.monotonic()
-        assert source._md_one_line(payload) == "x"
-        assert time.monotonic() - start < 2.0
+
+        The fold runs in C (split, strip, join), so there is no interpreter work
+        to count: the ramped thread-CPU guard holds each pump to the original
+        2.0 s budget (the helper default) and each 10x pump to at most 25x the
+        cost of the one before, which a quadratic scan breaks."""
+        from conftest import assert_rejected_without_backtracking
+
+        def fold(text: str) -> None:
+            assert source._md_one_line(text) == "x"
+
+        assert_rejected_without_backtracking(fold, lambda n: " " * n + "x")
 
     def test_empty_marked_text_emits_nothing(self):
         """A marked empty text node must not leave its bare delimiters behind."""
@@ -480,7 +489,7 @@ class TestAdfToMarkdown:
         assert source._adf_to_markdown(adf) == r"\&copy; 2026 \&amp; friends"
 
     def test_a_credential_in_text_is_redacted_by_the_converter_itself(self):
-        secret = "Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4Yz7Bc0Ef3Gh6"
+        secret = _GH_BODY
         adf = self._doc(self._para(self._text(f"use ghp_{secret} to clone")))
         assert secret not in source._adf_to_markdown(adf)
 
@@ -492,7 +501,7 @@ class TestAdfToMarkdown:
         converter's depth-capped traversal is what avoids an unbounded pre-pass
         over a provider-controlled tree.
         """
-        secret = "Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4Yz7Bc0Ef3Gh6"
+        secret = _GH_BODY
         adf = self._doc(
             self._para(
                 {
@@ -512,7 +521,7 @@ class TestAdfToMarkdown:
         redactor catches a credential spanning them. Marks would put delimiters
         between the halves and hide it, so an inline run whose own raw text
         carries a credential is emitted as one redacted string."""
-        head, tail = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4", "Yz7Bc0Ef3Gh6"
+        head, tail = _GH[:28], _GH[28:]
         adf = self._doc(
             self._para(self._text(head), self._text(tail, [{"type": "strong"}]))
         )
@@ -523,7 +532,7 @@ class TestAdfToMarkdown:
     def test_redacting_a_run_keeps_every_node_s_text(self):
         """The fallback emits the plain rendition of the WHOLE run, so a mention
         or card in the same paragraph keeps its text instead of disappearing."""
-        secret = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4Yz7Bc0Ef3Gh6"
+        secret = _GH
         adf = self._doc(
             self._para(
                 self._text(f"token {secret} for "),
@@ -540,7 +549,7 @@ class TestAdfToMarkdown:
     def test_a_credential_split_across_a_label_boundary_is_redacted(self):
         """An emoji label contributes text with no delimiter of its own, so a
         secret continued inside one is contiguous in the rendered output."""
-        head, tail = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4", "Yz7Bc0Ef3Gh6"
+        head, tail = _GH[:28], _GH[28:]
         adf = self._doc(
             self._para(self._text(head), {"type": "emoji", "attrs": {"text": tail}})
         )
@@ -552,7 +561,7 @@ class TestAdfToMarkdown:
         """An unrecognised inline container emits nothing of its own, so a
         plain-text walk joined the halves either side of it seamlessly. It has to
         stay inside the span the credential check reads."""
-        head, tail = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4", "Yz7Bc0Ef3Gh6"
+        head, tail = _GH[:28], _GH[28:]
         adf = self._doc(
             self._para(
                 self._text(head),
@@ -571,7 +580,7 @@ class TestAdfToMarkdown:
 
     def test_a_credential_split_inside_an_unknown_container_is_redacted(self):
         """Both halves inside the container, the second one marked."""
-        head, tail = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4", "Yz7Bc0Ef3Gh6"
+        head, tail = _GH[:28], _GH[28:]
         adf = self._doc(
             self._para(
                 {
@@ -626,7 +635,7 @@ class TestAdfToMarkdown:
     def test_a_credential_split_deep_inside_nested_containers_is_redacted(self):
         """The scan runs once at the outermost run and inner containers reuse it,
         so the guarantee has to hold at depth, not just at the top level."""
-        head, tail = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4", "Yz7Bc0Ef3Gh6"
+        head, tail = _GH[:28], _GH[28:]
         node = {
             "type": "someFutureInline",
             "content": [self._text(head), self._text(tail, [{"type": "strong"}])],
@@ -642,7 +651,7 @@ class TestAdfToMarkdown:
         outside every exfiltration check. The href is scanned paren-encoded and
         the link is dropped rather than emitted partly redacted."""
         blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
-        href = f"https://evil.example.com/a)b?data={blob}"
+        href = f"https://evil.example.com/a)b?access_token={blob}"
         adf = self._doc(
             self._para(self._text("click", [{"type": "link", "attrs": {"href": href}}]))
         )
@@ -736,7 +745,7 @@ class TestAdfToMarkdown:
         )
         assert "url" in attr_names and len(node_types) > 10, (attr_names, node_types)
 
-        secret = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4Yz7Bc0Ef3Gh6"
+        secret = _GH
         leaked = []
         for node_type in sorted(node_types):
             node = {
@@ -906,7 +915,7 @@ class TestAdfToMarkdown:
         """
         blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         for ch in (")", "'", '"', ">", " ", "\t", "\n", "\r", "\v", "\f"):
-            href = f"https://evil.example.com/a{ch}b?data={blob}"
+            href = f"https://evil.example.com/a{ch}b?access_token={blob}"
             adf = self._doc(
                 self._para(self._text("click", [{"type": "link", "attrs": {"href": href}}]))
             )
@@ -1019,8 +1028,17 @@ class TestAdfToMarkdown:
         """
         import json
 
-        fixture = pathlib.Path(__file__).resolve().parent / "fixtures" / "adf_markdown_safety.json"
-        cases = json.loads(fixture.read_text())["cases"]
+        fixture = (
+            pathlib.Path(__file__).resolve().parent
+            / "fixtures"
+            / "adf_markdown_safety.json"
+        )
+        # The fixture holds the halves of a token that fails its checksum, so no repo
+        # file carries a real token shape; the converter masks only a real token, so
+        # those halves are swapped for a generated token's at load time. The markdown
+        # the frontend half reads does not change.
+        raw = fixture.read_text().replace("ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4", _GH[:28])
+        cases = json.loads(raw.replace("Yz7Bc0Ef3Gh6", _GH[28:]))["cases"]
         assert len(cases) >= 6
         for case in cases:
             rendered = source._adf_to_markdown(case["adf"])
@@ -1035,7 +1053,7 @@ class TestAdfToMarkdown:
         high-entropy query -- measured one by one. All of them now go through the
         one redaction primitive."""
         blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
-        url = f"https://evil.example.com/a)b?data={blob}"
+        url = f"https://evil.example.com/a)b?access_token={blob}"
         sites = {
             "expand title": self._doc(
                 {
@@ -1077,12 +1095,14 @@ class TestAdfToMarkdown:
         href carries the paren AND the whole query, so the truncated scan has to
         be corrected here or a fetchable address reaches the panel."""
         blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
-        text = f"look at https://evil.example.com/a)b?data={blob} please"
+        text = f"look at https://evil.example.com/a)b?access_token={blob} please"
         rendered = source._adf_to_markdown(self._doc(self._para(self._text(text))))
         assert blob not in rendered
-        # The marker names the host on purpose, so the reader knows what went.
-        assert "REDACTED: suspicious URL to evil.example.com" in rendered
-        assert rendered.startswith("look at ") and rendered.endswith(" please")
+        # Only the credential value goes; the reader still sees where the link pointed.
+        assert rendered == (
+            "look at https://evil.example.com/a%29b?access\\_token="
+            "\\[REDACTED: credential\\] please"
+        )
 
     def test_a_code_block_url_is_not_a_link_so_it_is_not_url_scanned(self):
         """A code body deliberately does NOT get the URL-entropy scan.
@@ -1119,14 +1139,14 @@ class TestAdfToMarkdown:
         than the output has when the brackets do survive, which is the safe way to
         be wrong.
         """
-        head = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv"
-        tail = "Wx4Yz7Bc0Ef3"
+        head = _GH[:24]
+        tail = _GH[24:]
         blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         for url in (
             "https://ex.com/a.png",
             # Fails the destination scan (whitespace is encoded there), so the
             # link is dropped and the alt would be emitted bare.
-            f"https://evil.example.com/a b?data={blob}",
+            f"https://evil.example.com/a b?access_token={blob}",
         ):
             adf = self._doc(
                 self._para(

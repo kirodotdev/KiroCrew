@@ -1,12 +1,12 @@
 ---
 title: Work ledger caps a goal's open items, and its item total becomes an advisory line
-status: partial
+status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-10-12
-last-audited: 2026-11-13
-audited-at: 9b32941be6
+last-audited: 2026-11-14
+audited-at: e51c773a0c
 doc-pr: null
-implementation-prs: [19338]
+implementation-prs: [19338, 36312]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -23,15 +23,19 @@ Amended 2026-11-13 by §7 below, by the repository owner's decision: the
 default `concurrency_cap` becomes `MAX_ITEMS_PER_CONDUCTOR` (32), the field
 stays for a bound the user sets, and `resource_status` decides each wave. §3 to
 §6 are kept as the record of the 2026-10-12 decision. §3 shipped in #19338;
-§7 is not built. §7 relies on
+§7 shipped in #36312. §7 relies on
 [`rfc-work-ledger-resource-pressure.md`](rfc-work-ledger-resource-pressure.md)
 for the host signal that replaces the fixed 6.
 
-Status: accepted. The maintainer (iamwhatever) accepted this design in the
+Status: implemented. The maintainer (iamwhatever) accepted this design in the
 conductor chat on 2026-10-12 at about 06:12 UTC: a hard cap on open items, the
-total cap advisory only. The implementation is open as
-[#19338](https://github.com/kirodotdev/KiroCrew/pull/19338) and rebases onto the
-base that carries this document. Every code reference below was read at
+total cap advisory only. The implementation merged as
+[#19338](https://github.com/kirodotdev/KiroCrew/pull/19338), and §7 merged as
+[#36312](https://github.com/kirodotdev/KiroCrew/pull/36312)
+(`DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR` in `work_ledger_records.py`,
+the wait-for-a-seat refusal in `work_ledger_writes.py`, and the shared
+`resource_wave` conductor rule in `spec_prompts.py` and `crewmate_prompts.json`;
+verified at `e51c773a0c`). Every code reference below was read at
 `0a47021090`.
 
 This document lands on its own because it changes what the goal conductor does by
@@ -175,7 +179,7 @@ this section was read at `9b32941be6`.
 | `DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR` (32). With §3's check order, a board at 32 open items is refused by the store's `item_cap_exceeded` first, so the goal check never fires by default. | `DEFAULT_GOAL_CONCURRENCY_CAP` in `src/kiro_crew/work_ledger_records.py` |
 | The field stays (1..32, set with `work_ledger_record action=goal concurrency_cap=<N>`). It is the user's way to set a bound, and a user-set value still refuses `goal_concurrency_cap_reached`. | unchanged |
 | The refusal text says wait for a seat: dispatch nothing new until an item lands. It no longer says "ask the user and raise it", which already contradicts the conductor prompt's "never ask to raise it". | the `goal_concurrency_cap_reached` message in `_admit_create_locked` (`src/kiro_crew/work_ledger_writes.py`) and its copy in `src/kiro_crew/mcp_work.py` |
-| The conductor rule drops "at most 6 open" and says: before each wave, `resource_status` decides how many to start; a bound the user set is `concurrency_cap`; on a `host_pressure` record, follow the pressure RFC. | `spend_bounded` in `src/kiro_crew/agent_parts/spec_prompts.py`, the "Rounds are not gated, but spend is bounded" section of `goal-conductor/SKILL.md` |
+| The conductor rule drops "at most 6 open" and says: before each wave, `resource_status` decides how many to start; a bound the user set is `concurrency_cap`; on a `host_pressure` record, follow the pressure RFC. | `spend_bounded` in `src/kiro_crew/agent_parts/spec_prompts.py`, the "Rounds are not gated, but they are bounded" section of `goal-conductor/SKILL.md` |
 | The Bot conductor gets the same `resource_status` wave rule. Its prompt has none today (`crewmate_prompts.json`: no hits). The shared rule keeps Bot and Ultra Mode in parity (`test/test_mate_conductor_parity.py`). | `src/kiro_crew/crewmate_prompts.json` or the shared conductor rules in `spec_prompts.py` |
 | Tests that pin 6 move to the new default. | `test/test_work_ledger_caps.py` and the other ledger tests that reference the 6 |
 

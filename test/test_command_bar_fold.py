@@ -63,7 +63,11 @@ async def test_settings_writes_a_boolean(tmp_config, value) -> None:  # noqa: F8
 
 
 def test_the_app_is_a_migrated_builtin_that_no_longer_ships() -> None:
-    from kiro_crew.apps.builtins import _FOLDED_BUILTIN_SWITCHES, _MIGRATED_BUILTINS
+    from kiro_crew.apps.builtins import (
+        _FOLDED_BUILTIN_SWITCHES,
+        _FOLDED_OFF_BY_DEFAULT,
+        _MIGRATED_BUILTINS,
+    )
     from kiro_crew.apps.manager import (
         _DEFAULT_ON_BACKFILL,
         _DEFAULT_ON_BUILTINS,
@@ -73,14 +77,14 @@ def test_the_app_is_a_migrated_builtin_that_no_longer_ships() -> None:
     assert NAME in _MIGRATED_BUILTINS
     assert NAME not in shipped_builtin_names()
     assert NAME not in _DEFAULT_ON_BUILTINS | _DEFAULT_ON_BACKFILL
-    # Every folded switch names a real config flag that defaults on, as the app
-    # did, because the carry writes only an opt-out.
+    # Every folded switch names a real config flag that defaults to what its app's
+    # defaultEnabled was, because the carry writes only a state that differs.
     for name, path in _FOLDED_BUILTIN_SWITCHES.items():
         assert name in _MIGRATED_BUILTINS
         value: object = KiroCrewConfig()
         for part in path.split("."):
             value = getattr(value, part)
-        assert value is True, path
+        assert value is (name not in _FOLDED_OFF_BY_DEFAULT), path
 
 
 def test_an_enabled_record_is_removed_and_writes_nothing(app_home) -> None:  # noqa: F811

@@ -559,6 +559,14 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     ):
         if key in manifest:
             manifest_fields[key] = manifest[key]
+    # Listing copy per locale, parsed exactly as an install parses it: the block
+    # is untrusted, so a malformed locale is dropped here too. Imported here so
+    # the registry facade's star import gains no name.
+    from kiro_crew.apps.manifest_sections import L10nConfig
+
+    l10n = L10nConfig.from_value(manifest.get("l10n")).to_dict()
+    if l10n:
+        manifest_fields["l10n"] = l10n
     if manifest_fields:
         result["manifest"] = manifest_fields
 

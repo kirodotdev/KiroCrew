@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.platform import wheel_apply, wheel_engine
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -480,7 +481,7 @@ class TestShownFailureText:
         assert shown.endswith(final)
 
     def test_a_credential_is_redacted_before_the_cut(self) -> None:
-        secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        secret = github_classic(seed=177)
         text = "step exited 1: " + "x" * 3000 + secret + "y" * 200
         assert secret[-10:] not in wheel_apply.shown_failure_text(text)
 
@@ -733,7 +734,7 @@ class TestOutcomes:
     async def test_failure_text_is_redacted_then_capped(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        secret = github_classic(seed=178)
 
         def apply(**_kwargs: object) -> Path:
             raise wheel_engine.WheelUpdateError(f"could not fetch with {secret} " + "x" * 5000)
@@ -835,16 +836,35 @@ class TestOwnership:
             release.wait(30)  # an apply slow to unwind
             raise wheel_engine.WheelUpdateCancelled("cancelled")
 
-        # Far beyond any runner's scheduling delay, so the bound below separates
-        # "the caller's deadline fired" from "the grace was waited out".
         monkeypatch.setattr(wheel_apply, "STOP_GRACE_SECS", 60.0)
+        # Every wait the stop task hands asyncio.wait. After the caller's deadline
+        # cancels the grace wait, a second wait would be the grace waited out
+        # again before the cancellation surfaces, so it is refused at once.
+        grace_waits: list[object] = []
+        real_wait = asyncio.wait
+        stop_task: asyncio.Task[None] | None = None
+
+        async def recording_wait(fs, *args, **kwargs):  # noqa: ANN001, ANN202
+            if stop_task is not None and asyncio.current_task() is stop_task:
+                grace_waits.append(kwargs.get("timeout", args[0] if args else None))
+                if len(grace_waits) > 1:
+                    raise AssertionError(
+                        f"stop_wheel_applies waited again {grace_waits!r} after its "
+                        "caller's deadline cancelled the grace wait"
+                    )
+            return await real_wait(fs, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "wait", recording_wait)
         task = asyncio.ensure_future(_run(apply, monkeypatch))
         try:
             assert await asyncio.to_thread(started.wait, 30)
-            began = time.monotonic()
+            stop_task = asyncio.ensure_future(wheel_apply.stop_wheel_applies())
             with pytest.raises(asyncio.TimeoutError):
-                await asyncio.wait_for(wheel_apply.stop_wheel_applies(), timeout=0.3)
-            assert time.monotonic() - began < wheel_apply.STOP_GRACE_SECS / 2
+                await asyncio.wait_for(stop_task, timeout=0.3)
+            # The deadline ended the one grace wait; the apply is still unwinding.
+            assert stop_task.cancelled()
+            assert grace_waits == [wheel_apply.STOP_GRACE_SECS]
+            assert not task.done()
         finally:
             release.set()
             await asyncio.wait({task}, timeout=10)

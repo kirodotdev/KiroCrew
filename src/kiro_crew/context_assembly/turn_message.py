@@ -186,6 +186,7 @@ def build_message(
         (full_message, hook_result) — hook_result may be a reply/modify/inject.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_head as _session_head
     from kiro_crew.agent_sdk import context_provider_of
     from kiro_crew.essential_delivery import EssentialDelivery
 
@@ -329,6 +330,7 @@ def build_message(
             steering_dirs=steering_dirs,
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             provider_type=provider_type,
+            dispatch_mounted=member_dispatch_mounted,
         )
     if _essentials and not is_new_session:
         parts.append(_essentials)
@@ -378,9 +380,19 @@ def build_message(
             self._session_computer_use_gate(session_key, refresh=True)
         # Agent prompt goes BEFORE session context wrapper
         # so the LLM treats it as its identity, not background info.
+        # A resume sends none: the restored transcript holds the original. The
+        # exception is a chat that started with its agent prompt in a session head
+        # (the session manager's reading, ``session_head_started``) and whose
+        # resumed session holds no head: the engine rebuilt its first message
+        # without the block, and the first message never carried it.
+        resend_agent_prompt = (
+            slim_resume
+            and context_provider is not None
+            and _session_head.resend_on_resume(agent, context_provider)
+        )
         agent_prompt = (
             ""
-            if slim_resume
+            if slim_resume and not resend_agent_prompt
             else self._resolve_agent_prompt(
                 agent,
                 project=project or template_dir,
@@ -388,13 +400,20 @@ def build_message(
                 session_key=session_key,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
-                session_start=True,
+                session_start=not slim_resume,
             )
         )
         # Not when the harness holds this exact text as the agent's own prompt
-        # (recorded from KAS's wire definition); a compaction re-sends the block.
-        if agent_prompt and agent_prompt != native_documents.get(f"template://{agent}#prompt"):
-            parts.append(f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+        # (recorded from KAS's wire definition) or as its session head; a
+        # compaction re-sends the block.
+        if (
+            agent_prompt
+            and agent_prompt != native_documents.get(f"template://{agent}#prompt")
+            and not _session_head.holds(
+                native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
+            )
+        ):
+            parts.append(_session_head.agent_prompt_block(agent_prompt))
         with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
                 session_key,
@@ -424,6 +443,7 @@ def build_message(
                 _v2_essentials=_essentials,
                 member_dispatch_mounted=member_dispatch_mounted,
                 served_model=served_model,
+                native_documents=native_documents,
             )
         if session_ctx:
             # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -471,6 +491,7 @@ def build_message(
                         member,
                         include_briefing=not blocks_reads,
                         desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                        dispatch_mounted=member_dispatch_mounted,
                     )
                     if _member_section:
                         _resume_member = (
@@ -629,6 +650,17 @@ def build_message(
                 ),
             )
         )
+        # A conductor lost the goal-conductor body it read; the index above only
+        # names the skill. Minimal turns get no skills back, so no pointer either.
+        if not minimal_context:
+            _reread_part = _turn.conductor_reread_part(
+                agent=agent,
+                mode=mode,
+                session_key=session_key,
+                dispatch_mounted=member_dispatch_mounted,
+            )
+            if _reread_part:
+                parts.append(_reread_part)
         # The session's durable work state, which a monitor cycle already gets
         # and an interactive turn lost with the compaction. A minimal turn is
         # read by other people, and a read-blocked (incognito) turn keeps no
@@ -657,6 +689,7 @@ def build_message(
                 member,
                 include_briefing=not blocks_reads,
                 desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                dispatch_mounted=member_dispatch_mounted,
             )
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))

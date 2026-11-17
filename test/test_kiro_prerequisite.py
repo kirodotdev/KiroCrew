@@ -304,7 +304,7 @@ class TestKiroPrerequisiteHelpers:
         tmp_path: Path,
         platform_name: str,
     ) -> None:
-        # Regression: Kiro CLI 2.15+ is a multi-call binary that dispatches by
+        # Kiro CLI 2.15+ is a multi-call binary that dispatches by
         # exec'ing a SIBLING executable (``kiro-cli-chat``) resolved relative to
         # its own path. Copying into a flat dir stranded the sibling and every
         # spawn died with "No such file or directory (os error 2)" →

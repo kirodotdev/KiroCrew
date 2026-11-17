@@ -145,8 +145,8 @@ class AutocompactPctError(ValueError):
 def parse_autocompact_pct(value: int | float, *, name: str = "pct") -> float:
     """``value`` as a per-session threshold, or :class:`AutocompactPctError`.
 
-    The one finite and range check shared by the slot's "Auto-compact at" route
-    and ``session_create``. The caller has already refused a non-number (and a
+    The one finite and range check shared by the slot's "Auto-compact at" route,
+    ``session_create`` and a crew's ``PUT /api/agents/{name}``. The caller has already refused a non-number (and a
     bool) with its own code. Refused rather than clamped: a caller that asked
     for 95 learns it instead of silently running at 90.
     """
@@ -163,6 +163,25 @@ def parse_autocompact_pct(value: int | float, *, name: str = "pct") -> float:
             "pct_out_of_range",
         )
     return pct
+
+
+def crew_autocompact_pct_refusal(value: object) -> str | None:
+    """Why *value* is not a crew compaction threshold ``PUT /api/agents/{name}`` may
+    store, or ``None``.
+
+    0 inherits the global; any other value takes :func:`parse_autocompact_pct`, so a
+    refusal says what is wrong instead of the loader clamping it on the next read. A
+    bool is refused although it is an ``int``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "autocompact_pct must be a number: 0 inherits session.autocompact_pct"
+    if value == 0:
+        return None
+    try:
+        parse_autocompact_pct(value, name="autocompact_pct")
+    except AutocompactPctError as exc:
+        return str(exc)
+    return None
 
 
 # ``session.compact_wait_secs``: 0 is the sentinel for "use the built-in
@@ -182,12 +201,10 @@ COMPACT_WAIT_SECS_MAX = 3600.0
 # the same load/write asymmetry the security-relevant knobs also close.
 #
 # Defined HERE and imported by `_EDITABLE_CONFIG` rather than spelled twice, so
-# the write gate and the load clamp cannot drift. Three fields already clamped on
-# load but duplicated their literals across the two files; those now read from
-# these names too, which is the "two-literal drift" half of the same problem.
+# the write gate and the load clamp cannot drift.
 #
-# Bounds are the ones the write path already declared. This change does not
-# re-litigate any range; it makes the load path honour what the API promised.
+# Bounds are the ones the write path declares; the load path honours what the
+# API promises.
 COMPLETION_KEEP_CHARS_MIN = 0
 # Mirrors ``context_management.RESULT_FILE_MAX_BYTES`` (500 KB) rather than importing
 # it: ``context_management`` does ``from kiro_crew.config.loader import config_dir``, so
@@ -252,9 +269,10 @@ SOFT_STOP_BUDGET_MAX = 60.0
 EXTRACTION_POOL_SIZE_MIN = 1
 EXTRACTION_POOL_SIZE_MAX = 10
 # Load-only bounds. Unlike the parity block above these are NOT consumed by
-# `_EDITABLE_CONFIG` — the field is config-file-only (no dashboard write path),
-# so the only clamp site is the loader. Kept out of the shared block so its
-# "every bound is shared with the write gate" claim stays true.
+# `_EDITABLE_CONFIG`, so the loader is their only clamp site. Kept out of the
+# shared block so its "every bound is shared with the write gate" claim stays
+# true. Settings -> Advanced's generic rule can write `session.kas_delete_delay_secs`
+# without these bounds, and the loader clamps a stored value outside them.
 EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
 EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative

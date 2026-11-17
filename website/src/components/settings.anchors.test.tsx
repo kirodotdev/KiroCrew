@@ -1,4 +1,4 @@
-import { fireEvent, render, within } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import { vi } from 'vitest'
 import { SettingsToggle } from './settings'
 
@@ -26,37 +26,39 @@ describe('SettingsToggle anchors', () => {
     expect(container.querySelector('[data-setting-label]')).toBeNull()
   })
 
-  it('announces the row as disabled and busy, out of the tab order, while it saves', () => {
-    // A screen reader must not announce the clickable row as an active button
-    // that does nothing while the save runs: it is aria-disabled + aria-busy and
-    // not a tab stop, and a press is ignored. The inner switch keeps its own tab
-    // stop (its own busy), so focus is not lost.
+  it('ignores a press on the label while it saves and keeps the switch as the one busy stop', () => {
+    // The row is not a control, so it carries no state of its own: no role, no
+    // tab stop, and no `aria-busy` (on a container that can make a screen reader
+    // skip the switch inside it). The switch is announced disabled and busy and
+    // keeps its tab stop, so focus is not lost while the save runs.
     const onChange = vi.fn()
-    const { getByRole } = render(
+    const { container, getByRole, getByText } = render(
       <SettingsToggle label="Row" checked={false} onChange={onChange} busy />,
     )
-    const row = getByRole('button')
-    expect(row).toHaveAttribute('aria-disabled', 'true')
-    expect(row).toHaveAttribute('aria-busy', 'true')
-    expect(row).toHaveAttribute('tabindex', '-1')
-    fireEvent.click(row)
+    const row = container.querySelector('[data-setting-label="Row"]')!
+    expect(row).not.toHaveAttribute('role')
+    expect(row).not.toHaveAttribute('tabindex')
+    expect(row).not.toHaveAttribute('aria-busy')
+    // The label passes the press to the switch, which refuses it while busy.
+    fireEvent.click(getByText('Row'))
     expect(onChange).not.toHaveBeenCalled()
-    // The switch stays focusable and is announced busy, so focus is kept.
-    const sw = within(row).getByRole('switch')
+    const sw = getByRole('switch')
     expect(sw).toHaveAttribute('tabindex', '0')
     expect(sw).toHaveAttribute('aria-busy', 'true')
+    expect(sw).toHaveAttribute('aria-disabled', 'true')
   })
 
-  it('leaves the row an active button when it is not busy', () => {
+  it('flips on a press of its label when it is not busy, without the row being a button', () => {
     const onChange = vi.fn()
-    const { getByRole } = render(
+    const { container, getByRole, getByText } = render(
       <SettingsToggle label="Row" checked={false} onChange={onChange} />,
     )
-    const row = getByRole('button')
-    expect(row).not.toHaveAttribute('aria-disabled')
-    expect(row).not.toHaveAttribute('aria-busy')
-    expect(row).toHaveAttribute('tabindex', '0')
-    fireEvent.click(row)
+    const row = container.querySelector('[data-setting-label="Row"]')!
+    expect(row).not.toHaveAttribute('role')
+    expect(row).not.toHaveAttribute('tabindex')
+    expect(getByRole('switch')).not.toHaveAttribute('aria-disabled')
+    fireEvent.click(getByText('Row'))
+    expect(onChange).toHaveBeenCalledTimes(1)
     expect(onChange).toHaveBeenCalledWith(true)
   })
 })

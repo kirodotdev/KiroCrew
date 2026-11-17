@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _assemble_skills_catalog_uncached,
         _catalog_assembly_locks,
         _grant_reviewed_project,
+        _skill_name_too_long,
         api_skills_trust_grant,
         api_skills_trust_revoke,
     )
@@ -153,7 +154,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_skill_file  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import requesting_slot_project  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import resolved_skill_file  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import skill_rows_for_globs  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import string_field_error  # noqa: F401
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,
     )

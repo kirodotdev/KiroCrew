@@ -1,7 +1,7 @@
 /**
  * AppPage — loads an installed app via AppHost (dynamic ESM import).
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
@@ -10,6 +10,7 @@ import type { AppHostProps } from '../components/AppHost'
 import ErrorNotice from '../components/ErrorNotice'
 import InstalledAppSurface from '../components/InstalledAppSurface'
 import { Btn } from '../components/ui'
+import { useAppInstalledElsewhere } from '../hooks/useAppInstalledElsewhere'
 import { SURFACE_FORMER_APPS } from '../surfaces/surfaceData'
 
 import { i18nT } from '../i18n/t'
@@ -102,6 +103,11 @@ export default function AppPage() {
       })
     return () => { cancelled = true }
   }, [name, navigate, attempt])
+
+  // The "not installed" view re-reads the record when the gateway announces that
+  // this app's files were put in place, so an install made elsewhere shows here.
+  const rereadApp = useCallback(() => setAttempt(a => a + 1), [])
+  useAppInstalledElsewhere(!loading && !error && app === null && name ? name : null, rereadApp)
 
   if (loading) {
     // A status region, so a screen reader hears that the app is loading: the

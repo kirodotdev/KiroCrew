@@ -1497,15 +1497,17 @@ class ChannelTurns:
             # Durability, at the ONE point where the payload is still in memory and
             # the turn is provably unopened. Every other outcome of this dispatch is
             # already recorded somewhere, which is why nothing is spooled on those
-            # paths and why a replay cannot double-answer. Best-effort by
-            # construction: the helper never raises, so a full disk degrades to
-            # today's loss rather than becoming the thing that fails shutdown.
+            # paths and why a replay cannot double-answer. Best-effort: the helper
+            # never raises, so a full disk loses the message rather than failing
+            # shutdown.
+            #
             # ``route.text`` and ONLY ``route.text`` -- never the prompt. The two
             # differ wherever a channel transforms the prompt, and the difference is
             # not cosmetic: WhatsApp's rules mode prepends the group's private
             # operating rules to the model prompt, so spooling the turn text would
-            # quote those rules back into the group in the restart notice. NOT for a
-            # restricted session: an incognito or temporary conversation is a promise
+            # quote those rules back into the group in the restart notice.
+            #
+            # NOT for a restricted session: an incognito or temporary conversation is a promise
             # that nothing persists, and the spool is a durable file holding the
             # message verbatim.
             if monitor is None and not (
@@ -1737,6 +1739,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401
         is_runtime_death,
+    )
+    from kiro_crew.embeddings_shared import (  # noqa: F401
+        warm_embedder_for_person_soon,
     )
     from kiro_crew.history import (  # noqa: F401
         transcript_stem,

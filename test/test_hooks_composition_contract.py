@@ -183,7 +183,20 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         """.split()),
 }
 
-_MOVED = frozenset(name for names in _BASE_OWNERS.values() for name in names)
+#: Base definitions a later split moved out of the facade file, by owner, with the shape
+#: each had there. Kept apart from ``_BASE_OWNERS`` so that table and
+#: ``_BASE_SHAPE_DIGEST`` stay the record of the first split: a change that re-pins the
+#: digest does not meet this table.
+_LATER_MOVES: dict[str, dict[str, str]] = {
+    "hook_manager": {
+        "_fail_closed_on_gate_crash": "def (judge: 'Any') -> 'Any'",
+        "HookManager": "class",
+    },
+    "tool_identity": {"_cu_read_only_auto_approve": "def (tool_name: 'str') -> 'bool'"},
+}
+
+_FIRST_SPLIT = frozenset(name for names in _BASE_OWNERS.values() for name in names)
+_MOVED = _FIRST_SPLIT | {name for names in _LATER_MOVES.values() for name in names}
 
 #: Definitions added to the owners after the split, by owner. Kept apart from
 #: ``_BASE_OWNERS`` because the base names and shapes are a frozen record of the
@@ -198,6 +211,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
         gate_tier_problems
         """.split()),
     "safe_reads": ("screen_windows_linked_ancestors",),
+    "script_hooks": ("_script_hook_enabled_from",),
     "tool_identity": ("ToolCall",),
 }
 
@@ -235,11 +249,8 @@ _BASE_SHAPE_DIGEST = "99a8550367a8fe7af43162aedfa9cbe5c47b961e41df01ef8ed89e68a4
 _FACADE_DEFS = (
     "uncounted_gate",
     "unattended_turn",
-    "_fail_closed_on_gate_crash",
     "GateRule",
     "GateTier",
-    "HookManager",
-    "_cu_read_only_auto_approve",
     "_unc_data_home_root",
     "_unc_agents_root",
     "_screen_windows_links",
@@ -333,7 +344,6 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Over a hundred production modules and the tests read private names off this module as
     well as public ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 204
     assert sorted(name for name in _BASE_NAMES if not hasattr(hooks_mod, name)) == []
 
 
@@ -416,7 +426,7 @@ def test_every_name_a_production_module_imports_from_the_facade_resolves() -> No
 def test_the_owner_set_is_the_package() -> None:
     assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(
         _BASE_OWNERS
-    ) | set(_NEW_OWNER_DEFS)
+    ) | set(_NEW_OWNER_DEFS) | set(_LATER_MOVES)
 
 
 def test_every_added_owner_definition_is_one_object_on_the_facade() -> None:
@@ -443,22 +453,24 @@ def _shape(obj: object) -> str:
 def test_every_moved_name_is_one_object_in_its_owner() -> None:
     """The facade's binding of a moved name is the owner's object, in the owner its
     responsibility names, and no name is defined by two owners."""
+    placed = [*_BASE_OWNERS.items(), *((owner, tuple(m)) for owner, m in _LATER_MOVES.items())]
     strays = [
         f"{owner}:{name}"
-        for owner, names in _BASE_OWNERS.items()
+        for owner, names in placed
         for name in names
         if getattr(hooks_mod, name) is not vars(_owner(owner)).get(name)
     ]
     assert strays == []
-    names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 82
+    names = [name for _, group in placed for name in group]
+    assert names and len(names) == len(set(names))
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
-    lines = sorted(f"{name} {_shape(getattr(hooks_mod, name))}" for name in _MOVED)
-    assert len(lines) == 82
+    lines = sorted(f"{name} {_shape(getattr(hooks_mod, name))}" for name in _FIRST_SPLIT)
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
+    later = {name: shape for moves in _LATER_MOVES.values() for name, shape in moves.items()}
+    assert {name: _shape(getattr(hooks_mod, name)) for name in later} == later
 
 
 def _module_assignments(source: str) -> set[str]:
@@ -507,7 +519,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 94
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED)
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -658,6 +670,20 @@ def test_the_store_mutation_guard_is_rebound_through_the_shared_helper() -> None
     assert generator.__globals__ is vars(hooks_mod)
     source = Path(hooks_mod.__file__).read_text(encoding="utf-8")
     assert "_hook_runtime" not in source
+
+
+@pytest.mark.parametrize("name", ["judge", "on_tool_call"])
+def test_the_gate_entry_points_are_wrapped_on_the_facade(name: str) -> None:
+    """``compose`` rebinds no function a closure holds, so the facade wraps
+    ``HookManager``'s two gate entry points again after ``compose``: the wrapper and the
+    one body it holds both run on the facade's globals."""
+    wrapper = vars(hooks_mod.HookManager)[name]
+    assert wrapper.__globals__ is vars(hooks_mod)
+    body = wrapper.__wrapped__
+    assert not hasattr(body, "__wrapped__")
+    assert body.__code__.co_filename == _owner("hook_manager").__file__
+    assert body.__globals__ is vars(hooks_mod)
+    assert (wrapper.__module__, wrapper.__qualname__) == (_FACADE, f"HookManager.{name}")
 
 
 def _write_module(tmp_path: Path, name: str, source: str) -> types.ModuleType:
@@ -890,6 +916,7 @@ def test_a_fresh_facade_import_loads_every_owner(tmp_path: Path) -> None:
         """,
         *_BASE_OWNERS,
         *_NEW_OWNER_DEFS,
+        *_LATER_MOVES,
     )
 
 
@@ -932,7 +959,7 @@ def test_the_gate_still_carries_what_the_source_guards_read() -> None:
         for node in ast.parse(source).body
         if isinstance(node, (ast.FunctionDef, ast.ClassDef))
     }
-    assert {"HookManager", "_screen_windows_links"} <= module_level
+    assert "_screen_windows_links" in module_level
     assert typing.get_args(hooks_mod.GateTierKind) == hooks_mod._GATE_TIER_KINDS
     assert {tier.kind for tier in hooks_mod.GATE_TIERS} == set(hooks_mod._GATE_TIER_KINDS)
 
@@ -1328,15 +1355,18 @@ def test_the_binding_sweep_reports_a_shadow_and_ignores_an_inert_import() -> Non
 def test_no_owner_adds_a_gate_consultation_the_package_scan_would_meet() -> None:
     """``test_hooks.test_every_enforcing_caller_uses_the_shared_extraction`` scans the
     package for an assignment-shaped ``= X.on_tool_call(`` / ``= X.judge(`` and
-    exempts only ``hooks.py``. A consultation added in an owner would be scanned and
-    would have to use the one extraction; no owner consults the gate (a tier body is
-    handed its row, it never calls back into ``judge``).
+    exempts only the gate itself: ``hooks.py`` and ``HookManager``'s owner,
+    ``hook_runtime/hook_manager.py``, whose two calls are the gate's own (``judge``
+    running a row, ``on_tool_call`` delegating to ``judge``). A consultation added in
+    any other owner would be scanned and would have to use the one extraction; no
+    other owner consults the gate (a tier body is handed its row, it never calls back
+    into ``judge``).
 
     Over the AST, not the source text: ``hook_gate_kwargs``'s own docstring quotes a
     dispatcher's call line, and a substring check would flag that prose."""
     calls = {
         stem: sorted(
-            node.lineno
+            ast.unparse(node.func)
             for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -1344,4 +1374,6 @@ def test_no_owner_adds_a_gate_consultation_the_package_scan_would_meet() -> None
         )
         for stem, source in _owner_sources().items()
     }
-    assert {stem: lines for stem, lines in calls.items() if lines} == {}
+    assert {stem: found for stem, found in calls.items() if found} == {
+        "hook_manager": ["self.judge", "tier.judge"]
+    }

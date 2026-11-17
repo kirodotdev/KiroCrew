@@ -872,6 +872,20 @@ class McpConfig:
             restart=True,
         ),
     )
+    protect_kiro_permission_rules: bool = field(
+        default=False,
+        metadata=_meta(
+            "Protect kiro-cli permission rules",
+            "Refuse the agent's file-edit tools when they write kiro-cli's tool "
+            "permission rules: ``permissions.yaml`` and ``permissions.json`` in "
+            "``~/.kiro/settings``, and the ``~/.kiro/workspace-roots`` folder. A rule "
+            "with ``effect: allow`` there runs its tool with no approval card, so "
+            "Kiro Crew's own tool gate never sees the call. Off by default, so the "
+            "agent can edit these files as before. Reads stay allowed either way, and "
+            "kiro-cli saving a rule you chose, or your own editor, is never stopped. "
+            "Applies to the next file edit, no restart needed.",
+        ),
+    )
 
 
 @dataclass
@@ -1264,9 +1278,9 @@ class TunnelConfig:
             "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
             "viewer lists a remote Crew, and sends its access token, only when the Crew's "
             "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
-            "default) keeps the check without a domain: the address's host must start with "
-            "the Crew's endpoint ID. Any other value matches no Crew address, so no Crew "
-            "is listed.",
+            "default) lists a Crew whose address's host starts with its endpoint ID, but the "
+            "desktop app opens no Crew until this is set. Any other value matches no Crew "
+            "address, so no Crew is listed.",
         ),
     )
 

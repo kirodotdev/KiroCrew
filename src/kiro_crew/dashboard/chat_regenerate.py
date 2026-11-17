@@ -30,6 +30,7 @@ from kiro_crew.dashboard.kiro_readiness import (
     refuse_rerun_after_signed_out_turn,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
+    turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
@@ -160,7 +161,12 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     if await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name)):
-        blocked = await reject_if_kiro_unverified(request)
+        # The session the rerun's turn will run on names its harness; the slot
+        # is looked up again after the await, so this read only feeds the gate.
+        harness_turn, turn_session = turn_gate_target(state, name)
+        blocked = await reject_if_kiro_unverified(
+            request, harness_turn=harness_turn, session_key=turn_session
+        )
         if blocked is not None:
             return blocked
     slot = state._slots.get(name)
@@ -527,7 +533,18 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     kiro_turn = await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name))
     if kiro_turn:
-        blocked = await reject_if_kiro_unverified(request)
+        # The session the rerun's turn will run on names its harness; the slot
+        # is looked up again after the await, so this read only feeds the gate.
+        # An edit-resend discards the live conversation before its turn, so the turn
+        # cold-starts and the gate judges the configured route, not the live
+        # process.
+        harness_turn, turn_session = turn_gate_target(state, name)
+        blocked = await reject_if_kiro_unverified(
+            request,
+            harness_turn=harness_turn,
+            session_key=turn_session,
+            turn_reuses_session=False,
+        )
         if blocked is not None:
             return blocked
     slot = state._slots.get(name)
@@ -1173,18 +1190,17 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             # failure (exception OR a save refused by its own guards) means
             # nothing persisted: no live mutation and no dispatch.
             #
-            # The worker thread cannot be interrupted: once the rewrite starts it
-            # WILL finish, whether or not this handler is still alive. A client
-            # disconnect cancels the handler task, and a bare await here would
-            # then abandon a completed destructive rewrite -- persisted history
-            # truncated, the live slot still holding the full original window,
-            # and the next periodic dirty-slot flush re-serializing that stale
-            # window back over the truncated file. That is exactly the "live
-            # window desynchronized from disk" failure this change set out to
-            # close, so shield the save; on cancellation, wait for the worker's
-            # real outcome and, if the rewrite landed on the transcript we
-            # authorized, commit the live slot to match disk and let the reserved
-            # dispatch run the edited prompt before propagating the cancellation.
+            # The worker thread cannot be interrupted: once the rewrite starts it WILL
+            # finish, whether or not this handler is still alive. A client disconnect
+            # cancels the handler task, and a bare await here would then abandon a
+            # completed destructive rewrite -- persisted history truncated, the live
+            # slot still holding the full original window, and the next periodic
+            # dirty-slot flush re-serializing that stale window back over the truncated
+            # file: the "live window desynchronized from disk" failure. So shield the
+            # save; on cancellation, wait for the worker's real outcome and, if the
+            # rewrite landed on the transcript we authorized, commit the live slot to
+            # match disk and let the reserved dispatch run the edited prompt before
+            # propagating the cancellation.
             # Through ``save_slot_off_loop``, not a bare ``to_thread``, and the
             # difference is load-bearing rather than stylistic. Because the live
             # slot keeps the FULL window until the commit, the periodic

@@ -947,12 +947,11 @@ def _direct_push(self: Driver, *, fp: str, kind: str, target: str, sha: str) -> 
         )
         return None
     # Record the OBJECT THAT WAS SENT, which `_push_with_rebase` reports -- on the fast path
-    # the retained id, on the retry path the replayed one. Re-reading `HEAD` here was wrong
-    # for the same reason it is wrong everywhere else on this path: HEAD can move between
-    # the push and the read, and the ledger would then name an unrelated commit for a change
-    # that really did land. The HEAD read is GONE rather than kept as a fallback: `src` is
-    # required now, so there is no caller for whom the sent object is unknown, and a fallback
-    # that re-reads HEAD is the defect wearing a smaller hat. There is no fallback to the
+    # the retained id, on the retry path the replayed one. Never re-read `HEAD` here: HEAD
+    # can move between the push and the read, and the ledger would then name an unrelated
+    # commit for a change that really did land. No HEAD fallback either: `src` is required,
+    # so no caller lacks the sent object, and a fallback that re-reads HEAD has the same
+    # flaw. There is no fallback to the
     # caller's own snapshot either, because it is unreachable: the ONLY return in
     # `_push_with_rebase` that precedes `self._pushed_object = src` is the retire path's
     # `return None`, and that routes to this method's own `return None` above -- before this

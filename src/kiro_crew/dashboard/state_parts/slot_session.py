@@ -15,7 +15,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_effort_pick_gen``, ``_fork_lock``, ``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
-``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
+``_mcp_report_session_id``, ``_mcp_sign_in_notice_shown``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
 ``_model_pick_lock``, ``_model_runtime_pick_gen``, ``_model_withheld``,
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
 ``_deferred_model_switch_key``, ``_pending_discard_from_wake``, ``_pending_memory_mode``, ``_pending_model_pick``,
@@ -139,7 +139,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # next create or pick, and from the first row on the row carries it.
     self._welcome_preview = ("", "", "", "")
     # Whether the owner asked Jev to pick this turn's model tier
-    # (`decisions.points.model_route`), set by the picker's "Auto (Jev)" entry
+    # (`decisions.points.model_route`), set by the picker's "Auto (decision model)" entry
     # and cleared by any concrete pick. A FLAG beside `model`, never a
     # sentinel inside it: `model` is a provider model id -- it reaches
     # `session/set_model`, the session allocation and the composer chip -- and
@@ -343,6 +343,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: crewmate's worker report may wake its creator
     #: (``dashboard.mate_thread_wakes``); never persisted or restored.
     self._reports_to_creator = False
+    #: A code-channel conductor's work at a glance (``work_aggregate``), written by
+    #: the channel's work board on each refresh; ``None`` when it has no workers.
+    self._work_aggregate = None
     #: Slot key of the session-control caller that REVIVED this slot from
     #: history, or "". Cap attribution only: ``creator_slot_count`` counts it
     #: beside ``_created_by`` for the per-caller slot cap, since a revive keeps
@@ -363,6 +366,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # memory only and bounded; see dashboard.mcp_banner_dedupe.
     self._mcp_banner_shown = {}
     self._hidden_scratch_notice_shown = False
+    self._mcp_sign_in_notice_shown = False
     self._telemetry_notice_shown = ""
     self._project_hook_files_notice_shown = ""
     self._session_notice_marks = []
@@ -402,7 +406,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # rather than re-arm the same load.
     self._eager_spawn_reported_resume = False
     # Consecutive failed background starts, and the monotonic time before
-    # which the next one waits (chat_runner._note_eager_spawn_failure).
+    # which the next one waits (chat_turn.eager_spawn._note_eager_spawn_failure).
     self._eager_spawn_failures = 0
     self._eager_spawn_retry_at = 0.0
     # Unclaimed-prefetch teardown timer (resume prefetch). At most one per

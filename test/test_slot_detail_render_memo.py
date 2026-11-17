@@ -116,15 +116,16 @@ class TestSameBytesAsTheUnmemoizedRender:
 class TestEveryOutsideInputIsInTheKey:
     def test_exempt_host_change_re_renders(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hosts: dict[str, frozenset[str]] = {"v": frozenset()}
-        monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: hosts["v"])
         monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: hosts["v"])
         rows = _rows()
         first = _actual(rows)
-        assert "tenant.example.com/collect?data=" not in first
+        # The link is drawn as a Blocked link card, its text unchanged.
+        assert TENANT_URL in first
+        assert json.loads(first)[1]["meta"][cu.BLOCKED_LINKS_KEY][0]["url"] == TENANT_URL
         hosts["v"] = frozenset({"tenant.example.com"})
         second = _actual(rows)
         assert second == _expected(rows)
-        assert "tenant.example.com/collect?data=" in second
+        assert cu.BLOCKED_LINKS_KEY not in json.loads(second)[1]["meta"]
 
     def test_workspace_allowed_hosts_are_in_the_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def allowed(workspace: str | None) -> frozenset[str]:
@@ -195,7 +196,7 @@ class TestPageScope:
         monkeypatch.setattr(wire_render, "FILL_DELAY_S", 0.0)
         rows = _rows()
         assert wire_render.plan_read(self.SCOPE) == (False, True)
-        wire_render.schedule_fill(self.SCOPE, rows, False, live_child="c-1", workspace=None)
+        wire_render.schedule_fill(self.SCOPE, rows, False, live_child="c-1")
         assert wire_render.render_memo_info()[0] == 0
         await _drain_fills()
         entries = wire_render.render_memo_info()[0]
@@ -208,7 +209,7 @@ class TestPageScope:
     async def test_fill_waits_for_its_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(wire_render, "FILL_DELAY_S", 3600.0)
         wire_render.plan_read(self.SCOPE)
-        wire_render.schedule_fill(self.SCOPE, _rows(), False, live_child="c-1", workspace=None)
+        wire_render.schedule_fill(self.SCOPE, _rows(), False, live_child="c-1")
         for _ in range(5):
             await asyncio.sleep(0)
         assert not wire_render._fills
@@ -222,7 +223,7 @@ class TestPageScope:
         monkeypatch.setattr(wire_render, "FILL_DELAY_S", 0.0)
         monkeypatch.setattr(wire_render, "_FILLS_MAX", 0)
         wire_render.plan_read(self.SCOPE)
-        wire_render.schedule_fill(self.SCOPE, _rows(), False, live_child="c-1", workspace=None)
+        wire_render.schedule_fill(self.SCOPE, _rows(), False, live_child="c-1")
         await _drain_fills()
         assert wire_render.render_memo_info()[0] == 0
         assert wire_render.plan_read(self.SCOPE) == (False, True)
@@ -263,12 +264,13 @@ class TestContextMovedMidRender:
     def test_an_exemption_dropped_mid_read_is_not_served_from_the_memo(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Fill the memo while the tenant host is exempt, so its entries hold the
-        # tenant URL unredacted under that context's digest.
-        hosts: dict[str, frozenset[str]] = {"v": frozenset({"tenant.example.com"})}
-        monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: hosts["v"])
-        monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: hosts["v"])
-        rows = _rows()
+        # Fill the memo while the token-parameter prefix is exempt, so its entries
+        # hold the token unredacted under that context's digest.
+        prefix = "https://approve.example.com/auth"
+        token = "Zq7vK2mP9xR4tL8nW3cY6bH1"
+        rows = [{"role": "assistant", "content": f"approve at {prefix}?token={token} now"}]
+        prefixes: dict[str, tuple[str, ...]] = {"v": (prefix,)}
+        monkeypatch.setattr(cu, "_token_param_exempt_prefixes", lambda: prefixes["v"])
         real = wire_render._context_digest
         exempt_context = {"v": b""}
 
@@ -278,17 +280,17 @@ class TestContextMovedMidRender:
 
         monkeypatch.setattr(wire_render, "_context_digest", recording)
         relaxed, _ = wire_render.prepare_message_rows(rows, False, live_child="c-1")
-        assert any(f and "tenant.example.com/collect?data=" in f for f in relaxed)
+        assert any(f and token in f for f in relaxed)
         # The exemption is withdrawn after the read took its first reading, so
         # every lookup still uses the exempt context's key.
-        hosts["v"] = frozenset()
+        prefixes["v"] = ()
         readings = iter([exempt_context["v"]])
         monkeypatch.setattr(wire_render, "_context_digest", lambda: next(readings, None) or real())
         entries = wire_render.render_memo_info()
         fragments, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
         served = "[" + ", ".join(f for f in fragments if f is not None) + "]"
         assert served == _expected(rows)
-        assert "tenant.example.com/collect?data=" not in served
+        assert token not in served
         assert identities == [None] * len(identities)
         assert wire_render.render_memo_info() == entries
 

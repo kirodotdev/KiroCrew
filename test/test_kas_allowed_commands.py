@@ -119,8 +119,6 @@ def test_a_command_no_pattern_fullmatches_still_prompts(pattern: str, command: s
 @pytest.mark.parametrize(
     "command",
     [
-        "git status > out.txt",
-        "git status < in.txt",
         "git status $(whoami)",
         "git status `whoami`",
         "git status ${HOME}",

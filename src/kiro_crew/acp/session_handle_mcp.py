@@ -32,7 +32,11 @@ from kiro_crew.acp._dispatch import classify_notification
 from kiro_crew.acp.client import _is_safe_oauth_url
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
-from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure, is_start_timeout_failure
+from kiro_crew.acp.mcp_reattempt import (
+    is_recoverable_auth_failure,
+    is_refused_sign_in,
+    is_start_timeout_failure,
+)
 from kiro_crew.acp.mcp_session_report import (
     BUCKET_CAP,
     NAME_CAP,
@@ -201,7 +205,9 @@ _MCP_DRAIN_IDLE_EXIT = 0.25
 # cover a realistic npx cold start (npm resolve + Node boot, observed 1-6s)
 # while bounding the cost for a session whose agent config has no MCP servers
 # at all — the one case that pays the full ceiling, since nothing ever arms
-# the idle exit. Sessions with fast servers are unaffected: their registration
+# the idle exit, unless the caller knows no server can report (a runtime
+# declared MCP-free, or one whose process switched MCP off for a tool-less
+# agent) and passes a zero ceiling. Sessions with fast servers are unaffected: their registration
 # frames are staged during session/new and arm the idle exit immediately.
 _MCP_DRAIN_NO_REPORT_CEILING = 6.0
 # Notification actions that count as "an MCP server reported in" for the
@@ -909,7 +915,9 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             dropped += 1
             continue
         present.add(name)
-        if server.get("failedAuthorization") is True:
+        if server.get("failedAuthorization") is True or (
+            server.get("status") == "failed" and is_refused_sign_in(server.get("errorMessage"))
+        ):
             self._mcp_sign_in_needed.add(name)
             self._mcp_reattempt_waiting.discard(name)
         elif server.get("status") in ("connected", "disabled"):
@@ -1277,7 +1285,7 @@ async def drain_init(
     hard_deadline = start + max(duration, no_report_ceiling)
     # A nonpositive ceiling means "do not hold for a first report" — the
     # caller knows no MCP server can register (MCP-free runtime). The idle
-    # shortcut is then active from the start, i.e. the pre-fix behavior.
+    # shortcut is then active from the start.
     reported = no_report_ceiling <= 0.0
     # Exactly the frames the caller counted before it sent set_mode are the
     # pre-switch agent's. A count, not a test for emptiness: a queue that the

@@ -79,6 +79,21 @@ class TestInventory:
         assert install_row["manifest"] == expected
         assert display_row["manifest"] == expected
 
+    def test_declared_api_paths_are_disclosed_for_the_trust_prompt(self, monkeypatch):
+        entry = catalog_git(permissions={"api": ["/api/chat", "", "  ", 7, "/apps/demo-app/api/*"]})
+        (install_row,) = oc.inventory([entry])
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [entry])
+        (display_row,) = oc.list_catalog_rows()
+
+        expected = {"permissions": {"api": ["/api/chat", "/apps/demo-app/api/*"]}}
+        assert install_row["manifest"] == expected
+        assert display_row["manifest"] == expected
+
+    @pytest.mark.parametrize("raw", ["/api/chat", {"0": "/api/chat"}, [], ["", 3]])
+    def test_an_api_grant_that_is_not_a_list_of_paths_discloses_nothing(self, raw):
+        (row,) = oc.inventory([catalog_git(permissions={"api": raw})])
+        assert "manifest" not in row
+
     @pytest.mark.parametrize("raw", ["true", "yes", 1, False, {}, [], None])
     def test_session_approval_disclosure_requires_json_true(self, monkeypatch, raw):
         entry = catalog_git(permissions={"sessionApproval": raw})

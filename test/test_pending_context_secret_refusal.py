@@ -24,13 +24,14 @@ from kiro_crew.dashboard.chat_handlers import (
     api_chat_slot_note,
 )
 from kiro_crew.dashboard.chat_turn.turn_context import drain_pending_context
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Fixture values are assembled at runtime so no literal credential shape sits
 # in the source file.
-# An AWS key ID is kept visible with the structured detectors on, so the AWS
-# case uses a synthetic secret access key instead.
+# An AWS key ID and a bare 40-character run are kept visible, so the AWS case
+# uses a synthetic secret access key after its label.
 _AWS_SECRET = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
-_GITHUB_TOKEN = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+_GITHUB_TOKEN = github_classic(seed=156)
 _PRIVATE_KEY = (
     "-----BEGIN "
     + "RSA PRIVATE KEY-----\n"
@@ -43,7 +44,7 @@ _PRIVATE_KEY = (
 _URL_WITH_PASSWORD = "https://deploy:" + "s3cr3tpassw0rd@git.example.com/org/repo.git"
 
 SECRET_SHAPED = [
-    pytest.param(f"deploy with key {_AWS_SECRET} today", id="aws-secret-key"),
+    pytest.param(f"deploy with aws_secret_access_key={_AWS_SECRET} today", id="aws-secret-key"),
     pytest.param(f"token: {_GITHUB_TOKEN}", id="github-token"),
     pytest.param(f"here is the key\n{_PRIVATE_KEY}\n", id="private-key"),
     pytest.param(f"clone {_URL_WITH_PASSWORD}", id="url-userinfo"),

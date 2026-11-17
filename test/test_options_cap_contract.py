@@ -49,6 +49,13 @@ from kiro_crew.messaging.renderer import (
     split_options_trailer,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+
+# A Slack bot token the credential plan redacts, and its two halves for the
+# split-on-screen cases. Not a bare 40-character run (visible by design), and no
+# ``_`` in it, which the display form drops as markup.
+_KEY = SAMPLE_SLACK_BOT_TOKEN
+_HEAD, _TAIL = _KEY[:12], _KEY[12:]
 
 #: channel_type -> the test class below that pins its enforcement.
 PINNED_WIDGET_CHANNELS = {"slack", "discord", "telegram", "teams", "webex"}
@@ -103,17 +110,11 @@ def _whatsapp_renderer() -> Any:
     return WhatsAppRenderer(object(), object(), "chat@s.whatsapp.net", WHATSAPP_CAPABILITIES)
 
 
-#: Zero-widget channels that DROP the trailer rather than numbering it. WhatsApp
-#: is the one such channel, and the strip is a recorded GAP rather than a position
-#: (``whatsapp/transport.py``, ``docs/channel-capabilities.md``) — whether to
-#: number or keep stripping is a human decision this file does not make. It is a
-#: factory for the same reason as ``ZERO_WIDGET_RENDERERS``: the exemption is
-#: driven against the REAL renderer by
-#: ``test_the_trailer_is_stripped_not_numbered``, which calls each factory and
-#: asserts the trailer is dropped — so a bare name or a bogus callable fails,
-#: not just passes a membership check. A future zero-widget channel still trips
-#: ``test_every_zero_widget_channel_is_pinned_here`` until it is placed in one
-#: map or the other.
+#: Zero-widget channels that DROP the trailer instead of numbering it (only
+#: WhatsApp). The strip is a recorded gap (``whatsapp/transport.py``,
+#: ``docs/channel-capabilities.md``); numbering it instead is a human decision.
+#: Values are factories so ``test_the_trailer_is_stripped_not_numbered`` drives
+#: the real renderer: a bogus entry fails there, not just a membership check.
 STRIPS_NOT_NUMBERS: dict[str, Callable[[], Any]] = {
     "whatsapp": _whatsapp_renderer,
 }
@@ -158,16 +159,9 @@ class TestRatchet:
         )
 
     def test_every_zero_widget_channel_is_pinned_here(self) -> None:
-        # Keyed on the FACTORY maps, not a set of names: a name could be added to
-        # a bare set to make this green, which would leave the channel with no
-        # actual pin -- nothing in code forces a renderer to call the helper. A
-        # zero-widget channel is pinned either as a numbering channel
-        # (ZERO_WIDGET_RENDERERS) or as the recorded strip exception
-        # (STRIPS_NOT_NUMBERS). This test reads only the keys; the factory in
-        # each map is driven against the real renderer by the behaviour tests
-        # (test_the_trailer_becomes_numbered_text for the numbering map,
-        # test_the_trailer_is_stripped_not_numbered for the strip map), so a
-        # bogus callable fails there rather than passing a membership check here.
+        # Keyed on the factory maps, not a bare name set, so a channel cannot be
+        # "pinned" without a renderer the behaviour tests actually drive
+        # (test_the_trailer_becomes_numbered_text, ..._is_stripped_not_numbered).
         zero_widget = {
             name for name, caps in _all_channel_capabilities().items() if caps.max_buttons == 0
         }
@@ -258,9 +252,9 @@ class TestSharedHelper:
         # discord, which have no display-state pass of their own.
         from kiro_crew.messaging.renderer import format_overflow
 
-        split = "AKIA`" + "`IOSFODNN7EXAMPLE"
+        split = _HEAD + "``" + _TAIL
         out = format_overflow([f"Retry with {split}"], start=1)
-        assert "IOSFODNN7EXAMPLE" not in out, (
+        assert _TAIL not in out, (
             "a backtick-split key survived the overflow sink — the platform "
             "strips the delimiters and shows the reader an intact credential"
         )
@@ -271,9 +265,9 @@ class TestSharedHelper:
         # still renders it whole. Pin the order with a choice that needs both.
         from kiro_crew.messaging.renderer import format_overflow
 
-        out = format_overflow(["@everyone use AKIA*IOSFODNN7EXAMPLE*"], start=0)
+        out = format_overflow([f"@everyone use {_HEAD}*{_TAIL}*"], start=0)
         assert "@everyone" not in out
-        assert "IOSFODNN7EXAMPLE" not in out
+        assert _TAIL not in out
 
     def test_overflow_redacts_a_spoiler_split_key(self) -> None:
         # ``||…||`` is Discord's spoiler. The reader clicks it, the delimiters
@@ -282,8 +276,8 @@ class TestSharedHelper:
         # hole exactly one delimiter family wide.
         from kiro_crew.messaging.renderer import format_overflow
 
-        out = format_overflow(["Retry with AKIA||IOSFODNN7EXAMPLE||"], start=0)
-        assert "IOSFODNN7EXAMPLE" not in out, (
+        out = format_overflow([f"Retry with {_HEAD}||{_TAIL}||"], start=0)
+        assert _TAIL not in out, (
             "a spoiler-split key survived — Discord joins the halves when the "
             "reader reveals the spoiler"
         )
@@ -303,8 +297,8 @@ class TestSharedHelper:
             ("BOM", "\ufeff"),
             ("soft hyphen", "\u00ad"),
         ):
-            out = format_overflow([f"Retry with AKIA{ch}IOSFODNN7EXAMPLE"], start=0)
-            assert "IOSFODNN7EXAMPLE" not in out, f"{name} split the key past the scan"
+            out = format_overflow([f"Retry with {_HEAD}{ch}{_TAIL}"], start=0)
+            assert _TAIL not in out, f"{name} split the key past the scan"
 
     def test_non_ascii_text_is_not_mangled(self) -> None:
         """The format-character filter must not touch visible non-ASCII text."""
@@ -572,18 +566,13 @@ class TestRenderOptionsAsText:
     #: is the quantity that reflects the algorithm rather than the host.
     _SAMPLES = 3
 
-    #: Calls per timed batch. ONE call is single-digit milliseconds, and Windows'
-    #: ``process_time`` granularity is ~15.6 ms — so a single call measures as
-    #: exactly 0.0 there and any ratio built from it is noise, not signal (a
-    #: Windows shard produced "ratio 15625.0x" against a provably linear regex,
-    #: which is 1/1e-6, i.e. the divide-by-zero floor rather than a measurement).
-    #: 20 calls puts the batch 5-11x above that tick on measured hardware.
+    #: Calls per timed batch. One call takes a few ms, below Windows'
+    #: ~15.6 ms ``process_time`` tick, so it reads as 0.0 and the ratio hits the
+    #: divide-by-zero floor (1/1e-6). 20 calls put the batch 5-11x above the tick.
     _REPS = 20
 
-    #: A batch must clear this to be a measurement at all. Belt-and-braces against
-    #: the failure above recurring on a platform whose clock is coarser still, or a
-    #: machine fast enough to drop back under the tick: fail LOUDLY asking for more
-    #: reps rather than silently comparing two zeroes.
+    #: A batch shorter than this is under the clock tick: fail loudly asking for
+    #: more reps instead of comparing two zeroes.
     _MIN_BATCH_SECONDS = 0.02
 
     def _growth_ratio(self, build: Callable[[int], str], n: int) -> float:
@@ -628,15 +617,11 @@ class TestRenderOptionsAsText:
         return batch / self._REPS
 
     def test_an_unterminated_options_tag_is_not_redos(self) -> None:
-        # Regression (py/polynomial-redos), consolidated from the wecom, webex
-        # and teams renderer suites: a greedy ``.*`` body could consume a "["
-        # that ALSO starts the outer "[OPTIONS:" literal, so over text with many
-        # "[OPTIONS:" prefixes search() re-explored the body from each position —
-        # polynomial. The tempered body in OPTIONS_RE_TRAILER forbids only a
-        # re-occurring "[OPTIONS:", so the match is linear.
-        # Returned unchanged (no complete trailer), which is the point of the
-        # timing check below: the regex must REJECT this in linear time, not
-        # backtrack over it.
+        # py/polynomial-redos: a greedy ``.*`` body can eat a "[" that also
+        # starts "[OPTIONS:", so search() re-scans from each prefix. The tempered
+        # body in OPTIONS_RE_TRAILER keeps it linear. No complete trailer, so the
+        # text comes back unchanged, and the timing check proves the regex
+        # rejects it in linear time.
         evil = "[OPTIONS:" + ("\t" * 200_000) + "x"
         assert render_options_as_text(evil, self.CAPS) == evil
         ratio = self._growth_ratio(lambda n: "[OPTIONS:" + ("\t" * n) + "x", 100_000)
@@ -883,7 +868,7 @@ class TestDiscordEnforcement:
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 
         n = DISCORD_CAPABILITIES.max_buttons
-        leaked = "AKIA`" + "`IOSFODNN7EXAMPLE"
+        leaked = _HEAD + "``" + _TAIL
         choices = [f"Choice {i}" for i in range(1, n + 1)] + [f"Retry with {leaked}"]
         cli = FakeClient()
         r = DiscordRenderer(  # type: ignore[arg-type]
@@ -896,7 +881,7 @@ class TestDiscordEnforcement:
             await r.on_done()
 
         asyncio.run(_go())
-        assert "IOSFODNN7EXAMPLE" not in cli.final_text()
+        assert _TAIL not in cli.final_text()
 
 
 class TestTeamsEnforcement:
@@ -957,7 +942,7 @@ class TestTeamsEnforcement:
         from kiro_crew.teams.transport import TEAMS_CAPABILITIES
 
         n = TEAMS_CAPABILITIES.max_buttons
-        choices = [f"Choice {i}" for i in range(1, n + 1)] + ["AKIAIOSFODNN7EXAMPLE"]
+        choices = [f"Choice {i}" for i in range(1, n + 1)] + [_KEY]
         trailer = " | ".join(choices)
 
         class _Client:
@@ -988,7 +973,7 @@ class TestTeamsEnforcement:
 
         asyncio.run(_go())
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in "\n".join(cli.sent)
+        assert _KEY not in "\n".join(cli.sent)
 
 
 class TestKeptChoicesAreDisplayRedacted:
@@ -1011,7 +996,7 @@ class TestKeptChoicesAreDisplayRedacted:
     def test_a_credential_in_a_kept_label_is_redacted(self) -> None:
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = _KEY
         _body, kept = apply_options_cap("pick one", [key, "plain"], self._caps())
         assert key not in kept[0], "a credential must not reach a button label"
         assert "REDACTED" in kept[0]
@@ -1022,7 +1007,7 @@ class TestKeptChoicesAreDisplayRedacted:
         # the markup is flattened, which is exactly what display_safe does first.
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        head, tail = "AKIA", "IOSFODNN7EXAMPLE"
+        head, tail = _HEAD, _TAIL
         _body, kept = apply_options_cap("pick", [f"{head}**{tail}**"], self._caps())
         assert "REDACTED" in kept[0]
         assert head + tail not in kept[0]
@@ -1041,7 +1026,7 @@ class TestKeptChoicesAreDisplayRedacted:
         # The half that already worked, so a regression cannot trade one for the other.
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = _KEY
         body, kept = apply_options_cap("pick", ["a", "b", key], self._caps(max_buttons=2))
         assert len(kept) == 2
         assert key not in body and "REDACTED" in body
@@ -1053,7 +1038,7 @@ class TestKeptChoicesAreDisplayRedacted:
         # question the agent just asked.
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = _KEY
         body, kept = apply_options_cap("pick", [key], self._caps(max_buttons=0))
         assert kept == [], "a zero-widget channel keeps no choice for a widget"
         assert "1. " in body, "the choice must still reach the user as text"
@@ -1126,7 +1111,7 @@ class TestWebexEnforcement:
         choices = [
             "ask kyle@example.com",
             *[f"Choice {i}" for i in range(n)],
-            "AKIAIOSFODNN7EXAMPLE",
+            _KEY,
         ]
         cli = FakeClient()
         r = WebexRenderer(
@@ -1152,7 +1137,7 @@ class TestWebexEnforcement:
         assert "​" not in "".join(labels)
         assert "​" not in final
         # The credential rides the OVERFLOW half, past the widget cap.
-        assert "AKIAIOSFODNN7EXAMPLE" not in final
+        assert _KEY not in final
 
 
 class TestZeroWidgetBodyRedaction:
@@ -1161,7 +1146,7 @@ class TestZeroWidgetBodyRedaction:
     A buffered zero-widget channel that renders markdown (Feishu, WeChat-Work)
     sends the body through its own send boundary with no re-scan behind the
     literal channel-neutral stream pass, so a credential split by markup
-    (``AKIA**REST**``) is reassembled on screen. Each such channel scrubs the
+    (``HEAD**REST**``) is reassembled on screen. Each such channel scrubs the
     body render-aware at its send, the same way the markdown channels with a
     widget do. Asserted against the RENDERED form (``canonicalize_display``),
     because the split key passes a literal byte scan while the reader sees it
@@ -1191,11 +1176,11 @@ class TestZeroWidgetBodyRedaction:
         r = FeishuRenderer(cli, "m1", FEISHU_CAPABILITIES)
 
         async def _go() -> None:
-            await r.on_text_chunk("answer AKIAIOSF**ODNN7EXAMPLE** done")
+            await r.on_text_chunk(f"answer {_KEY[:8]}**{_KEY[8:]}** done")
             await r.on_done()
 
         asyncio.run(_go())
-        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(cli.sent)
+        assert _KEY not in canonicalize_display(cli.sent)
 
     def test_weixin_delivered_body_redacts_but_persisted_text_is_untouched(self) -> None:
         import asyncio
@@ -1219,16 +1204,16 @@ class TestZeroWidgetBodyRedaction:
         r = WeixinRenderer(cli, "peer", WEIXIN_CAPABILITIES, ctx_store=_Ctx(), account_id="acct")
 
         async def _go() -> None:
-            await r.on_text_chunk("answer AKIAIOSF**ODNN7EXAMPLE** done")
+            await r.on_text_chunk(f"answer {_KEY[:8]}**{_KEY[8:]}** done")
             await r.on_done()
 
         asyncio.run(_go())
         shipped = "".join(cli.parts)
         # What ships is scrubbed against the rendered form ...
-        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(shipped)
+        assert _KEY not in canonicalize_display(shipped)
         # ... but the persisted transcript form (text()) is not touched by the
         # send-boundary scrub.
-        assert "AKIAIOSF**ODNN7EXAMPLE**" in r.text()
+        assert f"{_KEY[:8]}**{_KEY[8:]}**" in r.text()
 
     def test_feishu_clean_body_is_delivered_intact(self) -> None:
         import asyncio

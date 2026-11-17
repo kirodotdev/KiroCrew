@@ -38,8 +38,13 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from redaction_structured_cases import github_classic
 
-from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, routes, store, tectonic
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.apps.builtins.papyrus.backend import (
+    gitops,
+    latex,
+    routes,
+    store,
+    tectonic,
+)
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -782,6 +787,8 @@ class TestCompile:
             )
         assert compile_mock.await_args is not None
         assert compile_mock.await_args.args[1] == "amlc.tex"
+        # Persisted, so the next compile reads it rather than searching again.
+        assert store.get_main_file(project) == "amlc.tex"
 
     async def test_404s_a_project_with_no_tex(self, enabled: None, data_root: Path) -> None:
         proj = store.projects_dir() / "empty"
@@ -1128,7 +1135,7 @@ class TestFieldCoercion:
 
 
 _FAKE_PAT = github_classic(seed=63)
-_FAKE_AWS_SECRET = SAMPLE_AWS_SECRET
+_FAKE_AWS_SECRET = github_classic(seed=138)  # a bare 40-character run is no credential
 
 
 @pytest.mark.asyncio

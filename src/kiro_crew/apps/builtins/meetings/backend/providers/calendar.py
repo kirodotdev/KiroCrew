@@ -561,6 +561,8 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
             current["end"] = _parse_dt(value, params)
         elif name == "DURATION":
             current["duration"] = value.strip()
+        elif name == "STATUS":
+            current["status"] = value
         elif name == "LOCATION":
             current["location"] = _unescape(value)
         elif name == "DESCRIPTION":
@@ -643,6 +645,12 @@ def _finalize_event(
     if not isinstance(start, datetime):
         return None
     if start < floor or start > horizon:
+        return None
+    # RFC 5545 marks a called-off meeting with STATUS:CANCELLED rather than
+    # removing it, and many feeds keep it. Listing it would show the meeting as
+    # scheduled and let the poller pre-create a directory for it. Producers vary
+    # in case and stray whitespace; TENTATIVE and CONFIRMED stay listed.
+    if str(raw.get("status") or "").strip().upper() == "CANCELLED":
         return None
     end = raw.get("end")
     if not isinstance(end, datetime):

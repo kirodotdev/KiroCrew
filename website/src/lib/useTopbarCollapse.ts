@@ -47,9 +47,6 @@ export type TopbarSide = 'left' | 'right'
  *  inside its track. */
 export const TOPBAR_LEVELS: Record<TopbarSide, number> = { left: 3, right: 6 }
 
-/** A capsule child that is not one of its Liquid Glass effect layers. */
-const capsuleSegment = ':not([data-liquid-glass-layer])'
-
 /** What each group's `@container` rungs in index.css hide, keyed by the measured
  *  step that hides the same items. Steps 2 and 6 of the actions group have no
  *  container rung. The selectors mirror those rungs' targets; the test "names,
@@ -63,7 +60,7 @@ export const TOPBAR_CONTAINER_FOLDS: Record<TopbarSide, Readonly<Partial<Record<
     3: '.tb-drop-usage',
     4: '.tb-drop-feedback',
     // Joined from tokens so the i18n gate does not read the selector as copy.
-    5: ['.tb-capsule', '>', capsuleSegment, '~', capsuleSegment].join(' '),
+    5: ['.tb-capsule', '>', '.tb-capsule-keep', '~', '*'].join(' '),
   },
 }
 

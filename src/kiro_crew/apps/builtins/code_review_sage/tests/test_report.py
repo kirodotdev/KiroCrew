@@ -6,9 +6,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sage_lib import pipeline as PL  # noqa: N812
 from sage_lib import report as RP  # noqa: N812
 from sage_lib import results, store
+
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
+
+#: A GitLab token in its published form (``glpat-`` and 20 or more characters); a
+#: shorter body is no token. A ``ghp_`` value needs a valid checksum for the same reason.
+_GLPAT = "glpat-" + synth(20, seed=124)
 
 
 def _rec(change_id, verdict="PASS", risk="low", blast="SMALL", red=0, yellow=0,
@@ -106,7 +113,7 @@ class TestLlmRedaction(unittest.TestCase):
         must survive unchanged, or redaction would rewrite the report's structure
         instead of its contents.
         """
-        cred = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
+        cred = github_classic(seed=123)
         rec = _rec("42", red=1)
         rec["findings"] = [{
             "dimension": "security", "severity": "red", "file": "a.py", "line": 1,
@@ -126,7 +133,7 @@ class TestLlmRedaction(unittest.TestCase):
         this level's redaction is not observable end-to-end. Asserted here so the
         helper cannot quietly start depending on a later pass to cover for it.
         """
-        cred = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
+        cred = github_classic(seed=123)
         out = RP._redact_finding({"observation": "obs", cred: "in the key"})
         self.assertIn("observation", out)
         self.assertNotIn(cred, out)
@@ -139,7 +146,7 @@ class TestLlmRedaction(unittest.TestCase):
         them from redaction let an injected value carry a secret into report.json
         and the dashboard.
         """
-        secret = "glpat-" + "IOSFODNN7EXAMPLE"
+        secret = _GLPAT
         rec = self._rec_with_llm()
         rec["platform"] = f"github {secret}"
         rec["change_id"] = f"GH-o-r-1 {secret}"
@@ -168,7 +175,7 @@ class TestLlmRedaction(unittest.TestCase):
         row = RP.build_report([rec])["rows"][0]
         self.assertEqual(row["url"], "https://github.com/o/r/pull/42")
 
-        rec["url"] = "https://evil.example/collect?k=glpat-" + "IOSFODNN7EXAMPLE"
+        rec["url"] = "https://evil.example/collect?k=" + _GLPAT
         row = RP.build_report([rec])["rows"][0]
         self.assertNotIn("glpat-", row["url"])
 
@@ -324,13 +331,15 @@ class TestBuildRender(unittest.TestCase):
 
 
 class TestPersistence(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_reset_clears_index_and_rows(self):
         results.write_result(_rec("CR-RED", risk="high", blast="LARGE", red=1), self.root)
@@ -395,7 +404,7 @@ class TestOverrideReasonRedaction(unittest.TestCase):
         }
 
     def test_a_credential_in_the_override_reason_is_scrubbed(self):
-        secret = "glpat-" + "IOSFODNN7EXAMPLE"
+        secret = _GLPAT
         row = RP.classify(self._rec("leaks " + secret + " here"))
         self.assertIn("AI override", row["why"])
         self.assertNotIn(secret, row["why"])
@@ -413,12 +422,18 @@ class TestFindingRedactionCoversEveryString(unittest.TestCase):
     """
 
     def test_a_credential_in_the_file_field_is_scrubbed(self):
-        secret = "glpat-" + "IOSFODNN7EXAMPLE"
-        out = RP._redact_finding({
-            "dimension": "Security", "severity": "red",
-            "file": f"src/{secret}.py", "line": 5,
-            "observation": "o", "consequence": "c", "suggestion": "s",
-        })
+        secret = _GLPAT
+        out = RP._redact_finding(
+            {
+                "dimension": "Security",
+                "severity": "red",
+                "file": f"src/{secret}.py",
+                "line": 5,
+                "observation": "o",
+                "consequence": "c",
+                "suggestion": "s",
+            }
+        )
         self.assertNotIn(secret, out["file"])
         # The numeric line is left as-is.
         self.assertEqual(out["line"], 5)
@@ -513,7 +528,7 @@ class TestRebandOnDismiss(unittest.TestCase):
         # `why` repeats the record's blast rating when it meets the critical
         # threshold, and the worker can write both. The build path scrubs the
         # row; the re-banded fields must be scrubbed the same way.
-        secret = "glpat-" + "IOSFODNN7EXAMPLE"
+        secret = _GLPAT
         rec = _rec("CR-1", blast=secret, red=1)
         rec["findings"] = [_finding("red")]
         payload = self._written(rec)

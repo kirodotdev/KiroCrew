@@ -378,6 +378,7 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
       ...(m.run_id ? { run_id: m.run_id } : {}),
       ...(m.steer ? { steer: true } : {}),
       ...(m.is_error ? { is_error: true } : {}),
+      ...(m.link_blocks !== undefined ? { link_blocks: m.link_blocks } : {}),
     }
   })
   const knownRuns = new Set(messages.map(m => m.run_id).filter((r): r is string => !!r))
@@ -456,8 +457,10 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
 }
 
 export const sideReducers = {
-  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; message_id?: string }>) {
-    const { slot, run_id, role, content, ts, is_error, final, steer, message_id } = action.payload
+  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown }>) {
+    const { slot, run_id, role, content, ts, is_error, final, steer, message_id, link_blocks } = action.payload
+    // The final frame's records describe its whole text, so they travel with it.
+    const records = final && link_blocks !== undefined ? { link_blocks } : {}
     if (isUnsafeKey(slot)) return
     const tsIso = typeof ts === 'number' ? new Date(ts * 1000).toISOString() : new Date().toISOString()
     // A steer is an echo of the conversation being closed, never a request to re-open it,
@@ -570,19 +573,23 @@ export const sideReducers = {
       side.streaming = !final
     }
     if (is_error) {
-      insertAfterRun(side.messages, { role: 'assistant', content, ts: tsIso, run_id, is_error: true, ...(message_id ? { id: message_id } : {}) })
+      insertAfterRun(side.messages, { role: 'assistant', content, ts: tsIso, run_id, is_error: true, ...(message_id ? { id: message_id } : {}), ...records })
       if (!earlierRun) side.lastRunId = run_id
       return
     }
     const last = side.messages[side.messages.length - 1]
     if (last?.role === 'assistant' && last.run_id === run_id && !last.is_error) {
       if (message_id) last.id = message_id
+      if (final) {
+        if (link_blocks !== undefined) last.link_blocks = link_blocks
+        else delete last.link_blocks
+      }
       if (content === last.content) return
       last.content = final ? content : content.startsWith(last.content) ? content : last.content + content
       last.ts = tsIso
       return
     }
-    side.messages.push({ role: 'assistant', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}) })
+    side.messages.push({ role: 'assistant', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}), ...records })
     if (!earlierRun) side.lastRunId = run_id
   },
   sseSideQueue(state: ChatState, action: PayloadAction<{ slot: string; action: 'push' | 'edit' | 'cancel' | 'drain'; queue_id: string; content?: string; ts?: number; front?: boolean; steer_id?: string; raw?: boolean; suppressRelease?: boolean; rev?: number }>) {

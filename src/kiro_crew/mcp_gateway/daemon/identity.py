@@ -603,7 +603,7 @@ async def _resolve_register_identity(
 
     # Identity, in precedence order: the session this connection's token names,
     # then the refusal any other token state forces, then the process-tree
-    # sources exactly as before for a connection carrying no token.
+    # sources for a connection carrying no token.
     #
     # ``peer_host_pids``, NOT ``indexed_pids``: the second factor has to be a
     # fact the registrant cannot author, and ``indexed_pids`` folds in the

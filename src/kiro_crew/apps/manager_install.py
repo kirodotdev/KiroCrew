@@ -30,7 +30,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
-    _declared_grant_entries,
+    _consented_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
@@ -262,6 +262,18 @@ def install_app(
             ),
         )
 
+    # Ticked Bots that an earlier install under this name left behind go before
+    # this one exists; if they cannot be removed, nothing is installed.
+    # Deferred: an MCP server lists its tools without loading the Bot grant store.
+    from kiro_crew.apps.bot_grant_store import remove_granted_bots
+
+    try:
+        remove_granted_bots(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
+        )
+
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(
         name, repository=market_coordinate or source_repository
@@ -401,6 +413,12 @@ def install_app(
         refusal = gateway_data_dir_obstruction(dest)
         if refusal:
             raise InstalledTreeRefused(refusal)
+        # Created as soon as the tree is published, before any record write that can
+        # fail, so a tree never stays on disk without its data directory: the sandbox
+        # refuses every spawn while an app declaring a credential-mask directory has
+        # none (``sandbox_staging._materialize_declared_mask_dirs``). A failure here
+        # removes the tree below.
+        app_data_dir(name)
     except InstalledTreeRefused as exc:
         # Nothing preserved is inside `dest`: a restored `data/` IS a directory,
         # so the refusal only fires where none was put back.
@@ -462,7 +480,7 @@ def install_app(
     # Written before the record, so no record ever sits beside a missing set.
     #
     # One unit: a failed write part-way through (disk full, permissions) must not
-    # leave a record with no secret or no data dir, read as installed. Only what
+    # leave a record with no secret, read as installed. Only what
     # this block wrote is undone; the copied tree, with any preserved ``data/``,
     # stays for the next install of this name to take over.
     #
@@ -471,11 +489,8 @@ def install_app(
     # outlive its record, and that set is restored byte for byte.
     prior_grants_text = _approved_grants_snapshot(name)
     try:
-        _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
         _write_installed(name, meta)
-
-        # Create data directory
-        app_data_dir(name)
 
         # Generate and write app secret for token-based auth (App Kit §5.1)
         # circular import: token_auth -> dashboard -> bridges -> manager
@@ -488,6 +503,10 @@ def install_app(
             _restore_approved_grants(name, prior_grants_text)
         except OSError as undo_exc:
             logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
+        # The record's write asked for a refresh that may have read it; ask again.
+        from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+        request_hiding_refresh()
         sel().log_api_access(
             caller="app_install",
             operation="install",
@@ -908,6 +927,12 @@ def update_app(
     # publishes every record's config keys before the dashboard serves.
     if _adoption is None:
         refresh_app_config_keys()
+        # Before the route announces app_reload, so the reloaded dashboard is
+        # served the updated manifest's frame origins.
+        # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+        from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
+        refresh_frame_sources()
 
     logger.info(
         "Updated app %s: v%s -> v%s from %s",

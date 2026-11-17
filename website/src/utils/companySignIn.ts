@@ -31,6 +31,26 @@ export function readCompanySignIn(): { startUrl: string; region: string } {
   }
 }
 
+/**
+ * What the Kiro sign-in form's company fields start with: the pair this browser
+ * last submitted, else the gateway's default (`GET /api/kas-login`
+ * `company_sign_in`: the saved setting, else the edition's), else empty. The
+ * pair is taken whole from one source, so a remembered URL never gets the
+ * gateway's region. `fromDefault` is true only when the pair is the gateway's,
+ * so the form can say where the URL came from.
+ */
+export function initialCompanySignIn(fallback?: {
+  start_url?: string
+  region?: string
+}): { startUrl: string; region: string; fromDefault: boolean } {
+  const remembered = readCompanySignIn()
+  if (remembered.startUrl) return { ...remembered, fromDefault: false }
+  const startUrl = (fallback?.start_url ?? '').trim()
+  return startUrl
+    ? { startUrl, region: (fallback?.region ?? '').trim(), fromDefault: true }
+    : { startUrl: '', region: '', fromDefault: false }
+}
+
 /** Remember a submitted company sign-in. An empty region clears the old one. */
 export function rememberCompanySignIn(startUrl: string, region: string): void {
   const url = normalizeCompanySignInUrl(startUrl)

@@ -1341,8 +1341,8 @@ class McpSessionReport:
             # notification carries no sessionId, so on a shared runtime it is
             # fanned out to every co-tenant. Recording it would credit this
             # session with a server it may not have. Kept here rather than at the
-            # call site so both ownership rules live together — the event path
-            # missing the rule the frame path had is exactly the bug this closes.
+            # call site so both ownership rules live together and the event path
+            # cannot miss the rule the frame path has.
             return False
         name = sanitize_sink_text(str(server_name or ""), _NAME_CAP)
         if not name:

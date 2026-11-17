@@ -1,8 +1,8 @@
 # Dashboard iframe hosts — which one to use
 
-This note covers five core interactive iframe hosts. The dashboard also has
+This note covers six core interactive iframe hosts. The dashboard also has
 static renderers and app-specific frames, so this list is not exhaustive. These
-five look interchangeable and are not: each has a different sandbox posture
+six look interchangeable and are not: each has a different sandbox posture
 (including no `sandbox` on remote-instance panes), and two make *opposite*
 assumptions about whether the frame may talk back.
 
@@ -10,7 +10,7 @@ Pick a host from this table. **Do not widen an existing host's sandbox to make i
 
 | Host | `sandbox` | Content it is for | Frame → host messages |
 |---|---|---|---|
-| `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | An explicitly loaded loopback preview or the loopback Playwright CLI dashboard; Electron browsing can use a native Chromium view instead. The relayed browser view, served on the dashboard's own origin, uses `VIEW_SANDBOX` instead: the same flags without `allow-same-origin` | none |
+| `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | An explicitly loaded loopback preview or the loopback Playwright CLI dashboard; Electron browsing can use a native Chromium view instead | none |
 | `WidgetFrame.tsx` (`<mcwidget>`, inline and popped out), and the artifact frames `ArtifactBody.tsx`, `library/ArtifactThumbs.tsx`, `RemoteArtifactDetailPage.tsx` | `allow-scripts` (`AGENT_PAGE_SANDBOX`) | **LLM-emitted HTML**. `buildSrcdoc({ linkBridge: true })` injects a shim that turns a `_blank` or bare absolute `http(s)` link click, and `window.open`, into `kirocrew-dashboard:open {url}`; the mochi `WidgetFrame.tsx` passes `rewriteBareLinks: false` instead | **Defended against.** A malicious emitted `<script>` can `postMessage`, so the host treats inbound messages as hostile. The one it answers is `kirocrew-dashboard:open` (`useFrameLinkBridge`): an `http(s)` URL with no user name or password, or a path resolved against the dashboard's origin, only from that host's own frame, only with a live user activation while that iframe holds focus, once per click (focus leaves the frame after it opens), via `window.open(url, '_blank', 'noopener,noreferrer')`; no dialog. It opens at once only when the click is tied to that frame (`tiedToFrame`: focus came into it straight from the dashboard, the pointer is not over another frame, and no dashboard click or key and no sibling bridged frame's reported input, `kirocrew-dashboard:input`, is within 5 s); otherwise an "Open <host>" button (`FrameLinkChip`) by the frame opens it on the person's own click. The shim decides a link click after the page's own handlers, so a click the page cancels posts nothing. The shim gives each web link its URL as a hover title. The popped-out tab carries the same check as a script of its own. The artifact detail page's self-sized frame also posts `mc-widget-scroll-to {top}` after an in-page `#id` link (`lib/widgetFragmentScroll.ts`); `useFrameFragmentScroll` scrolls the page's container there, only from that host's own frame, with `top` clamped to the frame's height, so a page can move the view only within itself |
 | `McpAppFrame.tsx` (the **App** tab) | `allow-scripts allow-forms` | **MCP-server-supplied HTML** (`srcDoc`) | **Required and trusted-by-capability.** SEP-1865 JSON-RPC bridge; the host holds a `callback_secret` |
 | `InstancesViewport.tsx` | none | another instance's dashboard | n/a |

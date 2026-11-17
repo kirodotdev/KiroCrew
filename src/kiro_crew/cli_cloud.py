@@ -344,7 +344,7 @@ def _cloud_login(args: argparse.Namespace) -> int:
         ui.detail(f"Verification code: {prompt.code}")
     # Keep the login daemon polling on the box so approval completes, then wait.
     login_mod.resume_login_daemon(instance_id, profile, region, target=target)
-    with ui.Spinner("Waiting for sign-in approval…"):
+    with ui.Spinner(f"Waiting for sign-in approval (up to {login_mod.signin_wait_limit()})…"):
         signed = login_mod.wait_until_logged_in(instance_id, profile, region, target=target)
     if signed:
         ui.ok(
@@ -796,8 +796,7 @@ def handle_cloud(args: argparse.Namespace) -> int:
         ui.detail("launch      Provision + configure an instance (interactive)")
         ui.detail("list        List your KiroCrew cloud instances")
         ui.detail("status      Show one instance's state")
-        ui.detail("tunnel      Open the dashboard SSM tunnel (alias: connect)")
-        ui.detail("connect     Open the dashboard over an SSM tunnel")
+        ui.detail("connect     Open the dashboard over an SSM tunnel (alias: tunnel)")
         ui.detail("login       Sign Kiro in on the instance (fixes chat errors)")
         ui.detail("logout      Sign Kiro out on the instance (switch Kiro account)")
         ui.detail("stop|start  Pause / resume (save cost)")

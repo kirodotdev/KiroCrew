@@ -15,7 +15,7 @@ Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_ov
 ``_fold_mcp_frame``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
-``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
+``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
 """
@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.harness import NotificationAliases
 from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
@@ -208,7 +209,84 @@ def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
         match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
         if match:
             return AcpModeNotFound(message, match.group("name"))
-    return AcpRuntimeError(message)
+    exc = AcpRuntimeError(message)
+    # The error frame itself, for a caller that reads more than the sentence (the
+    # model-substitution advisory a refused ``session/new`` carries).
+    exc.rpc_error = error
+    return exc
+
+
+#: The reason a child's question declined with no turn of its owner running is
+#: recorded under, as the permission answer's ``owner_no_active_turn``.
+_CHILD_QUESTION_DECLINE_REASON = "owner_no_active_turn"
+
+
+def _audit_child_question_declined(
+    runtime: AcpRuntime,
+    msg: JsonRpcMessage,
+    owner: str,
+    child_sid: str,
+    reason: str = _CHILD_QUESTION_DECLINE_REASON,
+) -> None:
+    """SEL-record a child's declined question, off the loop and before the reply.
+
+    Under the operation every elicitation decision is recorded under
+    (``ELICITATION_AUDIT_TOOL``), keyed on the owner's session (the child's own,
+    when no owner is known), naming the child and *reason*. The decision is
+    already made, so a failed record is logged and nothing else.
+    """
+    from kiro_crew.acp.elicitation import ELICITATION_DECLINE
+    from kiro_crew.acp.session_handle_elicitation import ELICITATION_AUDIT_TOOL
+
+    request_id = msg.id if isinstance(msg.id, (str, int)) else ""
+    session_key = f"acp:{owner or child_sid}"
+
+    def _audit() -> None:
+        try:
+            from kiro_crew.sel import sel
+
+            sel().log_tool_invocation(
+                session_key=session_key,
+                agent="kirocrew",
+                source="acp_runtime",
+                tool_name=ELICITATION_AUDIT_TOOL,
+                outcome=ELICITATION_DECLINE,
+                request_id=request_id,
+                metadata={"reason": reason, "child_session_id": child_sid},
+            )
+        except Exception:
+            logger.exception("SEL audit for a child's declined question failed")
+
+    task = asyncio.ensure_future(asyncio.to_thread(_audit))
+    runtime._audit_tasks.add(task)
+    task.add_done_callback(runtime._audit_tasks.discard)
+
+
+async def _decline_child_question(
+    runtime: AcpRuntime,
+    msg: JsonRpcMessage,
+    owner: str,
+    child_sid: str,
+    reason: str = _CHILD_QUESTION_DECLINE_REASON,
+) -> None:
+    """Decline a child's question no turn of its owner can show. Never raises.
+
+    Recorded first (:func:`_audit_child_question_declined`), then answered. Bounded
+    as the permission auto-answer is: a write that cannot land in 30s means the
+    backend is not reading, so the runtime is marked dead.
+    """
+    from kiro_crew.acp.elicitation import ELICITATION_DECLINE, elicitation_reply
+
+    _audit_child_question_declined(runtime, msg, owner, child_sid, reason)
+    reply = elicitation_reply(msg.method, ELICITATION_DECLINE, person=False)
+    try:
+        await asyncio.wait_for(runtime.send_response(msg.id, reply), timeout=30.0)
+    except asyncio.TimeoutError:
+        runtime._mark_dead(
+            "question-decline write stalled (backend not reading)", stdin_stalled=True
+        )
+    except Exception:  # noqa: BLE001 - an answer task must not raise into the loop
+        logger.debug("declining a child's question failed", exc_info=True)
 
 
 async def _route_owned_child_frame(
@@ -223,14 +301,39 @@ async def _route_owned_child_frame(
     (an outstanding routed request = the dispatch loop is consuming the queue).
     Between turns nothing reads the queue until the next prompt's drain, so a
     background child's request would sit unanswered -- the original hang with
-    extra steps. It is answered fail-closed NOW instead.
+    extra steps. It is answered fail-closed NOW instead. A child's question
+    (an elicitation request) is declined then, for the same reason.
+
+    An owner whose queue reads turns the agent starts on its own (a watched
+    ``AgentTurnQueue``, claude) has a reader between turns too: the frame goes to
+    that queue, so a background child's request opens a turn and an approval card
+    there rather than being refused. Not while that queue can open no turn (a
+    prompt whose reader left before its terminal): the request is answered
+    fail-closed as for any owner with no reader.
     """
-    _owner_turn_active = owner in self._turn_active_sessions
+    opens_turn = getattr(self._session_queues.get(owner), "opens_turn", None)
+    _owner_turn_active = owner in self._turn_active_sessions or (
+        opens_turn is not None and opens_turn()
+    )
     # The child is working for its owner whatever happens to the frame below --
     # answered, routed or dropped between turns -- so it counts as the owner's
     # activity, which keeps the owner off the idle sweep.
     self._session_activity_at[owner] = time.monotonic()
-    if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION) and not _owner_turn_active:
+    if is_elicitation_request(msg) and not _owner_turn_active:
+        self._unrouted_child_frames += 1
+        # The one answer-task set and its bound, as the permission answer below.
+        if not await self._wait_for_answer_capacity(
+            msg,
+            request_kind="child question",
+            session_id=session_id,
+            audit_reason="answer_task_cap_runtime_dead",
+        ):
+            return
+        _t = asyncio.ensure_future(_decline_child_question(self, msg, owner, session_id))
+        self._answer_tasks.add(_t)
+        _t.add_done_callback(self._answer_tasks.discard)
+        await asyncio.sleep(0)
+    elif msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION) and not _owner_turn_active:
         self._unrouted_child_frames += 1
         await self._spawn_answer_task(
             msg,
@@ -297,6 +400,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
         _announces_children = "subagents" in self._harness.client_capabilities
     except ValueError:
         _announces_children = False
+    # The host's reader of its own session frames, resolved once with the
+    # declaration above; a backend with no runtime harness reads none.
+    try:
+        _take_session_frame = self._harness.take_session_frame
+    except ValueError:
+        _take_session_frame = None
+    # The live map, never a copy: sessions register after the reader starts.
+    # Read with getattr: a runtime built without __init__ has none.
+    _harness_states: dict[str, Any] = getattr(self, "_session_harness_states", {})
 
     try:
         while True:
@@ -589,6 +701,13 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # session. Route to it if registered; otherwise DROP it.
                 # Broadcasting a known-but-unregistered session's frame to
                 # every other session would be cross-talk.
+                if (
+                    _take_session_frame is not None
+                    and _take_session_frame(_harness_states.get(session_id), msg) is True
+                ):
+                    # Read into that session's own harness state, as the host
+                    # reads it (``HarnessAdapter.take_session_frame``).
+                    continue
                 _child_frame = (
                     msg.is_method(METHOD_REQUEST_PERMISSION) or msg.method in _session_update
                 )
@@ -620,12 +739,14 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 elif (
                     _announced_owner is not None
                     and _announced_owner in self._session_queues
-                    and _child_frame
+                    and (_child_frame or is_elicitation_request(msg))
                 ):
                     # A child announced ON a registered session (codex-acp's
-                    # native subagents). The announcing frame named its owner,
-                    # so this routes even while other sessions share the
-                    # runtime; the governance below is the roster route's.
+                    # native subagents, claude-agent-acp's Agent-tool children).
+                    # The announcing frame named its owner, so this routes even
+                    # while other sessions share the runtime; the governance
+                    # below is the roster route's. A child's question
+                    # (``elicitation/create``) routes too: it waits on an answer.
                     await self._route_owned_child_frame(msg, session_id, _announced_owner)
                 elif (
                     session_id in self._subagent_sessions
@@ -693,6 +814,34 @@ async def _reader_loop(self: AcpRuntime) -> None:
                         ),
                     )
                     # Same yield rationale as the routed-owner branch above.
+                    await asyncio.sleep(0)
+                elif is_elicitation_request(msg):
+                    # A question no registered session owns (a child past the
+                    # announcement cap, or one never announced): nobody can
+                    # show it, and it waits on an answer, so it is declined NOW,
+                    # recorded and bounded as the permission answer above.
+                    self._unrouted_child_frames += 1
+                    if await self._wait_for_answer_capacity(
+                        msg,
+                        request_kind="child question",
+                        session_id=session_id,
+                        audit_reason="answer_task_cap_runtime_dead",
+                    ):
+                        _q = asyncio.ensure_future(
+                            _decline_child_question(
+                                self,
+                                msg,
+                                "",
+                                session_id,
+                                (
+                                    _ROSTER_OVERFLOW_REJECT_REASON
+                                    if self._subagent_roster_overflow or self._announced_overflow
+                                    else _UNREGISTERED_REJECT_REASON
+                                ),
+                            )
+                        )
+                        self._answer_tasks.add(_q)
+                        _q.add_done_callback(self._answer_tasks.discard)
                     await asyncio.sleep(0)
                 elif msg.method in _mcp_init and (
                     # Read live, never hoisted beside _mcp_init: collectors

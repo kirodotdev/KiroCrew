@@ -4,7 +4,6 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import { createTestStore, renderWithProviders } from './helpers'
 import SessionDashboardsPage from '../pages/chat/command-center/SessionDashboardsPage'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../hooks/useSandboxDoc', () => ({
   useSandboxDoc: (html: string | null) => ({ url: html ? '/sandbox/card' : null, pending: false, failed: false, retry: vi.fn() }),
@@ -352,6 +351,3 @@ describe('all session dashboards', () => {
   })
 
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

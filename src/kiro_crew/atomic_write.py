@@ -1156,7 +1156,11 @@ def _refuse_linked_parent(path: Path) -> None:
             "the write cannot be shown to land where it was named."
         )
     expected = anchor_resolved.joinpath(*names)
-    if resolved_parent != expected:
+    # ntpath.realpath keeps the \\?\ prefix on a missing directory when its
+    # re-probe fails with a different winerror, which a concurrent mkdir of the
+    # same chain causes; the prefixed and plain spellings name one directory.
+    strip = platform_compat.strip_extended_length_prefix
+    if strip(resolved_parent) != strip(expected):
         raise OSError(
             f"refusing to write {path}: its parent resolves to {resolved_parent} "
             f"rather than {expected}, so the write would land somewhere it was "

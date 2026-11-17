@@ -21,6 +21,8 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.metrics.chat_runtime_share import record_engine_install
+
 if TYPE_CHECKING:
     from kiro_crew.acp.kas_bundle import InstalledKasBundle
 
@@ -159,17 +161,21 @@ def install_pinned_engine(
             message = host_unsupported_message(str(exc))
             _update(running=False, error=message)
             logger.warning("KAS engine cannot run on this host: %s", exc)
+            record_engine_install(outcome="host_unsupported", caller=caller)
             raise kas_bundle_mod.KasHostUnsupported(message) from exc
         except kas_bundle_mod.KasBundleError as exc:
             message = offline_install_message(str(exc))
             _update(running=False, error=message)
             logger.warning("KAS engine install failed: %s", exc)
+            record_engine_install(outcome="failed", caller=caller)
             raise kas_bundle_mod.KasBundleError(message) from exc
         except Exception as exc:
             message = offline_install_message(f"{type(exc).__name__}: {exc}")
             _update(running=False, error=message)
             logger.exception("KAS engine install failed")
+            record_engine_install(outcome="failed", caller=caller)
             raise kas_bundle_mod.KasBundleError(message) from exc
         _update(running=False, error="")
         logger.info("KAS engine %s installed at %s", installed.version, installed.root)
+        record_engine_install(outcome="installed", caller=caller)
         return installed

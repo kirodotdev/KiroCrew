@@ -28,6 +28,7 @@ from kiro_crew.apps.bridges_mcp import (
 from kiro_crew.apps.bridges_mcp_config import (
     _mcp_lock,
     _read_mcp_json_unlocked,
+    _sync_app_tool_refs,
     _write_mcp_json_unlocked,
 )
 from kiro_crew.apps.bridges_skills import _deregister_skills, _register_skills
@@ -170,6 +171,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
             for k in stale:
                 del servers[k]
             if stale:
+                _sync_app_tool_refs(data, app_name)
                 _write_mcp_json_unlocked(data)
                 logger.info("Pruned %d stale app MCP server(s) for %s", len(stale), app_name)
 
@@ -382,13 +384,12 @@ def reconcile_enabled_app_resources() -> dict[str, int]:
         counts["skills"] += len(result.skills)
         counts["errors"] += len(result.errors)
         # Finish the shared-file migration for apps that are ALREADY enabled.
-        # Registration now targets the agent config, but an older build wrote
-        # this app's servers into the shared ``~/.kiro/settings/mcp.json``, and
-        # re-registering does not remove what is already there. Scrubbing only
-        # on deregister meant the leak this change exists to fix (one app's
-        # private tools visible to Kiro IDE and every other kiro-cli agent, plus
-        # dead-port entries that break unrelated sessions) survived until the
-        # user happened to disable the app. Best-effort and idempotent.
+        # Registration targets the agent config, but an install may still have
+        # this app's servers in the shared ``~/.kiro/settings/mcp.json``, and
+        # re-registering does not remove them. Scrubbing only on deregister would
+        # leave one app's private tools visible to Kiro IDE and every other
+        # kiro-cli agent, plus dead-port entries that break unrelated sessions,
+        # until the user disables the app. Best-effort and idempotent.
         scrubbed = _scrub_legacy_shared_mcp(name)
         if scrubbed:
             logger.info(

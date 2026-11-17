@@ -39,7 +39,7 @@ in its own document, so that one is not edited here.
 specified how the conductor surfaces it: "The total is a line in every round
 report (`items used: N of <item_cap>`)". The conductor prompt
 (`_CONDUCTOR_SYSTEM_PROMPT` in `src/kiro_crew/agent.py`, its "Rounds are not
-gated, but spend is bounded" paragraph) and the goal-conductor skill
+gated, but they are bounded" paragraph) and the goal-conductor skill
 (`src/kiro_crew/builtin_skills/goal-conductor/SKILL.md`, its "Item cap
 (advisory)" bullet) carry that instruction, and `src/kiro_crew/docs/work-ledger.md`
 documents it.

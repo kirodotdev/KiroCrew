@@ -1041,3 +1041,116 @@ async def test_a_target_server_gets_the_ssh_agent_the_session_may_forward(
     parent, target = extras.custom_agents
     assert (kas_env_shim.SHIM_MODULE in parent["mcpServers"]["own-git"]["args"]) is forwarded
     assert (kas_env_shim.SHIM_MODULE in target["mcpServers"]["git"]["args"]) is forwarded
+
+
+@pytest.mark.asyncio
+async def test_the_session_and_its_targets_answer_from_one_scope_reading(agents_dir, monkeypatch):
+    """One session projection reads the MCP config scopes once, its sub-agent
+    targets included, and a scope's mute still reaches the target."""
+    from kiro_crew import mcp_cleanup
+
+    reads: list[int] = []
+
+    def scope_muted():
+        reads.append(1)
+        return frozenset({"muted"})
+
+    monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", scope_muted)
+    # The projection reads the user's skill tree; give it an empty one.
+    monkeypatch.setenv("KIRO_HOME", str(agents_dir.parent / "kiro"))
+    servers = {"kept": {"command": "k"}, "muted": {"command": "m"}}
+    _write(agents_dir, {**_delegator("helper", tools=("*",)), "mcpServers": servers})
+    _write(agents_dir, {**_SLACK, "name": "helper", "tools": ["*"], "mcpServers": servers})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "helper"]
+    for agent in extras.custom_agents:
+        declared = agent.get("mcpServers") or {}
+        assert "kept" in declared and "muted" not in declared, agent["id"]
+    assert len(reads) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_held_bot_limit_reaches_its_named_child_and_the_targets_it_registers(
+    agents_dir, monkeypatch, held
+):
+    """A child session under a Bot with a held read limit (``mate_held_rules``), and each
+    agent it registers, ask before a read and keep no read pre-approval."""
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    ledger = agents_dir.parent / "mates" / "migrated.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(paths_mod, "kiro_home", lambda: agents_dir.parent)
+    rules = [{"text": "deny reading", "capability": "fs_read"}]
+    member = "m1" if held else "other"
+    ledger.write_text(json.dumps({"held_rules": {"zxc": {"member_id": "m1", "rules": rules}}}))
+    monkeypatch.setattr(
+        execution_context, "read_session_execution", lambda key: SimpleNamespace(member_id=member)
+    )
+    _write(agents_dir, _delegator("slack-agent"))
+    _write(agents_dir, _SLACK)
+
+    extras = await KasHarness().session_extras("delegator", work_dir=None, session_key="k")
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    for entry in extras.custom_agents:
+        reads = [
+            r
+            for r in entry.get("permissions", {}).get("rules", [])
+            if r.get("capability") == "fs_read"
+        ]
+        asks = {"capability": "fs_read", "effect": "ask"} in reads
+        allows = [r for r in reads if r.get("effect") == "allow"]
+        assert asks is held, entry["id"]
+        if held:
+            assert not allows, entry["id"]
+
+
+def _open_delegator(**extra) -> dict:
+    spec = _delegator()
+    del spec["toolsSettings"]
+    return {**spec, **extra}
+
+
+@pytest.mark.asyncio
+async def test_with_no_list_the_notice_names_each_agent_the_backend_skips(agents_dir):
+    _write(agents_dir, _open_delegator())
+    _write(agents_dir, _SLACK)
+    _write(agents_dir, {**_SLACK, "name": "kas-ready", "permissions": {"rules": []}})
+    _write(agents_dir, {"name": "plain", "prompt": "p", "tools": ["fs_read"]})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator"]
+    notice = extras.withheld_credentials_notice
+    assert "agent delegator cannot hand work to slack-agent (its agent file has" in notice
+    assert "no permissions block" in notice
+    assert "kas-ready" not in notice and "plain" not in notice
+
+
+@pytest.mark.asyncio
+async def test_with_no_list_and_no_sub_agent_tool_nothing_is_named(agents_dir):
+    _write(agents_dir, _open_delegator(tools=["fs_read"]))
+    _write(agents_dir, _SLACK)
+
+    extras = await _extras()
+
+    assert "slack-agent" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_list_under_the_use_subagent_key_registers_its_target(agents_dir):
+    _write(
+        agents_dir,
+        _open_delegator(toolsSettings={"use_subagent": {"availableAgents": ["slack-agent"]}}),
+    )
+    _write(agents_dir, _SLACK)
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    assert "slack-agent" not in extras.withheld_credentials_notice

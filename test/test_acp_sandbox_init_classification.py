@@ -989,7 +989,7 @@ async def test_a_cancel_during_the_startup_settle_spawns_no_second_child():
     startup = asyncio.ensure_future(client.ensure_ready())
     try:
         await await_until(entered)
-        # Timers fire in deadline order, so this lands inside the 0.5 s settle.
+        # Timers fire in deadline order, so this lands inside the spy's 30 s settle.
         await asyncio.sleep(0.1)
         startup.cancel()
         await _settled(startup)

@@ -104,8 +104,9 @@ _PROBE_SLOT: Final[str] = "catalog-probe"
 #: ``null`` at these paths, and ``null`` carries no type.
 #:
 #: Read off each fold's own ``render``, which is why each entry names the line it came
-#: from. A stale entry cannot sit here unnoticed: ``test_every_declared_nullable_leaf_is
-#: _a_real_path`` fails on a path the probe does not reach, and the companion test fails
+#: from. A stale entry cannot sit here unnoticed:
+#: ``test_every_declared_nullable_leaf_is_a_path_the_fold_renders_null`` fails on a
+#: path the probe does not reach, and the companion test fails
 #: on a null leaf with no entry -- so the two directions are both pinned and neither a
 #: removed field nor an added one passes quietly.
 #: Crew's five running sums, in characters, as the usage fold's context part names them.
@@ -255,7 +256,7 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
 #: let a typo through. Saying which it is leaves the choice with the validator.
 #:
 #: ``test_every_opaque_declaration_is_a_real_path`` pins each path, and
-#: ``test_no_empty_properties_passes_as_a_known_shape`` fails on an object the probe
+#: ``test_no_object_passes_as_having_no_keys`` fails on an object the probe
 #: rendered empty that is declared neither here nor in :data:`_NULLABLE`, so a map added
 #: to a fold cannot land as "has no keys".
 _OPAQUE: Final[dict[str, str]] = {
@@ -308,6 +309,7 @@ def _row_keys() -> dict[str, dict[str, Any]]:
             "title",
             "state",
             "status",
+            "awaits_person",
             "summary",
             "verdict",
             "pr",

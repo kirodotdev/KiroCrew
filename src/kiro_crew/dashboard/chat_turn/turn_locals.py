@@ -172,6 +172,11 @@ class _ChatTurn:
     _had_empty_response_verdict: "bool"
     _held_after_terminal: "list[Any]"
     _held_runs: "list[tuple[dict[str, Any], str, int | None, int]]"
+    # Harness notice rows ``(content, meta)`` held while a text segment is open,
+    # appended by ``_finish_harness_notices``. Set in __init__ so every exit can read it.
+    _held_harness_notices: "list[tuple[str, dict[str, Any] | None]]"
+    # Rows refused at ``session_events.MAX_HELD_HARNESS_NOTICES``, said at release.
+    _held_harness_notices_dropped: "int"
     _incoming_message: "str"
     _interrupted_turn_preamble: "str"
     _irreversible_consumption_reported: "bool"
@@ -438,6 +443,8 @@ class _ChatTurn:
         self._live_context_reading = None
         self._live_context_at = float("-inf")
         self._drained_subagent_notices = []
+        self._held_harness_notices = []
+        self._held_harness_notices_dropped = 0
 
     @property
     def assistant_text(self) -> str:

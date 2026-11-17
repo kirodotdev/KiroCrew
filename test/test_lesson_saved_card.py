@@ -21,6 +21,7 @@ from body_stream_helpers import attach_body
 from kiro_crew.dashboard import chat_cards
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
 _CRON_LOGGER = "kiro_crew.dashboard.handlers.cron"
@@ -88,7 +89,7 @@ class TestRecordLessonSaved:
 
     def test_the_rule_is_redacted_before_the_browser_draws_it(self) -> None:
         slot = _Slot()
-        secret = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
+        secret = github_classic(seed=96)  # a bare 40-character run is no credential
         chat_cards.record_lesson_saved(_State(slot), SLOT, f"deploy with key {secret}", "inserted")
 
         (row,) = slot.messages

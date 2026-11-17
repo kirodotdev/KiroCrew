@@ -16,6 +16,7 @@ from kiro_crew.config.loader_credentials import CRED_JIRA_API_TOKEN, CREDENTIAL_
 from kiro_crew.dashboard.handlers import secrets_usage
 from kiro_crew.dashboard.handlers.secrets import setup_secrets_routes
 from kiro_crew.secrets import SecretVault
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _MOD = "kiro_crew.dashboard.handlers.secrets_usage"
 
@@ -189,8 +190,8 @@ def _owner_record(name: str, url: str) -> dict:
 
 
 def test_an_agent_written_grant_key_and_job_name_are_redacted() -> None:
-    # Built at run time so no credential-shaped literal sits in the source.
-    aws_shaped = "AKIA" + "IOSFODNN7EXAMPLE"
+    # A synthetic GitHub token: a credential under either redaction engine.
+    aws_shaped = github_classic()
     job = SimpleNamespace(name=f"job {aws_shaped}", secret_env={aws_shaped: "CRON_TOKEN"})
     usage: dict[str, list[dict[str, str]]] = {}
     secrets_usage._scan_cron_jobs(usage, frozenset({"CRON_TOKEN"}), [job])

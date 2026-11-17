@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import _facade_mirror, mcp_apps_render, session_directive  # noqa: F401
+from kiro_crew.acp import kas_memory
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.engine_fallback import is_v2_model_fallback
 from kiro_crew.acp.harness_tool_names import (  # noqa: F401
@@ -29,6 +30,7 @@ from kiro_crew.acp.harness_tool_names import (  # noqa: F401
     GOOSE_READ_ONLY_BUILTINS,
     MAX_HARNESS_TOOL_NAME_LEN,
     qualified_harness_tool_id,
+    start_event_tool_id,
 )
 from kiro_crew.acp.kas_permissions import CREW_ONLY_ENTRY_KEYS
 from kiro_crew.acp.types import (  # noqa: F401
@@ -70,6 +72,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     RefusalInfo,
 )
 from kiro_crew.acp_backends import (  # noqa: F401
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -79,6 +82,7 @@ from kiro_crew.acp_backends import (  # noqa: F401
     ACP_BACKENDS_META_IDENTITY,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
 from kiro_crew.mcp_gateway.tool_surface import (  # noqa: F401
     mcp_identity_name,
     mcp_identity_unreadable,
@@ -119,6 +123,7 @@ def build_session_new_params(
     mcp_servers: list[dict[str, Any]] | None = None,
     claude_meta: bool = False,
     kas_custom_agents: list[dict[str, Any]] | None = None,
+    kas_memory_mode: str = "",
 ) -> dict[str, Any]:
     """Build the params for a ``session/new`` request.
 
@@ -132,6 +137,11 @@ def build_session_new_params(
     agent is registered, surfaces as a mode, and can then be activated by the
     ordinary ``session/set_mode``. The two ``_meta`` envelopes belong to
     different backends, so they never both apply.
+
+    ``kas_memory_mode`` states native memory with reflection off; ``""`` sends
+    no memory setting. While ``agent.orchestrator_memory`` is on, local KAS
+    sessions pass ``disabled`` unless recall is granted
+    (:func:`~kiro_crew.acp.kas_memory.runtime_memory_mode`).
     """
     params: dict[str, Any] = {
         "cwd": str(cwd),
@@ -139,14 +149,35 @@ def build_session_new_params(
     }
     if claude_meta:
         params["_meta"] = {"claudeCode": {"options": {}}}
+    if kas_memory_mode:
+        params = with_client_meta_settings(params, kas_memory.memory_settings(kas_memory_mode))
     if kas_custom_agents:
-        attach_kas_custom_agents(params, kas_custom_agents)
+        attach_kas_custom_agents(params, kas_custom_agents, memory_mode=kas_memory_mode)
     return params
+
+
+def _kiro_meta(params: dict[str, Any]) -> dict[str, Any]:
+    """The ``_meta.kiro`` envelope on *params*, created and attached if absent.
+
+    Keeps every key already in the envelope, such as the session settings, so
+    the agent definitions are added beside them rather than replacing them.
+    """
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        params["_meta"] = meta
+    kiro = meta.get("kiro")
+    if not isinstance(kiro, dict):
+        kiro = {}
+        meta["kiro"] = kiro
+    return kiro
 
 
 def attach_kas_custom_agents(
     params: dict[str, Any],
     agents: list[dict[str, Any]] | None,
+    *,
+    memory_mode: str = "",
 ) -> None:
     """Put agent definitions in the ``_meta`` envelope KAS reads them from.
 
@@ -155,8 +186,10 @@ def attach_kas_custom_agents(
     two hand-built copies of the same nesting would be free to drift.
 
     Merges into any existing ``_meta`` rather than replacing it. Today's other
-    writer is a kiro-cli-only transcript path, so in practice they never both
-    apply — but a future third writer should not be able to silently drop one.
+    writers are a kiro-cli-only transcript path and the session settings
+    (:func:`~kiro_crew.agent_sdk.tool_search.with_client_meta_settings`), so in
+    practice they never all apply — but a future writer should not be able to
+    silently drop one.
 
     Each entry goes out under :func:`~kiro_crew.agent_files.kas_wire_agent_id`,
     so a crewmate whose id the engine keeps for itself still registers. The
@@ -167,29 +200,26 @@ def attach_kas_custom_agents(
     field the engine defines. The one that carries the mcp.json reads is applied
     first, against the ``mcpServers`` array already in *params*
     (:func:`~kiro_crew.acp.kas_settings_mcp.finish_settings_mcp`).
+
+    ``memory_mode`` is the session's KAS memory mode: a session that may recall
+    needs the memory tool named in each entry's ``tools`` allowlist, or the
+    agent gets the memory index in its first message and no way to retrieve the
+    rest (:func:`~kiro_crew.acp.kas_memory.mount_memory_tool`).
     """
     if not agents:
         return
     from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
 
-    meta = params.get("_meta")
-    if not isinstance(meta, dict):
-        meta = {}
-        params["_meta"] = meta
-    wire = [
-        (
-            {
-                **{
-                    k: v for k, v in finish_settings_mcp(a).items() if k not in CREW_ONLY_ENTRY_KEYS
-                },
-                "id": kas_wire_agent_id(a["id"]),
-            }
-            if isinstance(a, dict) and isinstance(a.get("id"), str)
-            else a
-        )
-        for a in agents
-    ]
-    meta["kiro"] = {"customAgents": wire}
+    def wire_entry(entry: Any) -> Any:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            return entry
+        out = {k: v for k, v in finish_settings_mcp(entry).items() if k not in CREW_ONLY_ENTRY_KEYS}
+        out["id"] = kas_wire_agent_id(entry["id"])
+        if "tools" in out:
+            out["tools"] = kas_memory.mount_memory_tool(memory_mode, out["tools"])
+        return out
+
+    _kiro_meta(params)["customAgents"] = [wire_entry(a) for a in agents]
 
 
 def kas_crew_agent_id(agents: Any, mode_id: str) -> str:
@@ -637,6 +667,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WORKSPACE_PATH_ARGUMENTS,
         CLAUDE_CREW_PLACED_MCP_SOURCE,
         GATE_ENVELOPE_MARKER,
+        REFUSAL_FOREIGN_SERVER,
+        REFUSAL_UNCLASSIFIED_CALL,
         STRANDS_BUILTIN_TOOL_KINDS,
         STRANDS_SIDE_READ_ONLY_REFUSAL,
         StrandsCallIdentity,
@@ -648,6 +680,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         bridged_title_identity,
         build_permission_event,
         claude_mcp_identity,
+        foreign_server_refused,
         gate_envelope,
         identified_mcp_call,
         is_mcp_tool_approval,
@@ -656,6 +689,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         pi_mcp_title,
         reject_option_id,
         strands_envelope_identity,
+        unclassified_call_refused,
     )
     from kiro_crew.acp._dispatch_parts.session_update_parser import (  # noqa: F401
         _MESSAGE_ID_MAX_CHARS,
@@ -686,12 +720,28 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.acp._dispatch_parts.tool_call_identity import (  # noqa: F401
         _ACP_SHELL_KIND,
+        _ANTIGRAVITY_COMMAND_KEYS,
+        _ANTIGRAVITY_COMMAND_NAME_PARTS,
+        _ANTIGRAVITY_KNOWN_COMMAND_KEYS,
+        _ANTIGRAVITY_NAME_WORD_RE,
+        _ANTIGRAVITY_PATH_KEYS,
+        _ANTIGRAVITY_PATH_NAME_PARTS,
+        _ANTIGRAVITY_UNVERIFIABLE_KEPT_NAME_PARTS,
+        _ANTIGRAVITY_UNVERIFIABLE_NAME_PARTS,
+        _ANTIGRAVITY_UNVERIFIABLE_NAME_WORDS,
+        _ANTIGRAVITY_UNVERIFIABLE_TOOLS,
         _CODEX_MCP_TOOL_CALL_MARKER,
         _CODEX_WEB_SEARCH_INPUT_TYPE,
         _HARNESS_TOOL_ID_RE,
         _MAX_HARNESS_TOOL_ID_LEN,
         _MCP_IDENTITY_META_CHANNELS,
         ToolCallIdentity,
+        _antigravity_file_uri_paths,
+        _antigravity_name_has,
+        _antigravity_name_words,
+        _antigravity_named_paths,
+        _antigravity_other_commands,
+        _antigravity_stated_commands,
         _harness_identifier,
         _kiro_mcp_server_name,
         _kiro_tool_name,
@@ -700,6 +750,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MetaIdentityChannel,
         _permission_tool_id,
         _str_field,
+        antigravity_call_is_unverifiable,
+        antigravity_command_conflict,
+        antigravity_gate_params,
+        antigravity_unverifiable_params,
         classify_tool_call,
         codex_tool_name,
         harness_tool_name,
@@ -763,6 +817,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         NamedTuple,
         cast,
     )
+    from urllib.parse import (  # noqa: F401
+        unquote,
+        urlsplit,
+    )
+    from urllib.request import url2pathname  # noqa: F401
+
+    from kiro_crew.platform.tool_paths import _TARGET_PATH_MAX_NODES  # noqa: F401
 
 
 def _token_count(value: Any) -> int | float | None:

@@ -91,6 +91,10 @@ you need opened instead.
   `snapshot` to get refs, then `click`, `type` (with `submit: true` for Enter),
   `press_key`, `select_option`. Re-snapshot after every page change; a stale
   ref is refused, never silently redirected.
+  When a result carries `changes` (the user's `browser.report_changes` setting),
+  read it first: it names a new page, an opened dialog, an alert, the fields that
+  failed validation and the controls that came or went, so a snapshot is needed only
+  for fresh refs or a field's validation message.
 - **Human takeover:** the live card carries real mouse and keyboard input, so a
   CAPTCHA or a 2FA prompt is the user's to complete, not yours to work around.
   Say what is blocking and let them take the session.

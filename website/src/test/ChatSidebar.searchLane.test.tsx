@@ -14,7 +14,6 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { turnOnCrewModePreview } from './crewModePreview'
 import { _laneScrollAnchor, _resetLaneScrollMemory } from '../hooks/useLaneScrollMemory'
 
 const { searchReply, sessionsSearchMock } = vi.hoisted(() => {
@@ -145,7 +144,6 @@ describe('the sidebar while a search is active', () => {
   })
 
   it('shows the snippet on an idle Crew Mode root, whose usual tail is its last message', async () => {
-    turnOnCrewModePreview()
     SLOTS_OVERRIDE.current = SLOTS.map(s => (s.key === 'k-write' ? { ...s, crew_mode_root: true } : s))
     renderSidebar()
     search('memory')

@@ -25,6 +25,7 @@ from dashboard_owner_helpers import as_owner
 
 from conftest import make_dir_link
 from kiro_crew import platform_compat
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -232,7 +233,7 @@ class TestDiscoverInstall:
     async def test_install_overwrite_replaces_symlinked_skill_dir(
         self, fake_home, reset_registry, tmp_path
     ):
-        # Security regression: a pre-planted symlink at the skill dir must be
+        # A pre-planted symlink at the skill dir must be
         # REMOVED, never followed — otherwise the bundle (incl. nested paths
         # whose not-yet-existing parents dodge the parent-symlink guard) would
         # be written outside the skills root at the symlink target.
@@ -846,7 +847,7 @@ class TestDiscoverInstallLogSanitization:
     ):
         import logging
 
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=30)
 
         class BoomProvider(FakeProvider):
             async def fetch_skill_bundle(self, skill_id):

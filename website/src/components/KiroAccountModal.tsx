@@ -6,7 +6,7 @@ import { AlertCircle, AlertTriangle, ArrowRight, Coins, ExternalLink, Eye, EyeOf
 import { api } from '../api/client'
 import type { KasLoginStatus, KiroBonusCreditGrant, KiroCreditUsage, KiroUsageRefreshResponse } from '../api/client'
 import { isAccountOnly, parseKiroUsagePayload, type KiroAccountOnly } from '../api/kiroUsage'
-import { providerLabelFromWire } from './kasProviderLabel'
+import { accountProviderLabel, providerLabelFromWire } from './kasProviderLabel'
 import { forecastCreditRunOut } from '../api/creditForecast'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 import { getAdapter } from '../providers/registry'
@@ -157,7 +157,7 @@ function CreditForecastLine({ usage, onClose }: { usage: KiroCreditUsage; onClos
   if (error) {
     return (
       <div className="mt-2">
-        <ErrorNotice message={i18nT('components.kiroAccountModal.forecast_unavailable')} askAgent onHandoff={onClose} />
+        <ErrorNotice impact="minor" message={i18nT('components.kiroAccountModal.forecast_unavailable')} askAgent onHandoff={onClose} />
       </div>
     )
   }
@@ -213,39 +213,6 @@ function emailInitials(email: string): string {
   const parts = localPart.split(/[^A-Za-z0-9]+/).filter(Boolean)
   if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
   return (parts[0] ?? '?').slice(0, 2).toUpperCase()
-}
-
-function humanizeProviderId(value: string): string {
-  return value
-    .replace(/[_-]+/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .trim()
-}
-
-function accountProviderLabel(accountType?: string, startUrl?: string): string {
-  const rawType = accountType?.trim()
-  if (rawType?.startsWith('Social')) {
-    const socialProvider = humanizeProviderId(rawType.slice('Social'.length))
-    return socialProvider || i18nT('app.social_login')
-  }
-
-  const accountKind = rawType === 'IamIdentityCenter'
-    ? i18nT('app.iam_identity_center')
-    : rawType === 'BuilderId'
-      ? i18nT('app.builder_id')
-      : rawType?.toLowerCase().replace(/[^a-z0-9]/g, '') === 'externalidp'
-        // The organization's own sign-in: the sign-in flow's plain-language
-        // name for it ("Company SSO"), never the protocol's.
-        ? providerLabelFromWire('externalidp')
-        : rawType
-          ? humanizeProviderId(rawType)
-          : undefined
-
-  let issuerHost: string | undefined
-  if (startUrl) {
-    try { issuerHost = new URL(startUrl).host } catch { issuerHost = undefined }
-  }
-  return [accountKind, issuerHost].filter(Boolean).join(' · ')
 }
 
 function BonusCredits({ grants }: { grants: KiroBonusCreditGrant[] }) {
@@ -584,7 +551,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
     // stored nothing failed, so that is the passive notice.
     if (signInQuery.data === undefined) {
       return failedWithNoData(signInQuery)
-        ? <ErrorNotice message={i18nT('components.kasLogin.sign_in_status_unavailable')} askAgent onHandoff={onClose} />
+        ? <ErrorNotice impact="partial" message={i18nT('components.kasLogin.sign_in_status_unavailable')} askAgent onHandoff={onClose} />
         : <UsageSkeleton />
     }
     if (signInQuery.data.authenticated) {
@@ -660,6 +627,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
           ? refreshNotice
           : (
             <ErrorNotice
+              impact="partial"
               message={i18nT(usage === 'config-unreadable'
                 ? 'components.kiroAccountModal.credit_usage_config_unreadable'
                 : 'components.kiroAccountModal.credit_usage_unavailable')}

@@ -97,7 +97,8 @@ _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
 #: Where the template's public-repo fallback clones from when no ``repo`` is
 #: passed: the ``KirocrewRepo`` default of ``kirocrew-ec2.yaml``, spelled here
 #: too because the release-tag probe below must ask the SAME remote the
-#: instance will clone (``test_cloud_ec2.py`` pins the two spellings together).
+#: instance will clone (``test_launch_engine_ref.py::TestPublicRepoUrl`` pins the two
+#: spellings together).
 PUBLIC_REPO_URL = "https://github.com/kirodotdev/KiroCrew.git"
 #: Budget for one ``git ls-remote`` round trip to that remote. A launch already
 #: waits minutes on CloudFormation, so a slow answer costs little; a hung one

@@ -267,9 +267,10 @@ class _WorkflowSessionWorker:
         """Cheap clean slate before REUSE — fresh conversation on the warm process.
 
         Uses ``provider.new_conversation()``, which skips the expensive
-        spawn+initialize on a backend served through the shared runtime (kiro, KAS,
-        Codex) and on claude's own ``AcpClient``. Any other backend on its own
-        ``AcpClient`` has no such reset and raises ``NotImplementedError``. On that, or
+        spawn+initialize on a backend served through the shared runtime (kiro, KAS)
+        and on claude's own ``AcpClient``. Codex, whose closed session leaves its MCP
+        servers running, and any other backend on its own ``AcpClient`` have no such
+        reset and raise ``NotImplementedError``. On that, or
         any other failure, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path).
@@ -539,13 +540,11 @@ def build_pooled_agent_fn(
                 await memory_scope.validate()
             return result
         finally:
-            # Best-effort teardown. An exception raised from this ``finally``
-            # would REPLACE the step's real outcome: a successful ``result``
-            # would vanish behind a session error, and the body's own exception
-            # (provider failure, a scope ``validate()`` rejection) would be
-            # swallowed. So a teardown failure is logged and dropped; the body's
-            # outcome always wins. ``CancelledError`` is a BaseException and is
-            # deliberately NOT caught, so a cancel still propagates.
+            # Best-effort teardown: a raise from this ``finally`` would REPLACE
+            # the step's outcome (hide a good ``result`` or swallow the body's
+            # own exception). So a teardown failure is logged and dropped.
+            # ``CancelledError`` is a BaseException and is NOT caught, so a
+            # cancel still propagates.
             #
             # Log the exception TYPE only (no message, no traceback): session
             # error text can carry restricted conversation content.

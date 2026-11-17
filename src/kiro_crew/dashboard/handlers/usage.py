@@ -136,6 +136,7 @@ def read_effective_model(source: object) -> str:
                 if isinstance(candidate, str) and candidate and candidate.strip().lower() != "auto":
                     return candidate
     except Exception:
+        # Attribution only: an unreadable chain reports no model.
         pass
     return ""
 
@@ -880,6 +881,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
     from kiro_crew.agent_sdk.backends import (  # noqa: F401
+        ACP_BACKEND_ANTIGRAVITY,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_COPILOT,

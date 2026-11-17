@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.acp.client_permissions import GOOSE_VERIFIED_VERSION_PREFIX
+from kiro_crew.acp.client_goose_session import GOOSE_VERIFIED_VERSION_PREFIX
 from kiro_crew.acp.client_turn_control import (
     GOOSE_TESTED_RANGE,
     GOOSE_TESTED_VERSION,
@@ -61,6 +61,7 @@ def test_a_tested_or_unreadable_version_is_silent_and_does_not_raise(version):
             sdk_backends.ACP_BACKEND_CODEX,
             sdk_backends.ACP_BACKEND_CLAUDE,
             sdk_backends.ACP_BACKEND_PI,
+            sdk_backends.ACP_BACKEND_KIRO,
         }
     ),
 )

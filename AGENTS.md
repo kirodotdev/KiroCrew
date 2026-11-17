@@ -392,6 +392,11 @@ compares nothing (why: testing-conventions.md "Determinism contract"); run
 Contract:
 [testing-conventions § Determinism contract](docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
 
+A test that asserts a credential is removed plants one from
+`kiro_crew.testing.synthetic_credentials`, never an `AKIA…` literal: the redactor
+keeps AWS key IDs visible. Rule:
+[testing-conventions § Rules](docs/system-specs/common/testing-conventions.md#rules).
+
 ## Cross-platform
 
 Route POSIX calls through `platform_compat`: `fcntl`, `termios`, `resource` and

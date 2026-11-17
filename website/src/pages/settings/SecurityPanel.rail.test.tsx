@@ -99,6 +99,8 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Third-party apps'),
       expect.stringContaining('Registry trust'),
       expect.stringContaining('Redaction'),
+      expect.stringContaining('Message body fields'),
+      expect.stringContaining('Safety switches'),
       expect.stringContaining('Defense-in-Depth Architecture'),
       expect.stringContaining('Governance Policy'),
       expect.stringContaining('Documentation'),
@@ -322,7 +324,6 @@ describe('SecurityPanel — redaction allowed hosts', () => {
     renderWithProviders(<SecurityPanel />, { route: '/?section=redaction' })
     expect(await screen.findByText('reviews.corp.example')).toBeTruthy()
     expect(screen.getByText('Workspace: default')).toBeTruthy()
-    expect(screen.getByTestId('redaction-settings-note').textContent).toContain('always on')
     fireEvent.click(screen.getByTestId('redaction-revoke'))
     await waitFor(() => expect(api.redactionRevokeHost).toHaveBeenCalledWith('default', 'reviews.corp.example'))
   })

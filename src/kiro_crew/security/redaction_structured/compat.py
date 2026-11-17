@@ -1,29 +1,30 @@
-"""The structured detectors in front of the credential plan, behind an internal switch.
+"""The rule table as the credential plan, and its stream side.
 
 :func:`kiro_crew.security.redaction._credential_redaction_plan` is the one plan
 every credential entry point splices (``redact_credentials``,
-``redact_credentials_with_records``, ``pass_compose``). With the internal switch
-(:func:`use_rule_table`) ON it calls :func:`credential_plan_via_table`:
+``redact_credentials_with_records``, ``pass_compose``). It calls
+:func:`credential_plan`:
 
 1. the structured detectors (:mod:`.engine`) read the text and resolve their hits;
-2. each Secret hit is replaced by
-   :data:`~kiro_crew.security.redaction.REDACTED_CREDENTIAL_TAG`, and the plan's
-   own passes (pass 1's fixed patterns, then passes 2-4) run on that text,
-   unchanged;
-3. their spans are moved back onto the original text (a span edge inside a tag
-   widens to the whole hit the tag replaced) and merged with the Secret hits.
+2. a ``token`` URL parameter value that only the ``url.token_param.token`` row reads
+   stays where the owner's companion URL prefixes exempt it
+   (``redaction._exempt_token_values``);
+3. each other Secret hit becomes a span replaced by
+   :data:`~kiro_crew.security.redaction.REDACTED_CREDENTIAL_TAG` (a base64 or hex
+   run whose decoded text holds a secret by
+   ``[REDACTED: encoded credential]``); only the value is replaced, the label,
+   header name or URL around it stays.
 
-With the switch OFF nothing here runs and the plan is unchanged.
+Nothing else decides: a value no row reads is left as written. Identifier hits are
+never replaced.
 
 Shapes kept
 -----------
 * spans are ``(start, end, tag)``, sorted and disjoint;
-* one ``Redacted credential pattern (N chars)`` warning per Secret hit, in text
-  order, before the passes' own warnings;
+* one warning per Secret hit, in text order;
 * ``rules`` maps each span's start to ``(rule, label)``. A Secret hit carries the
-  old pass-1 rule name for its format (``github_token``, ``aws_secret_access_key``,
-  ...), because the source cards read those names; its label is ``""`` and the
-  field name before the value stays visible.
+  older rule name for its format (``github_token``, ``aws_secret_access_key``, ...),
+  because the source cards read those names; its label is ``""``.
 
 Fail-closed
 -----------
@@ -43,17 +44,15 @@ never committed. A unit decided while still running (a private-key block with no
 END past its bound) is replaced and the stream drops input to that unit's end
 (:func:`discard_run`). Each committed window is read after the raw text that
 preceded it (:func:`look_behind`), as the whole text reads it.
-
-The switch reads a module flag that only code sets (:func:`publish_use_rule_table`).
-It is OFF and there is no user setting for it.
 """
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import logging
 import threading
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -92,30 +91,20 @@ _OLD_RULE: dict[str, str] = {
     "aws.session_token.label": "aws_session_token",
     "pem.private_key": "private_key",
     "pgp.private_key": "private_key",
+    "encoded_credential": "encoded_credential",
+    "url.userinfo_password": "url_userinfo",
+    "telegram.bot_token": "telegram_bot_token",
+    "discord.bot_token": "discord_bot_token",
+    "openai.project_key": "openai_key",
+    "npm.token": "npm_token",
+    "pypi.token": "pypi_token",
+    "url.token_param.token": "token_parameter",
 }
 
 
 def old_rule(rule_id: str) -> str:
     """The pass-1 rule name a source card reads for a table rule id."""
     return _OLD_RULE.get(rule_id, "credential_pattern")
-
-
-# ── Switch ──
-
-_USE_RULE_TABLE = False
-_PUBLISH_LOCK = threading.Lock()
-
-
-def publish_use_rule_table(enabled: bool) -> None:
-    """Set what :func:`use_rule_table` answers. Code only; no user setting reads it."""
-    global _USE_RULE_TABLE
-    with _PUBLISH_LOCK:
-        _USE_RULE_TABLE = bool(enabled)
-
-
-def use_rule_table() -> bool:
-    """Whether the credential plan reads the structured detectors first (True) or not."""
-    return _USE_RULE_TABLE
 
 
 # ── Detectors ──
@@ -160,34 +149,53 @@ def look_behind(context: str, window: str) -> Iterator[None]:
         _LOOK_BEHIND.reset(token)
 
 
-def _resolved(text: str, final: bool = True) -> tuple[list[Hit], int | None, int]:
-    """``(resolved hits, open_from, base)`` over ``context + text``; offsets in that window."""
+@dataclass(frozen=True, slots=True)
+class _Read:
+    """One detector read of ``context + text``; offsets in that window."""
+
+    window: str
+    hits: list[Hit]
+    resolved: list[Hit]
+    open_from: int | None
+    base: int
+    replace_open_from: int | None = None
+
+
+def _read(text: str, final: bool = True) -> _Read:
     from kiro_crew.security.redaction_structured.engine import resolve, scan
 
     pair = _LOOK_BEHIND.get()
     context = pair[0] if pair is not None and pair[1] == text else ""
     base = len(context)
-    result = scan(context + text, final=final, origin=base)
-    return resolve([h for h in result.hits if h.start >= base]), result.open_from, base
+    window = context + text
+    result = scan(window, final=final, origin=base)
+    hits = [h for h in result.hits if h.start >= base]
+    return _Read(window, hits, resolve(hits), result.open_from, base, result.replace_open_from)
 
 
-def secret_hits(text: str) -> list[Hit]:
-    """The resolved Secret hits over ``text``, in text order, in ``text`` offsets."""
+def _secrets_of(read: _Read) -> list[Hit]:
     from dataclasses import replace
 
     from kiro_crew.security.redaction_structured.model import SECRET
 
-    resolved, _open, base = _resolved(text)
+    base = read.base
     return [
         replace(h, start=h.start - base, end=h.end - base) if base else h
-        for h in resolved
+        for h in read.resolved
         if h.tier == SECRET
     ]
+
+
+def secret_hits(text: str) -> list[Hit]:
+    """The resolved Secret hits over ``text``, in text order, in ``text`` offsets."""
+    return _secrets_of(_read(text))
 
 
 # ── Plan ──
 
 _counting = threading.local()
+#: Set while :func:`_fail_closed` logs and counts one failure on this thread.
+_reporting = threading.local()
 
 
 def _count_fail_closed() -> None:
@@ -209,9 +217,19 @@ def _count_fail_closed() -> None:
 
 
 def _fail_closed(text: str, exc: BaseException) -> _Plan:
-    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the exception type only, never the text or a value
-    logger.warning("credential redaction failed (%s); whole text replaced", type(exc).__name__)
-    _count_fail_closed()
+    # A handler that redacts the warning below (the live log stream) fails the same
+    # way; that nested failure still replaces its text but reports nothing more, so
+    # one failure is one warning and one count.
+    if not getattr(_reporting, "active", False):
+        _reporting.active = True
+        try:
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the exception type only, never the text or a value
+            logger.warning(
+                "credential redaction failed (%s); whole text replaced", type(exc).__name__
+            )
+            _count_fail_closed()
+        finally:
+            _reporting.active = False
     return (
         [(0, len(text), redaction.REDACTION_UNAVAILABLE_TAG)],
         ["Redaction unavailable: whole text replaced"],
@@ -219,71 +237,86 @@ def _fail_closed(text: str, exc: BaseException) -> _Plan:
     )
 
 
-def _merge(engine: list[_Span], passes: list[_Span]) -> list[_Span]:
-    """Sorted, disjoint union of two span lists; an overlap keeps the earlier span's tag."""
-    out: list[_Span] = []
-    for start, end, tag in sorted(engine + passes, key=lambda s: (s[0], -s[1])):
-        if out and start < out[-1][1]:
-            if end > out[-1][1]:
-                out[-1] = (out[-1][0], end, out[-1][2])
-            continue
-        out.append((start, end, tag))
-    return out
+#: The table rule that reports a base64 or hex run whose decoded text holds a secret.
+_ENCODED_RULE = "encoded_credential"
 
 
-def _combine(
-    text: str,
-    hits: list[Hit],
-    defer_token_param: bool,
-    judged_sri_values: Collection[str],
-    token_param_prefixes: tuple[str, ...] | None = None,
-) -> _Plan:
-    """Run the plan's passes on ``text`` with each hit tagged; merge onto ``text``."""
-    from kiro_crew.security.pass_compose import _map_back, _splice
+def _tag(rule_id: str) -> str:
+    """The placeholder a Secret hit of ``rule_id`` is replaced by."""
+    if rule_id == _ENCODED_RULE:
+        return redaction._REDACTED_ENCODED_CREDENTIAL_TAG
+    return redaction.REDACTED_CREDENTIAL_TAG
 
-    tag = redaction.REDACTED_CREDENTIAL_TAG
-    hit_spans = [(h.start, h.end, tag) for h in hits]
-    masked, rows = _splice(text, hit_spans)
-    found, pass_warnings, pass_rules = redaction._main_plan(
-        masked, defer_token_param, judged_sri_values, token_param_prefixes
+
+#: The table row that reads a URL's ``token`` parameter.
+_TOKEN_PARAM_RULE = "url.token_param.token"
+
+
+def _warning(rule_id: str, length: int) -> str:
+    if rule_id == _ENCODED_RULE:
+        return f"Redacted base64-encoded credential ({length} chars)"
+    if rule_id == _TOKEN_PARAM_RULE:
+        return f"Redacted token parameter value ({length} chars)"
+    return f"Redacted credential pattern ({length} chars)"
+
+
+def _exempting_tokens(
+    read: _Read, defer_token_param: bool, token_param_prefixes: tuple[str, ...] | None
+) -> _Read:
+    """*read* without each ``token`` parameter hit the owner's companion URLs keep.
+
+    Only a value no other Secret hit touches is the exemption's to judge
+    (``redaction._exempt_token_values``); a value another row reads is masked.
+    """
+    tokens = [h for h in read.hits if h.rule_id == _TOKEN_PARAM_RULE]
+    if not tokens:
+        return read
+    from dataclasses import replace
+
+    from kiro_crew.security.redaction_structured.engine import resolve
+    from kiro_crew.security.redaction_structured.model import SECRET
+
+    taken = [
+        h
+        for h in resolve([h for h in read.hits if h.rule_id != _TOKEN_PARAM_RULE])
+        if h.tier == SECRET
+    ]
+    starts = [h.start for h in taken]
+
+    def touched(h: Hit) -> bool:
+        i = bisect.bisect_left(starts, h.end) - 1
+        return i >= 0 and taken[i].end > h.start
+
+    whole = sorted((h.start, h.end) for h in tokens if not touched(h))
+    kept = redaction._exempt_token_values(
+        read.window, whole, defer_token_param, token_param_prefixes
     )
-    moved = _map_back(found, rows)
-    spans = _merge(hit_spans, moved)
-
-    rules: dict[int, tuple[str, str]] = {}
-    for (m_start, _m_end, _t), (start, _end, _tag) in zip(found, moved, strict=True):
-        rules.setdefault(start, pass_rules.get(m_start, ("credential_pattern", "")))
-    for h in hits:
-        rules[h.start] = (old_rule(h.rule_id), "")
-    kept = {s for s, _e, _t in spans}
-    rules = {s: r for s, r in rules.items() if s in kept}
-    for s in kept - rules.keys():
-        rules[s] = ("credential_pattern", "")
-    warnings = [f"Redacted credential pattern ({h.end - h.start} chars)" for h in hits]
-    return spans, warnings + pass_warnings, rules
+    if not kept:
+        return read
+    hits = [h for h in read.hits if h.rule_id != _TOKEN_PARAM_RULE or (h.start, h.end) not in kept]
+    return replace(read, hits=hits, resolved=resolve(hits))
 
 
-def credential_plan_via_table(
+def credential_plan(
     text: str,
     defer_token_param: bool = False,
-    judged_sri_values: Collection[str] = (),
     token_param_prefixes: tuple[str, ...] | None = None,
 ) -> _Plan:
-    """The credential plan with the structured detectors read first. Never raises.
+    """The credential plan: the rule table's Secret hits (module docstring).
 
-    Arguments and result are ``redaction._credential_redaction_plan``'s; the
-    owner-view bypass is decided by that caller before this runs.
+    Arguments and result are ``redaction._credential_redaction_plan``'s; the owner's
+    bypass is decided by that caller before this runs. Never raises.
     """
     try:
         if not isinstance(text, str):
             raise TypeError("text must be a str")
         _load()
-        hits = secret_hits(text)
-        if not hits:
-            return redaction._main_plan(
-                text, defer_token_param, judged_sri_values, token_param_prefixes
-            )
-        return _combine(text, hits, defer_token_param, judged_sri_values, token_param_prefixes)
+        read = _exempting_tokens(_read(text), defer_token_param, token_param_prefixes)
+        hits = _secrets_of(read)
+        spans = [(h.start, h.end, _tag(h.rule_id)) for h in hits]
+        warnings = [_warning(h.rule_id, h.end - h.start) for h in hits]
+        rules = {h.start: (old_rule(h.rule_id), "") for h in hits}
+        return spans, warnings, rules
     except Exception as exc:
         return _fail_closed(text if isinstance(text, str) else "", exc)
 
@@ -297,7 +330,7 @@ class StreamRead:
 
     ``cut`` is the furthest the buffer may be committed. When ``tail`` is set, a
     Secret unit starting at ``cut`` is decided while still running to the
-    buffer's end: the stream replaces it and drops input to its end.
+    buffer's end: the stream replaces it with ``tag`` and drops input to its end.
     ``undecided`` is set when ``cut`` stops at a unit the detectors have not
     decided yet (an open unit, or a hit the cut would split), rather than only
     at the anchor-prefix margin.
@@ -306,30 +339,68 @@ class StreamRead:
     cut: int
     tail: str = ""
     undecided: bool = False
+    tag: str = redaction.REDACTED_CREDENTIAL_TAG
 
 
-def stream_read(context: str, buf: str) -> StreamRead | None:
-    """The detectors' hold on ``buf`` read after ``context``; None with the switch off.
+#: How every credential placeholder starts (``[REDACTED: credential]`` and the rest).
+_TAG_HEAD = "[REDACTED"
 
-    None also when the detectors cannot load: the batch plan fails closed on the
-    same error, so there is nothing to hold for.
+
+def _tail_cut(buf: str, base: int, cut: int) -> int:
+    """The fixed tail hold, ending at the last word: ``cut`` moved up past the last blank.
+
+    A partial anchor literal is one word (``ghp_``, ``eyJ``, ``https://``, a key
+    spelling); an anchor that spans a blank (a private-key header, a labelled key
+    and its value) is a unit the detectors report undecided, or one the passes'
+    own stream holds keep. So only the last word needs holding.
     """
-    if not use_rule_table():
-        return None
+    blank = max(buf.rfind(c) for c in " \t\r\n")
+    if blank == -1:
+        return cut
+    # A redaction tag holds a blank; a cut inside one would hand half a tag to a
+    # pass that reads the whole. Such a blank moves the cut to the tag's start.
+    tag = buf.rfind(_TAG_HEAD, 0, blank)
+    if tag != -1 and buf.find("]", tag, blank) == -1:
+        return max(cut, base + tag)
+    return max(cut, base + blank + 1)
+
+
+def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead | None:
+    """The detectors' hold on ``buf`` read after ``context``.
+
+    None when the detectors cannot load: the batch plan fails closed on the same
+    error, so there is nothing to hold for.
+
+    With ``boundary`` (a display boundary: a tool call, a prompt, the turn's end)
+    the fixed :data:`~.stream.TAIL` hold is skipped; every unit still undecided and
+    every hit the cut would split is held as before.
+
+    Only what can change the text written is held: a unit or hit that an
+    Identifier-value row alone reads (a data URI payload, a request id) replaces
+    nothing and overrides no Secret hit, so the committed text is the same wherever
+    the cut falls in it, and it is not held.
+    """
     try:
         _load()
-        from kiro_crew.security.redaction_structured.model import SECRET
+        from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET
         from kiro_crew.security.redaction_structured.stream import TAIL
 
         with look_behind(context, buf):
-            resolved, open_from, base = _resolved(buf, final=False)
+            read = _read(buf, final=False)
     except Exception:
         return None
+    base, open_from = read.base, read.replace_open_from
+    # An Identifier-value hit (a structure reading that is not structural).
+    resolved = [
+        h
+        for h in read.resolved
+        if not (h.tier == IDENTIFIER and h.detector == "structure" and not h.structural)
+    ]
     n = base + len(buf)
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
     if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
-        return StreamRead(tail_hit.start - base, tail_hit.tail)
-    cut = n - TAIL
+        return StreamRead(tail_hit.start - base, tail_hit.tail, tag=_tag(tail_hit.rule_id))
+    cut = n if boundary else _tail_cut(buf, base, n - TAIL)
     undecided = open_from is not None
     if open_from is not None:
         cut = min(cut, open_from)
@@ -350,22 +421,11 @@ def stream_read(context: str, buf: str) -> StreamRead | None:
 def discard_run(tail: str, pad: int, buf: str) -> tuple[int, int, bool]:
     """``(dropped, pad, done)`` for a dropped unit's continuation in ``buf``.
 
-    ``tail`` is :data:`~.model.TAIL_ALL` (the unit runs to the end of the text:
-    drop everything) or :data:`~.model.TAIL_B64RUN` (drop the rest of a base64
-    run and at most two ``=`` after it). ``pad`` counts the ``=`` already dropped.
+    The structured stream drops with the same reader, :func:`.stream.discard`.
     """
-    from kiro_crew.security.redaction_structured.charsets import B64STD
-    from kiro_crew.security.redaction_structured.model import TAIL_ALL
+    from kiro_crew.security.redaction_structured.stream import discard
 
-    if tail == TAIL_ALL:
-        return len(buf), pad, False
-    i = 0
-    if pad == 0:
-        i = len(buf) - len(buf.lstrip(B64STD))
-    while i < len(buf) and buf[i] == "=" and pad < 2:
-        pad += 1
-        i += 1
-    return i, pad, not (i == len(buf) and pad < 2)
+    return discard(tail, pad, buf)
 
 
 def stream_context_max() -> int:

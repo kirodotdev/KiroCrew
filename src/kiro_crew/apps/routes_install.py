@@ -444,7 +444,7 @@ async def handle_register_external(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except (LookupError, RecursionError, ValueError):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -530,7 +530,7 @@ async def handle_install_app(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except (LookupError, RecursionError, ValueError):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -590,7 +590,12 @@ async def handle_install_app(request: web.Request) -> web.Response:
                 )
             ver_err = _check_min_version(manifest_data)
             if ver_err:
-                return web.json_response({"error": ver_err}, status=400)
+                # Call-time import: the ``routes`` facade mirrors this module's names.
+                from kiro_crew.apps.version import MIN_VERSION_REFUSAL_CODE
+
+                return web.json_response(
+                    {"error": ver_err, "code": MIN_VERSION_REFUSAL_CODE}, status=400
+                )
             raw_name = manifest_data.get("name")
             if isinstance(raw_name, str) and raw_name:
                 lock_name = raw_name

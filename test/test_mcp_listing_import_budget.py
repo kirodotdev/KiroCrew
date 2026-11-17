@@ -54,11 +54,27 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: with room for the modules one platform loads and another does not; a change that needs
 #: more names what it added and why a listing needs it, or moves the import behind the
 #: list. Lower a figure when a change brings the count down.
+#: Raised by 1 for ``mcp-cron`` (355 to 356) and ``mcp-mate`` (350 to 351): the structured
+#: credential detectors are on by default, so the first ``redact_credentials`` call a listing
+#: makes loads ``kiro_crew.redaction_seams`` and the ``security.redaction_structured`` package
+#: (the two servers sat one module under their old ceilings, and ``mcp-core`` and
+#: ``mcp-guide`` had room). The redactor runs on the listing's output, so the import cannot
+#: move behind the list.
+#: Raised by 1 again for ``mcp-core``, ``mcp-cron``, ``mcp-guide`` and ``mcp-mate``: the app
+#: manifest parser loads ``kiro_crew.apps.manifest_memory_providers``, the
+#: ``memoryProviders`` section's own small module, which the manifest dataclass needs at import.
+#: Raised by 1 for ``mcp-core`` (486 to 487): the line-cap split of ``kiro_crew.hooks``
+#: moved ``HookManager`` into the owner ``kiro_crew.hook_runtime.hook_manager``, which the
+#: facade imports with the rest of its owners; the module count rose by that one file and
+#: nothing new loads.
+#: Raised by 1 for each server: the rule table reads headers and encoded credentials in
+#: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
+#: ``.protection`` was one.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 485,
-    "mcp-cron": 355,
-    "mcp-guide": 350,
-    "mcp-mate": 350,
+    "mcp-core": 488,
+    "mcp-cron": 358,
+    "mcp-guide": 352,
+    "mcp-mate": 353,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

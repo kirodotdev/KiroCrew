@@ -9,14 +9,14 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_input_wait_emitted``, ``_last_stop_reason``,
+``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
 ``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
-``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
+``_stale_eligible``, ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
 ``_keepalive_parked``, ``_keepalive_ts``, ``_own_ingress_seq``, ``_parked_total``, ``_queue``,
-``_runtime``, ``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
+``_runtime``, ``_session_id``, ``_skill_reads``, ``_steers_proven``,
 ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_raw_params``, ``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``,
@@ -29,8 +29,9 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import raw_sdk_tasks
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     classify_notification,
@@ -48,6 +49,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
+from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -60,6 +62,8 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
+from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.tool_silence import named_tool_call_id
@@ -84,6 +88,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    OWN_STEERING_REQUEST_METHODS,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -171,6 +176,18 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+    # This turn's claude children are listed as they are seen.
+    self._reset_claude_child_turn()
+    # What the pre-turn drain read from a claude child that ended between turns:
+    # the text its redactor held, then its roster, so its card gets both.
+    if self._drained_child_events:
+        _drained, self._drained_child_events = self._drained_child_events, []
+        for _drained_event in _drained:
+            yield _drained_event
+    # Whether this is the dashboard turn that draws the session's background work.
+    # The readers take the per-chat client; they read the fields this handle names alike.
+    _raw_reader: Any = self
+    _draws_background = raw_sdk_tasks.begin_draw(_raw_reader)
     try:
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -717,6 +734,13 @@ async def _dispatch_events(
                 # Runtime process died — sentinel
                 raise self._died("Runtime process died during prompt")
 
+            # What Claude Code's background work sent before this frame, drawn
+            # above it by the dashboard turn alone (``raw_sdk_tasks``), as the
+            # per-chat client draws it.
+            if _draws_background:
+                for _raw_event in raw_sdk_tasks.pending_events(_raw_reader):
+                    yield _raw_event
+
             last_data_ts = time.monotonic()
             parked_at_data = self._parked_total
             if not msg.fanout_no_owner:
@@ -728,6 +752,23 @@ async def _dispatch_events(
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+                if (
+                    req_id == AGENT_STARTED_REQUEST_ID
+                    # A native child's frame is its own work: its tool calls
+                    # are re-tagged as child activity and never disarm the gate.
+                    and str((msg.params or {}).get("sessionId") or "") == self._session_id
+                    and _starts_agent_turn(
+                        msg, str(getattr(self._runtime, "acp_backend", "") or "")
+                    )
+                ):
+                    # A cycle the agent runs on its own ends on its closing
+                    # usage_update, which claude-agent-acp sends only when an
+                    # assistant message set usage. One that goes quiet after a
+                    # thought, a plan or an answered permission request sends
+                    # none, so the stale-turn gate arms from each activity
+                    # frame, not only after text. Set before the frame is
+                    # handled, so a tool call it opens disarms it again.
+                    self._stale_eligible = self._no_tool_in_flight()
             else:
                 # Fanned out to several sessions: the runtime is shared, so a
                 # kiro-cli sub-agent of this session, whose frames carry its own
@@ -738,6 +779,18 @@ async def _dispatch_events(
 
             # Turn-complete response
             if msg.is_response_for(req_id):
+                if msg.error and host_checks_sessions(self._runtime):
+                    # A claude turn whose only unfinished calls are background
+                    # agents' ends as the finished turn it is, as on the per-chat
+                    # client (``claude_background_calls``), read on this session's
+                    # own harness state.
+                    _state: Any = getattr(self._runtime, "_session_harness_states", {}).get(
+                        self._session_id
+                    )
+                    if getattr(_state, "_ends_background_only_turns", False) is True:
+                        _ended: JsonRpcMessage | None = await _state._settle_background_only(msg)
+                        if _ended is not None:
+                            msg = _ended
                 if msg.error:
                     if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
                         # A content-filter refusal whose terminal is the
@@ -863,6 +916,22 @@ async def _dispatch_events(
                 if msg.id in self._awaited_responses:
                     self._queue.put_nowait(msg)
                     await asyncio.sleep(0)
+                elif req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # A turn the agent started reads no response of its own, so a
+                    # response nobody waits on is a prompt's late answer: the
+                    # backend finished, and that ends this turn as its own
+                    # closing usage_update would.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
                 else:
                     logger.debug(
                         "Dropping stray response frame id=%s (no waiter)",
@@ -913,6 +982,9 @@ async def _dispatch_events(
                     if msg.id is not None:
                         await self._runtime.send_error(msg.id, -32600, "invalid request id")
                     continue
+                # A Stop on the card of the claude child that asks settles it
+                # (``session_handle_claude_children``).
+                self._note_native_child_request(msg)
                 # The request is its call's frame (a child's: its sub-agent's).
                 # The human wait that follows is a consumer park, which every
                 # clock subtracts, so the call's timer is paused while it lasts.
@@ -932,6 +1004,10 @@ async def _dispatch_events(
                 if await self._refuse_unidentifiable_mcp_approval(msg, _perm_event):
                     continue
                 if await self._refuse_unreadable_mcp_identity(_perm_event):
+                    continue
+                if host_checks_sessions(self._runtime) and await self._refuse_by_harness(
+                    _perm_event
+                ):
                     continue
                 if await self._refuse_unretained_provenance(msg, _perm_event):
                     continue
@@ -995,6 +1071,8 @@ async def _dispatch_events(
                 _elicit_event = await self._handle_elicitation_request(msg)
                 if _elicit_event is None:
                     continue
+                # A Stop on the card of the claude child that asks settles it.
+                self._note_native_child_request(msg)
                 self._sync_silence_hold()
                 # Same park marking as a permission: the consumer waits on a
                 # human here too, and an observer must not read that as a stall.
@@ -1011,6 +1089,19 @@ async def _dispatch_events(
                 # frame for it of a kind the silence timer cannot read.
                 self._retire_call_timer(named_tool_call_id(msg.params))
             elif action == "update":
+                # A session that left the permission state its host requires is
+                # closed before any of the frame is yielded. Read only on a host
+                # with per-session state, so every other host makes no call.
+                if host_checks_sessions(self._runtime):
+                    self._note_permission_state(msg)
+                    await self._refuse_moved_permission_state()
+                if self._runtime.acp_backend in OWN_STEERING_REQUEST_METHODS:
+                    # The run id a goose steer must name, and goose's echo of a
+                    # steer it drained into this turn (``_steer_via_goose_request``).
+                    self._note_goose_run(msg)
+                    _echo = self._goose_steer_echo(msg)
+                    if _echo is not None:
+                        yield _echo
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this
@@ -1047,6 +1138,20 @@ async def _dispatch_events(
                             kind=EVENT_COMPLETE, usage=self.last_prompt_stats.to_turn_usage()
                         )
                         return
+                if req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # The usage_update that closes a cycle Claude Code ran on its
+                    # own: no response comes for a turn nobody prompted.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
             elif action == "steer":
                 # Mid-turn steer lifecycle echo from kiro-cli (_session/steer).
                 # queued carries the pending snapshot; consumed carries injected

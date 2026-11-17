@@ -15,6 +15,7 @@ import { errMessage, isMissingSlotError, type StatusRejection } from '../../util
 import { i18nT } from '../../i18n/t'
 import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
+import { asFrontRead } from '../../api/readGate'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
 import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
@@ -244,7 +245,9 @@ export const switchSlot = createAsyncThunk<
       const cachedRows = state.slotMessages?.[safeKey(key)] ?? []
       const cached = cachedRows.length
       const limit = slotSwitchFetchLimit({ cached })
-      const first = await fetchSlotDetail(key, limit)
+      // Inside `asFrontRead`: the person is waiting on this page, so it takes the
+      // next free place among the reads (api/readGate).
+      const first = await asFrontRead(() => fetchSlotDetail(key, limit))
       // Coverage, MEASURED from the rows the window returned against the rows this
       // tab already holds. The older count-based check had to assume a hole whenever
       // it had no earlier server total to subtract -- true on every first visit to a

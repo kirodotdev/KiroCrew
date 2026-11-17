@@ -32,6 +32,8 @@ from dataclasses import dataclass, replace
 
 from .armour import detect_armour
 from .charsets import ascii_lower, cached
+from .encoded import detect_encoded
+from .headers import detect_headers
 from .identifier_values import detect_identifier_values
 from .identifiers import (
     ObjectNamePlan,
@@ -41,7 +43,16 @@ from .identifiers import (
     object_name_plan,
 )
 from .known_key import detect_known_keys
-from .model import CONTAINABLE_DETECTORS, IDENTIFIER, LABEL_BEATS_RULES, SECRET, TAG, Hit, Span
+from .model import (
+    CONTAINABLE_DETECTORS,
+    IDENTIFIER,
+    LABEL_BEATS_RULES,
+    PLAN_TAGS,
+    SECRET,
+    TAG,
+    Hit,
+    Span,
+)
 from .table import TABLE, StructureRow, Table
 from .tokens import detect_formats, detect_jose, detect_pairs
 
@@ -52,14 +63,25 @@ _NONE: tuple[list[Hit], list[int]] = ([], [])
 class ScanResult:
     hits: list[Hit]
     open_from: int | None
+    # The earliest undecided unit that can change what is replaced: ``open_from``
+    # without the units only an Identifier-value row reads (a data URI payload, a
+    # request id), whose hits replace nothing and override no Secret hit.
+    replace_open_from: int | None = None
 
 
-def scan(text: str, final: bool = True, origin: int = 0, table: Table = TABLE) -> ScanResult:
-    """Every detector's raw hits, and the earliest undecided unit at or after ``origin``."""
+def scan(
+    text: str, final: bool = True, origin: int = 0, table: Table = TABLE, depth: int = 0
+) -> ScanResult:
+    """Every detector's raw hits, and the earliest undecided unit at or after ``origin``.
+
+    ``depth`` counts the decodes the encoded detector went through to reach ``text``.
+    """
     hits: list[Hit] = []
     opens: list[int] = []
     # One lowered copy, shared by every case-insensitive reader.
     low = ascii_lower(text)
+    value_hits, value_opens = detect_identifier_values(text, table.structures, final, low)
+    hits += value_hits
 
     found, op = detect_formats(text, table.formats, final)
     hits += found
@@ -71,8 +93,11 @@ def scan(text: str, final: bool = True, origin: int = 0, table: Table = TABLE) -
         detect_jose(text, table.jose, final),
         detect_armour(text, table.armour, final),
         detect_known_keys(text, table.known_keys, final, low),
-        detect_urls(text, table.structures, final, table.url_params),
-        detect_identifier_values(text, table.structures, final, low),
+        detect_urls(
+            text, table.structures, final, table.url_params, table.userinfo, table.path_secrets
+        ),
+        detect_headers(text, table.headers, final, low),
+        detect_encoded(text, table.encoded, final, depth, _holds_secret(table), origin),
     ):
         if detected[0]:
             hits += detected[0]
@@ -88,7 +113,50 @@ def scan(text: str, final: bool = True, origin: int = 0, table: Table = TABLE) -
         opens += op
 
     live = [o for o in opens if o >= origin]
-    return ScanResult(hits, min(live) if live else None)
+    replace_from = min(live) if live else None
+    live += [o for o in value_opens if o >= origin]
+    return ScanResult(_outside_tags(text, hits), min(live) if live else None, replace_from)
+
+
+def _outside_tags(text: str, hits: list[Hit]) -> list[Hit]:
+    """*hits* without each Secret hit that reads only the text of a placeholder.
+
+    A placeholder holds no value, so a hit inside one is a reader taking the tag
+    for a value; replacing it would write a second tag into the first. Dropping it
+    keeps masked text a fixed point: redacting it again is a byte-for-byte no-op.
+    """
+    if "[REDACTED" not in text or not hits:
+        return hits
+    tags: list[tuple[int, int]] = []
+    for tag in PLAN_TAGS:
+        at = text.find(tag)
+        while at != -1:
+            tags.append((at, at + len(tag)))
+            at = text.find(tag, at + len(tag))
+    if not tags:
+        return hits
+    tags.sort()
+    starts = [start for start, _end in tags]
+
+    def inside(h: Hit) -> bool:
+        k = bisect.bisect_right(starts, h.start) - 1
+        return k >= 0 and h.end <= tags[k][1]
+
+    return [h for h in hits if h.tier != SECRET or not inside(h)]
+
+
+def _holds_secret(table: Table) -> Callable[[str, int], bool]:
+    """A reader for the encoded detector: does *decoded*, read at *depth*, hold a Secret?
+
+    It reads the decoded text with the table, as the plan reads plain text, so an
+    encoded copy of any credential a row reads is masked as its plain form is.
+    """
+
+    def holds(decoded: str, depth: int) -> bool:
+        hits = scan(decoded, final=True, table=table, depth=depth).hits
+        return any(h.tier == SECRET for h in resolve(hits))
+
+    return holds
 
 
 def _arn_rows(rows: tuple[StructureRow, ...]) -> tuple[StructureRow, ...]:

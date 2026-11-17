@@ -1,12 +1,12 @@
 ---
 title: Channel card catalog — one validated, redacted card spec rendered to Slack, Teams, Discord and plain text
-status: in-progress
+status: partial
 author: kseam
 created: 2026-11-10
-last-audited: 2026-11-12
-audited-at: 9e9de7bfc9
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
-implementation-prs: []
+implementation-prs: [35974]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,8 +14,10 @@ superseded-by: []
 
 # RFC: Channel card catalog
 
-- Status: in-progress. Phase 1 is built in the open pull request that carries
-  it, not on main. Every claim about the code below was checked against main
+- Status: partial. Phase 1 is on main via
+  [#35974](https://github.com/kirodotdev/KiroCrew/pull/35974) (the
+  `messaging/cards` package and the Slack Stop/working builders in
+  `slack/blocks.py`); Phase 2 onward is not built. Every claim about the code below was checked against main
   at `b58eef1f9c`, or against the open pull request it names, at that PR's
   head on 2026-11-10. The Phase 1 decisions under "Migration plan" were
   checked against main at `9e9de7bfc9` on 2026-11-12.

@@ -274,3 +274,44 @@ def test_crew_tool_specs_on_a_request_stay_under_the_ceiling(backend, tmp_path_f
             f"crew_tool_bytes_ceiling in expectations.json to {CREW_TOOL_BYTES_TARGET}"
         )
         pytest.xfail(f"{backend} sends {measured} bytes of Crew tool specs: {ISSUES['tool_specs']}")
+
+
+def test_the_codex_session_waits_for_every_mcp_server_before_its_turn(monkeypatch, tmp_path):
+    """The probe's mount wait sees only the probe servers, so codex's own
+    startup wait is what keeps a slow kirocrew-core's tools on the measured request.
+    The driver asks for it on top of whatever meta the client already sends."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(sys, "argv", ["drive.py", "codex", str(tmp_path)])
+    monkeypatch.setattr(sys, "path", list(sys.path))  # drive.py prepends its own dir
+    monkeypatch.setenv("HOME", str(tmp_path))
+    spec = importlib.util.spec_from_file_location("probe_drive", PROBE_DIR / "drive.py")
+    drive = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(drive)
+
+    calls = []
+
+    def own(method, params, agent, **kwargs):
+        calls.append(method)
+        return {**params, "_meta": {"own": 1}}, agent
+
+    harness = SimpleNamespace(session_request=own)
+    drive.await_codex_mcp_startup(harness)
+
+    new, agent = harness.session_request("session/new", {"cwd": "w"}, "a", agent_capabilities={})
+    assert (new, agent) == (
+        {
+            "cwd": "w",
+            "_meta": {"own": 1, "mcpStartupAwaitTimeoutMs": drive.CODEX_MCP_STARTUP_AWAIT_MS},
+        },
+        "a",
+    )
+    # A resumed session is not a fresh mount: only session/new waits.
+    load, _ = harness.session_request("session/load", {"cwd": "w"}, "a", agent_capabilities={})
+    assert load == {"cwd": "w", "_meta": {"own": 1}}
+    assert calls == ["session/new", "session/load"]
+    # The wait must end before the runtime's own session/new budget floor does.
+    from kiro_crew.acp.runtime_start import _SESSION_NEW_TIMEOUT
+
+    assert drive.CODEX_MCP_STARTUP_AWAIT_MS / 1000 < _SESSION_NEW_TIMEOUT

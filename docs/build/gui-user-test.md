@@ -8,7 +8,9 @@ the DOM calls visible that a person cannot click, a theme switch that changed a 
 name and not the pixels, a horizontal scrollbar, a spinner that never stops. Tracking
 issue: [#9578](https://github.com/kirodotdev/KiroCrew/issues/9578).
 
-The lane runs on the nightly schedule and on `workflow_dispatch` only; its job status is
+The lane runs on `workflow_dispatch` only (its nightly schedule is commented out in the
+workflow until the failing scenarios tracked in
+[#22733](https://github.com/kirodotdev/KiroCrew/issues/22733) are fixed); its job status is
 the verdict. It is not a pull-request check: a PR lane would run the PR's own harness
 with an assumed cloud role, and any write collaborator can open a same-repo PR, which
 makes "code write" reach "cloud credential" however the job is gated. The PR-advisory
@@ -379,8 +381,8 @@ logged, or fail with none.
   `configure-aws-credentials` -- verify branch changes through the nightly after merge
   or through a lane-scoped role that trusts the branch.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
-- **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 32 smoke plus
-  8 nightly-only scenarios). A non-PASS night opens or updates the single open
+- **Nightly** (paused: the `schedule:` block in the workflow is commented out): `20 9 * * *`
+  UTC on `main`, full tier (currently 33 smoke plus 11 nightly-only scenarios). A non-PASS night opens or updates the single open
   issue labelled `gui-test-report`.
 
 ### Locally
@@ -420,7 +422,7 @@ owning server is not a virtual one.
   `--budget-usd` (default $60 everywhere: the `budget_usd` dispatch input, the
   nightly schedule's fixed value, and the harness's own fallback when the flag is
   omitted -- the full nightly tier on Opus spends about $45 with retries) and
-  marks the remaining scenarios `SKIPPED`; the job's 90-minute timeout is the
+  marks the remaining scenarios `SKIPPED`; the job's 110-minute timeout is the
   backstop for a hung target, not the budget. Keep the nightly bill well under the
   $60 cap: when a new batch would push a night toward it, move the lowest-value
   scenarios to a cheaper cadence (a `weekly` tier is a schema + workflow change)

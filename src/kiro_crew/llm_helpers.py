@@ -88,6 +88,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         acp_error_after_tool_activity,
         acp_error_is_connection_failure,
         acp_error_is_pipe_death,
+        acp_error_is_server_error,
         acp_error_is_session_not_found,
         acp_error_is_throttle,
         acp_error_is_transient,
@@ -156,6 +157,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.tool_approval import (  # noqa: F401
         ToolApprovalPolicy,
+        _body_field_link_origin,
         _orphan_reject_done,
         _orphan_rejects,
         _resolve_permission,
@@ -295,6 +297,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security import (  # noqa: F401
         MAX_SCANNABLE_COMMAND_CHARS,
+        MAX_SCANNABLE_SOURCE_BODY_CHARS,
         is_denied,
         is_denied_synthesized_target,
         is_sensitive_bash_command,
@@ -303,6 +306,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         redact_exfiltration_urls,
         sensitive_path_refusal,
         sensitive_write_path_refusal,
+    )
+    from kiro_crew.security.mcp_body_fields import (  # noqa: F401
+        body_field_keys,
+        is_kirocrew_server,
+        named_size_refusal,
+        warn_body_field_matches,
     )
     from kiro_crew.security.paths_resolver import bounded_judgment  # noqa: F401
     from kiro_crew.security.readonly_bash import (  # noqa: F401

@@ -131,6 +131,72 @@ async def _view(request: web.Request, slug: str, rec: dict[str, Any]) -> dict[st
     return view
 
 
+def work_spend(value: Any) -> dict[str, Any]:
+    """The credits a Bot's work used, from its ``workstreams`` fold value.
+
+    Each task row names its worker session by a ``spender`` alias that is stable
+    within one render, so a worker that served several tasks is counted once. A
+    total with no reported charge is ``not_reported``, never ``0``: an unmetered
+    provider writes no credits, and showing zero would claim a measurement. A fold
+    that dropped boards, tasks, units or spenders says ``partial``, so the page
+    reads "at least".
+    """
+    if not isinstance(value, dict):
+        return {"status": "not_reported", "partial": False}
+    boards = value.get("items")
+    boards = boards if isinstance(boards, list) else []
+    partial = any(
+        isinstance(value.get(key), int) and value[key] > 0
+        for key in ("omitted", "units_omitted", "spenders_omitted")
+    )
+    spent: dict[str, float] = {}
+    for board in boards:
+        if not isinstance(board, dict):
+            continue
+        if isinstance(board.get("tasks_omitted"), int) and board["tasks_omitted"] > 0:
+            partial = True
+        tasks = board.get("tasks")
+        for task in tasks if isinstance(tasks, list) else []:
+            if not isinstance(task, dict) or task.get("credits_reported") is not True:
+                continue
+            spender, credits = task.get("spender"), task.get("credits")
+            if isinstance(spender, str) and isinstance(credits, (int, float)):
+                spent[spender] = float(credits)
+    if not spent:
+        return {"status": "not_reported", "partial": partial}
+    return {"status": "reported", "credits": round(sum(spent.values()), 6), "partial": partial}
+
+
+def _read_work_spend(cfg: KiroCrewConfig, slug: str, member: str) -> dict[str, Any] | None:
+    """:func:`work_spend` for the Bot's own thread slot, or ``None`` when it cannot
+    be read. FILE I/O: call off the loop.
+
+    The request path never folds cold: a slot with no warm cell reads ``pending``
+    and asks one background prime, so the next open of the tab has the number.
+    """
+    from kiro_crew.crew_log import projection, slot_prime
+    from kiro_crew.crew_log.projection_catalogue import WORKSTREAMS_FOLD_NAME
+    from kiro_crew.dashboard.handlers.members import _member_thread_slot
+
+    try:
+        slot, _store = _member_thread_slot(cfg, member, slug)
+        # The thread's own binding must name this Bot and this slot. A slug two
+        # Bots share, or one a deleted Bot left behind, derives the same slot, and
+        # its spend is that thread owner's, never the requester's.
+        binding = members_mod.read_dm_binding(slug)
+        if binding is None or binding.get("member") != member or binding.get("slot_key") != slot:
+            return None
+        try:
+            folded = projection.read_slot_projection(slot, WORKSTREAMS_FOLD_NAME, cold=False)
+        except projection.SlotFoldNotReady:
+            slot_prime.schedule(slot, WORKSTREAMS_FOLD_NAME, for_reader=True)
+            return {"status": "pending"}
+        return work_spend(folded.value)
+    except Exception:
+        logger.debug("no work spend for %r", slug, exc_info=True)
+        return None
+
+
 # ── owner half ──
 
 
@@ -138,14 +204,21 @@ async def _owner_member(
     request: web.Request, operation: str, member: Any, *, write: bool
 ) -> tuple[str, str, KiroCrewConfig] | web.Response:
     """``(slug, member, config)`` for an owner request, or the refusal to send."""
-    from kiro_crew.dashboard.handlers.members import _deny_app_caller, _member_names_for_slug
+    from kiro_crew.dashboard.handlers.members import (
+        _deny_app_caller,
+        _member_names_for_slug,
+        _teammate_admitted,
+    )
 
     denied = await _deny_app_caller(request, "members.goals")
     if denied is not None:
         return denied
-    owner_denied = await require_owner_dashboard_request(request, operation)
-    if owner_denied is not None:
-        return owner_denied
+    # A team Crew teammate reads a person-created Bot's goals; every goal write stays
+    # owner-only, as cron writes are for them.
+    if write or not await _teammate_admitted(request, operation, slug=request.match_info["slug"]):
+        owner_denied = await require_owner_dashboard_request(request, operation)
+        if owner_denied is not None:
+            return owner_denied
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)
@@ -175,18 +248,30 @@ async def _body(request: web.Request) -> dict[str, Any] | web.Response:
 
 
 async def api_member_goals_get(request: web.Request) -> web.Response:
-    """GET /api/members/{slug}/goals?member=<name> — the crewmate's goal record."""
+    """GET /api/members/{slug}/goals?member=<name> — the crewmate's goal record.
+
+    An app token gets its own trimmed view instead (``members_app.app_bot_goals``,
+    behind ``permissions.bots: read`` and the owner's ticked Bots), or a 404.
+    """
+    if request.get("app", ""):
+        from kiro_crew.dashboard.handlers.members import app_bot_goals
+
+        return await app_bot_goals(request)
     who = await _owner_member(
         request, "members.goals.read", request.query.get("member", ""), write=False
     )
     if isinstance(who, web.Response):
         return who
-    slug, member, _cfg = who
+    slug, member, cfg = who
     try:
         rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
     except member_goals.GoalsUnreadable:
         return _unreadable()
-    return web.json_response({"slug": slug, "member": member, **(await _view(request, slug, rec))})
+    # Read on the GET only: a goal write answers with the record, and the tab keeps
+    # the spend line it already has rather than every save reading the crew log.
+    spend = await asyncio.to_thread(_read_work_spend, cfg, slug, member)
+    view = await _view(request, slug, rec)
+    return web.json_response({"slug": slug, "member": member, **view, "spend": spend})
 
 
 async def _owner_write(

@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for the Decisions (Jev) card in Settings > Developer >
+ * Screenshot harness for the Decisions card in Settings > Developer >
  * Feature Previews.
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static
@@ -388,7 +388,7 @@ async function main() {
     })
     return page
   }
-  const decisionsSwitch = (page) => page.getByRole('switch', { name: 'Decisions (Jev)' })
+  const decisionsSwitch = (page) => page.getByRole('switch', { name: 'Decisions' })
   /** The card itself — the SettingsCard wrapper the switch sits in. */
   const decisionsCard = (page) =>
     decisionsSwitch(page).locator('xpath=ancestor::div[@data-settings-card][1]')
@@ -436,7 +436,7 @@ async function main() {
     await decisionsSwitch(page).waitFor({ state: 'visible', timeout: 15000 })
     await page.waitForFunction(
       (want) => {
-        const el = document.querySelector('[role="switch"][aria-label="Decisions (Jev)"]')
+        const el = document.querySelector('[role="switch"][aria-label="Decisions"]')
         return !!el && (el.getAttribute('aria-disabled') === 'true') !== want
       },
       enabled,

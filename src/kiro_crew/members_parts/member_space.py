@@ -42,12 +42,11 @@ MEMBERS_DIR_NAME = "members"
 ACTIVITY_FILE_NAME = "activity.jsonl"
 
 # LEGACY ONLY. Nothing writes this file: participation events go to the
-# per-member append-only event log, and :func:`read_activity` reads that log
-# rather than this path. It survives as a migration SOURCE, folded in once per
-# member and then retired by rename (see the event-log service). Bounding it by
-# size therefore has nothing to bound, since the writer that grew it is gone;
-# the fold streams it under its own byte budget instead, because the file stays
-# agent-writable whatever its size.
+# per-member append-only event log, which :func:`read_activity` reads. It is
+# kept as a migration SOURCE, folded in once per member and then retired by
+# rename (see the event-log service). No size cap is needed since nothing
+# grows it; the fold streams it under its own byte budget because the file
+# stays agent-writable.
 
 #: Crew-slug -> DM-thread binding inside a member's directory.
 DM_FILE_NAME = "dm.json"

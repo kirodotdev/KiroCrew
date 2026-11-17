@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewPane, isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
 import en from '../i18n/locales/en.manual.json'
 
 describe('offlineReason', () => {
@@ -24,6 +24,15 @@ describe('offlineReason', () => {
     // The test runner is a plain dashboard, as a local or Tailscale one is.
     expect(isRelayCrewWindow()).toBe(false)
     expect(offlineReason(null)).toBe(en.app.gateway_offline_reconnecting)
+  })
+
+  it('reads the relay Crew pane from its own user-agent marker only', () => {
+    expect(isRelayCrewPane('Mozilla/5.0 Electron/44 kiroCrewRelayWindow kiroCrewRelayPane')).toBe(true)
+    // The separate relay Crew window keeps its own header.
+    expect(isRelayCrewPane('Mozilla/5.0 Electron/44 kiroCrewRelayWindow')).toBe(false)
+    expect(isRelayCrewPane('Mozilla/5.0 NotkiroCrewRelayPaneAtAll')).toBe(false)
+    expect(isRelayCrewPane('')).toBe(false)
+    expect(isRelayCrewPane()).toBe(false)
   })
 
   it('treats only a plain drop in a relay Crew window as retrying', () => {

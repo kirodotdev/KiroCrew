@@ -70,9 +70,9 @@ class TestCreateSingleLockedSave:
         resp = await api_crons_create(request)
         assert resp.status == 200
 
-        # Exactly one save — the one inside the locked _persist_add_locked. The
-        # pre-fix handler did a SECOND, unlocked save to flush the mutated
-        # fields (save_calls["n"] would be 2), which is the data-loss window.
+        # Exactly one save — the one inside the locked _persist_add_locked. A
+        # SECOND, unlocked save to flush the mutated fields (save_calls["n"] == 2)
+        # would open a data-loss window.
         assert save_calls["n"] == 1
 
         # And the job is persisted fully-formed (fields set under the lock).

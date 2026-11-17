@@ -309,7 +309,23 @@ jobs:
       # write so un-attested bytes never go live; if attestation fails,
       # the job fails and nothing is published.
       - name: Attest artifact provenance
+        id: attest_artifact
         if: env.HAS_SIGNING_SECRETS && !inputs.promote
+        # A network failure minting the attestation (Sigstore Fulcio/Rekor)
+        # gets one paused retry of the identical step below; the retry has no
+        # continue-on-error, so two failures fail the job before anything is
+        # published. Pinned by test/test_workflow_attest_retry.py.
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.ARTIFACT_PATH }}
+
+      - name: Pause before retrying artifact provenance
+        if: ${{ (env.HAS_SIGNING_SECRETS && !inputs.promote) && steps.attest_artifact.outcome == 'failure' }}
+        run: sleep 45
+
+      - name: Attest artifact provenance (retry)
+        if: ${{ (env.HAS_SIGNING_SECRETS && !inputs.promote) && steps.attest_artifact.outcome == 'failure' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ env.ARTIFACT_PATH }}

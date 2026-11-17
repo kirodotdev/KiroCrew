@@ -57,7 +57,7 @@ omit the policy.
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
-| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
+| `credentials` | adapter | `DefaultCredentialPolicy` (the core credential redaction, `security.redact`; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
@@ -80,7 +80,7 @@ omit the policy.
 | `memory_files` | adapter | `DefaultMemoryFilesProvider` (memory's markdown source text on local disk) | a non-local `MemoryFiles` for memory's markdown source. `memory_files_for` does not catch a provider error: `PlatformCompositionError` propagates and nothing falls back to local disk. Memory's derived state (the FTS index, the SQLite stores, the FAISS vectors) stays local and does not travel through this seam |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`) instead when `tunnel.relay_enabled` is on (off by default) | internal tunnel supervisor, which the relay client never replaces |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destinations from `telemetry.otlp_endpoint` and `telemetry.otlp_endpoints`) | RUM/Cognito config + its own OTLP collector |
-| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths) | secretary/taskkeeper routes + enterprise SSO PTY login |
+| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths, no company sign-in default) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `mobile_connect` | adapter | `DefaultMobileConnectProvider` (personal-install pair: `tailnet_qr` + `login_link` (id == kind by design)) | edition-specific phone-connection methods (descriptor-only `{id, kind}`; minting stays on each method's own endpoint; an empty list hides the dashboard entry; list + mint governed by `capabilities.mobile_connect`) |
 | `remote_provisioners` | adapter | `DefaultRemoteProvisionerProvider` (the built-in `aws_ec2` lane backed by `RealLaunchEngine`, **plus a conditional `aws_fargate` lane** backed by `FargateLaunchEngine` that is offered only when `cloud.json` carries a complete `fargate` block; id == kind by design for both) | edition-specific ways to CREATE a remote instance (a managed dev environment, a container task): descriptor-only `{id, kind, label, posix_only, step_labels, confirm_before_launch}` plus a `LaunchEngine` per id (`confirm_before_launch` carries what the operator must see and confirm before that lane may launch -- `POST /api/cloud/launch` requires `confirm_recipient` to equal it, so the requirement is derived from the row rather than hard-coded to one id, and a lane with nothing to confirm leaves it empty); the core's durable launch job still drives every launch, so cancel, rollback and orphan reaping are inherited rather than reimplemented |
@@ -607,8 +607,8 @@ Runtime code reads only the module constant, never the build variable or a confi
 | `tunnel` | `tunnel.enabled`, `tunnel.relay_enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/server.py::start_dashboard`, which builds the app's `RelayIngress` off there; `platform/bootstrap.py::_public_tunnel_provider`, which never selects or imports the relay client there; all three read the relay switch through `edition_locks.py::relay_selected`; `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks all three paths `lockedByPolicy` |
 | `telemetry.otlp_hosts` | `telemetry.otlp_endpoint`, `telemetry.otlp_endpoints` | `metrics/provider.py::_edition_locked_view`, read by `_otlp_destinations` and `otlp_egress_active` before any provider sees the config (an edition provider's own destinations stay) | `GET /api/config/schema` marks the path `lockedByPolicy` |
 | `developer_mode` | `KIROCREW_DEV_MODE` (and the `-dev` home suffix for the update simulator) | `session_environment.py::session_environments_enabled` (remote placement stays off) and `dashboard/routes/system.py` (`POST /api/update/simulate` is not registered) | none; an environment variable has no setting API. The flag's on-loop persistence strictness only raises more, so it is left as is |
-| `feature_previews` | `dashboard.feature_previews` and every path under it (RFC D12) | `edition_locks.py::feature_previews`, read by `connections/crew_oauth.py::enabled`, `crew_mode.py::mate_sessions_hidden` and `dashboard_agentic.py::stale_fields_enabled`; `dashboard/handlers/core_config_view.py::_config_body` reports them `{}` on `GET /api/config/kirocrew` and every PATCH reply; the dashboard reads every `mc-preview-*` flag off and refuses to set one (`website/src/utils/previewFlags.ts`) | `GET /api/config/schema` marks every preview path `lockedByPolicy`; the dashboard takes its preview lock from that (`hooks/usePreviewFlagServerSync.ts::applyConfigLocks`) |
-| `debug_tools` | Settings > Developer > Debug tools and its `mc-scroll-inspector` key (RFC D12) | dashboard only: `pages/settings/DeveloperPanel.tsx` drops the page, `pages/DeveloperPage.tsx` sends the old link to the first page, `dev/scrollInspector.ts` reads off. No gateway route | `locked_controls: ["debug_tools"]` on `GET /api/config/kirocrew` and every PATCH reply, a field only an LTS build sends |
+| `feature_previews` | `dashboard.feature_previews` and every path under it (RFC D12) | `edition_locks.py::feature_previews`, read by `connections/crew_oauth.py::enabled` and `dashboard_agentic.py::stale_fields_enabled`; `dashboard/handlers/core_config_view.py::_config_body` reports them `{}` on `GET /api/config/kirocrew` and every PATCH reply; the dashboard reads every `mc-preview-*` flag off and refuses to set one (`website/src/utils/previewFlags.ts`), and keeps conductor mode off, as it was while a preview, including before the lock is known on an uncached browser (`website/src/lib/crewMode.ts::crewModeEnabled`, `website/src/utils/editionLocks.ts::featurePreviewLockKnown`) | `GET /api/config/schema` marks every preview path `lockedByPolicy`; the dashboard takes its preview lock from that (`hooks/usePreviewFlagServerSync.ts::applyConfigLocks`) |
+| `debug_tools` | Settings > Developer > Debug tools and its `mc-scroll-inspector` and `mc-slow-frame-log` keys (RFC D12) | dashboard only: `pages/settings/DeveloperPanel.tsx` drops the page, `pages/DeveloperPage.tsx` sends the old link to the first page, `dev/scrollInspector.ts` and `dev/slowFrameLog.ts` read off. No gateway route | `locked_controls: ["debug_tools"]` on `GET /api/config/kirocrew` and every PATCH reply, a field only an LTS build sends |
 
 The update channel left this table when it gained its key, `updates.channel` (see governance.md, "Update pins"): an LTS build follows `lts`, its own channel, whatever the policy pins (RFC crew-lts-edition D11), and still ignores `$KIROCREW_HOME/channel`.
 
@@ -631,7 +631,7 @@ The LTS edition RFC ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lt
 | Red control | LTS behaviour | Where |
 |---|---|---|
 | Hooks by name | Follows `capabilities.script_hooks`, off by default: no script hook runs and no user kiro hook is installed (asked on the host key) until the policy enables it; once on, its `events` list (if named) also drops the user kiro hooks of each refused event | `hook_runtime/governance_gate.py::_script_hooks_capability_denied`, `agent_materialization/kiro_hooks.py::_user_kiro_hooks_locked` and `_drop_refused_kiro_hook_events` |
-| Webhooks by source | Follows the `webhooks` scope, off by default (baseline): a source runs only when the policy names it, whatever the stored switch says | `webhook_sources.py::source_refusal`, asked by `webhooks.py::WebhookTokenStore.is_switch_on` (`/api/hooks/agent`, source `agent`) and `apps/builtins/ops_mission_control/backend/providers/webhook.py::enqueue` (the app's `/webhook` ingress, source `ops-mission-control`) |
+| Webhooks by source | Follows the `webhooks` scope, off by default (baseline): a source runs only when the policy names it, whatever the stored switch says | `webhook_sources.py::source_refusal`, asked by `webhooks.py::WebhookTokenStore.is_switch_on` (`/api/hooks/agent`, source `agent`) and `webhook_sources.py::app_source_refusal` for an app declaring `permissions.webhookSource` (source: the app's name; Ops Mission Control's `/webhook` ingress is `ops-mission-control`) |
 | Signed extensions only, Extension versions | Follow install: `capabilities.extension_install`, off in the baseline, so both are off until a policy turns install on (see `docs/system-specs/modules/governance.md`, "Extensions, app versions and developer mode") | `platform/capability_bound.py::BoundedCapabilityManager` install ops and `sync_plugins` |
 | Workload identity, Identity settings | `capabilities.agentcore` off: no posture, Gateway URL or workload name | `platform/governance_parts/carriers.py::agentcore_posture` |
 | Content sent to external decisions | Follows `capabilities.decisions`, off by default: nothing is sent until the policy enables it; the local row holds that deny, as for any hosted deny, and the denial is audited | `decisions/capability.py::_row_denied` |
@@ -801,15 +801,6 @@ Wired sites:
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes
   uniformly across every egress surface.
-- Code text (`kiro_crew.platform.context.redact_code_via_context`) — `redact_via_context` run
-  inside a `security.redaction_switch.code_text()` scope, where pass 3 of the core credential pass
-  (the entropy-and-shape guess at a secret key) spares an ordered alphabet and a data URI payload of
-  64 characters or more and judges every other run as it does anywhere, while every other pass, the
-  exfiltration-URL pass and a loaded companion's patterns run as they do for `redact_via_context`.
-  Its one caller is the member dashboard page scrub, which takes `redact_via_context` over the whole
-  page as its baseline and puts what this returns in place of the baseline's for the text of the
-  page's `<script>` and `<style>` elements. Like `redact_owner_view_via_context` it is a scope the
-  caller must open, so a sink that does not call it keeps the full pass.
 - Content scans (`binary_content_is_flagged`, `wide_content_is_flagged`) are serialized
   behind one re-entrant lock (`_SCAN_LOCK`) and their verdicts are kept in a 256-entry LRU
   (`_SCAN_VERDICTS`) keyed by (scan kind, SHA-256 of the bytes, `governance_generation()`),
@@ -870,7 +861,7 @@ Wired sites:
   correct there. A count that has fallen must be lowered, so a converted module
   does not leave free slots behind.
 - Exfil exact-host heuristic exemption (`CredentialPolicy.exempt_exact_hosts()`) —
-  `security.scan_exfiltration_urls` / `redact_exfiltration_urls` read the
+  `security.scan_exfiltration_urls` (the request-blocking URL scan) reads the
   companion-supplied exact-host set and, for a URL whose domain is an EXACT
   member, skip ONLY the base64-blob / query-length heuristics (which
   false-positive on legitimate long base64 document pointers, e.g. SharePoint
@@ -879,23 +870,22 @@ Wired sites:
   fast-path and the unconditional `_HARD_CREDENTIAL_RE` path+query scan run FIRST
   (before the exemption is consulted), so a real AWS key / SSH-or-PEM header /
   Slack token on an exempted host — including one embedded in the URL PATH — is
-  still flagged and redacted. Matched EXACTLY (not by suffix) so a shared
+  still flagged. Matched EXACTLY (not by suffix) so a shared
   multi-tenant domain does not exempt every tenant. The set is guarded with
   `getattr(policy, "exempt_exact_hosts", None)` (a pre-method companion adapter
   degrades to the empty set) and is NEVER sourced from `config.json` — an
-  agent-writable exemption would be a hole in the redaction ceiling, so the
+  agent-writable exemption would be a hole in the blocking ceiling, so the
   companion adapter is the only supplier. EVERY failure degrades to
-  `frozenset()` — the empty set means MORE redaction (every host runs the
+  `frozenset()` — the empty set means MORE flagging (every host runs the
   heuristics), the safe direction, and stricter than any companion-supplied list
   could be; NO logging on the degrade path (runs inside the stdio MCP servers).
-- Pass-4 token-parameter URL prefixes
-  (`CredentialPolicy.token_param_exempt_url_prefixes()`) — redaction pass 4
-  redacts every `token=` URL value by name. It skips only a literal `?token=`
+- Token-parameter URL prefixes
+  (`CredentialPolicy.token_param_exempt_url_prefixes()`): the token-parameter
+  pass redacts every `token=` URL value by name. It skips only a literal `?token=`
   immediately after a companion-supplied `https://host/path` prefix whose local
   boundary and preceding text prove it is not nested in another destination,
-  whose value is one URL-safe/base64 run plus closers, and which no earlier pass
-  claimed. The companion must list the host in `exempt_exact_hosts()` too, or
-  earlier base64/query heuristics can redact the URL before pass 4. The
+  whose value is one URL-safe/base64 run plus closers, and which no rule-table hit
+  claimed. The
   preceding-text guard rejects URL, backslash, scheme and HTML
   destination signals — any `&` (character reference) or `<` (tag) counts, scanned
   over the raw text and never decoded — after blanking earlier links that already
@@ -904,18 +894,18 @@ Wired sites:
   Context-incomplete streaming windows never apply the exemption; the complete
   stored message may apply it when the destination guards can inspect all prior text.
   While the prefix set is non-empty, the dashboard's per-delta redaction of the text
-  it accumulates for that stored message leaves pass 4 to the whole-segment run
-  (`redact_credentials(..., defer_token_param=True)`), so a delta cut inside the
-  link cannot redact a value the whole text would exempt; every other pass still
-  runs per delta, and the live wire window still redacts the value.
+  it accumulates for that stored message leaves the `token` parameter row to the
+  whole-segment run (`redact_credentials(..., defer_token_param=True)`), so a delta
+  cut inside the link cannot redact a value the whole text would exempt; the rule
+  table still runs per delta, and the live wire window still redacts the value.
   For links the user must open whose token is a lookup key, e.g. a one-time
-  approval workflow. Read lazily on the first pass-4 match via
+  approval workflow. Read lazily on the first token-parameter match via
   `installed_context()` (declared in `PEEK_CALLERS`) with the same degrade
   contract as `exempt_exact_hosts`: no context, a pre-method adapter, an
   exception or a member without a path all mean MORE redaction. The display
   redaction memo reads the prefix set once per render and hands that one snapshot
-  to its key and to pass 4 (`redact_credentials(..., token_param_prefixes=...)`,
-  the nested scan of a diagram's source included), so a cached entry is always
+  to its key and to the `token` parameter row
+  (`redact_credentials(..., token_param_prefixes=...)`), so a cached entry is always
   judged under the set its key names. Public default:
   `frozenset()`; never sourced from `config.json`.
   The set is read via `installed_context()`, so a process with no installed
@@ -1391,7 +1381,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   (structured entries — the manager parses its own output; the core keeps no
   text grammar; **`list_skills()` containment invariant:** every skill row MUST
   live under an `McpToolingProvider.extra_skills()` root, because the skill
-  browser (`/api/skills/package/<name>/tree` + detail) resolves paths by
+  browser (`/api/skills/<name>/-/tree` + detail) resolves paths by
   searching those roots — a row outside them lists but 404s on tree/detail, so an
   edition satisfying both Protocols MUST keep them consistent; the core enforces
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed
@@ -1407,9 +1397,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `package/<name>` request prefers `<root>/<name>/SKILL.md` over a nested
   `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
   it resolves to `None` — HTTP 404, with the competing candidates logged — rather
-  than picking one, because the key cannot express which was meant (paths that
-  merely symlink to the same file are not a tie). An edition that wants both of
-  two same-named skills reachable MUST therefore key them distinguishably);
+  than picking one (paths that merely symlink to the same file are not a tie).
+  **Each copy stays addressable by a qualified key:** `package/<qualifier>:<rel>`,
+  where `<qualifier>` (`package_root_qualifier`) is 16 lowercase hex of a blake2b
+  digest of the resolved package root, so a symlink alias of a root shares its
+  qualifier, and the resolver searches only the root it names
+  (`split_package_key` accepts that exact shape only, so a directory whose own
+  name holds `:` still resolves unqualified). The catalog walks each package
+  root on its own and `fold_package_keys` qualifies only a relative path that two
+  distinct files claim; every other key stays `package/<rel>`. `/api/skills`
+  rekeys each package row that shares its key with a different file to the
+  catalog's key for that file (`_qualify_colliding_package_rows`), so an edition
+  need not key same-named skills apart. The bare key two distinct files claim
+  still resolves to `None` and 404s on detail. The `$` picker and a skills-only
+  hook's directive both emit the qualifier-free leaf, because the `$` token
+  grammar stops at `:`);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`
@@ -1619,9 +1621,8 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   print (`terminal_issue_url`, `prefill=False`). `None` (the Default) keeps the
   public pre-filled GitHub link byte-for-byte; a string REPLACES it. `prefill`
   names the surface: the dashboard renders the URL from a JSON field no redactor
-  scans, while a terminal print crosses `redact_exfiltration_urls`, which
-  replaces any URL whose query is 200 characters or longer, so an edition keeps
-  that variant's query short. Read through `safe_context_call` (fallback `None`):
+  scans, while a terminal print crosses `redact_exfiltration_urls`, which masks
+  the credential values inside a URL and leaves the rest of it as written. Read through `safe_context_call` (fallback `None`):
   diagnostics catches `PlatformCompositionError`, logs a warning and returns an
   empty issue link while keeping the bundle usable, without a standalone fallback.
   `kirocrew doctor --bundle` prints the bundle path and explains why the link is
@@ -1687,7 +1688,12 @@ representative rather than exhaustive.
   exact entry another tool injects into every agent spec, so the knowledge spec
   repair leaves a file carrying only that injection alone and its view is built from
   the template. A filter's answer counts only when its output equals the template
-  exactly, and the view is the template, so a filter grants nothing. The public core
+  exactly, and the view is the template, so a filter grants nothing. The same filters
+  let the dashboard-author installer confirm a file as its own when the filtered spec
+  reproduces the recorded ownership digest, so the rebuild still rewrites it from
+  the template. Every managed writer of that spec records its digest over the
+  filtered spec (`worker_agent.dashboard_author_ownership_digest`), so an injected
+  identifier that changes per launch never enters the record. The public core
   registers none.
 - `config.overlay_owners.register_overlay_owner(key_path, owner)`: claims a
   `config.local.json` key the edition enforces, such as an `auto_update` value it
@@ -1759,8 +1765,8 @@ representative rather than exhaustive.
     default `slack/renderer.py::SlackRenderer.on_done` (the `handle_message_transport`
     path that normal non-review traffic uses — `SlackRenderer` takes a `user_id`
     kwarg for it). Decorator-introduced text is re-scanned (`redact_exfiltration_urls`
-    + `redact_credentials`) on both paths so a decorator cannot smuggle a URL/
-    credential past redaction; the native path logs only the redaction COUNT
+    + `redact_credentials`) on both paths so a decorator cannot smuggle a credential, inside a URL or
+    not, past redaction; the native path logs only the redaction COUNT
     (never the warning strings, which embed a truncated credential prefix).
 
   Interceptor ordering + dedup + audit (security-critical, all in `_route_message`):

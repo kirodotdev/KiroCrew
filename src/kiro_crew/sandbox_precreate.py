@@ -47,6 +47,12 @@ from kiro_crew.sandbox_leaves import (
 #:      for both, so nothing is opted out (criterion 2 is argued at its entry);
 #:    * ``decisions_consent.json`` — ``decisions.consent.load_state`` reads ``{}``
 #:      as NOT CONSENTED, which is what an absent keystone means;
+#:    * ``memory_provider_consent.json`` — ``memory_provider.consent.read_grants``
+#:      reads ``{}`` as no grant, so every remote provider still asks for consent;
+#:    * ``memory_provider_migrations`` — an empty directory holds no move job, so
+#:      there is nothing to resume or roll back;
+#:    * ``memory_provider_bench`` — an empty directory holds no run or eval set, so
+#:      there is nothing to resume or clean up;
 #:    * ``shared_crew_preview.json`` — ``shared_crew.preview.read_stored`` reads
 #:      ``{}`` as OFF, which is what an absent keystone means;
 #:    * ``settings_seeds.json`` — ``acp.seed_provenance._load`` finds no ``seeds``
@@ -64,12 +70,12 @@ from kiro_crew.sandbox_leaves import (
 #:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
 #:    or unlinked. A writer that rewrites in place (``atomic_write.rewrite_in_place``:
 #:    ``decisions_consent.json``, ``shared_crew_preview.json``,
-#:    ``credential_redaction.json``) keeps the inode, so its reader then sees the
-#:    owner's record under the seal; one that publishes by rename detaches the seal
-#:    in a running sandbox until it respawns (the ``config.json`` residual in
-#:    ``security.md``). The empty ``profiles`` dir is exempt from the concern
-#:    entirely: a directory bind shows live contents, so a profile added later is
-#:    visible.
+#:    ``credential_redaction.json``, ``mcp_body_fields.json``) keeps the inode, so
+#:    its reader then sees the owner's record under the seal; one that publishes by
+#:    rename detaches the seal in a running sandbox until it respawns (the
+#:    ``config.json`` residual in ``security.md``). The empty ``profiles`` dir is
+#:    exempt from the concern entirely: a directory bind shows live contents, so a
+#:    profile added later is visible.
 #:
 #: DELIBERATELY EXCLUDED:
 #:
@@ -97,6 +103,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "subagents",
     "member-memory-bindings",
     "memory_stores",
+    # Memory move jobs and ledgers: absent, a sandbox could create the directory and
+    # seed a ledger that a rollback would then delete from.
+    "memory_provider_migrations",
+    # Benchmark runs and ledgers: absent, a sandbox could create the directory and seed
+    # a ledger whose stores a cleanup would then reset.
+    "memory_provider_bench",
     "profiles",
     # The crew webview template directory. A fence only fences an EXISTING path:
     # the Linux launcher skips the read-only mount for an absent target, so on a
@@ -376,6 +388,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
     "denied_commands.json",
     "decisions_consent.json",
+    # The owner's memory egress consent: absent until the first remote provider is
+    # chosen, and while absent a sandbox could create it holding a grant. Its writer
+    # rewrites in place, so a sandboxed reader sees the owner's record under the seal.
+    "memory_provider_consent.json",
     # The update armed for the next start: ``update_next_start.read`` answers an
     # absent, empty and unreadable record alike as nothing armed, so a pre-created
     # ``{}`` means what an absent file means (criterion 1); the writer publishes
@@ -418,13 +434,19 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # name is on ``_CREW_READONLY_LEAVES`` and ``_CREW_CHILD_WITHHELD_LEAVES``, so no
     # sandbox mode can write it.
     "project_hooks_consent.json",
-    # The credential-redaction switch: ``redaction_switch.read_state`` reads
-    # absent, empty and unreadable alike as ENABLED, so a pre-created ``{}``
+    # The credential-redaction setting: ``redaction_switch.read_state`` reads an
+    # absent record and an empty one alike as the default, so a pre-created ``{}``
     # means exactly what an absent file means (criterion 1); the writer
     # rewrites an existing record in place (``redaction_switch.set_enabled``),
     # so the read-only mount stays on the same inode and a sandboxed reader
     # sees the owner's choice, never a writable copy (criterion 2).
     "credential_redaction.json",
+    # The owner's MCP message-body fields: ``mcp_body_fields.owner_rows`` reads an
+    # absent, empty, ``{}`` and unreadable store alike as no rows (criterion 1); the
+    # writer rewrites it in place (``atomic_write.rewrite_in_place``), so the
+    # read-only mount stays on the same inode and a sandboxed reader sees the owner's
+    # rows, never a writable copy; a torn read reads as no rows (criterion 2).
+    "mcp_body_fields.json",
     "settings_seeds.json",
     # The operator's grants of ``owner`` trust to a hand-configured app registry.
     # Satisfies both criteria the way ``ssh_auth_sock_consent.json`` does:
@@ -551,6 +573,8 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # The self-update wheel staging directory, by the same rule: the engine first creates it
     # at an update, which can start while a sandbox is already running.
     _UPDATE_STAGING_LEAF,
+    # The first dashboard import may start after a sandbox; its mask needs a target now.
+    "import-staging",
     # ``crew-panels`` is the same requirement seen from the mirror side of the
     # ceilings above: a read-only ceiling is materialised so the SEAL can apply,
     # a hidden leaf so the MASK can. The skip lands precisely on a fresh install,
@@ -666,11 +690,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
 #: holds. This is the per-leaf argument the sibling-gap note above asks for: ``mount(2)``
 #: cannot mask an absent path and the ``sensitive_files`` loop guards on ``isfile``, so an
 #: ABSENT leaf gets NO mask, and a namespace that outlives the leaf's later creation reads
-#: the real bytes — the PAT among them. That was vacuous while nothing could create these
-#: files on a sandboxed host; the backend carve-out
-#: (:func:`app_backend_visible_targets`) makes creation possible, so the mask has to be
-#: made non-vacuous first. Each document is its reader's absent-equivalent, and the
-#: md-notebook backend is the only reader:
+#: the real bytes — the PAT among them. No spawn gets these names back now (the Notes
+#: state lives in its own declared ``data/state/``), and the stubs keep every mask
+#: non-vacuous for a host still holding the old layout. Each document is its reader's
+#: absent-equivalent, and ``md_notebook_state``'s moves are the only reader:
 #:
 #:   * ``vaults.json`` — ``_read_vaults_sync`` returns ``[]`` for absent (OSError) and
 #:     for ``[]`` alike;

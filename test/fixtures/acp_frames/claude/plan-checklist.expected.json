@@ -1,0 +1,67 @@
+[
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "plan",
+    "todo": {
+      "description": "",
+      "read_only": true,
+      "tasks": [
+        {
+          "completed": false,
+          "id": "1",
+          "text": "Running the test suite"
+        },
+        {
+          "completed": false,
+          "id": "2",
+          "text": "Fix the failing test"
+        },
+        {
+          "completed": false,
+          "id": "3",
+          "text": "Update the changelog"
+        }
+      ]
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "plan",
+    "todo": {
+      "description": "",
+      "read_only": true,
+      "tasks": [
+        {
+          "completed": true,
+          "id": "1",
+          "text": "Run the test suite"
+        },
+        {
+          "completed": false,
+          "id": "2",
+          "text": "Fixing the failing test"
+        },
+        {
+          "completed": false,
+          "id": "3",
+          "text": "Update the changelog"
+        }
+      ]
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "plan",
+    "todo": {
+      "description": "",
+      "read_only": true,
+      "tasks": []
+    }
+  }
+]

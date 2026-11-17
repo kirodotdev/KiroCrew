@@ -56,7 +56,6 @@ export interface BuiltinAppEntry {
  */
 export const BUILTIN_COMPONENT_REGISTRY: Record<string, BuiltinAppEntry> = {
   '/worlds': { component: lazy(() => import('../pages/WorldsPage')), appId: 'agent-worlds' },
-  '/channels': { component: lazy(() => import('../pages/ChannelPage')), appId: 'channels' },
   '/auto-improvement': { component: lazy(() => import('./auto-improvement/AutoImprovementPage')), appId: 'auto-improvement' },
   '/auto-research': { component: lazy(() => import('./auto-research/ResearchLabPage')), appId: 'auto-research' },
   '/aws-control': { component: lazy(() => import('./aws-control/AwsControlPage')), appId: 'aws-control' },

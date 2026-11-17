@@ -159,7 +159,7 @@ _TASK_WAIT_STATES: dict[str, str] = {
 #: than restated there -- two lists that happen to match are how one surface
 #: starts counting a state the other does not. Spelled in literals, because
 #: this module duck-types the store and never imports ``kiro_crew.taskq``
-#: (``test_dashboard_handlers_lazy_tasks.py`` pins that import graph);
+#: (``test_import_floor_claims.py`` pins that import graph);
 #: ``test_api_tasks.py`` pins the spelling against the ``taskq.model``
 #: constants. ``waiting_infra`` is here and not in ``_TASK_WAIT_STATES``: infra
 #: capacity is exactly what the row waits for.

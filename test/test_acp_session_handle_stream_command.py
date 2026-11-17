@@ -32,6 +32,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
     JsonRpcMessage,
 )
+from kiro_crew.testing.clock import ManualClock
 
 _REQ_ID = 7
 
@@ -354,12 +355,20 @@ async def test_no_response_terminates_at_timeout():
     command timeout with a terminal event — not drain for the chat-turn
     ceiling — and leave the handle reusable."""
     handle, _ = _make(respond=False)
-    start = time.monotonic()
+    # The dispatch loop runs to the deadline it is handed; record that budget.
+    budgets: list[float] = []
+    dispatch = handle._dispatch_events
+
+    def _recording_dispatch(req_id, timeout, **kwargs):
+        budgets.append(timeout)
+        assert timeout == 0.5, f"the command turn waits {timeout}s, not its 0.5s timeout"
+        return dispatch(req_id, timeout, **kwargs)
+
+    handle._dispatch_events = _recording_dispatch
     events = await _collect_with_timeout(handle, "/tools", timeout=0.5)
-    elapsed = time.monotonic() - start
     assert events[-1].kind == EVENT_COMPLETE
     assert events[-1].stop_reason == "timeout"
-    assert elapsed < 5.0
+    assert budgets == [0.5]
     assert handle._turn_done.is_set()
     assert handle.is_turn_active is False
 
@@ -378,6 +387,71 @@ def _failed_compaction(params: dict | None = None) -> JsonRpcMessage:
     )
 
 
+def _record_armed_parks(monkeypatch, handle: AcpSessionHandle) -> list[float | None]:
+    """Record the timeout of each queue read the dispatch loop starts on an EMPTY
+    queue while the post-failure budget is armed: each one parks until that
+    timeout. The ``asyncio.wait_for`` spy only records, so it may see every caller;
+    it keeps only the waits on a read this handle's queue started."""
+    parks: list[float | None] = []
+    armed_reads: list[object] = []
+    get = handle._queue.get
+
+    def _get():  # noqa: ANN202
+        read = get()
+        if handle._compaction_failed_at is not None and handle._queue.empty():
+            armed_reads.append(read)
+        return read
+
+    real_wait_for = asyncio.wait_for
+
+    def _recording_wait_for(aw, timeout=None, **kwargs):  # noqa: ANN001, ANN202
+        if any(aw is read for read in armed_reads):
+            parks.append(timeout)
+        return real_wait_for(aw, timeout, **kwargs)
+
+    handle._queue.get = _get  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "wait_for", _recording_wait_for)
+    return parks
+
+
+def _silent_queue_on_clock(monkeypatch, handle: AcpSessionHandle) -> ManualClock:
+    """Put the dispatch loop on a manual clock and make its empty-queue polls
+    instant: a read started on an EMPTY queue (``respond=False`` sends nothing
+    more) times out at once and advances the clock by the timeout the loop
+    handed it. The post-failure budget and the turn deadline are then counted in
+    polls, not host seconds. Install it BEFORE ``_record_armed_parks`` so that
+    spy still sees every park."""
+    from kiro_crew.acp import session_handle_dispatch
+
+    clock = ManualClock()
+    clock.install(monkeypatch, session_handle_dispatch)
+    empty_reads: list[object] = []
+    get = handle._queue.get
+
+    def _get():  # noqa: ANN202
+        read = get()
+        if handle._queue.empty():
+            empty_reads.append(read)
+        return read
+
+    real_wait_for = asyncio.wait_for
+
+    async def _silent_wait_for(aw, timeout=None, **kwargs):  # noqa: ANN001, ANN202
+        if any(aw is read for read in empty_reads):
+            aw.close()
+            clock.advance(timeout)
+            raise asyncio.TimeoutError
+        return await real_wait_for(aw, timeout, **kwargs)
+
+    handle._queue.get = _get  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "wait_for", _silent_wait_for)
+    return clock
+
+
+# The dispatch loop's queue poll; a fired budget is acted on within one poll.
+_QUEUE_POLL_CEILING_SECS = 5.0
+
+
 @pytest.mark.asyncio
 async def test_failed_compaction_then_no_response_ends_the_turn(monkeypatch):
     """kiro-cli reports compaction `failed` and then abandons the prompt: no
@@ -389,19 +463,33 @@ async def test_failed_compaction_then_no_response_ends_the_turn(monkeypatch):
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.2)
 
     handle, _rt = _make(respond=False, updates=[_failed_compaction()])
-    start = time.monotonic()
+    clock = _silent_queue_on_clock(monkeypatch, handle)
+    armed_parks = _record_armed_parks(monkeypatch, handle)
+    t0 = clock.monotonic()
     events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
-    elapsed = time.monotonic() - start
+    elapsed = clock.monotonic() - t0
 
     assert events[0].kind == EVENT_COMPACTION_STATUS
     assert events[0].text == "failed"
     assert events[-1].kind == EVENT_COMPLETE
-    assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED
-    # Proves the budget ended it, not the 30s turn deadline. The bound is loose
-    # because the check runs on the loop's own tick: the dispatch loop parks on
-    # the session queue for up to 5s, so a fired budget is acted on at the next
-    # wake, not the instant it expires.
-    assert elapsed < 10.0, f"turn ran too long ({elapsed:.2f}s) — the hang is back"
+    # Only the budget branch ends a turn COMPACTION_FAILED; the 30s turn
+    # deadline ends it "timeout".
+    assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED, (
+        f"the turn ended {events[-1].stop_reason!r} after {elapsed:.1f}s on the "
+        "dispatch clock, not at the post-failure budget"
+    )
+    # The budget is checked at the top of every loop pass, so once it is armed
+    # the loop parks on the empty queue at most once (the park whose timeout
+    # carries the clock past the 0.2s budget) before it ends the turn, and that
+    # park is the 5s queue poll, so the turn ends within one poll of its budget.
+    assert len(armed_parks) <= 1, (
+        f"the loop parked {len(armed_parks)} times on an empty queue after the "
+        "budget was armed, so the budget is not acted on at the next check"
+    )
+    assert all(t is not None and t <= _QUEUE_POLL_CEILING_SECS for t in armed_parks), (
+        f"the armed loop parked for {armed_parks!r}, past the "
+        f"{_QUEUE_POLL_CEILING_SECS}s queue poll that bounds acting on the budget"
+    )
     assert handle._turn_done.is_set()
     assert handle.is_turn_active is False
 
@@ -457,6 +545,8 @@ async def test_failed_compaction_notice_carries_the_reason(monkeypatch):
         respond=False,
         updates=[_failed_compaction({"status": {"type": "failed", "reason": "history too long"}})],
     )
+    # Silent polls on a manual clock: the turn ends in polls, not a real 5s park.
+    _silent_queue_on_clock(monkeypatch, handle)
     events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
 
     assert events[0].title == "history too long"
@@ -488,16 +578,19 @@ async def test_co_tenant_fanout_frames_do_not_defer_the_budget(monkeypatch):
 
     feeder = asyncio.create_task(_co_tenant_chatter())
     try:
-        start = time.monotonic()
         events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
-        elapsed = time.monotonic() - start
     finally:
         stop_feeding.set()
         await feeder
 
     assert events[-1].kind == EVENT_COMPLETE
-    assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED
-    assert elapsed < 10.0, f"turn ran {elapsed:.2f}s — co-tenant fanout frames deferred the budget"
+    # The chatter runs until the turn ends, so frames that deferred the budget
+    # would defer it to the 30s turn deadline, which ends the turn "timeout".
+    # Only the budget branch ends it COMPACTION_FAILED.
+    stop = events[-1].stop_reason
+    assert (
+        stop == STOP_REASON_COMPACTION_FAILED
+    ), f"the turn ended {stop!r}: co-tenant fanout frames deferred the budget"
 
 
 @pytest.mark.asyncio
@@ -548,6 +641,8 @@ async def test_ownerless_completion_does_not_disarm_the_budget(monkeypatch):
     # This session's own failure arms the budget; the peer's completion must not
     # clear it.
     handle, _rt = _make(respond=False, updates=[_failed_compaction(), peer_ok])
+    # Silent polls on a manual clock: the budget fires in polls, not host seconds.
+    _silent_queue_on_clock(monkeypatch, handle)
 
     events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
 

@@ -102,6 +102,31 @@ def set_build_info(info: tuple[str, str]) -> None:
     _build_info = info
 
 
+def _share_tree_root(state: Any, session_key: str) -> str:
+    """The session key of *session_key*'s tree root, over this gateway's live slots.
+
+    The provider hands a session key (``dashboard:chat-...``) while the slots, the
+    creator edges and the persisted lineage are all keyed by slot name, so the key
+    is folded to its slot name before the walk and the root slot is mapped back to
+    the session key its turns run on (the member record is read by that key). No I/O.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.chat_utils_slots import _history_key_for, effective_session_key
+    from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
+
+    slot_key = _slot_directory._normalize_slot_key(session_key)
+    root = crew_mode.share_tree_root(
+        state._slots,
+        slot_key,
+        _frame_parents(state),
+        settled=crew_mode.lineage_is_settled(),
+    )
+    if root == slot_key:
+        return session_key
+    root_slot = state._slots.get(root)
+    return effective_session_key(root_slot) if root_slot is not None else _history_key_for(root)
+
+
 # ── Constants ──
 
 
@@ -109,6 +134,42 @@ _DEFAULT_PORT = DASHBOARD_PORT
 
 
 _SSE_INTERVAL_SECS = 5
+
+
+def _while_alive(owner: Any, call: Callable[..., Any], gone: Callable[..., Any]):
+    """A hook for a process-global seam that does not keep *owner* alive.
+
+    ``DashboardState`` wires a few module globals that live for the process
+    (``set_share_tree_reader``, ``set_parent_project_resolver``,
+    ``impl_llm.set_runner_factory``). A closure over the state there pins the state, and
+    everything it holds, until the next state replaces it. The gateway keeps its state for
+    the process, so this answers exactly as before; once *owner* is gone the hook returns
+    ``gone(*args)``, which each call site chooses to equal that seam's "not wired" answer.
+    An *owner* that cannot be weakly referenced is held strongly, as it always was.
+    """
+    try:
+        ref = weakref.ref(owner)
+    except TypeError:
+        return lambda *args: call(owner, *args)
+
+    def hook(*args: Any) -> Any:
+        live = ref()
+        return gone(*args) if live is None else call(live, *args)
+
+    return hook
+
+
+def _no_runner_after_close(model: str) -> Callable[[str], Any]:
+    """The decisions runner once its session manager is gone: every ask raises.
+
+    The lane treats a raising ``ask`` as a provider failure and fires the tick ungated,
+    which is what it does with no runner registered at all.
+    """
+
+    async def runner(_prompt: str) -> str:
+        raise RuntimeError(f"decisions runner for {model!r}: the session manager is gone")
+
+    return runner
 
 
 class DashboardState:
@@ -322,7 +383,11 @@ class DashboardState:
             from kiro_crew.decisions import impl_llm
 
             impl_llm.set_runner_factory(
-                lambda model: impl_llm.build_session_runner(sessions, model=model)
+                _while_alive(
+                    sessions,
+                    lambda live, model: impl_llm.build_session_runner(live, model=model),
+                    _no_runner_after_close,
+                )
             )
         except Exception:
             logger.debug("decisions: LLM lane runner not registered", exc_info=True)
@@ -977,13 +1042,19 @@ class DashboardState:
             from kiro_crew.dashboard.handlers._shared import session_project_for_spawn_gate
             from kiro_crew.subagent import set_parent_project_resolver
 
-            set_parent_project_resolver(lambda key: session_project_for_spawn_gate(self, key))
+            set_parent_project_resolver(
+                _while_alive(self, session_project_for_spawn_gate, lambda _key: ())
+            )
             # A child's prompt carries the folder steering its parent receives.
             from kiro_crew.dashboard.handlers._shared import session_folder_steering_dirs
 
             self.subagents._parent_steering_dirs = lambda key: session_folder_steering_dirs(
                 self, key
             )
+        # Chat runtime sharing places a chat only inside its own session tree.
+        from kiro_crew.agent_sdk.chat_runtime_sharing import set_share_tree_reader
+
+        set_share_tree_reader(_while_alive(self, _share_tree_root, lambda _key: ""))
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)
@@ -1324,6 +1395,7 @@ class DashboardState:
     _slot_links = _slots_frame._slot_links
     serialize_slot = _slots_frame.serialize_slot
     serialize_slots = _slots_frame.serialize_slots
+    serialize_slots_yielding = _slots_frame.serialize_slots_yielding
     serialize_slot_views = _slots_frame.serialize_slot_views
     _reproject_slots = _slots_frame._reproject_slots
     _drop_orphaned_mcp_report = _slots_frame._drop_orphaned_mcp_report

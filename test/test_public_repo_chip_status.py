@@ -246,7 +246,7 @@ async def test_refresh_keeps_prior_known_value_on_failure(monkeypatch):
 
 
 def test_stale_public_entry_reads_as_unknown(monkeypatch):
-    # GPT-blocked hole: a repo cached public must NOT authorize status forever.
+    # A repo cached public must NOT authorize status forever.
     # An entry older than the TTL reads as None (fail closed) even if its stored
     # value is True.
     ref = source.parse_source_url(PR_URL)

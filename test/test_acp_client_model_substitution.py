@@ -259,8 +259,7 @@ class TestSubstitutionFollow:
 
     @pytest.mark.asyncio
     async def test_adopts_substitute_and_reissues(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = "global.anthropic.claude-opus-4-8[1m]"
         # Avoid touching the real filesystem seeding.
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
@@ -432,8 +431,7 @@ class TestSubstitutionFollow:
 
     @pytest.mark.asyncio
     async def test_happy_path_no_retry(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = "global.anthropic.claude-sonnet-4-6[1m]"
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
@@ -477,8 +475,7 @@ class TestSubstitutionFollow:
         ],
     )
     async def test_terminal_advisory_is_not_retried(self, tmp_path, model, substitute):
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = model
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
@@ -515,8 +512,7 @@ class TestSubstitutionWrappersAndRedaction:
         next handshake step crash on the opaque "Cannot set config option before
         session is initialized" guard.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
 
@@ -545,8 +541,7 @@ class TestSubstitutionWrappersAndRedaction:
         (no substitution happened), the AcpError text MUST NOT include the
         "even after adopting substitute model" clause.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         client._model = "global.anthropic.claude-opus-4-8[1m]"
@@ -576,8 +571,7 @@ class TestSubstitutionWrappersAndRedaction:
         the AcpError text MUST include the "even after adopting substitute
         model {...}" clause.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         client._model = "global.anthropic.claude-opus-4-8[1m]"
@@ -611,17 +605,13 @@ class TestSubstitutionWrappersAndRedaction:
         contains a URL-shaped token and asserts the emitted log payload was
         redacted.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = "global.anthropic.claude-opus-4-8[1m]"
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
-        # Inject a substitute that embeds an AWS access-key-shaped substring
-        # so the dual redactor heuristic actually fires (redact_exfiltration_urls
-        # matches the URL because the query carries an AKIA token, and
-        # redact_credentials matches the standalone AKIA pattern). A bare
-        # arbitrary URL is too tame for the heuristic and would leave the test
-        # asserting on a no-op pass-through.
+        # Inject a substitute whose URL carries a ``token=`` value, which the
+        # credential plan masks. A bare arbitrary URL holds no credential and
+        # would leave the test asserting on a no-op pass-through.
         url_shaped = "http://attacker.example.com/exfil?token=AKIAIOSFODNN7EXAMPLE"
 
         sent: list[str] = []
@@ -654,19 +644,14 @@ class TestSubstitutionWrappersAndRedaction:
         assert adopt_calls, "expected an 'adopting gateway-served model' warning"
         # The redacted payload is the second positional argument.
         emitted = adopt_calls[0].args[1]
-        # The credential MUST be gone. The URL MUST be replaced with the
-        # redactor diagnostic marker. The redactor preserves the host name
-        # inside "[REDACTED: suspicious URL to <host>]" so operators can
-        # investigate the leak source -- that is BY DESIGN, not a bypass.
+        # The token value MUST be gone. A URL is never replaced whole: the scheme,
+        # host and path stay, so operators can investigate the leak source.
         assert (
             "AKIAIOSFODNN7EXAMPLE" not in emitted
-        ), "AWS access-key substring MUST be redacted before logging"
+        ), "the token value MUST be redacted before logging"
         assert (
-            "REDACTED" in emitted
-        ), "the redactor marker MUST appear, proving the URL was rewritten"
-        assert (
-            "http://attacker.example.com/exfil?token=" not in emitted
-        ), "the bare exfil URL MUST NOT be emitted verbatim"
+            "http://attacker.example.com/exfil?token=[REDACTED: credential]" in emitted
+        ), "only the token value is rewritten"
 
     @pytest.mark.asyncio
     async def test_initialize_session_redacts_model_in_info_log(self, tmp_path):
@@ -675,12 +660,10 @@ class TestSubstitutionWrappersAndRedaction:
         the happy path with a URL-shaped self._model and confirm the emitted
         info log does not leak it.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
-        # AWS access-key-shaped substring guarantees both redactors fire (URL
-        # query matches _EXFIL_PATTERNS; standalone key matches _CREDENTIAL_PATTERNS).
+        # A ``token=`` value in the URL, which the credential plan masks.
         client._model = "http://attacker.example.com/m?token=AKIAIOSFODNN7EXAMPLE"
 
         async def _send(method, params):
@@ -699,7 +682,7 @@ class TestSubstitutionWrappersAndRedaction:
         client._capture_available_models = MagicMock()  # type: ignore[assignment]
         client._store_session_config = MagicMock()  # type: ignore[assignment]
 
-        async def _drain():
+        async def _drain(**_kwargs):
             return None
 
         client._drain_notifications = _drain  # type: ignore[assignment]
@@ -716,17 +699,13 @@ class TestSubstitutionWrappersAndRedaction:
         # Format: logger.info("ACP session created: %s (model=%s)", sid, model_log)
         # The third positional arg is the redacted model.
         emitted_model = info_calls[0].args[2]
-        # See sibling test for the design note: redactor keeps the host as a
-        # diagnostic label inside "[REDACTED: suspicious URL to <host>]".
+        # See sibling test: only the token value is replaced, the URL stays.
         assert (
             "AKIAIOSFODNN7EXAMPLE" not in emitted_model
-        ), "AWS access-key substring MUST be redacted before logging"
+        ), "the token value MUST be redacted before logging"
         assert (
-            "REDACTED" in emitted_model
-        ), "the redactor marker MUST appear, proving the URL was rewritten"
-        assert (
-            "http://attacker.example.com/m?token=" not in emitted_model
-        ), "the bare exfil URL MUST NOT be emitted verbatim"
+            "http://attacker.example.com/m?token=[REDACTED: credential]" in emitted_model
+        ), "only the token value is rewritten"
 
     @pytest.mark.asyncio
     async def test_initialize_session_acperror_redacts_substitute_model(self, tmp_path):
@@ -736,8 +715,7 @@ class TestSubstitutionWrappersAndRedaction:
         via the same path as the logger sinks, so the redaction discipline
         applies to exception messages too -- not just logger.* calls.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         client._model = "global.anthropic.claude-opus-4-8[1m]"

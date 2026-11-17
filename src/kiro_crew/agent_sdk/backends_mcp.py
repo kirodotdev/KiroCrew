@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -60,22 +61,18 @@ from kiro_crew.agent_sdk.backends import (
 #: spec belongs here, and the next such harness should join the set rather than
 #: add a second branch at the call site (harness-parity H6).
 #
-# opencode is the third member, and it is here because the reason it was EXCLUDED
-# was wrong rather than because anything about the harness changed. That reason read
-# its ``initialize`` result -- ``mcpCapabilities: {"http": true, "sse": true}`` --
-# as an advertisement carrying "no stdio", and concluded the array could not mount
-# the stdio servers Crew puts in it. ACP's ``McpCapabilities`` schema has exactly
-# two boolean fields, ``http`` and ``sse``, and NO stdio field, so a conforming
-# agent cannot advertise stdio at all and that answer is what full support looks
-# like. Absence of a flag that cannot exist is not evidence. Measured on
-# opencode 1.18.30, the element ``acp.session_mcp.acp_server_element`` already
-# emits is accepted, the named child is spawned, its tools are listed and the
-# element's ``env`` reaches it -- so the excluded harness had in fact been serving
-# sessions with none of Crew's own tools for no reason at all. The exclusion also
-# contradicted the shipped code it sat beside: the shared gateway's broker stubs
-# are stdio elements too (``mcp_gateway.session_servers._acp_server_entry``) and
-# ``_pooled_mcp_servers`` appended them to this very array for opencode whenever
-# pooling was on. See ``providers/mirrors/opencode.py``.
+# opencode is the third member. Its ``initialize`` result --
+# ``mcpCapabilities: {"http": true, "sse": true}`` -- does not mean "no stdio": ACP's
+# ``McpCapabilities`` schema has exactly two boolean fields, ``http`` and ``sse``, and
+# NO stdio field, so a conforming agent cannot advertise stdio at all and that answer
+# is what full support looks like. Measured on opencode 1.18.30, the element
+# ``acp.session_mcp.acp_server_element`` emits is accepted, the named child is
+# spawned, its tools are listed and the element's ``env`` reaches it. The shared
+# gateway's broker stubs are stdio elements too
+# (``mcp_gateway.session_servers._acp_server_entry``), and ``_pooled_mcp_servers``
+# appends them to this array for opencode when pooling is on. See
+# ``providers/mirrors/opencode.py``.
+#
 # Pi is a member, and it is the one member whose array is NOT what mounts the
 # servers. ``pi-acp`` accepts the array on ``session/new``, stores it on its session
 # state, and never hands it to the ``pi`` process (its own documentation lists MCP
@@ -165,6 +162,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -334,7 +332,12 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 #: (``tool/memory.ts``, ``tool/history.ts``, ``tool/task.ts`` hold no ``ctx.ask``). Its
 #: ``mimo debug agent build`` lists all three on the xiaomi model, and no switch
 #: removes them.
-ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_MIMOCODE})
+#:
+#: antigravity: under the ``default`` mode Crew writes, 1.4.4 runs its file reads
+#: without a permission request
+#: (``test/fixtures/acp_frames/antigravity/turn-live-tools.jsonl``), and no mode
+#: makes them ask.
+ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_MIMOCODE})
 
 
 # Backends on which an agent spec's ``"tools": []`` is honoured as a total ban --
@@ -432,6 +435,14 @@ ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_MIMOCODE})
 # calls stay live under ``"tools": []``. mimocode is excluded on this ground: it is
 # mirrored, enforced and served by ``AcpClient``, but its ``memory``, ``history``
 # and ``task`` tools never ask.
+#
+# antigravity is NOT a member although its routing is enforced and it is
+# ``AcpClient``-served: on a signed-in 1.4.4 turn its file reads completed without
+# reaching ``session/request_permission``
+# (``test/fixtures/acp_frames/antigravity/turn-live-tools.jsonl``), so a refusal at
+# the permission request never meets them: the fourth fact, as a member of
+# ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``. The knowledge/research pool therefore
+# does not select it as a zero-tool-safe worker.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = (
     frozenset(
         {
@@ -483,7 +494,8 @@ ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 # on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
 # server on ``_meta.claudeCode.mcpServer``), goose
 # ``acp_frames/goose/crew-oauth-bridge-args-live.jsonl``, deepseek
-# ``acp_frames/deepseek/crew-oauth-bridge-args-live.jsonl``; replayed into an approval by
+# ``acp_frames/deepseek/crew-oauth-bridge-args-live.jsonl``; the claude, goose and
+# deepseek frames are replayed into an approval by
 # ``test/test_crew_oauth_bridge_harnesses.py``.
 # codex: ``rawInput`` is ``{server, tool, arguments}`` and ``arguments`` is what the
 # server's ``tools/call`` carried, ``acp_frames/codex/crew-oauth-bridge-args-live.jsonl``;
@@ -522,10 +534,29 @@ ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset(
 # that does not exist starts the session, logs "MCP server connection failed ...
 # failed to spawn MCP server process" and nothing reaches the wire -- so its launch
 # file is built from the pruned elements and the wire array is pruned the same way,
-# which is what names the server on the session's MCP report.
+# which is what names the server on the session's MCP report. antigravity drops it
+# the same way -- measured on Antigravity ACP 1.4.4 on Linux with an invalid API key:
+# a ``session/new`` whose array names a command that does not exist still creates
+# the session, and neither the wire nor the server's stderr names the server.
 ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset(
-    {ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_COPILOT}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
+    }
 )
+
+# Backends that send no MCP init frame over ACP: no server-initialized, init-failure
+# or sign-in notification follows ``session/new``. claude-agent-acp is one: Claude
+# Code connects the session's servers inside its own process and waits for them in
+# the first prompt, and a server that needs sign-in is offered as a URL elicitation,
+# a request the turn reader answers. So the drain after ``session/new`` has nothing
+# to wait for on these backends: it folds what was buffered while the start's own
+# requests were answered and ends, instead of idling ``_DRAIN_IDLE_EXIT`` (0.5 s) on
+# a quiet pipe before every new chat's first prompt. A frame that arrives later is
+# not lost: the idle reader holds it and the first turn's reader reads it.
+ACP_BACKENDS_NO_MCP_INIT_FRAMES = frozenset({ACP_BACKEND_CLAUDE})
 
 # Backends that read reasoning effort from the workspace ``cli.json`` overlay
 # (``chat.modelDefaults.<model>.<key>.effort``) at spawn. Only kiro-cli's Rust engine
@@ -654,6 +685,11 @@ ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
 # Disjoint from both sets above: the process does not watch a file and takes no
 # projection on a live session; the relaunch is the mechanism, with its own
 # failure mode (a load that falls back to a fresh session).
+#
+# antigravity is NOT a member: it takes its MCP servers on each ``session/new``
+# array (``ACP_BACKENDS_SESSION_MCP_ARRAY``) and reads none at launch, so a
+# relaunch has no launch-time config to change, and none was captured. Outside all
+# three sets, an MCP write resets its sessions.
 ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
 
 # Backends on which a per-template MCP addition reaches a session of a template

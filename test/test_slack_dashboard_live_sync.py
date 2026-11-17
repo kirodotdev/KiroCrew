@@ -132,8 +132,8 @@ class TestBTheWindowRefreshDeliversBothRoles:
         added = refresh_channel_window(slot, log.read_messages(SLACK_KEY), 200.0)
 
         assert added == 2
-        # Before the fix only the assistant row was pushed, so the tab showed a
-        # reply to a question that was not on screen.
+        # Both rows are pushed: pushing only the assistant row shows the tab a
+        # reply to a question that is not on screen.
         assert [(m["role"], m["content"]) for m in seen] == [
             ("user", "second question"),
             ("assistant", "second reply"),
@@ -284,8 +284,8 @@ class TestDTheQuestionIsRecordedBeforeTheAnswer:
         _drive_transport(log)
 
         assert seen_at_turn_start, "the turn never ran"
-        # Before the fix both rows were written together AFTER the turn, so the
-        # transcript was empty at this point and the tab had nothing to show.
+        # The user row is written BEFORE the turn: writing both rows after it
+        # leaves the transcript empty here, and the tab has nothing to show.
         assert [(m["role"], m["content"]) for m in seen_at_turn_start[0]] == [
             ("user", "the question")
         ]

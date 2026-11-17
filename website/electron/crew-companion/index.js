@@ -50,6 +50,7 @@ const {
   registerOverlayIpc,
   stopHitboxPoll,
 } = require("./petOverlay");
+const { seedHostDisplayMemory } = require("./displayHandOff");
 
 const APP_NAME = "crew-companion";
 
@@ -176,6 +177,8 @@ function noteCredential(present) {
  * it, in which case the CTA reports that it could not act rather than pretending.
  */
 let getDashboardWindow = null;
+// The macOS app show/focus hooks main.js passes for a user-intent show.
+let surfaceApp = {};
 
 /**
  * Ask the gateway whether the app is enabled.
@@ -184,7 +187,10 @@ let getDashboardWindow = null;
  * gateway has stopped accepting can be re-minted exactly once, instead of
  * either wedging the poll forever or going back to minting every tick.
  *
- * @returns {Promise<"enabled"|"disabled"|"unauthorized"|"unknown">}
+ * ``released`` means the row is no longer this built-in's (see below): the windows
+ * close as for ``disabled``, whatever the row's enabled flag says.
+ *
+ * @returns {Promise<"enabled"|"disabled"|"released"|"unauthorized"|"unknown">}
  */
 function probeEnabled(auth) {
   const { value, viaCookie } = auth || NO_AUTH;
@@ -220,6 +226,14 @@ function probeEnabled(auth) {
           // builtin, or a response shape we did not expect, must not be read as
           // an instruction to tear the windows down.
           if (!row) return resolve("unknown");
+          // A row the gateway no longer runs as this built-in (an adopted copy is a
+          // registry app) is drawn by the desktop window host from that app's own
+          // manifest, so these windows would be a second avatar and a second
+          // notification owner. A row without `origin` predates the field and is
+          // the built-in's, as before.
+          if (typeof row.origin === "string" && row.origin !== "builtin") {
+            return resolve("released");
+          }
           resolve(row.enabled ? "enabled" : "disabled");
         } catch {
           resolve("unknown");
@@ -250,7 +264,9 @@ function hostsDashboard(wc, base = backendUrl) {
  * @returns {boolean} true when the dashboard was surfaced and can show it.
  */
 function openDashboardSession(slotKey) {
-  return sharedOpenDashboardSession(getDashboardWindow && getDashboardWindow(), backendUrl, slotKey);
+  return sharedOpenDashboardSession(
+    getDashboardWindow && getDashboardWindow(), backendUrl, slotKey, surfaceApp,
+  );
 }
 
 async function reconcileOnce() {
@@ -289,12 +305,14 @@ async function reconcileOnce() {
     // resume here and reopen the overlay we just closed for the update quit.
     if (suspended) return;
     if (state === "unknown") return; // leave every window exactly as it is
-    if (state === "disabled") {
+    if (state === "disabled" || state === "released") {
       if (petWindowCount() > 0) {
         closePanelWindow();
         closeGalleryWindow();
         closePetWindow();
-        log("crew-companion: disabled — overlays closed");
+        log(state === "released"
+          ? "crew-companion: the app's own copy is installed; built-in overlays closed"
+          : "crew-companion: disabled, overlays closed");
       }
       return;
     }
@@ -338,6 +356,14 @@ function initCrewCompanion(deps) {
   reportedNoCredential = false;
   log = (deps && deps.glog) || (() => {});
   getDashboardWindow = (deps && deps.getDashboardWindow) || null;
+  surfaceApp = (deps && deps.surfaceApp) || {};
+  // Before main.js starts the window host, which reads its display memory once, on
+  // first use: the built-in avatar's display carries over to the app's own copy.
+  try {
+    seedHostDisplayMemory(deps && deps.userDataDir, deps && deps.displayMemoryPath);
+  } catch (error) {
+    log("crew-companion: display hand-off failed: " + (error && error.message));
+  }
   setOverlayLogger(log);
   setPanelLogger(log);
   setGalleryLogger(log);

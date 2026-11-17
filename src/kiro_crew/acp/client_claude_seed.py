@@ -1,20 +1,18 @@
-"""Author an ``AcpClient`` session's claude ``settings.local.json`` seed.
+"""Author a ``ClaudeAcpClient`` session's ``settings.local.json`` seed.
 
 Renders the permission payload and creates, adopts, re-seeds, shares or retracts the
 seed, each only while Crew can prove the file is its own.
 
-Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
+Each function here whose first parameter is ``self`` is a ``ClaudeAcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_claude_inline_settings``,
-``_claude_local_settings_excluded``, ``_claude_settings_authored``,
-``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_permission_surface_share_validated``,
-``claude_mode_pinned_notice``.
+Instance fields written: ``_claude_inline_settings``, ``_claude_local_settings_excluded``,
+``_claude_settings_authored``, ``_claude_settings_claim_unrevoked``,
+``_claude_settings_shared``, ``_claude_settings_written``,
+``_permission_surface_share_validated``, ``claude_mode_pinned_notice``.
 
-Instance fields read: ``_adopted_substitute_model``, ``_agent``, ``_model``,
-``_permission_mode``, ``_seed_owner``,
+Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
 ``_session_key``, ``_work_dir``.
 """
 
@@ -44,7 +42,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.security import is_sensitive_path
 
 if TYPE_CHECKING:
-    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.client import ClaudeAcpClient
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
@@ -90,7 +88,9 @@ def _claude_settings_usable(path: Path) -> bool:
     return not is_sensitive_path(str(real))
 
 
-def _share_settings_seed_if_identical(self: AcpClient, local_settings: Path, payload: str) -> bool:
+def _share_settings_seed_if_identical(
+    self: ClaudeAcpClient, local_settings: Path, payload: str
+) -> bool:
     """Take the shared-reader state when the existing seed IS this client's payload.
 
     The relaxation of the one-live-holder rule for the case where refusing
@@ -182,7 +182,7 @@ def _share_settings_seed_if_identical(self: AcpClient, local_settings: Path, pay
     return True
 
 
-def _share_sibling_settings_seed(self: AcpClient, local_settings: Path, payload: str) -> bool:
+def _share_sibling_settings_seed(self: ClaudeAcpClient, local_settings: Path, payload: str) -> bool:
     """Share a sibling's seed that governs this session and runs its model.
 
     Only the model half (``availableModels``, ``model``) may differ from
@@ -229,7 +229,7 @@ def _share_sibling_settings_seed(self: AcpClient, local_settings: Path, payload:
 
 
 def _retract_reseed(
-    self: AcpClient,
+    self: ClaudeAcpClient,
     local_settings: Path,
     payload: str,
     reseed_aside: "tuple[Path, tuple[int, int]]",
@@ -255,7 +255,7 @@ def _retract_reseed(
     self._restore_aside_without_clobber(reseed_aside[0], local_settings, reseed_aside[1])
 
 
-def _log_declined_share(self: AcpClient, local_settings: Path) -> None:
+def _log_declined_share(self: ClaudeAcpClient, local_settings: Path) -> None:
     """Log that an existing settings file was left authoritative."""
     logger.info(
         "%s already exists and %s; leaving it as it is. This "
@@ -266,7 +266,7 @@ def _log_declined_share(self: AcpClient, local_settings: Path) -> None:
     )
 
 
-def _render_claude_settings_payload(self: AcpClient) -> str:
+def _render_claude_settings_payload(self: ClaudeAcpClient) -> str:
     """The exact ``settings.local.json`` payload this session would write.
 
     Pure reads, no side effects on the path -- split out of
@@ -383,7 +383,7 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
-def _write_claude_local_settings(self: AcpClient) -> None:
+def _write_claude_local_settings(self: ClaudeAcpClient) -> None:
     """Seed ``<work_dir>/.claude/settings.local.json`` for this session.
 
     The highest-precedence project settings source the claude-agent-acp
@@ -973,7 +973,7 @@ def _write_claude_local_settings(self: AcpClient) -> None:
     self._invalidate_session_mcp_projection()
 
 
-async def _reseed_after_capture(self: AcpClient) -> None:
+async def _reseed_after_capture(self: ClaudeAcpClient) -> None:
     """Re-seed settings.local.json once the backend's model list is known.
 
     The spawn-time seed necessarily runs BEFORE ``session/new`` --
@@ -1014,7 +1014,7 @@ async def _reseed_after_capture(self: AcpClient) -> None:
         logger.warning("post-capture re-seed of settings.local.json failed", exc_info=True)
 
 
-async def _seed_session_settings(self: AcpClient) -> None:
+async def _seed_session_settings(self: ClaudeAcpClient) -> None:
     """Seed this session's settings file before its launch, off the loop.
 
     A seed that cannot be written costs model/permission fidelity, not the
@@ -1025,3 +1025,8 @@ async def _seed_session_settings(self: AcpClient) -> None:
         await asyncio.to_thread(self._write_claude_local_settings)
     except (OSError, ValueError, TypeError):
         logger.warning("initial seed of settings.local.json failed", exc_info=True)
+
+
+def _write_settings_seed(self: ClaudeAcpClient) -> None:
+    """Re-seed this session's ``settings.local.json`` (:meth:`_write_claude_local_settings`)."""
+    self._write_claude_local_settings()

@@ -172,11 +172,19 @@ def _create_browse_dir_sync(parent: str, name: str) -> tuple[str, str]:
     walked with ``O_NOFOLLOW`` (``pinned_fs.pin_parent``); on Windows a handle
     without delete sharing locks the chain against renames while ``mkdir`` runs,
     once its final path is confirmed to be *parent*. A swap is ``parent_changed``.
+
+    On Windows a trailing dot or space is dropped from *name* first, as Windows
+    itself drops it, so the path answered is the folder that exists (``taken.``
+    is the existing ``taken``: ``exists``). POSIX makes *name* exactly as sent.
     """
     try:
         base = os.path.realpath(os.path.expanduser(parent))
     except ValueError:  # a NUL byte or a lone surrogate in the path
         return "not_found", parent
+    if platform_compat.IS_WINDOWS:
+        name = name.rstrip(". ")
+        if not name:
+            return "invalid_name", base
     target = os.path.abspath(os.path.join(base, name))
     if os.path.normcase(os.path.dirname(target)) != os.path.normcase(base):
         return "invalid_name", target
@@ -236,7 +244,8 @@ async def api_browse_create_dir(request: web.Request) -> web.Response:
     ``{"path"}`` with the new folder's path so the picker can list it. Owner-only,
     checked before the body is read, like ``/api/file-write``: it writes to the
     gateway host's filesystem. *name* is one path component, so the route makes
-    exactly one folder level. Every refusal carries a ``code`` for the picker.
+    exactly one folder level. *parent* is used as sent, never trimmed. Every
+    refusal carries a ``code`` for the picker.
     """
     owner_denied = await require_owner_dashboard_request(request, "browse_create_dir")
     if owner_denied is not None:
@@ -256,7 +265,7 @@ async def api_browse_create_dir(request: web.Request) -> web.Response:
             {"error": "Not a valid folder name", "code": "invalid_name"}, status=400
         )
     try:
-        outcome, target = await _run_path_probe(_create_browse_dir_sync, parent.strip(), name)
+        outcome, target = await _run_path_probe(_create_browse_dir_sync, parent, name)
     except _PathProbeBusy:
         return _probe_busy_response(resource=parent, operation="browse_create_dir", caller=caller)
     if outcome == "created":

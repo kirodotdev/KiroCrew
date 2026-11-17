@@ -13,6 +13,14 @@ The frontend pack-author contract (the CSS-var surface and the
 [`website/docs/theming-contract.md`](../../../website/docs/theming-contract.md);
 where the two overlap, this spec governs.
 
+## Browser toolbar colour
+
+`useTheme` updates the existing `theme-color` meta tag from the resolved `--bg`
+token after theme changes, including installed-palette refreshes. It reads the
+target token rather than the body's in-progress colour transition. Before CSS
+supplies a token, the HTML boot colour remains in place. Browsers decide whether
+and where to use this hint; it does not change the page's colours.
+
 ## Capability Tiers
 
 `theme.json` MUST declare `"formatVersion": 1` (required integer major,

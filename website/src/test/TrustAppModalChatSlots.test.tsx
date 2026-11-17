@@ -45,6 +45,15 @@ describe('TrustAppModal chat slots disclosure', () => {
     expect(dialog.getByText(`${K}.capability_note`)).toBeTruthy()
   })
 
+  it('says the chats stay out of the session list when the app also hides them', () => {
+    const dialog = renderModal({ ...BASE, chatSlots: true, hiddenSessions: true })
+    expect(dialog.getByTestId('trust-hidden-sessions')).toBeTruthy()
+    expect(dialog.getByText(`${K}.hidden_sessions_heading`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.hidden_sessions_desc`)).toBeTruthy()
+    // Chats opened through ctx.chat_slots.open stay listed, so the main copy stays.
+    expect(dialog.getByText(`${K}.chat_slots_desc`)).toBeTruthy()
+  })
+
   it('shows no such box for an app that does not declare it', () => {
     const dialog = renderModal(BASE)
     expect(dialog.queryByTestId('trust-chat-slots')).toBeNull()
@@ -56,16 +65,16 @@ describe('trustGrants', () => {
   it('carries every disclosed grant, each flag only as a literal true', () => {
     expect(trustGrants({
       sessionApproval: true, memberThreads: true, workerAutoApprove: true, chatSlots: true,
-      reachableByUserSessions: ['read'],
+      hiddenSessions: true, reachableByUserSessions: ['read'], webhookSource: true,
     })).toEqual({
       sessionApproval: true, memberThreads: true, workerAutoApprove: true, chatSlots: true,
-      reachableByUserSessions: ['read'],
+      hiddenSessions: true, reachableByUserSessions: ['read'], webhookSource: true,
     })
     const loose = { chatSlots: 'true', workerAutoApprove: 1 } as never
     expect(trustGrants(loose)).toMatchObject({ chatSlots: false, workerAutoApprove: false })
     expect(trustGrants(undefined)).toEqual({
       sessionApproval: false, memberThreads: false, workerAutoApprove: false, chatSlots: false,
-      reachableByUserSessions: undefined,
+      hiddenSessions: false, reachableByUserSessions: undefined, webhookSource: false,
     })
   })
 })

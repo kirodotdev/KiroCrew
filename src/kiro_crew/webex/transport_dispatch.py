@@ -79,7 +79,7 @@ from kiro_crew.agent_switch_command import (
 )
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid, transcript_stem
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -178,12 +178,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many queued messages collapse into one drained turn. A burst answered as
-# one turn keeps the conversation coherent; past this the surplus is deferred in
-# order rather than dropped, so the combined prompt stays bounded. Same value as
-# the Telegram and Discord drains for the same reason — a single human will not
-# realistically burst past it mid-turn — rather than a third number for one
-# concept.
+# How many queued messages collapse into one drained turn, so a burst gets one
+# coherent answer. The surplus waits in order (never dropped), keeping the
+# combined prompt bounded. Same value as the Telegram and Discord drains: one
+# person will not burst past it mid-turn.
 _MAX_COLLAPSE = 50
 
 # Bound on an in-place compaction so a backend that streams text without ever
@@ -1297,7 +1295,10 @@ class WebexDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "Webex"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "Webex"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(self, inbound: "WebexInbound", session_key: str, provider: Any) -> None:

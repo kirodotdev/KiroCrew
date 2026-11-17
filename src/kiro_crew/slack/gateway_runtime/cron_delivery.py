@@ -182,9 +182,12 @@ async def _deliver_cron_agent_result(
                 if log is not None:
                     await asyncio.to_thread(log.update_metadata, session_key, {"cron_run": "tab"})
             except Exception:
+                from kiro_crew.terminal_safe import safe_terminal_line
+
+                # The name is agent-authored: one line, no controls, in the log.
                 logger.warning(
                     "Cron '%s': could not keep run transcript %s; no tab opened",
-                    job.name,
+                    safe_terminal_line(job.name),
                     session_key,
                     exc_info=True,
                 )

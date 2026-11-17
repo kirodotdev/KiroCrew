@@ -19,6 +19,7 @@ from kiro_crew import guide_catalog
 from kiro_crew.dashboard import guide_observe
 from kiro_crew.dashboard.guide_observe import ObservationHub, observation_hub_for
 from kiro_crew.dashboard.guide_runs import GuideError, GuideStore, guide_store_for
+from kiro_crew.ui_index_load import parse_index_text
 
 TARGET = "chat.older-sessions"
 TOGGLE = "chat.sessions-sidebar-toggle"
@@ -496,7 +497,7 @@ def test_an_auto_location_is_observed_through_its_stamped_site(
 ) -> None:
     import json
 
-    committed = json.loads(guide_catalog._UI_INDEX_PATH.read_text(encoding="utf-8"))
+    committed = parse_index_text(guide_catalog._UI_INDEX_PATH.read_text(encoding="utf-8"))
     lid, site = "auto:page.schedule:k.retry", "auto:page.schedule:SchedulePage:k.retry"
     plan = {
         "version": 2,

@@ -62,6 +62,23 @@ _TEXT_RE = re.compile(
     r'^(?P<name>(?!GATEWAY_NOTICE_)(?:TRANSIENT|GATEWAY)_[A-Z_]+_TEXT)\s*=\s*\(?\s*"(?P<text>[^"]+)"',
     re.MULTILINE,
 )
+# Every column-0 assignment of the same names, whatever its right-hand side. The
+# strict patterns above must parse each one; a constant written in a shape they
+# miss (an annotation, single quotes) would otherwise drop out of every check.
+_BACKEND_NAME_RE = re.compile(
+    r"^((?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+)\b\s*[:=]", re.MULTILINE
+)
+_TEXT_NAME_RE = re.compile(
+    r"^((?!GATEWAY_NOTICE_)(?:TRANSIENT|GATEWAY)_[A-Z_]+_TEXT)\b\s*[:=]", re.MULTILINE
+)
+
+
+def _assigned_names(pattern: re.Pattern[str]) -> set[str]:
+    return {
+        name
+        for path in (_CHAT_UTILS, _GATEWAY)
+        for name in pattern.findall(path.read_text(encoding="utf-8"))
+    }
 
 
 def _table(name: str) -> str:
@@ -188,7 +205,6 @@ def test_legacy_table_recognises_every_pre_token_wording() -> None:
         "EMPTY_TURN_NOTICE_AFTER_WORK",
     ):
         texts[name] = getattr(empty_turn_copy, name)
-    assert len(texts) == 13
     unmatched = [n for n, t in texts.items() if not any(p.match(t) for p in patterns)]
     assert (
         not unmatched
@@ -199,7 +215,7 @@ def test_fallback_texts_avoid_internal_vocabulary() -> None:
     # A person reading the English fallback is not told about "backends" or
     # "hiccups". Pins the wording class, not the copy.
     texts = _fallback_texts()
-    assert len(texts) == 16
+    assert texts, "no TRANSIENT_*_TEXT / GATEWAY_*_TEXT fallback constants found"
     for name, text in texts.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (name, text)
@@ -218,11 +234,64 @@ def _legacy_token(text: str) -> str | None:
     return None
 
 
-def test_token_tables_have_the_pinned_size() -> None:
-    # 6 transient-5xx tokens and 79 gateway tokens; a new row family moves both.
-    assert len(_backend_tokens()) == 85
-    assert len(_frontend_families()) == 85
-    assert len(_legacy_entries()) == 81
+def test_every_constant_and_legacy_row_is_parsed() -> None:
+    # The scans above are what every other check iterates, so a constant or row
+    # they fail to parse would be checked by nothing. Each is compared with a
+    # looser scan of the same source rather than with a stored total: a total is
+    # one line every PR that adds a family edits, and two such PRs merge into a
+    # tree neither tested (testing-conventions.md § Merge-safe ratchets and counts).
+    assert set(_backend_tokens()) == _assigned_names(_BACKEND_NAME_RE)
+    assert set(_fallback_texts()) == _assigned_names(_TEXT_NAME_RE)
+    legacy = _legacy_entries()
+    assert len(legacy) == len(
+        re.findall(r"\bre:\s*/", _table("LEGACY"))
+    ), "a LEGACY row whose pattern or token the parser cannot read"
+    assert {token for _, token in legacy} <= set(_frontend_families())
+
+
+#: Every literal-content append that writes one gateway token, as
+#: ``"<path under dashboard/> <token>"``, one line per site, so two branches adding
+#: sites add different lines. Pins that the AST scan below still finds each site:
+#: a scan that silently stops resolving one would leave its wording unchecked.
+_TOKENIZED_SITES = (
+    "chat_api/slot_lifecycle.py archive_failed_turn_cancelled",
+    "chat_turn/acp_recovery.py image_history_restarting",
+    "chat_turn/acp_recovery.py model_server_error_fallback",
+    "chat_turn/acp_recovery.py model_throttled_fallback",
+    "chat_turn/acp_recovery.py reasoning_mismatch_rebuilding",
+    "chat_turn/eager_spawn.py eager_spawn_stopped",
+    "chat_turn/model_fallback.py model_access_fallback",
+    "chat_turn/model_fallback.py model_unavailable",
+    "chat_turn/queue_cycle.py local_command_failed_before_start",
+    "chat_turn/queue_cycle.py turn_failed_before_start",
+    "chat_turn/queue_drain.py memory_preparing",
+    "chat_turn/queue_drain.py session_reset_continuing",
+    "chat_turn/segment_flush.py compaction_continuing",
+    "chat_turn/segment_flush.py refusal_fallback_same_model",
+    "chat_turn/segment_flush.py refusal_fallback_same_model",
+    "chat_turn/session_events.py agent_switch_blocked_channel",
+    "chat_turn/session_events.py agent_switch_blocked_crew_mode",
+    "chat_turn/session_events.py agent_switch_blocked_pinned",
+    "chat_turn/steer_queue.py queued_message_dropped",
+    "chat_turn/stop_recovery.py compaction_retrying",
+    "chat_turn/turn_admission.py channel_message_not_run",
+    "chat_turn/turn_admission.py code_channel_worktree_not_ready",
+    "chat_turn/turn_admission.py crew_name_undispatchable",
+    "chat_turn/turn_admission.py crew_name_undispatchable",
+    "chat_turn/turn_ending.py capacity_retries_spent",
+    "chat_turn/turn_ending.py capacity_retrying",
+    "chat_turn/turn_ending.py deferred_followup",
+    "chat_turn/turn_ending.py intent_without_action_auto_approve",
+    "chat_turn/turn_ending.py intent_without_action_continuing",
+    "chat_turn/turn_ending.py intent_without_action_spent",
+    "chat_turn/turn_ending.py read_only_stop_retrying",
+    "chat_turn/turn_ending.py tool_call_as_text",
+    "chat_turn/turn_ending.py tool_call_as_text_partial",
+    "chat_turn/turn_ending.py tool_call_leaked_at_compaction",
+    "chat_turn/turn_ending.py work_in_progress_ended",
+    "chat_turn/turn_entry.py remote_crew_read_only",
+    "chat_turn/turn_failures.py conversation_rejected_restarting",
+)
 
 
 def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:
@@ -275,7 +344,7 @@ def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:
             else:
                 continue
             sites.append(
-                (str(path.relative_to(_REPO)), node.lineno, getattr(gn, names.pop()), text)
+                (path.relative_to(_REPO).as_posix(), node.lineno, getattr(gn, names.pop()), text)
             )
     return sites
 
@@ -285,7 +354,13 @@ def test_every_tokenized_literal_site_is_recognised_by_its_legacy_pattern() -> N
     # English, so the frontend's LEGACY table must map each wording to the very
     # token the site writes today.
     sites = _tokenized_literal_sites()
-    assert len(sites) == 36
+    prefix = "src/kiro_crew/dashboard/"
+    found = sorted(f"{p.removeprefix(prefix)} {tok}" for p, _line, tok, _text in sites)
+    assert found == sorted(_TOKENIZED_SITES), (
+        "the tokenized literal sites changed; set _TOKENIZED_SITES to one line per site: "
+        f"added {sorted(set(found) - set(_TOKENIZED_SITES))}, "
+        f"gone {sorted(set(_TOKENIZED_SITES) - set(found))}"
+    )
     wrong = [
         (p, line, tok, _legacy_token(text))
         for p, line, tok, text in sites
@@ -350,7 +425,7 @@ def test_every_cancelled_replay_wording_has_its_own_token() -> None:
 def test_localized_copy_avoids_internal_vocabulary() -> None:
     catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
     copy = catalog["pages"]["chat"]["gatewayNotice"]
-    assert len(copy) == 95
+    assert copy, "pages.chat.gatewayNotice is empty in en.json"
     for key, text in copy.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (key, text)

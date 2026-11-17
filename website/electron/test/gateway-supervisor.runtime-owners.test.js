@@ -46,12 +46,15 @@ test("fetchRemoteToken runs one bounded ssh against the port's crew and parses i
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].file, "/usr/bin/ssh");
   assert.deepStrictEqual(
-    calls[0].args.slice(0, 6),
-    ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "myhost.example.com"],
-    "stdin closed, no prompt, and ssh's connect deadline inside the kill budget",
+    calls[0].args.slice(0, 8),
+    [
+      "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+      "-o", "ClearAllForwardings=yes", "myhost.example.com",
+    ],
+    "stdin closed, no prompt, connect deadline inside the kill budget, no config forwards",
   );
-  assert.strictEqual(calls[0].args.length, 7);
-  assert.match(calls[0].args[6], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
+  assert.strictEqual(calls[0].args.length, 9);
+  assert.match(calls[0].args[8], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
   assert.deepStrictEqual(calls[0].options, { timeout: 5000 }, "the SSH budget never drops below 5s");
   assert.ok(logs.includes("SSH token fetch: /usr/bin/ssh myhost.example.com for port 7000"));
 });
@@ -75,7 +78,7 @@ test("fetchRemoteToken defaults the SSH budget and the remote port to the tab's 
   assert.deepStrictEqual(await supervisor.fetchRemoteToken(7778), { token: "", error: null });
   assert.deepStrictEqual(calls[0].options, { timeout: 20000 });
   assert.ok(calls[0].args.includes("ConnectTimeout=18"));
-  assert.match(calls[0].args[6], /KIROCREW_PORT=7778/);
+  assert.match(calls[0].args[8], /KIROCREW_PORT=7778/);
 });
 
 function windowsCrewHarness(kernelRoot, execFileFn) {

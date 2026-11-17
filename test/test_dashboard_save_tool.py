@@ -687,14 +687,14 @@ async def test_artifact_update_refuses_a_surrogate_the_same_way(tmp_path):
 async def test_a_credential_shaped_field_name_is_refused_at_save(monkeypatch, store):
     """A name a redactor would mask is refused HERE, and nothing is written.
 
-    ``[a-z][a-z0-9_]{0,63}`` admits ``ghp_`` plus 36 characters, and the page refuses
+    ``[a-z][a-z0-9_]{0,63}`` admits ``npm_`` plus 36 characters, and the page refuses
     the whole read for such a name, so storing it would give a page that never renders.
     The premise is asserted on the real redactor, the rule both sides consult. The
     refusal names a POSITION, not the name, so the name never travels raw in logs.
     """
     from kiro_crew.platform import redact_via_context
 
-    token_name = "ghp_" + "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+    token_name = "npm_" + "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
     # The two halves of the premise, each asserted rather than assumed.
     assert redact_via_context(token_name) != token_name, "not credential-shaped here"
     assert redact_via_context("open_prs") == "open_prs", "control name is not redacted"
@@ -740,7 +740,8 @@ async def test_a_credential_shaped_theme_token_is_refused_too(monkeypatch, store
     """
     from kiro_crew.platform import redact_via_context
 
-    token_key = "--xoxb-" + "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+    # An OpenAI project key: a Slack token after the leading ``--`` is glued to a dash.
+    token_key = "--sk-proj-" + "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
     # The two halves of the premise, each asserted rather than assumed.
     assert redact_via_context(token_key) != token_key, "not credential-shaped here"
     assert redact_via_context("--accent") == "--accent", "control token is not redacted"

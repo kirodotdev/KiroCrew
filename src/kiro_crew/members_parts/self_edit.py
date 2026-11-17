@@ -65,9 +65,9 @@ class SelfUpdateError(ValueError):
 SelfUpdateError.__module__ = "kiro_crew.members"
 
 
-#: Kept as a name for the rename case: every rename refusal is a self-update
-#: refusal, and the codes (``not_a_crewmate``, ``name_taken``, ``invalid_name``,
-#: ``empty_name``) are unchanged.
+#: Alias for callers that catch rename failures: a rename refusal is a
+#: :class:`SelfUpdateError` with code ``not_a_crewmate``, ``name_taken``,
+#: ``invalid_name`` or ``empty_name``.
 SelfRenameError = SelfUpdateError
 
 

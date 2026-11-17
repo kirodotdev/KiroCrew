@@ -4,8 +4,10 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
+import { mergeReplyIntoDraft } from '../utils/chatDrafts'
+import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
 import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
@@ -28,7 +30,7 @@ import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSel
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
 import ConductorModeEffect from '../components/crew/ConductorModeEffect'
 import { crewModeRoot, crewRootOf, mateRootOf, runsCrewMode } from '../lib/crewMode'
-import { useCrewMode, useMateSessionsHidden } from '../hooks/usePreviewFlag'
+import { useCrewMode } from '../hooks/usePreviewFlag'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
 import { useTranscriptScrollRefs, useTranscriptPaging } from './chat/page/transcriptPaging'
@@ -62,7 +64,7 @@ import { useComposerTypingLock } from './chat/shared-crew/useComposerTypingLock'
 import { SessionPresence, usePresentOthers } from './chat/shared-crew/PresenceChips'
 import { useComposerEditWithTyping } from './chat/shared-crew/typingSignal'
 import ChatSidePanels from './chat/page/ChatSidePanels'
-import { slotBusySteer } from '../components/chat-input/busySend'
+import { busySteerFlag, slotBusySteer } from '../components/chat-input/busySend'
 import { useSessionAutomation } from './chat/page/sessionAutomation'
 import { useTranscriptJumps } from './chat/page/transcriptJumps'
 import { useTranscriptWidth } from './chat/TranscriptScrollShell'
@@ -410,11 +412,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const memorySwitchingRef = useRef(false) // Held true while a memory-mode switch runs (see usePanelLayout).
   // A conductor mode chat (a crew root or one of its workers, the same test the
   // side panel uses to put the Board first): only a person moves its focus.
-  const crewModePreview = useCrewMode()
+  const crewModeOffered = useCrewMode()
   const boardFirst = useAppSelector(st => {
     const row = activeSlot ? st.dashboard.slots.find(r => r.key === activeSlot) : undefined
     return crewModeRoot(row) || !!crewRootOf(row)
-  }) && crewModePreview
+  }) && crewModeOffered
   const resources = useChatPageResourcesController({
     boardFirst,
     activeSlot,
@@ -678,7 +680,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The side panel can hold on to the callback it was last rendered with for a
   // render after this page has moved on (it sits under AnimatePresence), so it
   // is handed a stable forwarder to the latest handler: a Submit right after
-  // Auto (Jev) consent arrives must carry the auto flag, not the steer the
+  // Auto (decision model) consent arrives must carry the auto flag, not the steer the
   // previous render would have sent.
   const { submitComments } = useStableCallbackProps({ submitComments: (message: string): false | Promise<boolean> => {
     // Defense-in-depth: the panels' submit buttons are gated on `connected`,
@@ -726,9 +728,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
   // ChatTitleOverlay shows the worker breadcrumb for a Crew worker and for a
-  // crewmate's session the mate sessions preview hides.
-  const mateSessionsHidden = useMateSessionsHidden()
-  const workerBreadcrumb = !!currentCrewRoot || (mateSessionsHidden && !!mateRootOf(currentSlot))
+  // crewmate's session, which its Bot's Sessions tab lists.
+  const workerBreadcrumb = !!currentCrewRoot || !!mateRootOf(currentSlot)
   const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentCrewRoot)
   const crewRootClosed = !!currentCrewRoot && crewRootClosedRaw
   // From the chip press to the first message the transcript shows the Crew Mode
@@ -796,6 +797,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession, setActionError,
   })
 
+  // A reply card's Start / No thanks (the `[GRILL:]` discussion card) is a
+  // deliberate press, so it sends whatever Quick Send says. While a turn runs it
+  // takes the composer's own busy decision: steer, or queue behind the turn.
+  // Only for the chat this composer serves: a card from another pane is refused,
+  // so it stays open instead of answering the wrong session. Where nothing can
+  // go out (offline, a held crew composer, a force stop that clears the queue)
+  // the text is put in the chat box and the card says so. Otherwise the send is
+  // isolated (no error row, no text back in the box: the card is where the
+  // result shows) and `onOutcome` hears what it came to. A `false` with no
+  // undelivered call (a send that stopped before the POST) did not go out.
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void): ComposeSendResult | null => {
+    // A split view draws a composer per cell (ChatPane takes its own cards).
+    if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
+    const stopState = currentSlot?.stop_state
+    if (!connected || crewModeSwitching || crewRootClosed || stopState === 'killing') {
+      dispatch(setPendingInput(mergeReplyIntoDraft(inputRef.current, text)))
+      return 'staged'
+    }
+    // The composer's own busy reading (a turn, or only sub-agents running), so
+    // the card steers, queues or starts a turn exactly where its Send would.
+    const flag = busySteerFlag({ slotKey: slot, busy: composerBusy, turnRunning: !!slotRunning, stopState, jevAutoConsented, busyMode: currentCrewRoot && currentSlot ? 'steer-only' : undefined })
+    // The refusal's framed reason too: an isolated send shows it nowhere else.
+    let undelivered: 'refused' | 'indeterminate' | undefined
+    let why: string | undefined
+    send(text, slot, flag, true, false, (kind, reason) => { undelivered = kind; why = reason }).then(
+      ok => onOutcome(ok ? 'sent' : undelivered ?? 'refused', why),
+      // send() is not meant to throw; if it does, the POST may already be out.
+      () => onOutcome('indeterminate'),
+    )
+    return 'pending'
+  } })
   // Outside events feeding the side panel, the dock terminal and the composer,
   // then the cold file tabs' reads.
   const { runInTerminalScope } = useChatEventBridges({
@@ -811,6 +843,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     terminalCfgUnsettledRef,
     terminalCfgReadFailedRef,
     inputRef,
+    composeSend,
   })
   useColdFileTabHydration({ tabsCtl, showActionError })
   // Session mode of the active slot. In the unified chat view the page-level
@@ -881,13 +914,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleEditResend, editLast, setEditLast, editSeqRef, farmPassRef, handleEditConsumed, searchCtxValue, renderUserContentCb, lastRole, streamTick, transcriptHot, railWidth, winW,
     effectiveSidebarWidth, toggleAct, handleSpeak, handleApplyPlan,
   } = useMessageActions({
-    dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, search,
+    dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
     tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
+    // The same document test appShell's `isEmbed` makes: a companion chat renders on its host's route.
+    embedChatFrame: embedMode === 'chat' && location.pathname.startsWith('/embed/'),
   })
 
   // The rows the virtualizer draws (see transcriptRows).
   const { renderedTranscript, renderedDisplayItems } = useTranscriptRows({
-    messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef,
+    messages, transcriptLoaded: !slotLoading && slotSwitchTarget !== activeSlot, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef,
   })
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
@@ -1119,7 +1154,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div ref={setChatPaneEl} onPointerDownCapture={launchedDraftInteracted} onKeyDownCapture={launchedDraftInteracted} onInputCapture={launchedDraftInteracted} onChangeCapture={launchedDraftInteracted} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
+      <div ref={setChatPaneEl} data-chat-scope="" onPointerDownCapture={launchedDraftInteracted} onKeyDownCapture={launchedDraftInteracted} onInputCapture={launchedDraftInteracted} onChangeCapture={launchedDraftInteracted} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         <ChatPaneChrome
           embedded={embedded} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} navigate={navigate} provider={provider} setVoiceRecoverySlot={setVoiceRecoverySlot}
           switchSlotGone={switchSlotGone} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}
@@ -1209,7 +1244,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               defaultAgentFailed={defaultAgentFailed} effectiveAgents={effectiveAgents} filteredAgents={filteredAgents} installedAgents={installedAgents} setAgentDropdown={setAgentDropdown}
               setAgentFilter={setAgentFilter} toggleDefaultAgent={toggleDefaultAgent} codexPairModels={codexPairModels} filteredModels={filteredModels} hiddenModelsQ={hiddenModelsQ}
               ownModelsFailed={ownModelsFailed} ownModelsFetching={ownModelsQuery.isFetching} retryOwnModels={() => { void ownModelsQuery.refetch() }}
-              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode}
+              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode} fastMode={selectionCapabilitiesQ.data?.fast} fastUnavailable={selectionCapabilitiesQ.data?.fast_unavailable}
               jevRouteOn={jevRouteOn} modelDropdown={modelDropdown} modelDropdownRef={modelDropdownRef} modelFilter={modelFilter} modelInputRef={modelInputRef}
               modelPickerConfigured={modelPickerConfigured} modelPickerReturnsFocusRef={modelPickerReturnsFocusRef} setModelDropdown={setModelDropdown} setModelFilter={setModelFilter}
               onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote} onJumpToQuote={handleJumpToQuote}
@@ -1248,7 +1283,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               crewModeMidChatOffered={crewModeMidChat && !slotLoading && !showComposerMemoryChip}
               crewChipPressed={crewChipPressed}
               agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
-              // With the preview off too: the raw `crew_mode_root` stamp is the gateway's
+              // In an LTS build too: the raw `crew_mode_root` stamp is the gateway's
               // own lock (`crew_mode_locked` once the chat has a message), so no switch.
               agentSwitchLocked={hasUserMessage && !!currentSlot?.crew_mode_root}
               turnOffCrewMode={turnOffCrewMode} crewModeSwitching={crewModeSwitching}

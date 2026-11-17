@@ -12,7 +12,9 @@ import logging
 
 import pytest
 
-TOKEN = "ghp_" + "a1B2" * 9
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+TOKEN = github_classic(seed=134)  # a ghp_ without a valid checksum is no token
 
 
 class _FakeStream:

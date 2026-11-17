@@ -28,7 +28,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
-    _declared_grant_entries,
+    _consented_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
@@ -338,7 +338,7 @@ def register_external_app(
         # The first manifest of a registration that declared nothing, sent by this
         # owner route: approved as declared, as a first registration with it would be.
         # The sealed store, not the agent-writable app.json, says none came before.
-        approved_grants = _declared_grant_entries(new_permissions)
+        approved_grants = _consented_grant_entries(new_permissions)
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
@@ -346,7 +346,7 @@ def register_external_app(
             new_permissions=new_permissions,
         )
     else:
-        approved_grants = _declared_grant_entries(new_permissions)
+        approved_grants = _consented_grant_entries(new_permissions)
     widened_grants = bool(manifest_data) and any(
         _held_back_entries(approved_grants, new_permissions).values()
     )
@@ -434,8 +434,24 @@ def register_external_app(
             if rollback_errors:
                 detail += f" ({'; '.join(rollback_errors)})"
             return AppResult(ok=False, name=name, error=detail)
+        finally:
+            # A refresh asked for by the first write may read the record before the
+            # manifest (or its rollback) lands; ask once more now both are final.
+            from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+            request_hiding_refresh()
     else:
-        # New registration
+        # New registration. Ticked Bots that an earlier install under this name left
+        # behind go first; if they cannot be removed, nothing is registered.
+        # Deferred: an MCP server lists its tools without loading the Bot grant store.
+        from kiro_crew.apps.bot_grant_store import remove_granted_bots
+
+        try:
+            remove_granted_bots(name)
+        except (OSError, ValueError) as exc:
+            return AppResult(
+                ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
+            )
         dest.mkdir(parents=True, exist_ok=True)
         meta = InstalledApp(
             name=name,

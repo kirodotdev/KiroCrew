@@ -112,6 +112,8 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
+from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
@@ -426,7 +428,7 @@ async def init_socket_mode(
                 error=_deny_error,
             )
             return
-        if _subtype and _subtype != "file_share":
+        if _subtype and _subtype not in PERSON_SUBTYPES:
             if not (_from_trusted_bot and _subtype == "bot_message"):
                 return
 
@@ -1573,7 +1575,7 @@ async def _route_message(
         logger.info(
             "Message %s queued for busy session %s (session_obj=%s)", msg_ts, session_key, _queued
         )
-        if orch.slack:
+        if orch.slack and not code_channel_no_reactions(channel):
             try:
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
@@ -1601,7 +1603,7 @@ async def _route_message(
         **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
-        if orch.slack:
+        if orch.slack and not code_channel_no_reactions(channel):
             try:
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
@@ -1849,6 +1851,7 @@ from kiro_crew.slack.events_inbound import _maybe_prompt_owner  # noqa: E402
 from kiro_crew.slack.events_inbound import _thread_follow_admits  # noqa: E402
 from kiro_crew.slack.events_inbound import _trusted_bot_turns  # noqa: E402
 from kiro_crew.slack.events_queue import _CHANNEL  # noqa: E402
+from kiro_crew.slack.events_queue import _configured_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _dispatch_queued  # noqa: E402
 from kiro_crew.slack.events_queue import _drain_slack_queue  # noqa: E402
 from kiro_crew.slack.events_queue import _entry_owner  # noqa: E402

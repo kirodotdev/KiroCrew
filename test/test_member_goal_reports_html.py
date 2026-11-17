@@ -22,7 +22,6 @@ from typing import Any
 from guide_route_helpers import FakeState
 from member_goals_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     REPORT,
-    TOKEN,
     _call,
     _owner_ok,
     _quiet_sel,
@@ -34,6 +33,7 @@ from member_goals_helpers import (  # noqa: F401 -- the autouse fixtures registe
 from kiro_crew import dashboard_frame, mcp_mate, member_goals
 from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.dashboard import goal_reminder
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 PAGE = (
     "<style>@page { size: A4; margin: 0 } .sheet { width: 210mm; height: 297mm }</style>"
@@ -41,6 +41,10 @@ PAGE = (
     "<p>PRs described: 14 -> 19 of 27.</p>"
     '<svg viewBox="0 0 100 40"><polyline points="0,30 50,20 100,10"/></svg></section>'
 )
+
+#: A GitHub token with a valid checksum. The shared helper's literal fails its
+#: checksum, so it is no token and the scrub keeps it.
+TOKEN = github_classic(seed=120)
 
 
 def _setup() -> tuple[FakeState, Any, list[Any]]:
@@ -145,15 +149,16 @@ def test_the_html_the_crewmate_writes_is_scrubbed(_floor_monkeypatch) -> None:
 def test_a_report_page_takes_the_plain_scrub_exactly(_floor_monkeypatch) -> None:
     """A page gets the same scrub as any other goal string; no payload is exempt.
 
-    A report page embeds no raster image by contract, so a base64 run it carries
-    anyway (here a seeded blob in a data URI) is redacted as the plain scrub would.
+    A report page embeds no raster image by contract, but a base64 run it carries
+    anyway (here a seeded blob in a data URI) is treated as the plain scrub treats
+    it: an image data URI is no credential and stays, and the token goes.
     """
     from kiro_crew import artifacts as artifacts_mod
 
     blob = base64.b64encode(random.Random(7).randbytes(300)).decode()
     page = PAGE + f'<img src="data:image/png;base64,{blob}"><p>{TOKEN}</p>'
     plain = member_goals.scrub_text(page)
-    assert blob not in plain and TOKEN not in plain
+    assert blob in plain and TOKEN not in plain
     state, slot, _pushed = _setup()
     status, body = _call(state, REPORT, {"kind": "weekly", "title": "W", "html": page}, slot.key)
     assert status == 200, body

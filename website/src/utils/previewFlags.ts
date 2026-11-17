@@ -17,8 +17,7 @@
  * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy
  * and sends each toggle to the server through the writer it registers with
  * {@link setPreviewFlagPersister}.
- * A flag has no server behavior of its own unless its own note says so
- * ({@link PREVIEW_MATE_SESSIONS} is the one that does).
+ * A flag has no server behavior of its own unless its own note says so.
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -162,39 +161,6 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
- * Crew Mode: the composer switch that runs a chat on a conductor, and every
- * dashboard mark that goes with it (the welcome, the Crew panel tab, the crew
- * card in the Sessions list, the Crew Mode filter, the crew member breadcrumb).
- *
- * Read it through `crewModeEnabled()` in `lib/crewMode.ts` (or `useCrewMode`
- * for a re-render), never as a bare flag: that one read is what every Crew Mode
- * surface consults.
- *
- * Default OFF, and OFF is the dashboard as it was before Crew Mode's UI: no
- * switch, no conductor hidden from the agent picker, and every session -- a crew
- * member included -- listed and alerting as an ordinary chat. The backend is
- * unchanged either way; without the UI nothing turns Crew Mode on. A chat that
- * is already in Crew Mode stays an ordinary chat on its conductor agent while
- * the flag is off, and its crew members are ordinary rows of the list.
- */
-export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
-
-/**
- * A crewmate's sessions leave the person's own lists: every session a mate
- * thread dispatched (its `mate_root` stamp), at any depth, is left out of the
- * sidebar, Recents, the grid and unread counts, and shows on the mate's
- * Sessions tab instead. The mate's own chat stays; History and search still find
- * every session (step 6 of
- * docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md).
- *
- * Read it through `mateSessionsHidden()` in `lib/crewMode.ts`. Unlike the other
- * flags here it also has a server half: a person's `GET /api/chat/slots` leaves
- * the same rows out (`crew_mode.list_view`). Default OFF, and OFF is every list
- * as before, a mate's sessions included.
- */
-export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
-
-/**
  * Explore: the top-bar "Explore N/7" pill and its phone twins (the bar ring and
  * the overflow-menu row), the Explore sheet, the milestone notice, the Try today
  * card on a new chat, and the Display > Explore switch.
@@ -272,6 +238,18 @@ export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-
 export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
 
 /**
+ * Worker grill: a conductor may offer to let two or three workers grill a costly
+ * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
+ * and dispatch one moderator worker that runs the fast talk
+ * (`worker_grill_preview.py`, the goal-conductor skill's
+ * `references/worker-grill.md`). Server-only: the gateway reads
+ * `dashboard.feature_previews.worker_grill` per turn, so nothing in the
+ * dashboard reads this key. Default OFF, and OFF is a conductor that offers no
+ * discussion unasked.
+ */
+export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -286,8 +264,6 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_LAYOUT_HARNESS,
   PREVIEW_FOLDER_CONDUCTOR,
   PREVIEW_SESSION_ENVIRONMENTS,
-  PREVIEW_CREW_MODE,
-  PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
   PREVIEW_CREW_OAUTH,
   PREVIEW_DASHBOARD_STALE_FIELDS,
@@ -296,6 +272,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
   PREVIEW_SECRETS_VAULT,
+  PREVIEW_WORKER_GRILL,
 ]
 
 /**

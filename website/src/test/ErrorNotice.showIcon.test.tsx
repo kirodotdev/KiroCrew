@@ -10,15 +10,16 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import ErrorNotice from '../components/ErrorNotice'
 
-const ICON = '.lucide-triangle-alert'
+// The default (`blocking`) icon.
+const ICON = '.lucide-circle-alert'
 
 describe('ErrorNotice showIcon', () => {
-  it.each(['inline', 'block'] as const)('%s: draws the triangle by default', (variant) => {
+  it.each(['inline', 'block'] as const)('%s: draws the circle by default', (variant) => {
     render(<ErrorNotice variant={variant} message="Save failed" testId="n" noHandoffReason="unit test" />)
     expect(screen.getByTestId('n').querySelector(ICON)).not.toBeNull()
   })
 
-  it.each(['inline', 'block'] as const)('%s: showIcon={false} drops the triangle and keeps the alert', (variant) => {
+  it.each(['inline', 'block'] as const)('%s: showIcon={false} drops the circle and keeps the alert', (variant) => {
     render(<ErrorNotice variant={variant} message="Save failed" testId="n" showIcon={false} noHandoffReason="unit test" />)
     const notice = screen.getByTestId('n')
     expect(notice.querySelector(ICON)).toBeNull()

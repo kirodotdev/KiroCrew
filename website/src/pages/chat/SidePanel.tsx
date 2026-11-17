@@ -356,9 +356,9 @@ export default function SidePanel({
   // disabled server-side, and never list the pinned views (Changes / Files /
   // Artifacts, and Summary while Pin Summary holds it) — those are always
   // present in the strip.
-  // The Crew Mode preview, subscribed so a flip redraws the strip and the + menu.
-  // Off, a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
-  const crewModePreview = useCrewMode()
+  // Whether this build offers conductor mode, subscribed so the edition lock redraws
+  // the strip and the + menu. Off (LTS), a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
+  const crewModeOffered = useCrewMode()
   // A Crew Mode root or one of its workers: its panel offers Workers, and the
   // tab is put on its strip whenever the session is shown (a fresh browser, a
   // reload, a reopened browser tab). It is the tab the panel opens on until the
@@ -378,7 +378,7 @@ export default function SidePanel({
   const { pinnedViews, summaryPinned } = usePinnedViews({
     tabsCtl, slot, panelHidden: !!panelHidden, pinSummary,
     summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
-    crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModePreview && !hiddenViews?.has('workers'),
+    crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModeOffered && !hiddenViews?.has('workers'),
   })
   const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hasWorkflowRuns, hiddenViews, crewMode })
   // The empty-state launcher shows the same entries flat: its two-column grid
@@ -438,15 +438,15 @@ export default function SidePanel({
     return leaving?.onBeforeLeave ?? null
   }, [])
   const visibleTabs = useMemo(() => {
-    const shown = hiddenViews || terminalsPending || !crewModePreview
-      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal') && (crewModePreview || t.kind !== 'workers'))
+    const shown = hiddenViews || terminalsPending || !crewModeOffered
+      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal') && (crewModeOffered || t.kind !== 'workers'))
       : tabs
     if (!viewTitles) return shown
     return shown.map(t => {
       const title = Object.prototype.hasOwnProperty.call(viewTitles, t.kind) ? viewTitles[t.kind as ViewKind] : undefined
       return title && title !== t.title ? { ...t, title } : t
     })
-  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles, crewModePreview])
+  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles, crewModeOffered])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
     if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId

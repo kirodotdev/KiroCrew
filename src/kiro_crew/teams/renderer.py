@@ -439,13 +439,11 @@ class TeamsRenderer(Renderer):
         # redaction came from one would otherwise announce none.
         cred_count, url_count = count_redaction_tags("\n".join(chunks))
         if cred_count or url_count:
-            # The answer above carries a redaction placeholder, so a follow-up
-            # notice tells the reader the text was rewritten. Counted over the
-            # DELIVERED body (a failed chunk raises out of the loop above, so
-            # reaching here means the text shipped), and best-effort by the
-            # shared contract: the answer is already out, so a failed notice
-            # send is logged, never raised. Posted before the options card so
-            # the card stays adjacent to the choices it asks about.
+            # The answer holds a redaction placeholder, so tell the reader the
+            # text was rewritten. Counted over the DELIVERED body (a failed chunk
+            # raises above, so the text shipped). Best-effort: the answer is
+            # out, so a failed send is logged, never raised. Sent before the
+            # options card so the card stays next to its choices.
             try:
                 await self._client.send_message(
                     self._conversation_id,

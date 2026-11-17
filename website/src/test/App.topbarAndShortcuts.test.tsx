@@ -1053,7 +1053,8 @@ describe('Kiro credits pill — edge cases', () => {
 
     fireEvent.click(pill)
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    const alert = await within(dialog).findByRole('alert')
+    // A partial failure: the modal works, its balance is missing, so the notice is polite.
+    const alert = (await within(dialog).findAllByRole('status')).find((el) => el.textContent?.includes('Could not load settings'))!
     expect(alert).toHaveTextContent('Could not load settings, so your balance can’t be shown.')
     expect(within(alert).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: /^Refresh$/ })).toBeEnabled()
@@ -1069,7 +1070,7 @@ describe('Kiro credits pill — edge cases', () => {
     await new Promise(resolve => setTimeout(resolve, 600))
     expect(screen.getByTitle(CONFIG_TITLE)).toBeInTheDocument()
     expect(screen.getByRole('dialog', { name: 'Kiro Account' })).toBe(dialog)
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not load settings, so your balance can’t be shown.')
+    expect(within(dialog).getAllByRole('status').some((el) => el.textContent?.includes('Could not load settings, so your balance can’t be shown.'))).toBe(true)
     expect(within(dialog).queryByText('No balance reading is available for this account yet.')).not.toBeInTheDocument()
     vi.mocked(api.kirocrewConfig).mockReset().mockResolvedValue({ agent: { acp_backend: 'claude' } } as never)
   })

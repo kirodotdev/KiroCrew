@@ -1,10 +1,10 @@
 ---
 title: Ship the team lead as a default agent built like kirocrew-research, not as a crewmate template
-status: in-progress
+status: implemented
 author: Raymond Chen, with kirocrew-worker
 created: 2026-10-10
-last-audited: 2026-10-10
-audited-at: 7612507e11
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [18128]
 tracking-issues: [18049, 18813]
@@ -14,7 +14,11 @@ superseded-by: []
 
 # RFC: The team lead as a default agent
 
-- Status: in-progress. The decision was made by the product owner on 2026-10-10:
+- Status: implemented in
+  [#18128](https://github.com/kirodotdev/KiroCrew/pull/18128) (merged 2026-10-11):
+  `_install_team_lead_agent` in `agent_materialization/service_agents.py` writes
+  `kirocrew-team-lead.json`, and `TEAM_LEAD_AGENT_FILENAME` is an owned agent
+  file in `agent_files.py`. The decision was made by the product owner on 2026-10-10:
   "this shall be a normal custom agent, not a crewmate for now", and "I do need
   it to be found by default; look at the other default-agent mechanism." The
   document and the implementation land together in

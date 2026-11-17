@@ -1149,7 +1149,7 @@ def test_a_withheld_leaf_leaves_the_mask_only_by_a_narrower_grant(backend, leaf)
     home = os.path.expanduser("~")
     granted = _granted_per_backend(leaf, backend)
 
-    # What this change actually controls is the EXCLUSION, so that is asserted for
+    # What this guard controls is the EXCLUSION, so that is asserted for
     # every withheld leaf without exception: a withheld leaf must never be published
     # as child-readable, whatever the floor does.
     assert leaf not in readable, f"{leaf!r} is withheld yet published as child-readable"

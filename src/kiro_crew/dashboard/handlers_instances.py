@@ -89,6 +89,7 @@ from kiro_crew.instances.registry import (  # noqa: F401
     InstanceNotFoundError,
     InstancesError,
     InstancesRegistry,
+    InstanceStoppedError,
     InvalidInstanceError,
     RegistryUnreadableError,
     ancestor_ids,
@@ -335,9 +336,11 @@ async def api_instances_update(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     # Only allow editing user-facing config fields (not internal hints). Derived
     # from the type map rather than listed twice, so a field can never be editable
     # without a declared type to check it against.
@@ -750,6 +753,17 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                 "state": "disconnected",
                 "error": str(e),
                 "code": UnsupportedConnectionMethodError.code,
+            },
+            status=409,
+        )
+    except InstanceStoppedError as e:
+        _audit("connect", "denied", request_id=instance_id, error="stopped")
+        return web.json_response(
+            {
+                "instance_id": instance_id,
+                "state": "disconnected",
+                "error": f"{e}; start it from Settings > Remote Crew to connect",
+                "code": "instance_stopped",
             },
             status=409,
         )
@@ -1633,5 +1647,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_instances_chat_slots,
         api_instances_proxy,
         api_instances_versions,
+        read_peer_capabilities,
         read_peer_slots,
     )

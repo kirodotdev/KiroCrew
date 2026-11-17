@@ -15,7 +15,7 @@ import member_mount_checks
 import pytest
 
 import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -299,7 +299,7 @@ class _ClientStub:
         # The real governed-surface derivation (authored OR share-validated),
         # reached at call time through the live class so the stub cannot drift
         # from what production actually reads.
-        return AcpClient._permission_surface_governed.fget(self)
+        return ClaudeAcpClient._permission_surface_governed.fget(self)
 
 
 @pytest.fixture

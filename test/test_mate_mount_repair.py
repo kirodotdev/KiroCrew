@@ -231,3 +231,21 @@ def test_a_bot_moved_off_a_retired_private_copy_gets_its_server_back(
     assert _file(mates, "zxc")["tools"] == tools
     assert _ledger(mates)[CHECKED_KEY] == ["zxc"]
     assert restore_withheld_mounts(cfg) == []
+
+
+def test_an_owner_edit_made_while_the_repair_runs_is_kept(layout, persisted, monkeypatch):
+    from test_mate_policy_repair import owner_edit_lands_as_the_lock_is_taken
+
+    from kiro_crew.mate_mount_repair import restore_withheld_mounts
+
+    user, mates = layout
+    old = {"name": "builder", "tools": ["*"], "mcpServers": {"jira": JIRA}}
+    cfg = _moved_before(user, mates, old, _UNMOUNTED)
+    persisted(cfg)
+    owner_edit_lands_as_the_lock_is_taken(monkeypatch, mates, "zxc")
+
+    assert restore_withheld_mounts(cfg) == ["zxc"]
+
+    written = _file(mates, "zxc")
+    assert written["description"] == "owner edit"
+    assert written["tools"] == ["@jira"]

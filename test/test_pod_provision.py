@@ -929,7 +929,7 @@ class TestProvisionProvenance:
         # A website change does not touch the venv's input.
         self._commit(co, "website/package.json", '{"v":1}')
         assert prov.has_venv(co) is True
-        # A setup.cfg dependency bump restales it (the GPT finding).
+        # A setup.cfg dependency bump restales it.
         self._commit(co, "setup.cfg", "[options]\ninstall_requires =\n    requests\n")
         assert prov.has_venv(co) is False
         # Re-stamp, then a pyproject change also restales it.

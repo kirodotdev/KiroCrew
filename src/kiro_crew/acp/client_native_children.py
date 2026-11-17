@@ -12,10 +12,18 @@ render as the parent's own rows.
 This module turns those frames into the events the native Activity cards already
 read: an ``EVENT_SUBAGENT_LIST`` roster of this turn's children that have a task, in
 the kiro-cli shape, on every lifecycle change, and ``EVENT_SUBAGENT_ACTIVITY`` for a
-child's text and tool calls. A child's
+child's text and tool calls; an adapter notice addressed to a child is its text, in the
+notice's text form (``_child_text``). A child's
 text never becomes the parent's text; a child's tool frames still continue to the
 ordinary tool path after their activity prefix, which is how a kiro-cli child's tool
 calls render too.
+
+A child the adapter announced with ``capabilities.cancel`` can be stopped alone:
+``cancel_native_child`` sends ``session/cancel`` naming it, the request a Stop on its
+card makes (``ACP_BACKENDS_NATIVE_CHILD_CANCEL``). The permission and elicitation
+requests each child asks this turn are remembered (``_note_native_child_request``), so
+that Stop can settle the cards of the ones the stopped child leaves open
+(``native_child_requests``).
 
 The activity events leave here unredacted. ``client_turn._redact_native_child_events``
 redacts them before the turn yields them, a child's text through that child's own
@@ -27,10 +35,12 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_native_child_by_tool_use``, ``_native_child_overflow``,
-``_native_child_rows``, ``_native_child_turn``, ``_prompt_or_tool_seen``.
+Instance fields written: ``_native_child_by_tool_use``, ``_native_child_cancellable``,
+``_native_child_overflow``, ``_native_child_rows``,
+``_native_child_turn``, ``_prompt_or_tool_seen``.
 
-Instance fields read: ``_native_child_sids``, ``_session_id``.
+Instance fields read: ``_native_child_requests``, ``_native_child_sids``, ``_process``,
+``_session_id``.
 """
 
 from __future__ import annotations
@@ -39,29 +49,39 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import transport_framing
 from kiro_crew.acp._dispatch import parse_text_chunk
+from kiro_crew.acp.harness_notices import parse_notice
 from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.session_handle_native_children import (
     NATIVE_CHILD_LABEL_CAP,
     NATIVE_CHILD_ROSTER_CAP,
     NATIVE_CHILDREN_UNCHARGED_KIND,
     _note_native_child,
+    native_child_refusal,
 )
 from kiro_crew.acp.session_handle_native_children import (
     native_child_resume_refusal as _handle_resume_refusal,
 )
+from kiro_crew.acp.transport_framing import write_notification_best_effort
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_CLIENT_CAPABILITIES,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
+    METHOD_CANCEL,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
+    UPDATE_NOTICE,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
     JsonRpcMessage,
+)
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_HARNESS_NOTICES,
+    ACP_BACKENDS_NATIVE_CHILD_CANCEL,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
@@ -84,11 +104,14 @@ UPDATE_SESSION_MESSAGE = "session_message"
 #: module handles every frame it turns on: the two lifecycle updates above and the
 #: child-addressed frames the adapter re-routes once it is declared. JetBrains AIR's
 #: own ``_meta`` opt-in is never sent: it switches the adapter into that client's
-#: draft form and its other client-specific branches.
+#: draft form and its other client-specific branches. ``session.notices`` is promised
+#: because every reader of this client reads the ``notice`` the adapter then sends in
+#: place of its blockquote text: ``acp.harness_notices`` the session's own, and
+#: ``_child_text`` a child's (``ACP_BACKENDS_HARNESS_NOTICES``).
 CLAUDE_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
     "subagents": {},
-    "session": {"compaction": {}},
+    "session": {"compaction": {}, "notices": {}},
 }
 
 #: ``clientCapabilities`` per ``AcpClient`` backend; a backend with no row declares
@@ -97,6 +120,13 @@ CLIENT_CAPABILITIES_BY_BACKEND: dict[str, dict] = {
     ACP_BACKEND_CLAUDE: CLAUDE_CLIENT_CAPABILITIES,
     ACP_BACKEND_CODEX: {**ACP_CLIENT_CAPABILITIES, "session": {"compaction": {}}},
 }
+
+#: The longest JSON-RPC id of a child's request kept for its Stop; a longer one is not
+#: recorded (the request is still answered).
+MAX_CHILD_REQUEST_ID_CHARS = 128
+
+#: How a native card's id names the child it draws.
+_NATIVE_CARD_PREFIX = "native:"
 
 #: The ``idle`` stop reasons that mean the child finished its work.
 _IDLE_FINISHED = frozenset({"end_turn", "max_tokens", "max_turn_requests", ""})
@@ -175,16 +205,24 @@ def _reset_native_child_turn(self: AcpClient) -> None:
     """
     if not self._native_children_declared():
         return
-    self._native_child_turn.clear()
-    if self._native_child_overflow:
+    _start_native_child_turn(self)
+
+
+def _start_native_child_turn(client: Any) -> None:
+    """The turn-start reset of :func:`_reset_native_child_turn`, for a session that
+    reads children; the shared runtime's session handle runs the same one."""
+    client._native_child_turn.clear()
+    # A request is read and answered within the turn that reads it.
+    client._native_child_requests.clear()
+    if client._native_child_overflow:
         logger.warning(
             "native child store made %d refusal(s) at its bound of %d last turn; "
             "those children got no card, their text was dropped and their tool calls "
             "rendered as ordinary rows",
-            self._native_child_overflow,
+            client._native_child_overflow,
             NATIVE_CHILD_ROSTER_CAP,
         )
-        self._native_child_overflow = 0
+        client._native_child_overflow = 0
 
 
 def _native_child_roster(self: AcpClient) -> list[AcpEvent]:
@@ -228,6 +266,14 @@ def _note_subagent_update(self: AcpClient, update: dict[str, Any]) -> list[AcpEv
             "status": {"type": "working", "message": ""},
         },
     )
+    if "capabilities" in update:
+        # The child's whole grant: a report that names none keeps the last one, and
+        # ``null`` (a child the adapter has lost track of) withdraws it.
+        granted = update["capabilities"]
+        if isinstance(granted, dict) and isinstance(granted.get("cancel"), dict):
+            self._native_child_cancellable.add(child_sid)
+        else:
+            self._native_child_cancellable.discard(child_sid)
     if update.get("title"):
         row["agentName"] = _label(update["title"])
     if update.get("description"):
@@ -235,6 +281,8 @@ def _note_subagent_update(self: AcpClient, update: dict[str, Any]) -> list[AcpEv
     status = _standard_state_status(update.get("state"))
     if status is not None:
         row["status"] = status
+        if status["type"] != "working":
+            _forget_native_child_requests(self._native_child_requests, child_sid)
     self._native_child_turn[child_sid] = None
     return self._native_child_roster()
 
@@ -359,16 +407,142 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
         return events, False
     if kind == UPDATE_TOOL_CALL_UPDATE:
         return events, False
-    if kind in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
-        text, is_thinking = parse_text_chunk(update)
-        if text and not is_thinking:
-            self._prompt_or_tool_seen = True
-            events.append(
-                AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=text)
-            )
+    text = _child_text(self.backend, kind, update)
+    if text:
+        self._prompt_or_tool_seen = True
+        events.append(AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=text))
     # Anything else a child sends (its plan, its commands, its session info)
     # describes the child, never the parent.
     return events, True
+
+
+def _child_text(backend: str, kind: object, update: dict[str, Any]) -> str:
+    """The text a child's frame adds to its card, or ``""``.
+
+    A child's reply text, and on a *backend* in ``ACP_BACKENDS_HARNESS_NOTICES`` an
+    advisory the adapter addressed to the child (a background task the child started,
+    stopped by the user: ``async-tasks.js`` routes it by the task's tool call) in the
+    notice's text form (``harness_notices.transcript_block``), as a client without
+    ``session.notices`` is sent it as the child's text. A card draws text, not notices.
+    """
+    if kind in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
+        text, is_thinking = parse_text_chunk(update)
+        return text if text and not is_thinking else ""
+    if kind == UPDATE_NOTICE and backend in ACP_BACKENDS_HARNESS_NOTICES:
+        notice = parse_notice(update)
+        return notice.transcript if notice is not None else ""
+    return ""
+
+
+def native_child_cancellable(client: Any, child_sid: str) -> bool:
+    """Whether a Stop may name *child_sid*: the gate :func:`cancel_native_child` asks.
+
+    A backend in ``ACP_BACKENDS_NATIVE_CHILD_CANCEL``, a child this session tracks
+    whose last report granted ``capabilities.cancel`` and left it running
+    (``working``), and never this session's own id, which would cancel the parent's
+    turn. The shared runtime's session handle asks the same gate.
+    """
+    row = client._native_child_rows.get(child_sid)
+    return not (
+        client.backend not in ACP_BACKENDS_NATIVE_CHILD_CANCEL
+        or not child_sid
+        or child_sid == client._session_id
+        or child_sid not in client._native_child_cancellable
+        or row is None
+        or row["status"].get("type") != "working"
+    )
+
+
+async def cancel_native_child(self: AcpClient, child_sid: str) -> bool:
+    """Ask the harness to stop the native child *child_sid*; whether it was asked.
+
+    Sends ``session/cancel`` naming the child, on a backend in
+    ``ACP_BACKENDS_NATIVE_CHILD_CANCEL``, for a child this session tracks whose last
+    report granted ``capabilities.cancel`` and left it running (``working``: running
+    or waiting on a request), and never for this session's own id, which would
+    cancel the parent's turn. The turn's own cancel state is left alone, because
+    the parent goes on: the child's end comes back as its ``subagent_update``
+    (``idle`` with ``cancelled``), which closes its card. Written best effort, as the
+    turn's own cancel is; a failed write answers False, so the caller closes the
+    card itself.
+    """
+    if not native_child_cancellable(self, child_sid):
+        return False
+    process = self._process
+    if process is None or process.stdin is None or process.returncode is not None:
+        return False
+    data = transport_framing.encode_frame(
+        {"jsonrpc": "2.0", "method": METHOD_CANCEL, "params": {"sessionId": child_sid}}
+    )
+    try:
+        outcome = await write_notification_best_effort(
+            process.stdin,
+            self._stdin_write_lock(),
+            data,
+            bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+            on_written=self._record_sent,
+        )
+    except Exception as exc:  # noqa: BLE001 - a Stop that cannot be sent closes the card
+        logger.warning("cancelling native child %s failed: %s", child_sid, type(exc).__name__)
+        return False
+    logger.info("asked the harness to stop native child %s (%s)", child_sid, outcome)
+    return True
+
+
+def _note_native_child_request(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Remember which tracked child the permission or elicitation request *msg* is for.
+
+    A ``session/cancel`` naming a child makes Claude Code withdraw the requests the
+    child has open, and the SDK then sends ``$/cancel_request`` for each. This client
+    reads nothing while the turn waits on a person's answer, and skips that
+    notification when it does read it, so the Stop that sent the cancel settles
+    those cards itself (``native_child_requests``). Kept on a backend in
+    ``ACP_BACKENDS_NATIVE_CHILD_CANCEL`` for the turn that reads the request, under
+    ``NATIVE_CHILD_ROSTER_CAP`` with the oldest dropped first, and dropped when the
+    child ends. The child is the one the frame's ``sessionId`` names, or the one the
+    Agent-call stamp on its tool call names (``_native_child_of``). Never raises: it
+    runs on the permission path, whose answer must not depend on it.
+    """
+    requests = getattr(self, "_native_child_requests", None)
+    if requests is None or msg.id is None:
+        return
+    try:
+        if self.backend not in ACP_BACKENDS_NATIVE_CHILD_CANCEL:
+            return
+        params = msg.params if isinstance(msg.params, dict) else {}
+        tool_call = params.get("toolCall")
+        child_sid = self._native_child_of(
+            params.get("sessionId"), tool_call if isinstance(tool_call, dict) else {}
+        )
+        if not child_sid:
+            return
+        request_id = str(msg.id)
+        if len(request_id) > MAX_CHILD_REQUEST_ID_CHARS:
+            logger.warning(
+                "a native child's request id past %d characters was not recorded",
+                MAX_CHILD_REQUEST_ID_CHARS,
+            )
+            return
+        if request_id not in requests and len(requests) >= NATIVE_CHILD_ROSTER_CAP:
+            requests.pop(next(iter(requests)))
+        requests[request_id] = child_sid
+    except Exception:  # noqa: BLE001 - the request is answered whatever this records
+        logger.debug("recording a native child's request failed", exc_info=True)
+
+
+def _forget_native_child_requests(requests: dict[str, str], child_sid: str) -> None:
+    """Drop from *requests* the ones recorded for *child_sid*, a child that has ended."""
+    for request_id in [rid for rid, sid in requests.items() if sid == child_sid]:
+        del requests[request_id]
+
+
+def native_child_requests(self: AcpClient, child_sid: str) -> tuple[str, ...]:
+    """The ids of the permission and elicitation requests *child_sid* asked this turn.
+
+    Strings, as the dashboard keys a request's card. Some may be answered already:
+    the caller settles only the cards still waiting.
+    """
+    return tuple(rid for rid, sid in self._native_child_requests.items() if sid == child_sid)
 
 
 def native_child_resume_refusal(self: AcpClient, conversation_id: str) -> str | None:
@@ -377,8 +551,16 @@ def native_child_resume_refusal(self: AcpClient, conversation_id: str) -> str | 
 
     The same refusal an ``AcpSessionHandle`` gives a kiro-cli or KAS child, read
     from the same child-id set: the continuation and ``POST /api/spawn`` paths ask
-    the provider's client, which on the claude backend is this one.
+    the provider's client, which on the claude backend is this one. An agent of one of
+    the session's Claude Code Workflow runs is such a child too, named by its card id
+    (``<task_id>:<agent>``, ``native:<task_id>:<agent>`` on the card), running or ended
+    (``raw_sdk_tasks.workflow_card_ids``).
     """
+    # Imported here rather than at the top: that module's cards import ``_label`` from this one.
+    from kiro_crew.acp.raw_sdk_tasks import workflow_card_ids
+
+    if conversation_id.removeprefix(_NATIVE_CARD_PREFIX) in workflow_card_ids(self):
+        return native_child_refusal(conversation_id, self._session_id)
     return _handle_resume_refusal(self, conversation_id)
 
 
@@ -387,13 +569,17 @@ def report_native_children(self: AcpClient, budget: Any) -> int:
     returning the count reported.
 
     The count an ``AcpSessionHandle`` reports, read from this client's turn: the
-    children seen this turn plus the ones the cap refused. The child-id set is not
-    the count, because its ids outlive the turn and a finished child stays in it.
-    The children run inside the parent's adapter process, which is already charged,
-    so this reports and never charges. Session health asks the slot's client, which
-    on the claude backend is this one.
+    children seen this turn plus the ones the cap refused, and the agents of the
+    session's Claude Code Workflow runs that still run (``raw_sdk_tasks.live_card_ids``).
+    The child-id set is not the count, because its ids outlive the turn and a finished
+    child stays in it. The children run inside the parent's adapter process, which is
+    already charged, so this reports and never charges. Session health asks the slot's
+    client, which on the claude backend is this one.
     """
-    count = len(self._native_child_turn) + self._native_child_overflow
+    # Imported here rather than at the top, as in ``native_child_resume_refusal``.
+    from kiro_crew.acp.raw_sdk_tasks import live_card_ids
+
+    count = len(self._native_child_turn) + self._native_child_overflow + len(live_card_ids(self))
     report = getattr(budget, "report_uncharged", None)
     if callable(report):
         report(NATIVE_CHILDREN_UNCHARGED_KIND, count, label=self._session_id)

@@ -252,6 +252,7 @@ def _merge_memory(src_db: Path, dst_db: Path) -> bool:
             try:
                 conn.execute("DETACH DATABASE src")
             except Exception:
+                # The connection is closed next, which detaches the database anyway.
                 pass
         conn.close()
     return True

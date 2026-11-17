@@ -98,6 +98,9 @@ describe('slot refresh sends the cursor', () => {
     await store.dispatch(refreshSlot(slot) as never)
     expect(wire.rowsSent - first).toBe(1)
     expect(wire.requests[1]).toContain('digest=')
+    // The dashboard pages older with `before=next_before`, so it opts into the
+    // byte-bounded page; the app-sdk embed does not (embedIncrementalRead.test.ts).
+    expect(wire.requests.slice(0, 2).every(u => new URL(u, 'http://x').searchParams.get('page_bytes') === '1')).toBe(true)
     expect(mids(store)).toEqual(rows(0, 200).slice(-store.getState().chat.messages.length).map(r => r.meta.mid))
   })
 

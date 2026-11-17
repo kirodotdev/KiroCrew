@@ -19,8 +19,6 @@ No engine, no subprocess.
 import inspect
 import json
 import os
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,11 +26,17 @@ from unittest import mock
 import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import decks, paths
+from kiro_crew.testing.synthetic_credentials import ALNUM, github_classic, synth
 
 
 class _DeckTree(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.root = self.tmp / "decks"
         self.root.mkdir(parents=True)
         self._prev = os.environ.get(paths.DECK_ROOT_ENV)
@@ -43,7 +47,6 @@ class _DeckTree(unittest.TestCase):
             os.environ.pop(paths.DECK_ROOT_ENV, None)
         else:
             os.environ[paths.DECK_ROOT_ENV] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _deck(self, deck_id: str) -> Path:
         deck = self.root / deck_id
@@ -392,14 +395,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
-_FAKE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+_FAKE_AWS_SECRET = github_classic(seed=322)  # a bare 40-character run stays visible
 
-# An AKIA-shaped access key ID. Used for the deck-ID test specifically, because the
-# SECRET above contains "/" and so is already refused by `SEGMENT_RE` as a directory
-# name — a deck-ID test built on it passes without the redaction check and proves
-# nothing. An access key ID is all `[A-Z0-9]`, so it IS a legal directory name and is
-# the value that actually reached the dashboard.
-_FAKE_AKIA = "AKIAIOSFODNN7EXAMPLE"
+# An OpenAI project key. Used for the deck-ID test specifically, because a secret
+# with "/" in it is already refused by `SEGMENT_RE` as a directory name, and a
+# deck-ID test built on one passes without the redaction check and proves
+# nothing. This key is all `[A-Za-z0-9-]`, so it IS a legal directory name, and
+# its rule still reads it after the `20260101-` date prefix. (A Slack token's rule
+# refuses a match glued to a `-`, and an AWS key ID stays visible as an identifier.)
+_FAKE_TOKEN = "sk-proj-" + synth(40, ALNUM, seed=5)
 
 
 class TestAgentMetadataIsRedacted:
@@ -434,7 +438,7 @@ class TestAgentMetadataIsRedacted:
         """
         root = tmp_path / "decks"
         root.mkdir()
-        for name in (f"20260101-{_FAKE_AKIA}", "20260102-quarterly"):
+        for name in (f"20260101-{_FAKE_TOKEN}", "20260102-quarterly"):
             deck = root / name
             (deck / "specs").mkdir(parents=True)
             (deck / "deck.json").write_text("{}", encoding="utf-8")
@@ -444,17 +448,17 @@ class TestAgentMetadataIsRedacted:
         rows = decks.list_decks()
 
         assert [r["deckId"] for r in rows] == ["20260102-quarterly"]
-        assert _FAKE_AKIA not in json.dumps(rows)
+        assert _FAKE_TOKEN not in json.dumps(rows)
         # And the deck cannot be reached by asking for it directly either.
-        assert decks.deck_detail(f"20260101-{_FAKE_AKIA}") is None
+        assert decks.deck_detail(f"20260101-{_FAKE_TOKEN}") is None
 
     def test_a_credential_shaped_slide_slug_is_skipped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The same leak as the deck ID, one level down — and reachable only by the
         FALLBACK slug path, which is why the outline's grammar is not a defence.
 
         `_slide_order` prefers `specs/outline.md`, whose `[a-z0-9-]+` slug grammar
-        cannot spell an AKIA key. But with no outline it falls back to the slide
-        FILENAMES, and `SEGMENT_RE` allows `[A-Za-z0-9._-]` — so an `AKIA…`-named
+        cannot spell this token. But with no outline it falls back to the slide
+        FILENAMES, and `SEGMENT_RE` allows `[A-Za-z0-9._-]` — so a token-named
         slide file carried the credential into `/deck`, both as the slide's own label
         and inside every `preview/<deckId>/…` artifact URL built from it.
 
@@ -473,7 +477,7 @@ class TestAgentMetadataIsRedacted:
         (deck / "slides").mkdir(parents=True)
         (deck / "compose").mkdir(parents=True)
         (deck / "deck.json").write_text("{}", encoding="utf-8")
-        for slug in (_FAKE_AKIA, "intro"):
+        for slug in (_FAKE_TOKEN, "intro"):
             (deck / "slides" / f"{slug}.json").write_text("{}", encoding="utf-8")
             (deck / "compose" / f"{slug}.json").write_text("{}", encoding="utf-8")
         monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
@@ -484,13 +488,13 @@ class TestAgentMetadataIsRedacted:
         assert [s["slug"] for s in detail["slides"]] == ["intro"]
         # Asserted on the whole payload, not just the slugs: the value also reached
         # the previewUrl / composeUrl strings built from it.
-        assert _FAKE_AKIA not in json.dumps(detail)
+        assert _FAKE_TOKEN not in json.dumps(detail)
 
     def test_a_credential_shaped_thumbnail_filename_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Third instance of one class, which is why the guard is in `_preview_url`.
 
         The engine names preview PNGs, so the filename is agent-authored and
-        `SEGMENT_RE` permits `[A-Za-z0-9._-]` — an `AKIA…`-named PNG put the
+        `SEGMENT_RE` permits `[A-Za-z0-9._-]` — a token-named PNG put the
         credential straight into `thumbnailUrl`. After `deckId` and the slide slug,
         this was the same defect a third time, so every artifact URL is now screened
         segment-by-segment at the one point they are all built.
@@ -503,14 +507,14 @@ class TestAgentMetadataIsRedacted:
         (deck / "specs").mkdir(parents=True)
         (deck / "specs" / "brief.md").write_text("ordinary brief", encoding="utf-8")
         (deck / "deck.json").write_text("{}", encoding="utf-8")
-        (deck / "preview" / f"{_FAKE_AKIA}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (deck / "preview" / f"{_FAKE_TOKEN}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
 
         rows = decks.list_decks()
 
         assert [r["deckId"] for r in rows] == ["20260101-demo"]
         assert rows[0]["thumbnailUrl"] is None
-        assert _FAKE_AKIA not in json.dumps(rows)
+        assert _FAKE_TOKEN not in json.dumps(rows)
 
     def test_an_ordinary_thumbnail_is_still_linked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The screen must not drop honest artifact URLs — a refusal-only test would
@@ -606,10 +610,9 @@ class TestAgentMetadataIsRedacted:
         surfaced its directory name to the Deck list. Redacting the metadata path and
         not this one left the identical leak on the other branch.
         """
-        # An ACCESS KEY ID, not `_FAKE_AWS_SECRET`: the secret-key fixture contains
-        # `/`, so it cannot appear in a single path segment. A key id is the shape a
-        # directory name can actually carry, which is what makes this reachable.
-        key_id = "AKIAIOSFODNN7EXAMPLE"
+        # `_FAKE_TOKEN`: a key that is all `[A-Za-z0-9-]` is the shape a directory
+        # name can actually carry, which is what makes this reachable.
+        key_id = _FAKE_TOKEN
         deck = tmp_path / f"deck-{key_id}"
         deck.mkdir()
         # No deck.json at all: the directory name is what gets returned.

@@ -1259,7 +1259,7 @@ def test_the_effective_closer_is_immune_to_its_own_surrounding_container():
     _assert_no_unclosed_comment_before_later_heading(out)
 
 
-# ── GPT 6.1 current-head findings 1-5 ────────────────────────────────────
+# ── block boundaries: raw HTML, fences, lists ─────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -1422,7 +1422,7 @@ def test_gpt_5_unicode_digits_do_not_start_a_commonmark_list():
     _assert_later_heading_is_structural(out)
 
 
-# ── fork-lane review (GPT 6.1) findings: three more ways a turn could hide the rest ──
+# ── quoted comments and other ways a turn could hide the rest ──
 
 
 @pytest.mark.parametrize(
@@ -1449,10 +1449,7 @@ def test_gpt_6_a_quoted_comment_still_owns_lines_that_stay_in_its_quote(content)
     _assert_later_heading_parses(out)
 
 
-# ── fork-lane review, second round ──
-
-
-# ── fork-lane review, third round: the parser decides ──
+# ── the parser decides ──
 
 
 def test_gpt_14_a_raw_block_ended_by_another_tags_terminator_frees_the_fence():

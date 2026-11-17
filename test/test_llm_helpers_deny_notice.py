@@ -50,7 +50,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     LLMEvent,
 )
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until
 
 #: These tests start background helper turns, which are skipped while the host's
 #: memory posture is critical (see ``ample_host_free_memory``).
@@ -454,7 +454,6 @@ async def test_cancelled_mid_steer_does_not_hang_on_a_stalled_reject(monkeypatch
     cancellation IS the caller's deadline, so the helper re-raises at once
     rather than waiting on the reject; the task stays referenced and keeps
     trying, and its outcome is read when it settles."""
-    import time
 
     class _StalledBoth(_Provider):
         async def steer(self, message: str) -> bool:
@@ -471,12 +470,17 @@ async def test_cancelled_mid_steer_does_not_hang_on_a_stalled_reject(monkeypatch
         _resolve_permission(provider, _event(), ToolApprovalPolicy.REJECT_ALL, None)
     )
     await async_wait_until(lambda: bool(provider.calls))
-    started = time.monotonic()
     task.cancel()
+    # No fixed wait stacked on top of the caller's own deadline: the cancel settles
+    # the task in loop turns alone, with no timer to run out. Turns are not seconds;
+    # the cap only ends a run whose task can never settle this way.
+    for _turn in range(50):
+        if task.done():
+            break
+        await asyncio.sleep(0)
+    assert task.done(), "the cancelled helper waited on something before re-raising"
     with pytest.raises(asyncio.CancelledError):
-        await await_until(task, timeout=2.0)
-    # No fixed wait stacked on top of the caller's own deadline.
-    assert time.monotonic() - started < 0.5
+        await task
     await asyncio.sleep(0)
     assert provider.calls == ["steer", "reject-started"], provider.calls
     (orphan,) = [t for t in llm_helpers._orphan_rejects if not t.done()]

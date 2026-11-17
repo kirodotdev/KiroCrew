@@ -108,8 +108,8 @@ class TestReadiness:
         """The first spawn installs the pinned engine, so every page before it
         gets the cold ``auto`` list, not a 503."""
         monkeypatch.setattr(bundle, "_bundle_installed", lambda: False)
-        # raising=False: the seam is named before the fix exists, so a revert
-        # fails on the assertion rather than on the patch.
+        # raising=False: if the seam is ever removed, the test fails on the
+        # assertion rather than on the patch.
         monkeypatch.setattr(bundle, "_engine_installable_here", lambda: True, raising=False)
         monkeypatch.setattr(bundle, "_vault_signed_in", lambda: True)
         monkeypatch.setattr(catalog, "vault_identity", lambda: _ID)
@@ -301,8 +301,8 @@ class TestTheCrewSignInRelay:
         monkeypatch.setattr(
             agents, "reject_if_kiro_unverified", AsyncMock(return_value=self._refused())
         )
-        # raising=False: the seam is named before the fix exists, so a revert
-        # fails on the assertion rather than on the patch.
+        # raising=False: if the seam is ever removed, the test fails on the
+        # assertion rather than on the patch.
         monkeypatch.setattr(bundle, "_crew_sign_in_starts_spawn", lambda: True, raising=False)
         monkeypatch.setattr(catalog, "vault_identity", lambda: _ID)
 

@@ -55,7 +55,13 @@ from typing import BinaryIO, Callable, NamedTuple, TypeVar  # noqa: F401
 from aiohttp import web
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
-from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
+from kiro_crew import (  # noqa: F401
+    executors,
+    pinned_fs,
+    platform_compat,
+    redaction_seams,
+    sandbox_plan,
+)
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
@@ -417,6 +423,7 @@ from kiro_crew.security import (  # noqa: F401
     redact_exfiltration_urls,
     redact_path_segments,
     redaction_switch,
+    refuses,
     sandbox_credential_targets,
 )
 from kiro_crew.session_environment import session_runs_remotely  # noqa: F401
@@ -428,6 +435,9 @@ from kiro_crew.validation import (  # noqa: F401
     ValidationError,
     validate_tool_args,
 )
+from kiro_crew.workbook_rows import read_workbook_rows  # noqa: F401
+from kiro_crew.zip_vet import WORKBOOK_MAX_EXPANDED_BYTES as _SHEET_MAX_EXPANDED_BYTES  # noqa: F401
+from kiro_crew.zip_vet import WORKBOOK_MAX_MEMBERS as _SHEET_MAX_MEMBERS  # noqa: F401
 from kiro_crew.zip_vet import (  # noqa: F401
     ZipInventoryRejected,
     vet_zip_inventory_bytes,
@@ -905,7 +915,7 @@ _ProbeT = TypeVar("_ProbeT")
 #: uses.
 _PATH_PROBE_ADMIT_TIMEOUT_SECS = 2.0
 #: Execution ceiling handed to ``run_in_cron_pool``, which requires one. It is
-#: deliberately NOT a request timeout: this change bounds how many probes can be
+#: deliberately NOT a request timeout: it bounds how many probes can be
 #: wedged, not how long a client waits on one, and a shorter figure here would
 #: add a second refusal class this endpoint family does not yet define. Large
 #: enough that no healthy transfer under the module's own caps reaches it.
@@ -1284,8 +1294,8 @@ async def api_browse_files(request: web.Request) -> web.Response:
 _SHEET_MAX_SHEETS = 20
 _SHEET_MAX_ROWS = 500
 _SHEET_MAX_COLS = 100
-_SHEET_MAX_MEMBERS = 4096
-_SHEET_MAX_EXPANDED_BYTES = 200 * 1024 * 1024
+# _SHEET_MAX_MEMBERS and _SHEET_MAX_EXPANDED_BYTES are zip_vet's workbook
+# ceilings, imported above, so every reader that opens a workbook uses one pair.
 # Text amplification caps. Shared strings are stored once in the archive but
 # referenced per cell, so the expansion cap above does not bound the RESPONSE:
 # one 32 KiB string referenced by every cell would amplify into gigabytes of

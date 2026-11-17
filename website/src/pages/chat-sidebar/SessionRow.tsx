@@ -40,6 +40,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { deriveAutomationStatus, MONITOR_STATUS_KEYS } from '../../monitoring/automation'
 import MonitorRadar from '../../components/MonitorRadar'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel, withMemorySource } from '../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -289,8 +290,8 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   const stalledForMs = longest ? Date.now() - longest.since : 0
   const stalledName = member?.title || member?.agent || longestSlot || i18nT('commandCenter.worker_untitled')
   const title = crewRowTooltip(total, rowCounts, stall.stalled, needsYou)
-  // Finished only when the main chat itself is settled too.
-  const allDone = total > 0 && done === total && !own
+  // Finished only when the main chat is settled too, and, with a ledger, the gateway's run verdict says done.
+  const allDone = (work?.run ? work.run.settled === 'done' : total > 0 && done === total) && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
   const ownFirst = !paused && own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
   // Nothing needs attention and the crew is not finished (or paused): the row's usual line.
@@ -699,8 +700,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const goalLoopLabel = !goalLoop
       ? ''
       : goalLoop.maxCycles > 0
-        ? i18nT('pages.chatSidebar.loop', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-        : i18nT('pages.chatSidebar.loop_2', { count: goalLoop.cycleCount })
+        ? i18nT('pages.chatSidebar.loop', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+        : i18nT('pages.chatSidebar.loop_2', { count: fmtNumber(goalLoop.cycleCount) })
     // The loop is armed but its session's last turn died — a trailing error row
     // or an unanswered user row, the state behind the composer's Resume button —
     // and nothing is executing on its behalf. The pulsing dot below would claim
@@ -872,8 +873,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             className={ROW_STATUS_LINE_CLS}
             title={goalLoop
               ? (goalLoop.maxCycles > 0
-                ? i18nT('pages.chatSidebar.loop_waiting_title_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-                : i18nT('pages.chatSidebar.loop_waiting_title_cycle_2', { count: goalLoop.cycleCount }))
+                ? i18nT('pages.chatSidebar.loop_waiting_title_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+                : i18nT('pages.chatSidebar.loop_waiting_title_cycle_2', { count: fmtNumber(goalLoop.cycleCount) }))
               : i18nT('pages.chatSidebar.loop_waiting_title')}
           >
             {goalLoop
@@ -888,8 +889,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 carries the full sentence. */}
             <span className="truncate"><span className="font-medium crew-tone-warn">{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted">{goalLoop || monitorOwnsRunning ? ' · ' : ''}{goalLoop
               ? (goalLoop.maxCycles > 0
-                ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-                : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
+                ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+                : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: fmtNumber(goalLoop.cycleCount) }))
               : monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_monitor') : ''}</span></span>
           </div>
         ),
@@ -956,8 +957,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         when: !!goalLoop,
         build: () => {
           const cycleTitle = goalLoop && goalLoop.maxCycles > 0
-            ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-            : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop?.cycleCount ?? 0 })
+            ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+            : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: fmtNumber(goalLoop?.cycleCount ?? 0) })
           return (
             <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : (goalLoopDetail || undefined)}>
               <span role="img" aria-label={cycleTitle} title={cycleTitle} data-testid="goal-loop-icon" className="inline-flex shrink-0">
@@ -1139,8 +1140,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         case 'needs_input': return needsInputLabel
         case 'loop_waiting': return !goalLoop && !monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_on_you') : `${i18nT('pages.chatSidebar.loop_waiting_on_you')} · ${goalLoop
           ? (goalLoop.maxCycles > 0
-            ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-            : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
+            ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+            : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: fmtNumber(goalLoop.cycleCount) }))
           : i18nT('pages.chatSidebar.loop_waiting_monitor')}`
         case 'interrupted': return i18nT('pages.chat.recoveryCard.turn_interrupted')
         case 'crew_stalled': return i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })

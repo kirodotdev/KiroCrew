@@ -247,7 +247,7 @@ _SLOT_SCOPED_EVENTS = frozenset({
     # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (the ``_subagent_event``
     # closure in slack/gateway_runtime/subagent_wiring.py), so a guard that scans
     # broadcast call sites for string literals cannot see them --
-    # ``TestFireEventNamesAreClassified`` reads the
+    # ``test_fire_event_names_are_classified`` reads the
     # emitter's own literals instead. Each payload carries id + slot.
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
     "subagent_snapshot", "subagent_status", "subagent_queued",

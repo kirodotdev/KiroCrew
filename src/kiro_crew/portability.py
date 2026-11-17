@@ -47,6 +47,11 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.dashboard.folder_portability import (
+    FolderMerge,
+    import_folders,
+    merge_folders_on_disk,
+)
 from kiro_crew.history import (
     ARCHIVE_DIR_NAME,
     ARCHIVE_SEGMENT_DELIMITER,
@@ -59,6 +64,7 @@ from kiro_crew.history import (
     _safe_key,
     memory_mode_from_header_line,
 )
+from kiro_crew.home_path_rewrite import archive_home, rewrite_staged_paths, this_home
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.notifications.settings import ChannelSettings, parse_imported_settings
@@ -72,6 +78,7 @@ from kiro_crew.portability_archive import (
     MEMORY_EXPORT_MANIFEST_VERSION,
     MEMORY_ONLY_FILES,
     MEMORY_ONLY_TREES,
+    REBUILDABLE_DIRS,
     _chat_stem,
     _entry_is_link,
     _is_link_entry,
@@ -80,8 +87,10 @@ from kiro_crew.portability_archive import (
     _mc_dir,
     _read_first_line_fd,
     _rotation_segment_for_stem,
+    _skipped_on_import,
     _transcript_header_verdict,
     _unsafe_member_name,
+    import_size_problem,
     logger,
     manifest_is_memory_only,
 )
@@ -127,7 +136,7 @@ from kiro_crew.snapshot import (
     _refuse_corrupt_source_databases,
     _staging_is_pinned,
 )
-from kiro_crew.staging import staging_dir
+from kiro_crew.staging import IMPORT_STAGING_DIRNAME, staging_dir
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
@@ -172,6 +181,22 @@ def _read_archive_object(path: Path) -> dict:
         )
     doc.pop("meta", None)
     return doc
+
+
+def _move_home_paths(snap: Path, summary: dict) -> frozenset[str]:
+    """Move the staged archive's saved folder paths from its home to this one.
+
+    Before either mode copies anything, so both install the moved paths. Returns the
+    file names of the staged transcripts whose folder could not be moved: such a chat
+    opens in the default workspace, and `_merge_sessions` counts the ones it installs.
+    """
+    old_home, new_home = archive_home(snap), this_home()
+    if old_home is None or new_home is None:
+        return frozenset()
+    rewrite = rewrite_staged_paths(snap, old_home, new_home)
+    if rewrite.moved:
+        summary["home_paths_moved"] = rewrite.moved
+    return rewrite.cleared_chats
 
 
 def _skip_setting(summary: dict, label: str, why: str) -> None:
@@ -469,7 +494,14 @@ def _rollback_import_session(
     return left
 
 
-def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool) -> None:
+def _merge_sessions(
+    snap: Path,
+    mc: Path,
+    summary: dict,
+    *,
+    allow_unpinned: bool,
+    cleared: frozenset[str] = frozenset(),
+) -> None:
     """Add the archive's dashboard chats this install does not have yet.
 
     Never overwrites: a transcript whose file name already exists here is left as
@@ -487,7 +519,9 @@ def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool
     use the import driver's declared unpinned policy and still copy, never move.
 
     Records ``sessions_added``, ``sessions_skipped_existing``, ``sessions_withheld``
-    and ``sessions_failed`` in *summary*. Copy failures roll back only this call's
+    and ``sessions_failed`` in *summary*, plus ``sessions_project_cleared``: how many
+    installed transcripts are in *cleared*, the ones whose folder `_move_home_paths`
+    dropped (left out when none). Copy failures roll back only this call's
     files under the stem lock and use the existing items/refused_merges reporting.
     An archive without a ``sessions/`` tree records nothing.
     """
@@ -502,7 +536,7 @@ def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool
     _staging_is_pinned(allow_unpinned=allow_unpinned, what="chat import")
     dest = mc / SESSIONS_DIR_NAME
     history = ConversationLog(base_dir=dest)
-    added = existing = withheld = failed = 0
+    added = existing = withheld = failed = project_cleared = 0
     for name in sorted(entries):
         entry = entries[name]
         stem = _chat_stem(name)
@@ -570,7 +604,11 @@ def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool
                             )
                         continue
                 added += 1
+                if name in cleared:
+                    project_cleared += 1
     summary["sessions_added"] = added
+    if project_cleared:
+        summary["sessions_project_cleared"] = project_cleared
     summary["sessions_skipped_existing"] = existing
     summary["sessions_withheld"] = withheld
     summary["sessions_failed"] = failed
@@ -643,6 +681,7 @@ def apply_import_zip(
     channel_settings: ChannelSettings | None = None,
     memory_only: bool = False,
     agent_templates: tuple[str, ...] = (),
+    folder_merge: FolderMerge | None = None,
 ) -> dict:
     """Extract and apply an import zip.
 
@@ -666,6 +705,9 @@ def apply_import_zip(
             only where no template of that name exists, in either mode; every one not
             written is named in ``agent_templates_skipped``. A memory-only import
             installs none.
+        folder_merge: the running gateway's chat-folder store, which adds the
+            archive's folders it lacks so its in-memory copy does not write them
+            away. ``None`` (no gateway in this process) writes ``folders.json``.
 
     Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
     browser-preference backup was installed, which tells the dashboard to re-read it.
@@ -727,11 +769,16 @@ def apply_import_zip(
         "staging": staging_mode,
     }
 
-    # The extraction (up to the uncompressed cap) stages under the data home's
-    # ``staging`` leaf, on the install's own disk rather than a RAM-backed tmpfs ``/tmp``.
-    # This function runs off the event loop, so ``staging_dir()`` is no on-loop call.
-    # The uploaded ``.zip`` spool sits in its own directory of the same leaf.
-    with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
+    # Extraction stays on the data home's disk, but outside agent-writable staging.
+    # The sandbox precreates and masks this whole leaf before any agent starts.
+    # The upload spool and snapshot/restore staging keep their existing location.
+    # The hourly maintenance wake reclaims a crash orphan here (staging.sweep_staging).
+    private_staging = mc / IMPORT_STAGING_DIRNAME
+    if platform_compat.is_link_or_junction(private_staging):
+        raise ValueError("import staging directory is not a real directory")
+    private_staging.mkdir(mode=0o700, exist_ok=True)
+    platform_compat.restrict_dir_to_owner(private_staging)
+    with tempfile.TemporaryDirectory(dir=str(private_staging)) as work_str:
         work = Path(work_str)
         platform_compat.restrict_dir_to_owner(work)
 
@@ -742,12 +789,9 @@ def apply_import_zip(
                 raise ValueError(
                     f"Import archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})"
                 )
-            total_uncompressed = sum(i.file_size for i in infos)
-            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
-                raise ValueError(
-                    f"Import archive uncompressed size {total_uncompressed} exceeds cap "
-                    f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
-                )
+            size_problem = import_size_problem(infos, os.path.getsize(zip_path))
+            if size_problem is not None:
+                raise ValueError(size_problem)
             session_mtimes = _read_session_mtimes(zf)
             if not memory_only:
                 # The same one manifest the validator read decides the scope; a file
@@ -765,6 +809,8 @@ def apply_import_zip(
                 if _unsafe_member_name(info.filename):
                     continue
                 if _is_link_entry(info):
+                    continue
+                if _skipped_on_import(parts):
                     continue
                 if memory_only and not _is_memory_member(tuple(parts[1:])):
                     continue
@@ -792,8 +838,11 @@ def apply_import_zip(
         if len(snap_dirs) != 1:
             raise ValueError(f"Expected 1 top-level directory in zip, found {len(snap_dirs)}")
         snap = snap_dirs[0]
+        cleared: frozenset[str] = frozenset()
         if memory_only:
             summary["components"] = ["memory"]
+        else:
+            cleared = _move_home_paths(snap, summary)
 
         # Re-vet imported cron commands before ANY path below consumes
         # crons.json (merge, copy, or replace). An import archive is
@@ -845,8 +894,13 @@ def apply_import_zip(
                 excluded_file = snap / excluded_name
                 if excluded_file.exists():
                     excluded_file.unlink()
+            # Judged as if staged in the visible ``staging`` leaf, as before this extraction
+            # moved: the private leaf is itself a secret leaf, so its own path would mark
+            # every member sensitive, and the destination path would drop crons.json,
+            # crew-teams and named stores, which Replace restores.
+            neutral = staging_dir() / snap.name
             for fpath in snap.rglob("*"):
-                if fpath.is_file() and is_sensitive_path(str(fpath)):
+                if fpath.is_file() and is_sensitive_path(str(neutral / fpath.relative_to(snap))):
                     fpath.unlink()
             auto_dir = snap / "skills" / "auto"
             # ``is_link_or_junction`` FIRST, not a bare ``is_dir()``: a Windows
@@ -1019,7 +1073,10 @@ def apply_import_zip(
         # Both modes, and add-only in both: Replace restores the components it
         # names, and chats are not one of them, so an archive -- with chats or
         # without -- never deletes or overwrites a chat this install already has.
-        _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned)
+        # The chat folders follow the same rule (`dashboard.folder_portability`).
+        if not memory_only:
+            import_folders(snap, summary, folder_merge or merge_folders_on_disk(mc))
+        _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned, cleared=cleared)
 
     if agent_templates and not memory_only:
         _install_agent_templates(zip_path, sorted(set(agent_templates)), summary)
@@ -1085,11 +1142,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DASHBOARD_STEM_PREFIX,
         _DRIVE_PREFIX,
         _FILE_ATTRIBUTE_REPARSE_POINT,
+        _IMPORT_DISK_RESERVE,
+        _MAX_IMPORT_COMPRESSION_RATIO,
+        _MAX_IMPORT_UNCOMPRESSED_CEILING,
         _MAX_TRANSCRIPT_HEADER_BYTES,
         _SETTINGS_DOCUMENTS,
+        _SHRINK_HINT,
         _TRANSCRIPT_SUFFIX,
+        _gb,
+        _in_rebuildable_dir,
         _is_excluded,
         _keep_top_level_transcript,
+        _largest_folders,
         _transcript_stem,
     )
     from kiro_crew.portability_export import (  # noqa: F401

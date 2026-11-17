@@ -1,10 +1,10 @@
 ---
 title: Bounded-time restore for large sessions - tail window for fully read tabs, focus-first order, one walk for a slot's folds, and a CI fixture at the threshold
-status: partial
+status: implemented
 author: kirocrew agent session, directed by chenmingwei23
 created: 2026-11-12
-last-audited: 2026-11-12
-audited-at: 0feaa8be90
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 35916
 implementation-prs: [35960, 36141, 36259, 36035]
 tracking-issues: [35875]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Bounded-time restore for large sessions
 
-Status: partial. Accepted 2026-11-13 by maintainer chenmingwei23 (Mingwei) on #35875: https://github.com/kirodotdev/KiroCrew/issues/35875#issuecomment-6841428443. 1.2 and 1.1 are behaviour changes approved by this acceptance. This is part B of [#35875](https://github.com/kirodotdev/KiroCrew/issues/35875). Part A (readiness in the composer) is a separate document. Main-side references were read at `029b6db029`. The document changes no code.
+Status: implemented. All four parts are on main at `1d08e941b3`: 1.1 [#36259](https://github.com/kirodotdev/KiroCrew/pull/36259), 1.2 [#36141](https://github.com/kirodotdev/KiroCrew/pull/36141), 1.3 [#36035](https://github.com/kirodotdev/KiroCrew/pull/36035), 1.4 [#35960](https://github.com/kirodotdev/KiroCrew/pull/35960). Accepted 2026-11-13 by maintainer chenmingwei23 (Mingwei) on #35875: https://github.com/kirodotdev/KiroCrew/issues/35875#issuecomment-6841428443. 1.2 and 1.1 are behaviour changes approved by this acceptance. This is part B of [#35875](https://github.com/kirodotdev/KiroCrew/issues/35875). Part A (readiness in the composer) is a separate document. Main-side references were read at `029b6db029`. The document changes no code.
 
 ## Summary
 

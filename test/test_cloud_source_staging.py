@@ -409,7 +409,7 @@ class TestTarballStagingDirectory:
         message = str(caught.value)
         assert str(shared) in message, "the refusal must name the outermost problem"
         assert "shared with 3 other account(s)" in message, message
-        # A refusal the operator cannot act on is the bug this PR exists to remove.
+        # The refusal must be one the operator can act on.
         # The ownership test ran first, so this node is theirs or root's either way.
         assert f"chmod go-w {shared}" in message, "the refusal must name its own remedy"
         assert stat.S_IMODE(shared.stat().st_mode) == 0o775, "the launch rewrote the parent"
@@ -979,7 +979,7 @@ class TestWindowsStagingAncestorWalk:
     ):
         # The exemption applies ONLY to the volume root. A peer with DELETE on a
         # non-root ancestor can rename that entry away, so it must still refuse --
-        # the ordinary peer-writable-ancestor hazard this PR exists to catch.
+        # the ordinary peer-writable-ancestor hazard.
         root, data_home = self._relocated_chain(monkeypatch, tmp_path)
         mid = data_home.resolve().parent
         assert mid != root  # a genuine intermediate node, not the anchor

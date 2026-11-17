@@ -60,6 +60,7 @@ def _lesson_caller_slot_key(state: DashboardState, session_key: str) -> str:
             if session_key == effective_session_key(slot):
                 return slot.key
         except Exception:
+            # One slot that cannot resolve its key must not stop the search.
             continue
     return ""
 

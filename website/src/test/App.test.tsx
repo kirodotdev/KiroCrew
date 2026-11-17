@@ -104,6 +104,8 @@ vi.mock('../api/client', () => ({
       import_onboarded: true,
     }),
     updateThemeConfig: vi.fn().mockResolvedValue({}),
+    // The owner check behind first run (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn().mockResolvedValue(true),
     onboardingImportScan: vi.fn().mockResolvedValue({
       sources: [],
       skipped: [],
@@ -449,6 +451,167 @@ describe('App routing', () => {
       return api
     }
 
+    // A relay teammate's window loads the host's dashboard, whose first-run
+    // writes are owner-only: the chapters are the owner's to answer. The window
+    // is a fresh partition, so it has no local flags of its own either.
+    describe('in a tab that is not the owner', () => {
+      afterEach(async () => {
+        const { api } = await import('../api/client')
+        vi.mocked(api.viewerOwnerOk).mockReset().mockResolvedValue(true)
+        // Several cases here turn recording on; put the default (off) back so
+        // none of them decides whether a later case's changed notice is due.
+        vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+      })
+
+      it.each([
+        ['a relay teammate', () => Promise.resolve(false)],
+        ['an owner check that failed', () => Promise.reject(new Error('502'))],
+        ['a gateway that does not say', () => Promise.resolve(null)],
+      ])('never shows the Privacy notice to %s on a host whose ack is due', async (_who, ownerOk) => {
+        const api = await existingUser(0)
+        localStorage.clear()
+        vi.mocked(api.viewerOwnerOk).mockImplementation(ownerOk as never)
+        vi.mocked(api.patchConfig).mockClear()
+        // Recording on: the owner's own tab shows the notice here (test above).
+        vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: true, env_pinned: false } as never)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.viewerOwnerOk).toHaveBeenCalled())
+        await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
+        await shellSettled()
+        await act(async () => {})
+        expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+        expect(api.updateThemeConfig).not.toHaveBeenCalled()
+        expect(api.patchConfig).not.toHaveBeenCalled()
+      })
+
+      it('never opens first run for a relay teammate on a host that has not finished it', async () => {
+        const api = await freshFirstRun()
+        vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.viewerOwnerOk).toHaveBeenCalled())
+        await shellSettled()
+        await act(async () => {})
+        expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+        expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+        expect(api.updateThemeConfig).not.toHaveBeenCalled()
+      })
+
+      it('does not seed the Customize tour from local flags while the owner check is unanswered', async () => {
+        const { api } = await import('../api/client')
+        localStorage.clear()
+        // This browser finished Import and Privacy but not the tour.
+        localStorage.setItem('mc-import-onboarded', '1')
+        localStorage.setItem('mc-privacy-acked', '1')
+        vi.mocked(api.themeBoot).mockResolvedValue({
+          mode: '', color: '', onboarded: false, import_onboarded: true, privacy_acked: true,
+        } as never)
+        vi.mocked(api.viewerOwnerOk).mockImplementation(() => new Promise(() => {}))
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
+        // The owner read never answers, so it is the one fetch still held.
+        await shellSettled(1)
+        await act(async () => {})
+        expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+      })
+
+      it('keeps a tour /onboarding opened before the owner check answered open once it answers', async () => {
+        // An owner who finished first run replays it while /api/auth/me is still out.
+        const api = await existingUser(0)
+        // Recording off: no changed notice comes due when the owner answers.
+        vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+        let answerOwner: (ok: boolean) => void = () => {}
+        vi.mocked(api.viewerOwnerOk).mockImplementation(() => new Promise<boolean>(resolve => { answerOwner = resolve }) as never)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
+        await waitFor(() => expect(api.viewerOwnerOk).toHaveBeenCalled())
+        act(() => { window.dispatchEvent(new CustomEvent('mc-start-import', { detail: { continueOnboarding: true } })) })
+        // Chain: the replay -> the importer -> its empty scan passes by itself -> Customize.
+        expect(await screen.findByText('Pick your look', {}, { timeout: 5000 })).toBeInTheDocument()
+
+        await act(async () => { answerOwner(true) })
+        // The answer readies first run, and the changed-notice check then reads
+        // usage: past this call the chapters' derive has run on the answer.
+        await waitFor(() => expect(api.collectionStatus).toHaveBeenCalled())
+        await act(async () => {})
+        expect(screen.getByText('Pick your look')).toBeInTheDocument()
+      })
+
+      it('sets that tour aside for a changed notice the answer makes due, and hands back to it', async () => {
+        const api = await existingUser(0)
+        // Recording on: once the owner answers, the changed notice is due.
+        vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: true, env_pinned: false } as never)
+        let answerOwner: (ok: boolean) => void = () => {}
+        vi.mocked(api.viewerOwnerOk).mockImplementation(() => new Promise<boolean>(resolve => { answerOwner = resolve }) as never)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
+        await waitFor(() => expect(api.viewerOwnerOk).toHaveBeenCalled())
+        act(() => { window.dispatchEvent(new CustomEvent('mc-start-import', { detail: { continueOnboarding: true } })) })
+        expect(await screen.findByText('Pick your look', {}, { timeout: 5000 })).toBeInTheDocument()
+
+        await act(async () => { answerOwner(true) })
+        // One chapter at a time: Privacy opens and the tour steps aside.
+        const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+        await waitFor(() => expect(screen.queryByText('Pick your look')).not.toBeInTheDocument())
+        fireEvent.click(await keepOnWhenReady(dialog))
+
+        await waitFor(() =>
+          expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 3 }))
+        expect(await screen.findByText('Pick your look', {}, { timeout: 5000 })).toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+      })
+
+      it('says a failed owner check holds first run, and Try again opens it once the owner answers', async () => {
+        const api = await freshFirstRun()
+        vi.mocked(api.viewerOwnerOk).mockRejectedValueOnce(new Error('502')).mockResolvedValue(true)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        const notice = await screen.findByTestId('first-run-owner-check-error')
+        expect(within(notice).getByText(/Couldn't confirm this is your Crew/)).toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+
+        fireEvent.click(within(notice).getByRole('button', { name: 'Try again' }))
+        await waitFor(() => expect(screen.queryByTestId('first-run-owner-check-error')).not.toBeInTheDocument())
+        // The owner's first run then goes on: Import (nothing found) hands to Privacy.
+        expect(await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })).toBeInTheDocument()
+      })
+
+      it('lets the on-hold notice be dismissed, so it never keeps the composer covered', async () => {
+        const api = await freshFirstRun()
+        vi.mocked(api.viewerOwnerOk).mockRejectedValue(new Error('502'))
+        renderWithProviders(<App />, { route: '/chat' })
+
+        const notice = await screen.findByTestId('first-run-owner-check-error')
+        fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+        await waitFor(() => expect(screen.queryByTestId('first-run-owner-check-error')).not.toBeInTheDocument())
+        expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+      })
+
+      it('shows no on-hold notice when a refetch fails after the check already answered', async () => {
+        // react-query hands the failed refetch to the hook on a zero-delay timer
+        // (its notifyManager), after refetchQueries resolves; the notice itself has
+        // no delay. On a fake clock, advancing by 0 delivers it, so the check below
+        // sees the state the refetch left, not the one before it.
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const api = await freshFirstRun()
+        vi.mocked(api.viewerOwnerOk).mockResolvedValueOnce(true).mockRejectedValue(new Error('502'))
+        renderWithProviders(<App />, { route: '/chat' })
+
+        expect(await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })).toBeInTheDocument()
+        // A later refetch fails (a gateway restart, say); the answer it had stands.
+        await act(async () => { await rendered.queryClient.refetchQueries({ queryKey: ['shared-crew', 'viewer', 'owner-ok'] }) })
+        expect(api.viewerOwnerOk).toHaveBeenCalledTimes(2)
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+        expect(screen.queryByTestId('first-run-owner-check-error')).not.toBeInTheDocument()
+        expect(screen.getByRole('dialog', { name: 'Privacy' })).toBeInTheDocument()
+      })
+    })
+
     it('shows the changed notice once to an existing user, and Keep on closes it', async () => {
       const api = await existingUser(0)
       vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: true, env_pinned: false } as never)
@@ -459,12 +622,23 @@ describe('App routing', () => {
       fireEvent.click(await keepOnWhenReady(dialog))
 
       await waitFor(() =>
-        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 2 }))
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 3 }))
       await waitFor(() =>
         expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument())
       // An existing user is not sent back through the tour.
       expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
       expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+    })
+
+    it('shows the off form once to a user off only by an older build\'s written false', async () => {
+      const api = await existingUser(0)
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false, off_offer: true } as never)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+      expect(within(dialog).getByRole('heading', { name: 'Performance metrics are off' })).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Turn on performance metrics' })).toBeInTheDocument()
       vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
     })
 
@@ -567,7 +741,7 @@ describe('App routing', () => {
     })
 
     it('does not show the notice again once the current version is acknowledged', async () => {
-      const api = await existingUser(2)
+      const api = await existingUser(3)
       renderWithProviders(<App />, { route: '/chat' })
 
       await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
@@ -1453,8 +1627,8 @@ describe('App routing', () => {
     const GROUP_GAP = 6
     const SHIFT_LABELED = Math.ceil(PILL_WIDEST_LABELED + GROUP_GAP)
     // The capsule is a Liquid Glass host whose effect layers precede the
-    // segments, so the rung skips `[data-liquid-glass-layer]` on both sides.
-    const TERMINAL = '.tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer])'
+    // segments, so the rung hides what follows the connection dot.
+    const TERMINAL = '.tb-capsule > .tb-capsule-keep ~ *'
     // ≥640px (label visible): every rung, terminal included, shifts by the
     // labeled footprint, inside the media gate.
     for (const sel of ['.tb-drop-metrics', '.tb-drop-usage', '.tb-drop-feedback', TERMINAL]) {

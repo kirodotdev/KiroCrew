@@ -191,6 +191,8 @@ def _apply_through_gateway(
             _refuse_session_approval_from_cli(subject)
         # A refusal that already ends its sentence would otherwise print "..".
         print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
+        for line in app_lifecycle_client.gateway_version_lines(exc.gateway_version, refused=True):
+            print(line, file=sys.stderr)
         sys.exit(1)
     if result is None:
         return False
@@ -233,6 +235,31 @@ def _register_unrecorded_builtin(app_name: str) -> None:
 
     if app_name in shipped_builtin_names() and get_app(app_name) is None:
         register_builtin_apps()
+
+
+def _set_folded_app_switch(app_name: str, *, on: bool) -> bool:
+    """Answer ``app enable``/``app disable`` for a built-in that folded into a setting.
+
+    True when *app_name* was such a built-in and its setting was written, so the
+    command is done. A running gateway reads the file through its live config
+    watcher, which refreshes every open dashboard.
+    """
+    # Call-time import: a module-level import would make this module serve the
+    # name through the ``cli_commands`` facade it does not own.
+    from kiro_crew.apps.builtin_fold import set_folded_switch
+
+    try:
+        path = set_folded_switch(app_name, on)
+    except Exception as exc:  # noqa: BLE001 - reported, never a traceback
+        print(f"❌ Could not save the setting that replaced {app_name}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if path is None:
+        return False
+    print(
+        f"✅ {app_name} is part of Kiro Crew now, switched by the {path} setting; "
+        f"turned it {'on' if on else 'off'}."
+    )
+    return True
 
 
 def _refuse_unsafe_app_name(app_name: str) -> None:
@@ -682,6 +709,8 @@ def _handle_app(args: argparse.Namespace) -> None:
             )
 
     elif action == "enable":
+        if _set_folded_app_switch(args.name, on=True):
+            return
         if _run_app_action_through_gateway("enable", args.name):
             return
         _register_unrecorded_builtin(args.name)
@@ -744,6 +773,8 @@ def _handle_app(args: argparse.Namespace) -> None:
 
     elif action == "disable":
         _refuse_unsafe_app_name(args.name)
+        if _set_folded_app_switch(args.name, on=False):
+            return
         if _run_app_action_through_gateway("disable", args.name):
             return
         _register_unrecorded_builtin(args.name)

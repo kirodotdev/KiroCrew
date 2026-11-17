@@ -45,6 +45,7 @@ from kiro_crew.onboarding_scan import (
     _Item,
     _read_json,
     _read_text,
+    _refuses_text,
     _sanitize_text,
     _Scan,
     _skill_package,
@@ -398,7 +399,7 @@ def _sanitize_mcp_spec(
             scan.diagnostic("mcp_servers", "unsupported_mcp_schema", unsupported=True)
             return None
         cleaned = _sanitize_text(command.strip(), scan)
-        if cleaned != command.strip() or len(cleaned) > 2048:
+        if cleaned != command.strip() or len(cleaned) > 2048 or _refuses_text(command.strip()):
             scan.diagnostic("mcp_servers", "credential_bearing_server")
             return None
         result["command"] = cleaned
@@ -426,7 +427,7 @@ def _sanitize_mcp_spec(
                 scan.diagnostic("mcp_servers", "credential_bearing_server")
                 return None
             cleaned_arg = _sanitize_text(arg, scan)
-            if cleaned_arg != arg:
+            if cleaned_arg != arg or _refuses_text(arg):
                 scan.diagnostic("mcp_servers", "credential_bearing_server")
                 return None
             safe_args.append(arg)
@@ -605,7 +606,7 @@ def _add_memory_files(scan: _Scan, paths: list[tuple[Path, Path]]) -> None:
         # _sanitize_text truncates to _MAX_TEXT_CHARS before redacting, so compare
         # against the same truncated baseline: only an actual redaction (credential
         # removed) should drop the file, not the size-cap truncation of a clean one.
-        if cleaned != content[:_MAX_TEXT_CHARS].strip():
+        if cleaned != content[:_MAX_TEXT_CHARS].strip() or _refuses_text(content):
             scan.diagnostic("memories", "credential_bearing_memory")
             continue
         if contains_injection(cleaned):
@@ -740,7 +741,7 @@ def _add_instruction_text(scan: _Scan, content: str, origin: str) -> bool:
     cleaned = _sanitize_text(content, scan)
     # Mirror the memory gate: only an actual redaction drops the document, not
     # the size-cap truncation of an otherwise clean one.
-    if cleaned != content[:_MAX_TEXT_CHARS].strip():
+    if cleaned != content[:_MAX_TEXT_CHARS].strip() or _refuses_text(content):
         scan.diagnostic("instructions", "credential_bearing_instruction")
         return True
     if contains_injection(cleaned):
@@ -794,7 +795,7 @@ def _add_db_directive(scan: _Scan, key: str, value: Any) -> None:
     # credential, so drop it (mirroring _add_instruction_files); a mere size
     # truncation is not a reason to drop.
     cleaned = _sanitize_text(rule, scan)
-    if cleaned != rule[:_MAX_TEXT_CHARS].strip():
+    if cleaned != rule[:_MAX_TEXT_CHARS].strip() or _refuses_text(rule):
         scan.diagnostic("instructions", "credential_bearing_instruction")
         return
     if contains_injection(cleaned):
@@ -877,7 +878,7 @@ def _schedule_from_record(record: Any, scan: _Scan) -> dict[str, Any] | None:
     secrets_before = scan.secret_count
     name_clean = _sanitize_text(name, scan)[:200]
     message_clean = _sanitize_text(message, scan)
-    if scan.secret_count > secrets_before:
+    if scan.secret_count > secrets_before or _refuses_text(name) or _refuses_text(message):
         scan.diagnostic("schedules", "credential_bearing_schedule")
         return None
     if not name_clean or not message_clean:

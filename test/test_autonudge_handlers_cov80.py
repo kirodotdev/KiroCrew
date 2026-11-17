@@ -448,7 +448,7 @@ async def test_monitor_list_excludes_persistence_only_fields(
         "review_decision": "approved",
         "review_threads_complete": True,
         "state": "open",
-        "target": f"github.com/acme/widgets#7?token={secret}",
+        "target": f"https://github.com/acme/widgets/pull/7?token={secret}",
         "unresolved_review_threads": 0,
     }
     _svc(monkeypatch, _FakeSvc([loop]))
@@ -1482,7 +1482,7 @@ async def test_start_400_on_undecodable_body(monkeypatch: pytest.MonkeyPatch) ->
     _svc(monkeypatch, _FakeSvc())
     response = await h.api_autonudge_start(_mk("POST", "/api/autonudge", body=None))
     assert response.status == 400
-    assert _body(response) == {"error": "invalid JSON"}
+    assert _body(response) == {"error": "invalid JSON", "code": "invalid_json"}
 
 
 @pytest.mark.asyncio
@@ -1646,7 +1646,7 @@ async def test_update_400_on_undecodable_body(monkeypatch: pytest.MonkeyPatch) -
     request = _mk("PATCH", "/api/autonudge/lp-1", match={"loop_id": "lp-1"}, body=None)
     response = await h.api_autonudge_update(request)
     assert response.status == 400
-    assert _body(response) == {"error": "invalid JSON"}
+    assert _body(response) == {"error": "invalid JSON", "code": "invalid_json"}
 
 
 @pytest.mark.asyncio

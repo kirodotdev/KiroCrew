@@ -11,6 +11,7 @@ import asyncio
 import gc
 import inspect
 import logging
+import sys
 import threading
 import time
 
@@ -387,25 +388,67 @@ def test_a_slow_writer_costs_memory_not_a_record_and_not_the_loop(monkeypatch):
     assert_drained()
     original = lg.CrewLog.append
     release = threading.Event()
+    producer = threading.get_ident()
+    producer_appends: list[int] = []
+    writer_gave_up = threading.Event()
 
     def _held(self, *args, **kwargs):
+        if threading.get_ident() == producer:
+            # The producer wrote for itself. Record it and do not hold it, so the
+            # test fails by name below instead of sitting out the hold.
+            producer_appends.append(1)
+            return original(self, *args, **kwargs)
         # The writer is stuck for the whole burst, so this measures the producer
-        # alone rather than a race with a writer that might be keeping up.
-        assert release.wait(20.0)
+        # alone rather than a race with a writer that might be keeping up. Only the
+        # producer sets ``release``, after its burst: a producer that waited on this
+        # writer leaves the hold to run out, which is what ``writer_gave_up`` reads.
+        # The hold is the lost-run bound: only a producer that waits on this writer
+        # (or a host stalled for that long) lets it run out.
+        if not release.wait(default_timeout()):
+            writer_gave_up.set()
+            release.set()  # held once is the evidence; let the rest drain
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(lg.CrewLog, "append", _held)
+    # Any timed or untimed wait the producer makes on its own thread during the
+    # burst: Event.wait, Queue.put(block=True) and Future.result all park in
+    # Condition.wait, and a poll loop parks in time.sleep. Seen through a profile
+    # hook on THIS thread only (``sys.setprofile`` is per-thread), so no other
+    # thread in the worker runs this test's instrumentation.
+    producer_waits: list[str] = []
+    cond_wait = threading.Condition.wait.__code__
+    thread_start = threading.Thread.start.__code__
+    real_sleep = time.sleep
+
+    def _profile(frame, event, arg):  # type: ignore[no-untyped-def]
+        if event == "c_call" and arg is real_sleep:
+            producer_waits.append("time.sleep")
+        elif event == "call" and frame.f_code is cond_wait:
+            timeout = frame.f_locals.get("timeout")
+            # Thread.start parks until the new thread runs: the writer pool
+            # spawning its drain thread, not a wait on the writer's progress.
+            callers = (frame.f_back, frame.f_back.f_back if frame.f_back else None)
+            spawning = any(f is not None and f.f_code is thread_start for f in callers)
+            if timeout != 0 and not spawning:
+                producer_waits.append(f"Condition.wait({timeout})")
 
     async def _flood() -> None:
-        started = time.monotonic()
-        for n in range(40):
-            emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
-        elapsed = time.monotonic() - started
-        # The writer holds the very first append for 20s. A producer that waited
-        # on it, or wrote for itself, could not get through 40 emits in under a
-        # second.
-        # flake-ok: pre-existing 1 s real-time ceiling on 40 emits while the writer is held for 20 s, moved verbatim; tracked for a de-flake pass
-        assert elapsed < 1.0, f"the producer blocked for {elapsed:.2f}s"
+        previous = sys.getprofile()
+        sys.setprofile(_profile)
+        try:
+            for n in range(40):
+                emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
+        finally:
+            sys.setprofile(previous)
+        # The writer holds the very first append until ``release``. A producer that
+        # waited on it could not get through 40 emits before the hold ran out; one
+        # that wrote for itself shows up on its own thread.
+        assert not producer_waits, f"the producer waited: {producer_waits[:3]}"
+        # The hold is the lost-run bound (half the test's timeout), not a budget: it
+        # runs out only if the burst took that long, which the profile checks above
+        # would name first for any wait they can see.
+        assert not writer_gave_up.is_set(), "lost run: the burst outlasted the held writer"
+        assert producer_appends == [], "the producer wrote to the file itself"
         assert emit.buffered_writes() > 0, "nothing was buffered -- the writer kept up"
         release.set()
         # The drain is 40 fsynced appends, so its length is the host's disk speed:

@@ -17,6 +17,7 @@ head notice is invisible to the receipt digest, so a committed sub-slice replays
 cleanly across the migration.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -159,11 +160,11 @@ class TestASubSliceReceiptSurvivesAHeadNoticeMigration:
             # durable sub-offset advance is made durable: reset the sub-offset to
             # the pre-advance snapshot value (0) so the next pass recomputes the
             # SAME source_id and finds the committed receipt -- the replay path.
-            with history_mod.allow_on_loop_persist():
-                log.update_metadata(
-                    KEY,
-                    {"consolidation_sub_offset": 0, "consolidation_retry_at": 0.0},
-                )
+            await asyncio.to_thread(
+                log.update_metadata,
+                KEY,
+                {"consolidation_sub_offset": 0, "consolidation_retry_at": 0.0},
+            )
 
             # A one-time orphan-transcript migration drops an older display-only
             # notice in at the marker. Generation and marker are unchanged.
@@ -178,8 +179,9 @@ class TestASubSliceReceiptSurvivesAHeadNoticeMigration:
             with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})):
                 passes = 0
                 while log.unconsolidated_count(KEY) and passes < 10:
-                    with history_mod.allow_on_loop_persist():
-                        log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                    await asyncio.to_thread(
+                        log.update_metadata, KEY, {"consolidation_retry_at": 0.0}
+                    )
                     await c._consolidate(KEY, include_history=True)
                     passes += 1
 
@@ -208,8 +210,9 @@ class TestASubSliceReceiptSurvivesAHeadNoticeMigration:
             passes = 0
             with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})):
                 while log.unconsolidated_count(KEY) and passes < 8:
-                    with history_mod.allow_on_loop_persist():
-                        log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                    await asyncio.to_thread(
+                        log.update_metadata, KEY, {"consolidation_retry_at": 0.0}
+                    )
                     await c._consolidate(KEY, include_history=True)
                     passes += 1
             assert log.unconsolidated_count(KEY) == 0, "the head drained"
@@ -220,11 +223,9 @@ class TestASubSliceReceiptSurvivesAHeadNoticeMigration:
             # then migrate a notice in and replay. (The committed final-slice
             # receipt is still in the store.)
             final_sub = store  # receipts kept
-            with history_mod.allow_on_loop_persist():
-                log.update_metadata(
-                    KEY,
-                    {"last_consolidated": 0, "consolidation_retry_at": 0.0},
-                )
+            await asyncio.to_thread(
+                log.update_metadata, KEY, {"last_consolidated": 0, "consolidation_retry_at": 0.0}
+            )
             _inject_head_notice(log, "AutoNudge: earlier reminder")
 
             with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})):
@@ -232,8 +233,9 @@ class TestASubSliceReceiptSurvivesAHeadNoticeMigration:
                 # end consolidated.
                 passes = 0
                 while log.unconsolidated_count(KEY) and passes < 8:
-                    with history_mod.allow_on_loop_persist():
-                        log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                    await asyncio.to_thread(
+                        log.update_metadata, KEY, {"consolidation_retry_at": 0.0}
+                    )
                     await c._consolidate(KEY, include_history=True)
                     passes += 1
             assert log.unconsolidated_count(KEY) == 0, "the head re-drains without wedging"

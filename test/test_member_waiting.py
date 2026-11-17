@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from kiro_crew.dashboard import member_waiting
 from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 ASK = "Open a PR for the docs fix? [OPTIONS: Open the PR | Not yet]"
 
@@ -99,7 +100,7 @@ def test_an_older_card_sorts_after_a_newer_message():
 
 
 def test_the_list_is_bounded_and_redacted():
-    token = "ghp_" + "a" * 36
+    token = github_classic(seed=97)  # a ghp_ without a valid checksum is no token
     rows = [
         _said(f"Use {token}? [OPTIONS: Yes | No]", f"2026-10-18T18:{m:02d}:00+00:00")
         for m in range(10)

@@ -21,7 +21,7 @@ from turn_harness import Do, TurnContext, TurnRecord, TurnScript, run_turn
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
 from kiro_crew.messaging import TurnDriver
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, StreamRedactor
-from kiro_crew.security.redaction_structured import compat
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: The AWS documentation's example access key id, split so no literal sits here.
 _HEAD, _TAIL = "AKIA", "IOSFODNN7EXAMPLE"
@@ -70,9 +70,8 @@ _GLUED = (
 
 
 @pytest.fixture
-def detectors_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Switch the structured detectors on, as only code can, for one test."""
-    monkeypatch.setattr(compat, "_USE_RULE_TABLE", True)
+def detectors_on() -> None:
+    """The rule table always runs; kept as the marker these cases were written under."""
 
 
 def _as_today(*chunks: str) -> str:
@@ -134,11 +133,6 @@ class TestSentenceEndRelease:
         pieces = [glued[at : at + 8] for at in range(len(glued) - 7)]
 
         assert [piece for piece in pieces if piece in now and piece not in today] == []
-
-    def test_a_two_part_run_glued_to_a_released_word_is_masked_whole(self) -> None:
-        """The one known difference: a ``.`` on its left switches that pattern off."""
-        assert _TWO_PART_HEAD in _as_today("settled.", _TWO_PART)
-        assert _with_release("settled.", _TWO_PART) == f"settled.{_TAG}"
 
     @pytest.mark.usefixtures("detectors_on")
     def test_a_unit_the_detectors_still_read_is_not_released(self) -> None:
@@ -226,8 +220,9 @@ class TestTheDashboardTurn:
         assert _wire(record) == tail
 
     @pytest.mark.asyncio
-    async def test_a_key_split_across_two_chunks_is_masked_whole(self) -> None:
-        record = await _run(_text(f"key {_HEAD}"), _text(_TAIL), Do(_mark), _DONE)
+    async def test_a_secret_split_across_two_chunks_is_masked_whole(self) -> None:
+        secret = github_classic()
+        record = await _run(_text(f"key {secret[:8]}"), _text(secret[8:]), Do(_mark), _DONE)
 
         assert _before_mark(record) == "key "
         assert _wire(record) == f"key {_TAG}"

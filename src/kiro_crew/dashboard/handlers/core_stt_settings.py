@@ -223,7 +223,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         # Every field read below is a membership test followed by a subscript, and
         # a JSON array satisfies `"model" in body` while `body["model"]` raises
         # TypeError — a 500 out of a partial-update endpoint, and out of the

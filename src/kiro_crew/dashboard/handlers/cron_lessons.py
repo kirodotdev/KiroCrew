@@ -52,6 +52,7 @@ from kiro_crew.project_scope import (
     scope_is_admissible,
     scope_selector_is_inadmissible,
 )
+from kiro_crew.security import refuses
 from kiro_crew.validation import (
     ALLOWED_LESSON_SCOPES,
     LEARN_ADD_SCHEMA,
@@ -431,6 +432,26 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.create")
     if refusal is not None:
         return refusal
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, sk or None)
+    if memory_route.replaces:
+        if replaces is not None:
+            return _lesson_replace_refusal("replace_vector_unsupported")
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.create(
+            state,
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=sk,
+            rule=rule,
+            category=category,
+            negative=negative,
+            repo_scope=repo_scope,
+            applies=applies,
+            written_by=written_by,
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
@@ -703,7 +724,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # predicate, the blocked-content screen and the row cap -- and all answer
         # with the bare ``refused`` string, so the cause has to be re-derived here.
         # Re-running the predicates is exact rather than a guess: they are the same
-        # pure-text calls the store made, and ``_lesson_withheld`` above re-derives
+        # pure-text calls the store made, and the listing's ``_safe_lesson`` re-derives
         # the first the same way for its own surface. Reporting every refusal as
         # ``volatile_session_fact`` told a user at the row cap to reword a rule
         # whose wording was never the problem. The blocked-content reason is the
@@ -971,6 +992,23 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.delete")
     if refusal is not None:
         return refusal
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, sk or None)
+    if memory_route.replaces:
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.delete(
+            state,
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=sk,
+            rule=rule_sub,
+            repo_scope=repo_scope,
+            scoped=_rs is not _no_scope_key,
+            exact=exact,
+            keep_one=keep_one,
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
@@ -1101,6 +1139,22 @@ async def api_lessons_update(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.update")
     if refusal is not None:
         return refusal
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, sk or None)
+    if memory_route.replaces:
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.update(
+            state,
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=sk,
+            rule=cleaned["rule"],
+            repo_scope=cleaned.get("repo_scope"),
+            current=cleaned["current"],
+            applies=cleaned["applies"],
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
@@ -1208,7 +1262,7 @@ def _lesson_scope_selector(stored: object) -> str | None:
     # no real row.
     if any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in selector):
         return None
-    if _redact_memory_field(selector) != selector:
+    if refuses(selector, _redact_memory_field):
         return None
     return selector
 
@@ -1352,6 +1406,20 @@ async def api_lessons(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.list")
     if refusal is not None:
         return refusal
+    list_key = request.headers.get("X-Session-Key", "")
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, list_key or None)
+    if memory_route.replaces:
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.list_page(
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=list_key,
+            limit=limit,
+            offset=offset,
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal

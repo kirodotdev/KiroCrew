@@ -11,7 +11,10 @@ import './lib/installBasePath'
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
 import { startMemoryWatch } from './lib/memoryWatch'
-import React, { StrictMode, Suspense, lazy } from 'react'
+// Side effect only: when the slow frame log is on (Settings > Developer > Debug
+// tools), it starts here so it sees the page load. Off, it creates no observer.
+import './dev/slowFrameLog'
+import React, { StrictMode, Suspense, lazy, startTransition } from 'react'
 import { createRoot } from 'react-dom/client'
 import { withCommitProfiler, installCommitProfilerConsoleApi } from './lib/commitProfiler'
 import { Provider } from 'react-redux'
@@ -332,7 +335,12 @@ function boot(startSync: boolean): void {
   // definition for how the language is reconciled first).
   void catalogReady.then(() => {
     announceBoot('render')
-    createRoot(document.getElementById('root')!).render(<AppMotionConfig>{rootTree}</AppMotionConfig>)
+    const root = createRoot(document.getElementById('root')!)
+    // The first render of the whole app is one long task when it runs
+    // synchronously. As a transition React renders it in slices and yields
+    // to the browser between them. Nothing is on screen to keep responsive yet,
+    // so the only visible effect is that this render no longer blocks input.
+    startTransition(() => { root.render(<AppMotionConfig>{rootTree}</AppMotionConfig>) })
     if (startSync) startUiPrefsSync()
   })
 }

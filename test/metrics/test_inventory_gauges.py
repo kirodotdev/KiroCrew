@@ -347,8 +347,26 @@ def test_config_toggles_reports_zero_and_one():
     with patch.object(KiroCrewConfig, "load", return_value=cfg):
         toggles = ig.read_config_toggles()
     assert toggles
-    assert set(toggles) == {key for key, _, _ in ig.CONFIG_TOGGLES}
+    assert set(toggles) == {key for key, _, _ in ig.CONFIG_TOGGLES} | {
+        ig.PREVIEW_CHAT_RUNTIME_SHARING_KEY
+    }
     assert set(toggles.values()) <= {0, 1}
+
+
+def test_preview_toggle_reports_the_chat_runtime_sharing_preview():
+    """Adoption of the preview reads 1 only when stored True, and 0 in an LTS build."""
+    from kiro_crew.acp.chat_runtime_sharing import CHAT_RUNTIME_SHARING_PREVIEW
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    key = ig.PREVIEW_CHAT_RUNTIME_SHARING_KEY
+    cfg = KiroCrewConfig()
+    with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        assert ig.read_config_toggles()[key] == 0
+    cfg.dashboard.feature_previews = {CHAT_RUNTIME_SHARING_PREVIEW: True}
+    with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        assert ig.read_config_toggles()[key] == 1
+        with patch("kiro_crew.edition_locks.local_enable_locked", return_value=True):
+            assert ig.read_config_toggles()[key] == 0
 
 
 def test_config_toggles_omits_an_unresolvable_key():
@@ -357,7 +375,7 @@ def test_config_toggles_omits_an_unresolvable_key():
     cfg = KiroCrewConfig()
     with patch.object(ig, "CONFIG_TOGGLES", (("ghost", "telemetry", "no_such_field"),)):
         with patch.object(KiroCrewConfig, "load", return_value=cfg):
-            assert ig.read_config_toggles() is None
+            assert "ghost" not in ig.read_config_toggles()
 
 
 # ---------------------------------------------------------------------------

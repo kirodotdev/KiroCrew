@@ -184,7 +184,7 @@ def test_the_server_instructions_point_at_the_line_instead_of_a_refused_try() ->
 @pytest.mark.parametrize(
     "path",
     [
-        _SRC / "builtin_skills" / "goal-conductor" / "SKILL.md",
+        _SRC / "builtin_skills" / "goal-conductor" / "references" / "manual-dispatch.md",
         _SRC / "builtin_skills" / "team-lead" / "SKILL.md",
         _SRC / "builtin_skills" / "pipeline-conductor" / "SKILL.md",
         _SRC / "builtin_skills" / "security-conductor" / "SKILL.md",

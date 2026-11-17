@@ -11,11 +11,10 @@ Both are pure/local (no ``gh`` calls): ``list_issue_timeline`` is exercised by
 monkeypatching ``_run_gh_api`` so the sort/drop pipeline is tested without a
 subprocess.
 """
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import store
@@ -115,11 +114,14 @@ class TestListIssueTimeline(unittest.TestCase):
 
 
 class TestIssueDetailCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_roundtrip(self):
         detail = {"number": 7, "title": "t", "body": "b"}

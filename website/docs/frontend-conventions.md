@@ -39,6 +39,19 @@ commit that touches it. The API needs Chrome/Edge 105, Safari 17.2 or Firefox
 140; older browsers paint no highlight, while match counting and stepping to
 the current match keep working (`utils/domHighlight.ts`).
 
+A `::highlight()` rule is attached to a class (`.code-block::highlight(…)`) or
+limited to `[data-hl-scope]`, written for the scope element and its descendants
+both: `[data-hl-scope]::highlight(name), [data-hl-scope] ::highlight(name)`. A
+bare `::highlight(name)` matches every element of the page, so every style
+recalc builds a highlight style for the sidebar, the menus and the rest of the
+chrome, where nothing is ever highlighted. `data-hl-scope` goes on the element
+a registrar walks for text: the chat bubbles, the previews `ContentRenderer`
+renders, the remote artifact body. Ranges registered outside one paint
+nothing, so a new registrar marks its root. Firefox and Safari do not pass a
+highlight style down to descendants, so neither `:root::highlight(name)` nor
+the scope element alone is enough. `src/test/styleRecalcScope.test.ts` enforces
+the selector shape and the attribute on each root.
+
 Pierre draws a fenced code block into a shadow root. A `TreeWalker` never
 enters it, and a document selection reports a drag inside it as collapsed.
 `utils/pierreShadow.ts` therefore reads the block's source lines for the preview
@@ -63,6 +76,10 @@ hand-rolling:
 There is deliberately no `Select` primitive: use `SimpleSelect`,
 `SettingsSelect`, `SearchableSelect`, or `SettingsMultiSelect` for a searchable
 checkbox list in Settings.
+
+`SettingsToggle` accepts a `labelBadge` for status such as Preview, placed after
+the label and before its info tip. Keep `label` plain text so settings search and
+the switch's accessible name remain unchanged.
 
 `SimpleSelect` accepts optional decorative `optionIcons` alongside its text
 labels. Desktop rows and the selected value show those identities; touch devices
@@ -241,7 +258,7 @@ and every other concern has one owner under `components/markdown/`.
 | `markdown/MarkdownTable.tsx` | a table, its Markdown / CSV copy row, and the Widen / Narrow toggle |
 | `markdown/useMarkdownTableColumns.tsx` | resizable table columns (the second `ColumnResizer` consumer) |
 | `markdown/markdownSniff.ts` | whether an untagged or generic-tagged fence holds a markdown document, so the transcript may offer it the Formatted \| Raw card |
-| `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images (local-path routing, the layout reserve, the broken-image chip) and the click-to-load gate for remote images, video and audio |
+| `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images and local video and audio players (local-path routing, the layout reserve for an image or a video, the broken-image chip) and the click-to-load gate for remote images, video and audio |
 | `markdown/MermaidBlock.tsx` | lazily loaded mermaid, its `initialize` config (`securityLevel: 'strict'`), and the diagram's box and font gates, source view and downloads |
 | `markdown/Lightbox.tsx` | the image viewer and `dispatchLightbox` |
 
@@ -969,6 +986,28 @@ files own it:
   directory are imported by `main.tsx` instead. A test that measures the
   stylesheet's source text reads it through `src/test/indexCssSource.ts`
   (`readIndexCss()`), which splices every partial in at its import.
+
+  No selector may continue past a `[style…]` attribute match (`[style*="x"] .y`).
+  Chrome keys such a rule on the `style` attribute, so every inline style write on
+  any element (each Framer animation frame, a drawer drag) restyles that element's
+  whole subtree. Anchor on a data attribute instead, as `cli-mode.css` does with
+  `[data-chat-scope]`. `src/test/styleAttributeSelectorAnchor.test.ts` enforces it.
+
+  Three more rules keep one inserted node from restyling the whole app. Every
+  Radix layer inserts a focus guard at the start of `<body>` when it opens, so
+  each of these costs a full style recalc per open and per close;
+  `src/test/styleRecalcScope.test.ts` enforces them.
+  - No sibling combinator between two compounds that name no class, id, tag or
+    attribute (`* + *`, `:not(…) ~ :not(…)`, the `[&>*+*]:` variant). Chrome has
+    nothing to key such a rule on, so a node inserted anywhere restyles the whole
+    subtree of the elements after it. Write "all but the first" as
+    `:not(:first-child)`, or give the left side a class.
+  - `#root` is never the first element of `<body>` (`index.html` keeps an empty
+    hidden element before it): the element that loses `:first-child` to the focus
+    guard has its subtree restyled.
+  - The custom property the scroll lock writes on `<body>`
+    (`--removed-body-scroll-bar-size`) stays registered with `@property` as
+    non-inherited. Unregistered, it inherits to every element.
 
 The build runs through `@tailwindcss/vite`; there is no PostCSS config. A
 downstream edition's sources are added to the content scan by

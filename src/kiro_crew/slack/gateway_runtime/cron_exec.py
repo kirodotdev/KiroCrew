@@ -693,7 +693,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         elif status == "done":
             msg = result.get("message")
             # Any JSON type may arrive: redact() takes text, and an empty value sends nothing.
-            msg = "" if not msg else msg if isinstance(msg, str) else str(msg)
+            if msg and not isinstance(msg, str):
+                msg = str(msg)
             script_msg = redact(msg) if msg else ""
             job.set_run_result(script_msg)
             job.last_error = ""
@@ -719,7 +720,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         elif status == "report":
             msg = result.get("message")
             # Any JSON type may arrive: redact() takes text, and an empty value sends nothing.
-            msg = "" if not msg else msg if isinstance(msg, str) else str(msg)
+            if msg and not isinstance(msg, str):
+                msg = str(msg)
             script_msg = redact(msg) if msg else ""
             job.set_run_result(script_msg)
             job.last_error = ""

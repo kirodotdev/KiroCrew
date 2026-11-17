@@ -259,7 +259,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
       }
       return readNewestPage(slot, limit, async (query, etag) => {
-        const r = await fetch(chatSlotDetailPath(slot) + '?' + new URLSearchParams(query), {
+        // `page_bytes=1`: a cursor page is cut by the server's byte budget like a
+        // plain one. Safe here because this store pages older with
+        // `before=next_before`; the app-sdk embed does not, so it never sends it.
+        const q = new URLSearchParams(query)
+        if (q.has('cursor') || q.has('digest')) q.set('page_bytes', '1')
+        const r = await fetch(chatSlotDetailPath(slot) + '?' + q, {
           signal, ...(etag ? { headers: { 'If-None-Match': etag } } : {}),
         })
         if (r.status === 304 && etag) return { page: null, etag }
@@ -356,8 +361,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
+    /** Continue this chat once, just after the usage limit it stopped on resets (`resetAt`: the ISO instant on the limit row). The gateway holds the wait and answers `continue_at`, the instant it will resume; `ok: false` carries a `warning` and means nothing was armed. */
+    armLimitContinue: (slot: string, resetAt: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/limit-continue', { reset_at: resetAt }).then(j) as Promise<{ ok: boolean; warning?: string; continue_at?: string }>,
+    /** Cancel the wait `armLimitContinue` armed for this chat. `started: true` means the continue was already queued, so nothing was cancelled. */
+    cancelLimitContinue: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/limit-continue').then(j) as Promise<{ ok: boolean; cancelled: boolean; started?: boolean }>,
     /** The bulk form of `continueSlot`: Resume every idle session whose last turn ended without a reply (only those among `slots` when given). Owner-only. Starts a background run and answers at once (409 `resume_all_running` with that run's id and total while one is in flight); the outcome arrives as a `resume_all_done` frame. */
-    /** `crewMode`: this tab's Crew Mode preview is on, so its count left out the workers of listed roots and the run leaves them out too. */
+    /** `crewMode`: this build offers conductor mode, so its count left out the workers of listed roots and the run leaves them out too. */
     chatSlotsResumeAll: (crewMode = false, slots?: string[]) => post('/api/chat/slots/resume-all', {
       ...(crewMode ? { crew_mode: true } : {}), ...(slots ? { slots } : {}),
     }).then(j) as Promise<{ ok: boolean; total: number; run_id: string }>,

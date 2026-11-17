@@ -41,6 +41,7 @@ from kiro_crew.agent_sdk.mcp_problems import (
     session_mcp_problems,
     wait_for_declared_mcp,
 )
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import (
     DENY_CAUSE_AUDIT_UNAVAILABLE,
@@ -83,9 +84,98 @@ from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.shared_crew.admission import OperationKind
 from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
+from kiro_crew.tracing import inbound as trace_inbound
 from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger(__name__)
+
+#: The longest a caller's ``wait`` may hold its request open for the answer.
+_HOOK_ANSWER_WAIT_MAX = 300
+
+#: The most answer characters a ``wait`` response carries.
+_HOOK_ANSWER_MAX_CHARS = 20_000
+
+#: Run outcomes whose text is the agent's answer; any other carries none.
+_HOOK_ANSWER_OUTCOMES = frozenset({webhooks.OUTCOME_COMPLETED, webhooks.OUTCOME_DEGRADED})
+
+
+def _answer_return_enabled() -> bool:
+    """Whether ``hooks.return_answer`` is the JSON boolean ``true``.
+
+    Off when config cannot be read, so an unreadable ``config.json`` never turns
+    the answer on.
+    """
+    try:
+        loaded = KiroCrewConfig.load()
+    except Exception:
+        logger.debug("webhook answer setting unreadable; answer off", exc_info=True)
+        return False
+    if getattr(loaded, "_base_unreadable", False) or getattr(loaded, "_overlay_unreadable", False):
+        return False
+    section = loaded.hooks if isinstance(loaded.hooks, dict) else {}
+    return section.get("return_answer") is True
+
+
+def _answer_wait(raw: object, enabled: bool) -> tuple[int, str]:
+    """``(seconds to wait, warning)`` for the body's ``wait`` value.
+
+    Never a refusal: a value that cannot be honoured is dropped and named in the
+    warning, and the call keeps the plain accept receipt.
+    """
+    if not enabled:
+        return 0, "wait ignored: hooks.return_answer is off"
+    if isinstance(raw, bool):
+        return 0, "wait ignored: not a whole number of seconds"
+    try:
+        secs = body_int(raw)
+    except (TypeError, ValueError):
+        return 0, "wait ignored: not a whole number of seconds"
+    if secs <= 0:
+        return 0, ""
+    if secs > _HOOK_ANSWER_WAIT_MAX:
+        return _HOOK_ANSWER_WAIT_MAX, f"wait capped at {_HOOK_ANSWER_WAIT_MAX} seconds"
+    return secs, ""
+
+
+async def _wait_for_answer(task: asyncio.Task[Any], secs: float) -> tuple[str, str] | None:
+    """The run's ``(outcome, redacted answer)`` if it ends within *secs*, else ``None``.
+
+    ``asyncio.wait`` never cancels *task*: on a timeout, or when the caller hangs
+    up and this await is cancelled, the run goes on and delivers as before.
+    """
+    done, _pending = await asyncio.wait({task}, timeout=secs)
+    if task not in done or task.cancelled() or task.exception() is not None:
+        return None
+    result = task.result()
+    if not (isinstance(result, tuple) and len(result) == 2):
+        return None
+    return str(result[0]), str(result[1])
+
+
+async def _answer_fields(body: dict[str, Any], task: asyncio.Task[Any]) -> dict[str, Any]:
+    """The fields a ``wait`` call adds to the accept receipt.
+
+    Opt-in: called only when the body names ``wait``, so a call without it takes
+    exactly the path it took before. The setting is read off the event loop; a
+    finished run replaces ``status`` with ``completed`` and carries the text the
+    run delivers, after the same redaction.
+    """
+    enabled = await asyncio.to_thread(_answer_return_enabled)
+    secs, warning = _answer_wait(body["wait"], enabled)
+    fields: dict[str, Any] = {"warning": warning} if warning else {}
+    answer = await _wait_for_answer(task, secs) if secs else None
+    if answer is not None:
+        outcome, text = answer
+        fields.update(status="completed", outcome=outcome)
+        # A run that did not finish its turn carries no answer: its text is a
+        # failure detail for the owner's notifications, and the caller gets the
+        # outcome alone, as the status read answers.
+        if outcome not in _HOOK_ANSWER_OUTCOMES:
+            return fields
+        fields["answer"] = text[:_HOOK_ANSWER_MAX_CHARS]
+        if len(text) > _HOOK_ANSWER_MAX_CHARS:
+            fields["answerTruncated"] = True
+    return fields
 
 
 # Deliberately NOT wrapped in @_store_failure_guard. This route is externally
@@ -414,6 +504,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             {"error": "agent must be a string", "code": "agent_not_a_string"}, status=400
         )
     deliver = body.get("deliver", True)
+    if isinstance(deliver, str):
+        # A JSON string such as "false" is truthy, so it delivered anyway. The
+        # shared reader maps the usual spellings; any other value keeps the
+        # same truth test as before.
+        deliver = _coerce_bool(deliver, bool(deliver))
     try:
         timeout_secs = max(
             60,
@@ -425,7 +520,6 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},
             status=400,
         )
-
     mapped_agent = str(source_entry.get("agent") or "") if source_entry else ""
     if mapped_agent and requested_agent and requested_agent != mapped_agent:
         _sel().log_api_access(
@@ -575,6 +669,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             resources=session_key,
         )
+        # The caller passed the token and signature checks above: join its trace when
+        # asked to (tracing/inbound.py).
+        traceparent = trace_inbound.begin(request.headers)
         task = asyncio.create_task(
             _run_hook_agent(
                 state,
@@ -598,7 +695,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
-    return web.json_response({"status": "accepted", "sessionKey": session_key})
+    extra: dict[str, Any] = {"sessionKey": session_key}
+    if "wait" in body:
+        extra.update(await _answer_fields(body, task))
+    headers = {"traceparent": traceparent} if traceparent else None
+    return web.json_response({"status": "accepted", **extra}, headers=headers)
 
 
 async def api_hooks_agent_status(request: web.Request) -> web.Response:
@@ -1077,8 +1178,11 @@ async def _run_hook_agent(
     timeout_secs: int,
     token_id: str | None = None,
     execution_context: ExecutionContext | None = None,
-) -> None:
+) -> tuple[str, str]:
     """Execute a webhook-triggered agent turn in an ephemeral session.
+
+    Returns ``(outcome, result text)``, the text redacted as delivery sends it,
+    for a caller that waits for the answer.
 
     Sessions are always destroyed after the turn completes (like subagents).
     Context continuity across webhook calls is provided by hooks.json —
@@ -1115,8 +1219,8 @@ async def _run_hook_agent(
         # `BaseException` and passes straight through that leg. The `finally` is
         # what covers it, and only from inside the try.
         saved_context = await asyncio.to_thread(_load_hook_context, hook_id)
-        if saved_context:
-            message = _with_restored_context(saved_context, message)
+        # Unconditional: it also scrubs a forged frame from the payload alone.
+        message = await asyncio.to_thread(_with_restored_context, saved_context, message)
 
         # The inner turn's first step opens the session's memory, which the
         # gateway keeps closed from boot until its startup preparation task has
@@ -1298,6 +1402,7 @@ async def _run_hook_agent(
         downstream_service="slack" if "Slack DM" in destinations else "internal",
     )
     logger.info("Hook agent %s: %s (%d chars)", outcome, session_key, len(result_text))
+    return outcome, result_text
 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -1363,4 +1468,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import _read_agent_spec, list_agents  # noqa: F401
+    from kiro_crew.context_assembly.markers import neutralize_restored_context_frame  # noqa: F401
+    from kiro_crew.shell_audit_log import platform_spec_hooks  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401

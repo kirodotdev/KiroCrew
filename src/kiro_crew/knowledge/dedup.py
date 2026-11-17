@@ -454,6 +454,7 @@ def _doc_labels(store) -> dict[str, str]:
             rows = store.db.execute(
                 f"SELECT item_ids, name FROM {table}").fetchall()  # noqa: S608
         except Exception:
+            # A table that cannot be read adds no labels; the loop goes on to the next.
             continue
         for r in rows:
             if not r["name"]:

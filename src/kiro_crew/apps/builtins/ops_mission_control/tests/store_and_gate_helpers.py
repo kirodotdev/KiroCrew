@@ -1,22 +1,26 @@
 """Shared base class for the ops-mission-control store and gate tests (``test_store_and_gate*.py``).
 
-``_HomeIsolated`` redirects ``KIROCREW_HOME`` to a fresh temp dir around each test, so no
-store or ledger write reaches the real data home.
+``_HomeIsolated`` redirects ``KIROCREW_HOME`` to pytest's per-test ``tmp_path`` around each
+test, so no store or ledger write reaches the real data home.
 """
 
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
+
+import pytest
 
 
 class _HomeIsolated(unittest.TestCase):
     """Redirects the data home so store/ledger writes land in a temp dir."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         # config_dir() caches; clear the caches these modules read through.
@@ -40,7 +44,6 @@ class _HomeIsolated(unittest.TestCase):
             fn = getattr(loader, candidate, None)
             if fn is not None and hasattr(fn, "cache_clear"):
                 fn.cache_clear()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _signal(native_id="alarm/x", title="something broke", source="cloudwatch", **kw):

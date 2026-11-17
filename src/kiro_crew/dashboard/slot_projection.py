@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.apps.hidden_sessions import listed_surface
 from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
@@ -504,7 +505,7 @@ class SlotProjection:
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             # Whether this session's turns ask Jev which model tier to run on
-            # (the picker's "Auto (Jev)" entry). Shipped on every slot, not only
+            # (the picker's "Auto (decision model)" entry). Shipped on every slot, not only
             # the routed ones, so the picker branches on a field that is always
             # present: an absent key and "the owner picked a model by hand" would
             # otherwise be the same reading, and a stale client would show a
@@ -525,7 +526,8 @@ class SlotProjection:
             "served_model": slot.served_model,
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
-            "surface": slot.mode,
+            # An app's mode lists as plain while the app may not hide it.
+            "surface": listed_surface(slot.mode),
             "workspace": slot.workspace,
             "project": slot.project,
             # Relay-archive marker. Shipped on every slot so the frontend can
@@ -670,4 +672,8 @@ class SlotProjection:
             "participants": ordered_participants(slot),
             # How many the list's cap dropped; the row's "+N" counts them too.
             "participants_dropped": participants_dropped(slot),
+            # A code-channel conductor's workers at a glance, for the sidebar row:
+            # ``{"state", "label", "counts"}`` (see ``board.model.work_aggregate``),
+            # or ``None`` for every other session. Counts and fixed words only.
+            "work_aggregate": getattr(slot, "_work_aggregate", None),
         }

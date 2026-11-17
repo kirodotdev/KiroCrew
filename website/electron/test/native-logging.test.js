@@ -97,6 +97,13 @@ function fakeFs({
     existsSync: (p) => files.has(p),
     renameSync(from, to) {
       if (throwOn) throw new Error(throwOn);
+      // Windows refuses to replace a file this process still holds open (EPERM),
+      // which POSIX allows: modelled always, so every rename path is held to it.
+      if ([...handles.values()].some((h) => h.path === to)) {
+        const err = new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`);
+        err.code = "EPERM";
+        throw err;
+      }
       renames.push({ from, to });
       files.delete(from);
       files.add(to);
@@ -717,6 +724,26 @@ describe("redactNativeLogSecrets", () => {
     assert.deepEqual(fs.renames, [], "nothing may be renamed over the original");
     assert.ok(lines.some((l) => /not applied/.test(l)));
   });
+
+  // Windows refuses (EPERM) to rename over a file this process holds open; the
+  // fake models that, so the read descriptor must be closed first, exactly once.
+  for (const strategy of ["whole-file", "streaming"]) {
+    it(`closes its read descriptor once, before the replace (${strategy})`, () => {
+      const fs = fakeFs({ present: [PREV], contents: { [PREV]: TOKENED_LINE } });
+      if (strategy === "streaming") forceOverCap(fs);
+      const closes = [];
+      const realClose = fs.closeSync.bind(fs);
+      fs.closeSync = (fd) => {
+        closes.push(fd);
+        realClose(fd);
+      };
+      const out = redactNativeLogSecrets(PREV, { fs });
+      assert.deepEqual(out, { scanned: true, redacted: true, skipped: null });
+      assert.deepEqual(fs.renames, [{ from: TMP, to: PREV }]);
+      assert.match(fs.body.get(PREV), /token=\[REDACTED\]/);
+      assert.equal(new Set(closes).size, closes.length, "no descriptor may be closed twice");
+    });
+  }
 
   it("cleans up the temp when the rename fails", () => {
     const fs = fakeFs({

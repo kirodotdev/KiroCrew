@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import importlib.abc
+import importlib.util
+import logging
+import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.feishu.gateway import _resolve_approval_mode, maybe_start_feishu
+from kiro_crew.feishu.transport import SPOOL_DM_ROUTE_PREFIX, FeishuTransport
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 class _FakeState:
@@ -70,6 +79,7 @@ class TestResolveApprovalMode:
         assert _resolve_approval_mode(orch) == APPROVAL_INTERACTIVE
 
 
+@patch("kiro_crew.feishu.gateway._LARK_MODULES", ())
 @patch("kiro_crew.feishu.gateway.LarkClient")
 @patch("kiro_crew.feishu.gateway.FeishuTransport")
 @patch("kiro_crew.feishu.gateway.FeishuDispatcher")
@@ -239,3 +249,212 @@ class TestMaybeStartFeishu:
         # settings payload.
         fake_client.on_state_change(False, "x" * 500)
         assert len(orch.dashboard_state.feishu_connect_error) == 120
+
+
+class _SlowLarkFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Serves stub ``lark_oapi`` packages whose import waits for the event loop.
+
+    The import blocks until a task on the loop releases it. Run on the loop
+    thread, the import starves that task and the wait runs out, which only
+    names a hang: the bound is the runner's, not a guess at its speed.
+    """
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.released = threading.Event()
+        self.import_threads: list[threading.Thread] = []
+        self.timed_out = False
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "lark_oapi" or name.startswith("lark_oapi."):
+            return importlib.util.spec_from_loader(name, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        self.import_threads.append(threading.current_thread())
+        self.started.set()
+        if not self.released.wait(default_timeout()):
+            self.timed_out = True
+
+
+@pytest.fixture
+def slow_lark(monkeypatch):
+    for name in [m for m in sys.modules if m == "lark_oapi" or m.startswith("lark_oapi.")]:
+        monkeypatch.delitem(sys.modules, name)
+    finder = _SlowLarkFinder()
+    sys.meta_path.insert(0, finder)
+    try:
+        yield finder
+    finally:
+        finder.released.set()
+        sys.meta_path.remove(finder)
+        for name in [m for m in sys.modules if m == "lark_oapi" or m.startswith("lark_oapi.")]:
+            del sys.modules[name]
+
+
+def _sdk_importing_constructor(**_kwargs):
+    # The real LarkClient imports the SDK inline in its constructor.
+    importlib.import_module("lark_oapi")
+    return MagicMock()
+
+
+async def _during_import(slow_lark: _SlowLarkFinder, action=lambda: None) -> None:
+    """Run *action* on the loop while the SDK import is in progress, then release it."""
+    await async_wait_until(slow_lark.started.is_set, describe=lambda: "SDK import never started")
+    action()
+    slow_lark.released.set()
+
+
+@pytest.mark.asyncio
+async def test_slow_lark_import_does_not_block_the_event_loop(slow_lark) -> None:
+    """A slow SDK import runs off the loop, so the loop keeps running meanwhile."""
+    loop_thread = threading.current_thread()
+    fake_transport = MagicMock()
+    fake_transport.connect = AsyncMock()
+    with (
+        patch("kiro_crew.feishu.gateway.LarkClient", side_effect=_sdk_importing_constructor),
+        patch("kiro_crew.feishu.gateway.FeishuTransport", return_value=fake_transport),
+        patch("kiro_crew.feishu.gateway.FeishuDispatcher"),
+    ):
+        releaser = asyncio.create_task(_during_import(slow_lark))
+        result = await maybe_start_feishu(_orch())
+        await releaser
+
+    assert result is not None
+    assert slow_lark.import_threads, "the stub SDK was never imported"
+    assert loop_thread not in slow_lark.import_threads
+    assert not slow_lark.timed_out, "the SDK import blocked the event loop"
+
+
+def _live_feishu(allowed_open_ids, *, allow_group=False, group_ids=(), degraded=False):
+    return SimpleNamespace(
+        feishu=SimpleNamespace(
+            allowed_open_ids=list(allowed_open_ids),
+            allow_group=allow_group,
+            allowed_group_ids=list(group_ids),
+        ),
+        degraded_sections=frozenset({"feishu"} if degraded else ()),
+    )
+
+
+async def _start_with_edit_during_import(
+    slow_lark, monkeypatch, edited, *, deferred=False, audit=None
+):
+    """Boot Feishu with ``ou_abc123`` allowed while *edited* is adopted mid-import.
+
+    The watcher's replay hands the dispatcher's subscription the adopted
+    section, as the section applier does, or defers it when it is degraded.
+    """
+    built: list = []
+
+    def _transport(*args, **kwargs):
+        transport = FeishuTransport(*args, **kwargs)
+        transport.connect = AsyncMock()
+        built.append(transport)
+        return transport
+
+    dispatcher = MagicMock()
+    replayed: list = []
+
+    def _replay(sub):
+        replayed.append(sub)
+        if not deferred:
+            dispatcher.transport.reconfigure(edited.feishu)
+
+    monkeypatch.setattr(
+        "kiro_crew.feishu.transport.sel", lambda: audit if audit is not None else MagicMock()
+    )
+    snapshot = {"value": _live_feishu(["ou_abc123"])}
+    with (
+        patch("kiro_crew.feishu.gateway.LarkClient", side_effect=_sdk_importing_constructor),
+        patch("kiro_crew.feishu.gateway.FeishuTransport", side_effect=_transport),
+        patch("kiro_crew.feishu.gateway.FeishuDispatcher", return_value=dispatcher),
+        patch("kiro_crew.feishu.gateway.live.snapshot", side_effect=lambda: snapshot["value"]),
+        patch(
+            "kiro_crew.feishu.gateway.live.watch",
+            return_value=SimpleNamespace(replay=_replay),
+        ),
+    ):
+        releaser = asyncio.create_task(
+            _during_import(slow_lark, lambda: snapshot.__setitem__("value", edited))
+        )
+        result = await maybe_start_feishu(_orch())
+        await releaser
+    assert result is not None and len(built) == 1
+    assert replayed == [dispatcher._config_sub]
+    return built
+
+
+@pytest.mark.asyncio
+async def test_a_sender_revoked_during_the_import_is_not_authorized(slow_lark, monkeypatch) -> None:
+    """An allow-list edit with no transport to apply to is in force at wiring."""
+    (transport,) = await _start_with_edit_during_import(slow_lark, monkeypatch, _live_feishu([]))
+    assert transport.configured_targets() == []
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_replay_leaves_nobody_authorized(slow_lark, monkeypatch) -> None:
+    """A degraded section never restores the boot allow-list."""
+    (transport,) = await _start_with_edit_during_import(
+        slow_lark, monkeypatch, _live_feishu(["ou_abc123"], degraded=True), deferred=True
+    )
+    assert transport.configured_targets() == []
+
+
+@pytest.mark.asyncio
+async def test_a_revocation_then_a_malformed_section_keeps_the_sender_out(
+    slow_lark, monkeypatch
+) -> None:
+    """Revoked, then the section goes degraded: the replay defers, nobody passes."""
+    (transport,) = await _start_with_edit_during_import(
+        slow_lark, monkeypatch, _live_feishu([], degraded=True), deferred=True
+    )
+    assert transport.configured_targets() == []
+    assert not transport.may_send_to("msg1", f"{SPOOL_DM_ROUTE_PREFIX}ou_abc123")
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_section_is_adopted(slow_lark, monkeypatch) -> None:
+    (transport,) = await _start_with_edit_during_import(
+        slow_lark, monkeypatch, _live_feishu(["ou_new"])
+    )
+    assert [t.target_id for t in transport.configured_targets()] == ["user:ou_new"]
+
+
+@pytest.mark.asyncio
+async def test_an_unedited_start_audits_no_roster_change(slow_lark, monkeypatch, caplog) -> None:
+    """Replaying the section the transport was seeded from records no grant."""
+    audit = MagicMock()
+    unchanged = _live_feishu(["ou_abc123"], allow_group=True, group_ids=["oc_g"])
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.feishu.transport"):
+        (transport,) = await _start_with_edit_during_import(
+            slow_lark, monkeypatch, unchanged, audit=audit
+        )
+    assert not [r for r in caplog.records if "flipped" in r.getMessage()]
+    assert [t.target_id for t in transport.configured_targets()] == [
+        "user:ou_abc123",
+        "group:oc_g",
+    ]
+    audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_real_reload_after_the_start_audits_exactly_its_diff(
+    slow_lark, monkeypatch
+) -> None:
+    """After a quiet start, a real allow-list edit is audited by its own counts."""
+    audit = MagicMock()
+    seeded = _live_feishu(["ou_abc123"], allow_group=True, group_ids=["oc_g"])
+    (transport,) = await _start_with_edit_during_import(slow_lark, monkeypatch, seeded, audit=audit)
+    audit.log_api_access.assert_not_called()
+
+    transport.reconfigure(
+        _live_feishu(["ou_abc123", "ou_new"], allow_group=True, group_ids=["oc_g"]).feishu
+    )
+
+    (call,) = audit.log_api_access.call_args_list
+    assert call.kwargs["outcome"] == "allow_list_changed"
+    assert call.kwargs["resources"] == "added=1 removed=0 size=2"

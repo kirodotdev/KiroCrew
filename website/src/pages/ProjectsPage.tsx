@@ -25,6 +25,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
 import StatusNotice from '../components/StatusNotice'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
+import { pollWhileVisible } from '../lib/pollWhileVisible'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
@@ -268,8 +269,7 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     load()
-    const iv = setInterval(load, 3000)
-    return () => clearInterval(iv)
+    return pollWhileVisible(load, 3000)
   }, [load, refreshTrigger])
 
   // Recovery: poll for planned run if isPlanning was restored from sessionStorage

@@ -258,7 +258,8 @@ class TestPrompt:
         prompt of all places.
         """
         key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
-        text = build_approval_prompt(f"bash {key}", f"upload with {key}")
+        labelled = f"aws_secret_access_key={key}"
+        text = build_approval_prompt(f"bash {labelled}", f"upload with {labelled}")
         assert key not in text, "an agent-authored credential reached the chat"
         assert "bash" in text, "screening must not eat the tool name"
 

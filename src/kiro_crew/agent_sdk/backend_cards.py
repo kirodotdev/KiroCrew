@@ -134,8 +134,9 @@ preference:
   do it -- seven of them are equal to ``frozenset({""})`` today, so equality
   proves nothing about which name was meant.
 * a value bound at import time does not follow a test that injects a synthetic
-  harness by patching the DEFINING module (``test_member_memory_auth`` does
-  exactly that). The patch would land on an attribute nothing reads, and the card
+  harness by patching the DEFINING module
+  (``test_backend_cards.py::test_a_new_backend_renders_a_complete_card_with_no_card_edit``
+  does exactly that). The patch would land on an attribute nothing reads, and the card
   would answer from production membership while the test believed otherwise.
 
 The MCP half, which is a projection over another source
@@ -395,6 +396,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "with its own reason, and the card appears where it applies, so a card "
         "line would repeat what the refusal says"
     ),
+    "ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL": (
+        "which advertised model vocabulary the picker sends. A wrong membership "
+        "accepts a write that leaves the model unchanged, so it is a defect rather "
+        "than a missing feature a user would choose a harness by"
+    ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
         "that template's sessions here. The approval card asks the same question for "
@@ -449,6 +455,74 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "membership selects a command-dispatch path rather than a task capability a "
         "reader loses by choosing another harness. A wrong membership forwards a "
         "command the acquired provider cannot serve, which is a defect"
+    ),
+    "ACP_BACKENDS_PLAN_CHECKLIST": (
+        "which wire frame carries the agent's checklist to the task progress bar -- "
+        "an ACP plan update for this set, a todo tool result for kiro-cli -- and so "
+        "that a member's bar is read-only and its turns get no todo_list sync block. "
+        "The bar is the same either way, so the membership selects a reader rather "
+        "than a feature someone choosing a harness gains. A wrong membership is a "
+        "defect: a member's checklist never reaches the bar, or a non-checklist plan "
+        "is drawn as one"
+    ),
+    "ACP_BACKENDS_HARNESS_NOTICES": (
+        "which wire frames carry a harness's own advisories and mode changes to the "
+        "chat's notice rows -- an ACP notice and current_mode_update for this set, "
+        "frames of its own for kiro-cli. Every harness's chat draws notice rows, so the "
+        "membership selects a reader rather than a feature someone choosing a harness "
+        "gains. A wrong membership is a defect: a member's advisory is lost, or a "
+        "tripwire's mode report is drawn as a routine change"
+    ),
+    "ACP_BACKENDS_RAW_SDK_TASKS": (
+        "which wire frames carry a harness's background work to the Subagents panel "
+        "and the chat's notice rows -- Claude Code's raw SDK task and retry messages "
+        "for this set, frames of their own for kiro-cli. The panel and the rows are "
+        "the same on every harness, so the membership selects a reader rather than a "
+        "feature someone choosing a harness gains. A wrong membership is a defect: a "
+        "member's Workflow agents get no cards, or a session asks a harness for "
+        "messages it does not send"
+    ),
+    "ACP_BACKENDS_READ_PATH_ARG": (
+        "which argument of a harness's read tool names the file a tool row previews "
+        "-- file_path for this set, operations[].image_paths for kiro-cli. The "
+        "thumbnail strip is the same on every harness, so the membership selects a "
+        "reader rather than a feature someone choosing a harness gains. A wrong "
+        "membership is a defect: a member's image read shows no thumbnail, or a "
+        "non-member's argument is read as the file it read"
+    ),
+    "ACP_BACKENDS_SUMMARIZED_THINKING": (
+        "whether the launch asks a harness for summarized thinking text, through a "
+        "variable of its process environment. The chat's thinking rows are the same "
+        "on every harness that sends thinking text, so the membership selects a "
+        "launch default rather than a feature someone choosing a harness gains. A "
+        "wrong membership is a defect: a member's chat shows no thinking, or a "
+        "non-member's launch carries a variable it never reads"
+    ),
+    "ACP_BACKENDS_NATIVE_CHILD_CANCEL": (
+        "which request a Stop on a harness-native child's Subagents card sends -- "
+        "session/cancel naming that child for this set, none elsewhere, where the "
+        "card alone is closed. The card and its Stop are the same on every harness, "
+        "so the membership selects a request path rather than a feature someone "
+        "choosing a harness gains. A wrong membership is a defect: a member's child "
+        "runs on after its card closes, or a non-member is sent a cancel naming a "
+        "session it does not know"
+    ),
+    "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": (
+        "which frame names a call on a Crew-spawned subagent's Subagents card -- the "
+        "tool_call_update that refines the call's first title for this set, the "
+        "tool_call and its permission request alone elsewhere. The card's tool list "
+        "is the same on every harness, so the membership selects a reader rather than "
+        "a feature someone choosing a harness gains. A wrong membership is a defect: "
+        "a member's card keeps a generic title, or a non-member's better title is "
+        "replaced by a bare tool name"
+    ),
+    "ACP_BACKENDS_COMPACTION_SUMMARY": (
+        "which frames carry a harness's compaction summary to the chat's compaction card "
+        "-- a native compaction_update's summary and its compaction_summary_chunk "
+        "updates for this set, the compaction status notification for kiro-cli. The card "
+        "is the same on every harness, so the membership selects a reader rather than a "
+        "feature someone choosing a harness gains. A wrong membership is a defect: a "
+        "member's card shows no summary, or a non-member's text is folded as one"
     ),
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": (
         "whether the dashboard forwards every leading-slash word to the harness raw, "
@@ -650,6 +724,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "line, and a wrong membership is a defect, not a feature a card could mark: a "
         "hidden switch, or a write to another harness's option of the same id"
     ),
+    "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": (
+        "whether the session's advertised Fast mode switch is read and written. The "
+        "switch shows only while the adapter advertises it, so a member needs no card "
+        "line, and a wrong membership is a defect, not a feature a card could mark: a "
+        "hidden switch, or a write to another harness's option of the same id"
+    ),
     "ACP_BACKENDS_AGENT_STARTED_TURNS": (
         "whether a turn the agent starts on its own between prompts is read when it "
         "happens. It is a transport detail of one adapter, not a choice a reader "
@@ -786,6 +866,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "covers only those providers: a server that registers its own client "
         "signs in on every backend that serves remote MCP at all"
     ),
+    "ACP_BACKENDS_NO_MCP_INIT_FRAMES": (
+        "whether the drain after session/new folds only the frames already "
+        "buffered, because the harness reports no MCP server state over ACP. A "
+        "start-path timing detail, not a capability a reader choosing a harness "
+        "gains or loses: the servers and their tools are the same either way"
+    ),
     "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": (
         "whether a session/new stdio element whose command cannot be found is left "
         "out and reported as a failed server, rather than handed to a harness that "
@@ -846,6 +932,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "ACP_BACKENDS_SESSION_SHARING). A wrong membership is invisible when it "
         "withholds and a lost resume record when it grants, which is a defect rather "
         "than an absent feature a card could mark"
+    ),
+    "ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS": (
+        "which chat-sharing members move onto the shared runtime only for a chat that "
+        "shares, keeping their own process for every other session. A transport "
+        "choice made per start, invisible to a reader choosing a harness: the chat "
+        "behaves the same on either process"
     ),
 }
 

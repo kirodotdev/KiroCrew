@@ -38,6 +38,9 @@ BOUNDARIES: dict[str, str] = {
     "b64std_pad": ALNUM + "+/=",
     "b64url": ALNUM + "-_",
     "b64url_dot": ALNUM + "-_.",
+    # Before a Telegram bot id: a digit (the id would be longer), and the ``:`` or ``/``
+    # that ends an ARN's account or resource field.
+    "telegram_left": DIGITS + ":/",
 }
 
 B64STD = ALPHABETS["b64std"]
@@ -48,7 +51,11 @@ B64URL_DOT = B64URL + "."
 B64URL_DOT_SET = frozenset(B64URL_DOT)
 WORD_DASH_SET = frozenset(BOUNDARIES["word_dash"])
 
-_ASCII_LOWER = str.maketrans(UPPER, LOWER)
+#: Non-ASCII letters that case-insensitive matching equates with an ASCII one (dotted
+#: and dotless i, long s, Kelvin sign): a name spelled with one reads as the ASCII name,
+#: so ``Author\u0131zation`` cannot hide a header. Each folds to ONE character.
+_ASCII_FOLDS = {"\u0130": "i", "\u0131": "i", "\u017f": "s", "\u212a": "k"}
+_ASCII_LOWER = str.maketrans({**dict(zip(UPPER, LOWER, strict=True)), **_ASCII_FOLDS})
 
 # Lookups derived from a rows tuple, built once per (rows, builder) and reused on every
 # call; keyed by identity and checked against the rows object itself.
@@ -85,7 +92,8 @@ def _cached(rows: object, build: Callable[[Any], Any]) -> Any:
 
 
 def ascii_lower(text: str) -> str:
-    """Lower ASCII letters only, so every index of the copy matches the original."""
+    """Lower ASCII letters (and :data:`_ASCII_FOLDS`), so every index of the copy
+    matches the original."""
     if text.isascii():
         # Same result for ASCII text, without a per-character table lookup.
         return text.lower()

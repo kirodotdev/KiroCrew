@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import DefaultDestinationCrewPicker from '../../components/DefaultDestinationCrewPicker'
+import SharedCrewsCards from '../../components/SharedCrewsCards'
 import {
   Server,
   Rocket,
@@ -1296,6 +1297,8 @@ export function RemoteCrewPanel() {
           </Card>
 
           <AddInstanceForm onAdded={reloadInstances} />
+
+          <SharedCrewsCards />
         </div>
       ) : (
         <div className="space-y-4">
@@ -1669,10 +1672,11 @@ export function RemoteCrewPanel() {
             <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
               <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
               <div className="text-[12px] text-text">
-                {i18nT('pages.settings.remoteCrewPanel.billing')}{' '}
-                <a className="text-accent font-medium hover:underline inline-flex items-center gap-1" href={PRICING_CALCULATOR_URL} target="_blank" rel="noreferrer">
-                  {i18nT('pages.settings.remoteCrewPanel.pricing_calculator')} <ExternalLink size={12} />
-                </a>
+                <Trans i18nKey="pages.settings.remoteCrewPanel.billing_pricing_calculator" components={{ link: (
+                  <a className="text-accent font-medium hover:underline inline-flex items-center gap-1" href={PRICING_CALCULATOR_URL} target="_blank" rel="noreferrer">
+                    {i18nT('pages.settings.remoteCrewPanel.pricing_calculator')} <ExternalLink size={12} />
+                  </a>
+                ) }} />
               </div>
             </div>
 

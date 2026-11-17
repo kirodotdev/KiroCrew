@@ -332,8 +332,9 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     # the bench imports to module scope costs +280 modules and +0.21s of import
     # time on this host (152 -> 432 modules, 0.046s -> 0.254s) and drags
     # `kiro_crew.vector_memory` plus `sqlite3` into the boot path of commands that
-    # will never touch a benchmark. `test/test_perf_boot_path.py` exists to pin
-    # exactly that class of regression, and `cli.py` already uses this pattern for
+    # will never touch a benchmark. `test/test_cli_lazy_imports.py` keeps
+    # `kiro_crew.vector_memory` out of `import kiro_crew.cli`, and `cli.py` already
+    # uses this pattern for
     # the same reason (see its `computer_use.cli` import inside the dispatch).
     # AUTOSDE `top-level-imports` is `blocking: false`; its concerns (dependency
     # tracing, IDE navigation, mock targeting) are real but are outweighed here by
@@ -549,10 +550,10 @@ def _retrieval(args: argparse.Namespace) -> int:
 def _kb_retrieval(args: argparse.Namespace) -> int:
     """Run the Knowledge Library recall harness against a golden set.
 
-    Lazy imports, like ``_retrieval``: this keeps ``knowledge.store`` /
-    ``knowledge.retrieval`` (and their sqlite/embedder pull-ins) out of the boot
-    path of every unrelated ``kirocrew`` subcommand -- the perf regression
-    ``test/test_perf_boot_path.py`` pins.
+    Lazy imports, like ``_retrieval``: this keeps this module from adding
+    ``knowledge.store`` / ``knowledge.retrieval`` (and their sqlite/embedder
+    pull-ins) to the boot path of every unrelated ``kirocrew`` subcommand.
+    No test pins it.
     """
     from kiro_crew.eval.bench.kb_retrieval import (
         KBGoldenSet,

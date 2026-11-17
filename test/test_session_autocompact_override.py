@@ -267,8 +267,8 @@ class TestAutocompactEndpoint:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", ["null", "42", '"pct"', "[80]"])
     async def test_post_non_object_json_body_is_400_not_500(self, payload: str) -> None:
-        # Regression: `"pct" in body` raised TypeError on non-dict JSON,
-        # turning a malformed request into an HTTP 500.
+        # `"pct" in body` raises TypeError on non-dict JSON, which would turn
+        # a malformed request into an HTTP 500.
         slot = _ChatSlot("test")
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -283,7 +283,7 @@ class TestAutocompactEndpoint:
 
     @pytest.mark.asyncio
     async def test_post_huge_int_is_400_not_500(self) -> None:
-        # Regression: float(10**400) raises OverflowError, which was uncaught.
+        # float(10**400) raises OverflowError; the handler must catch it.
         slot = _ChatSlot("test")
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -337,10 +337,10 @@ class TestAutocompactEndpoint:
 
     @pytest.mark.asyncio
     async def test_app_token_on_linked_slot_is_denied(self) -> None:
-        # Regression: the POST writes the override keyed by
-        # effective_session_key(slot) -- for a channel-linked slot that is the
-        # channel's own session, which the app does NOT own. An app naming an
-        # existing channel stem could modify a foreign session's threshold.
+        # The POST writes the override keyed by effective_session_key(slot) --
+        # for a channel-linked slot that is the channel's own session, which the
+        # app does NOT own. An app naming an existing channel stem must not
+        # modify a foreign session's threshold.
         # The session-aware gate (slot_ownership.deny_app_slot_session_access) must deny this.
         slot = _ChatSlot("someapp-slot")
         slot._app = "someapp"
@@ -363,7 +363,7 @@ class TestAutocompactEndpoint:
 
     @pytest.mark.asyncio
     async def test_rebind_during_persist_await_is_denied(self) -> None:
-        # Regression: the persist await is a rebind window -- a slot rebound
+        # The persist await is a rebind window -- a slot rebound
         # during the metadata write (cron/workflow injection re-pointing
         # linked_session_key at a foreign channel) must not let an app's
         # override land on that foreign session. Invariant: every write is
@@ -395,8 +395,8 @@ class TestAutocompactEndpoint:
 
     @pytest.mark.asyncio
     async def test_persist_failure_leaves_live_state_untouched(self) -> None:
-        # Regression: an I/O failure in the confirmed write (best_effort=False) must
-        # return 500 with the slot field rolled back and the SessionManager
+        # An I/O failure in the confirmed write (best_effort=False) must return
+        # 500 with the slot field rolled back and the SessionManager
         # override (the live gate) untouched -- never a 500 whose change is
         # already live and silently reverts on restart.
         slot = _ChatSlot("test")
@@ -417,7 +417,7 @@ class TestAutocompactEndpoint:
 
     @pytest.mark.asyncio
     async def test_post_racing_a_permanent_delete_does_not_resurrect(self) -> None:
-        # Regression: a threshold POST racing a permanent delete_session must not
+        # A threshold POST racing a permanent delete_session must not
         # resurrect the unlinked transcript. The forced save runs main's own
         # delete-won guard and returns False for exactly that skip -- the
         # endpoint must honor the verdict: 409, field rolled back, live gate
@@ -451,7 +451,7 @@ class TestPersistedValueValidator:
         assert _validate_autocompact_pct(raw) is None
 
     def test_huge_int_is_discarded_not_crash(self) -> None:
-        # Regression: float(10**400) raises OverflowError, which aborted the
+        # float(10**400) raises OverflowError, which would abort the
         # recent-session restore path (gateway startup) on corrupted metadata.
         assert _validate_autocompact_pct(10**400) is None
 

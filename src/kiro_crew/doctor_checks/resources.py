@@ -29,11 +29,10 @@ from kiro_crew.doctor_checks import render
 #
 # It is the projection's own hard ceiling
 # (:data:`kiro_crew.acp.skill_projection.SKILL_VIEW_PROJECTION_CEILING`), so a host
-# the doctor warns about already falls back to the authored agent. Read through the
-# ``cli_doctor`` facade: this family binds no project module
-# (test_cli_doctor_refactor_family_reads).
-# It is the floor: ``cli_doctor.skill_view_ceiling`` raises it with the authored
-# agent count, exactly as the projection does.
+# the doctor warns about already falls back to the authored agent. It is a floor:
+# ``cli_doctor.skill_view_ceiling`` raises it with the authored agent count, as the
+# projection does. Read through the ``cli_doctor`` facade, since this family binds
+# no project module (test_cli_doctor_refactor_family_reads).
 _SKILL_VIEW_BACKLOG_WARN = cli_doctor.SKILL_VIEW_PROJECTION_CEILING
 
 
@@ -519,6 +518,7 @@ def _acp_runtime_census(
                 if total_pages > 0:
                     rss_bytes = total_pages * page_size
             except Exception:
+                # A sum that fails leaves the memory size unknown; the runtime is still listed.
                 pass
         runtimes.append(
             _AcpRuntime(root, owner, cpu_pct, age_of(first[root].start_ticks), rss_bytes)
@@ -808,7 +808,8 @@ def _task_ceiling_lines() -> list[str]:
                 f"  runtimes:    {scopes.scopes} scopes, {mean:.0f} tasks each on average, "
                 f"largest {scopes.largest}"
             )
-            if live_max > 0:
+            # A mean of 0 (scopes left by exited runtimes) has no headroom to estimate.
+            if live_max > 0 and mean > 0:
                 room = int((live_max - current) / mean)
                 note = f"  headroom:    about {room} more runtimes at the observed average"
                 if room < scopes.scopes:

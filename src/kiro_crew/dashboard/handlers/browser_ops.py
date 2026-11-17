@@ -73,6 +73,7 @@ from aiohttp import web
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.browser_harness import url_gate
 from kiro_crew.browser_harness.budgets import (
+    CHANGE_REPORT_S,
     DECISION_HEADROOM_S,
     ENSURE_TIMEOUT_S,
     HANDBACK_WAIT_S,
@@ -288,7 +289,25 @@ def build_context(
         mark=_mark,
         record=_record,
         frames=_frames,
+        report_changes=_report_changes(),
     )
+
+
+def _op_budget(op: str, ctx: harness_ops.OpContext) -> float:
+    """The route's budget for *op*: its own, the decision hooks', and the change report's."""
+    own = SLOW_OP_TIMEOUT_S if op in harness_ops.SLOW_OPS else OP_TIMEOUT_S
+    report = CHANGE_REPORT_S if ctx.report_changes and op in harness_ops.REPORT_OPS else 0.0
+    return own + DECISION_HEADROOM_S + report
+
+
+def _report_changes() -> bool:
+    """``browser.report_changes``, read fresh for each op. Off when it cannot be read."""
+    try:
+        from kiro_crew.config import KiroCrewConfig
+
+        return KiroCrewConfig.load().browser.report_changes is True
+    except Exception:  # noqa: BLE001 - an unreadable setting leaves every result as it was
+        return False
 
 
 def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
@@ -576,10 +595,9 @@ async def api_browser_op(request: web.Request) -> web.Response:
     # card's slot key. They ask the gate first and run the op exactly as written
     # whenever it answers no.
     ctx.decisions = BrowserDecisions(session_key)
-    # Plus the decision hooks' own ceilings, so a hook never eats into the op's time.
-    budget = (
-        SLOW_OP_TIMEOUT_S if op in harness_ops.SLOW_OPS else OP_TIMEOUT_S
-    ) + DECISION_HEADROOM_S
+    # Plus the decision hooks' and the change report's own ceilings, so neither ever
+    # eats into the op's time.
+    budget = _op_budget(op, ctx)
     if hub.in_control(key):
         # Answered at once, with ``hold``: the shim parks the tool and polls
         # ``/api/browser/handback`` until the person lets go, then posts the op

@@ -5,10 +5,8 @@
   "CredentialMatch",
   "JWT_MULTI_SEGMENT",
   "REDACTED_CREDENTIAL_TAG",
-  "bare_secret_pass_enabled",
   "credential_pass_bypassed",
   "get_credential_patterns",
-  "mask_baseline_symbol_tables",
   "pem_scan",
   "redact_credentials",
   "redact_credentials_with_records",
@@ -19,7 +17,6 @@
  "rebound": {
   "AWS_KEY_ID": "kiro_crew.credential_patterns",
   "JWT_MULTI_SEGMENT": "kiro_crew.credential_patterns",
-  "bare_secret_pass_enabled": "kiro_crew.security.redaction_switch",
   "credential_pass_bypassed": "kiro_crew.security.redaction_switch",
   "get_credential_patterns": "kiro_crew.security.redaction_patterns",
   "pem_scan": "kiro_crew.security"

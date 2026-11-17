@@ -638,6 +638,135 @@ describe('useVirtualChat: above-fold compensation during a width transition', ()
     expect(state.scrollTop).toBe(startedAt + 40)
     expect(persisted(OLD_SCOPE, 'm3')).toBe(250)
   })
+
+  it('keeps a straddler held by its bottom as the reader row through the scroll event of its own write', () => {
+    // The column widens: the straddling reply shrinks, and holding its bottom
+    // brings its top inside the fold. The write's own scroll event re-reads
+    // the frame; the question above the reply now straddles the fold instead.
+    // The column then narrows back while still unsettled: the reply grows
+    // again and must keep its bottom, so the row under it stays put.
+    const { el, state, view, gate } = setup()
+    const question = { top: -400, h: 100 }
+    const reply = { top: -300, h: 500 }
+    const next = { top: 220, h: 100 }
+    const questionRow = makeRow(question)
+    const replyRow = makeRow(reply)
+    const nextRow = makeRow(next)
+    act(() => {
+      view.result.current.measureRef(9)(questionRow)
+      view.result.current.measureRef(10)(replyRow)
+      view.result.current.measureRef(13)(nextRow)
+    })
+    gate.open = false
+    // Wider: the reply shrinks to 150 and, with no native anchor, the row
+    // under it rises by 350. The hold writes its top down to 50.
+    reply.h = 150; next.top -= 350; state.scrollHeight -= 350
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect([reply.top, next.top, question.top]).toEqual([50, 220, -50])
+    act(() => { vi.advanceTimersByTime(1000) })
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    // Narrower again: the reply grows to 300 and pushes the row under it down.
+    reply.h = 300; next.top += 150; state.scrollHeight += 150
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(next.top).toBe(220)
+    expect(reply.top + reply.h).toBe(200)
+  })
+
+  it('lets that hold go when a scroll no reader caused takes the row off screen', () => {
+    const { el, state, view, gate, nudge } = setup()
+    const question = { top: -400, h: 100 }
+    const reply = { top: -300, h: 500 }
+    const questionRow = makeRow(question)
+    const replyRow = makeRow(reply)
+    act(() => {
+      view.result.current.measureRef(9)(questionRow)
+      view.result.current.measureRef(10)(replyRow)
+    })
+    gate.open = false
+    reply.h = 150; state.scrollHeight -= 350
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(reply.top).toBe(50)
+    act(() => { vi.advanceTimersByTime(1000) })
+    // A jump with no reader input moves the reply well above the fold.
+    nudge(1000)
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    expect(reply.top + reply.h).toBeLessThan(0)
+    const jumpedTo = state.scrollTop
+    // The reply re-wraps off screen: nothing the reader sees moves, so no write.
+    reply.h = 300; state.scrollHeight += 150
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(state.scrollTop).toBe(jumpedTo)
+  })
+
+  it('lets that hold go once the width settles: a later in-place growth keeps the row top', () => {
+    const { el, state, view, gate } = setup()
+    const question = { top: -400, h: 100 }
+    const reply = { top: -300, h: 500 }
+    const lower = { top: 380, h: 100 }
+    const questionRow = makeRow(question)
+    const replyRow = makeRow(reply)
+    const lowerRow = makeRow(lower)
+    act(() => {
+      view.result.current.measureRef(9)(questionRow)
+      view.result.current.measureRef(10)(replyRow)
+      view.result.current.measureRef(14)(lowerRow)
+    })
+    gate.open = false
+    reply.h = 150; lower.top -= 350; state.scrollHeight -= 350
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(reply.top).toBe(50)
+    act(() => { vi.advanceTimersByTime(1000) })
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    // A row below the reader re-wraps before the settle: that fire writes
+    // nothing and raises no scroll event, and the hold stays carried.
+    lower.h = 120; state.scrollHeight += 20
+    act(() => { fire?.([{ target: lowerRow }]) })
+    // The width settles with no further scroll; then the reply grows in place
+    // (a block renders) while its top is on screen.
+    gate.open = true
+    const settledAt = state.scrollTop
+    reply.h = 250; state.scrollHeight += 100
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(state.scrollTop).toBe(settledAt)
+    expect(reply.top).toBe(50)
+  })
+
+  it('keeps a straddler held by its bottom mounted when a scroll recompute runs before the fire that pays a reflow', () => {
+    // Under load a scroll's frame callback can run between a reflow and the
+    // fire that pays it: scrollTop still holds the reflow's displacement, and
+    // the window mapped through it walks past the reader's rows. The held
+    // reply must stay mounted, or the next fire takes the row below it as the
+    // reader's and misses the re-wrap of everything between (probe on
+    // chat-form-switch-anchor.spec.ts, 1400 -> 382: row 32 landed 33px low).
+    const { el, state, view, gate, nudge, setWidth } = setup()
+    const reply = { top: -300, h: 500 }
+    const next = { top: 220, h: 100 }
+    const replyRow = makeRow(reply)
+    const nextRow = makeRow(next)
+    // The reader's rows sit inside the committed window (20-29 at this
+    // scrollTop); the setup's own rows 3 and 12 leave.
+    act(() => {
+      view.result.current.measureRef(3)(null)
+      view.result.current.measureRef(12)(null)
+      view.result.current.measureRef(20)(replyRow)
+      view.result.current.measureRef(23)(nextRow)
+    })
+    const mounted = () => view.result.current.virtualItems.map((v) => v.index)
+    expect(mounted()).toContain(20)
+    gate.open = false
+    reply.h = 150; next.top -= 350; state.scrollHeight -= 350
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(reply.top).toBe(50)
+    act(() => { vi.advanceTimersByTime(1000) })
+    // The column narrows again, and its reflow drags scrollTop far down
+    // before this layout's fire has paid it back. No reader input.
+    setWidth(200)
+    nudge(2500)
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    // The scroll's frame callback: the window recompute.
+    act(() => { vi.advanceTimersByTime(16) })
+    expect(mounted()).toContain(20)
+  })
 })
 
 /**

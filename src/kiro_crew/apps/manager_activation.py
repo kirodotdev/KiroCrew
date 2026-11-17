@@ -292,6 +292,10 @@ def enable_app(
     # The owner's enable is the one write that ends their disable.
     protected_app_state.set_owner_disabled(name, False)
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
+    # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
+    refresh_frame_sources()
 
     # Mint the owner-enable grant. This path runs only after the owner, governance
     # and execution checks above, so it is owner-authenticated, and it is never
@@ -406,6 +410,9 @@ def mark_session_approval_consent_pending(name: str) -> bool:
 @holds_app_record_locks
 def disable_app(name: str) -> AppResult:
     """Disable an installed app without removing it."""
+    # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     hold_app_record_lock(name)
@@ -420,6 +427,12 @@ def disable_app(name: str) -> AppResult:
         return AppResult(
             ok=False, name=name, error=f"could not record the disable of {name!r}: {exc}"
         )
+    # A disable removes every job the app owns, so the next enable registers all of
+    # them again, the ones the owner deleted included.
+    try:
+        protected_app_state.forget_deleted_app_crons(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear the deleted cron jobs of %s", name, exc_info=True)
     if not meta.enabled:
         # Already disabled ON DISK -- which a sandboxed shell can forge by writing
         # enabled:false to the writable installed.json. This early return otherwise
@@ -436,11 +449,13 @@ def disable_app(name: str) -> AppResult:
             )
         meta.updatedAt = _now_iso()
         _write_installed(name, meta)
+        refresh_frame_sources()
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False
     meta.updatedAt = _now_iso()
     _write_installed(name, meta)  # revokes the host-exec grant (enabled is False)
+    refresh_frame_sources()
 
     # Fail closed: a disable that reports success must not leave a live grant that
     # still authorizes a pod. _write_installed's revoke is best-effort, so verify.

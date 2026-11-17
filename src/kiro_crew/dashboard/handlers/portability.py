@@ -18,6 +18,7 @@ from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.dashboard import part_stream
+from kiro_crew.dashboard.folder_portability import live_folder_merge
 from kiro_crew.dashboard.handlers._shared import open_multipart, require_owner_dashboard_request
 from kiro_crew.portability import (
     apply_import_zip,
@@ -85,10 +86,9 @@ def _abort_connection(request: web.Request) -> None:
             transport.abort()
 
 
-#: Ceiling for an uploaded state archive, aligned with the bomb guard that
-#: already governs this path: `portability._MAX_IMPORT_UNCOMPRESSED` admits 2 GiB
-#: *uncompressed*, so a compressed archive under 2 GiB cannot be refused here
-#: without the two limits contradicting each other.
+#: Ceiling for an uploaded state archive. An import accepts more than this once
+#: unpacked (`portability.import_size_problem`), and an export compresses a few
+#: times, so a backup that unpacks to several GB still uploads under it.
 #:
 #: A tighter ceiling (512 MB, say) is a NEW restriction rather than a restored
 #: one -- the upload streams to disk, so nothing downstream needs it -- and it
@@ -104,7 +104,7 @@ _SPOOL_FILE = "import.zip"
 UNBUNDLED_TEMPLATES_HEADER = "X-Kirocrew-Unbundled-Templates"
 
 #: Export response header: how many chats were left out so the archive stays within
-#: what import accepts (`portability._export_sessions`). A bare non-negative integer.
+#: what import accepts (`portability_export._plan_sessions`). A bare non-negative integer.
 SESSIONS_SKIPPED_SIZE_HEADER = "X-Kirocrew-Sessions-Skipped-Size"
 
 
@@ -603,6 +603,7 @@ async def api_portability_import(request: web.Request) -> web.Response:
             zip_path,
             mode,
             channel_settings=channel_settings,
+            folder_merge=live_folder_merge(request.app.get("state"), asyncio.get_running_loop()),
             memory_only=memory_only or manifest_is_memory_only(manifest),
             **({"agent_templates": picked_templates} if picked_templates else {}),
         )

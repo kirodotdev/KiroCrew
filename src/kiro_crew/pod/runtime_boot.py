@@ -735,13 +735,12 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
     if target_supports_flag(checkout, "--no-tunnel"):
         argv.append("--no-tunnel")
     else:
-        # This gateway predates the flag, so it does not RECEIVE the new guarantee:
-        # it keeps the pod's seeded ``tunnel.enabled=False`` and behaves exactly as
-        # it did before the flag existed. No regression, no improvement -- and
-        # deliberately nothing more.
+        # This checkout's gateway has no ``--no-tunnel`` flag, so it does not get
+        # the guarantee: it keeps the pod's seeded ``tunnel.enabled=False`` and
+        # nothing more.
         #
-        # Config is NOT re-pinned here to hand it the guarantee anyway. That was
-        # tried and the premise does not hold: ``KiroCrewConfig.load()`` deep-merges
+        # Config is NOT re-pinned to hand it the guarantee:
+        # ``KiroCrewConfig.load()`` deep-merges
         # ``config.local.json`` OVER ``config.json`` with the overlay winning, and
         # ``kirocrew config set`` writes that overlay by default -- so pinning
         # ``config.json`` is not pinning the setting. Nor would it be sufficient if
@@ -749,9 +748,9 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
         # (``cfg.tunnel.enabled or current_context().tunnel.enabled()``) and no
         # config file reaches the provider half at all.
         #
-        # Refusing the boot is likewise unavailable: the refusal exit is non-zero
-        # and ``Restart=on-failure`` + ``RestartSec=5`` (the unit carries no
-        # ``RestartPreventExitStatus``) turns a refusal into a 5s restart loop.
+        # Refusing the boot is no answer either: under ``Restart=on-failure`` +
+        # ``RestartSec=5``, a non-zero exit outside ``TERMINAL_BOOT_EXIT_CODES``
+        # (the only codes ``RestartPreventExitStatus`` exempts) is a 5s restart loop.
         print(
             "kirocrew-pod: --no-tunnel not found in this checkout's cli.py, so the "
             "flag was not passed -- this pod keeps the tunnel behaviour it had "

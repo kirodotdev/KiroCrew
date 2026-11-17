@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import redact_backend_text
 from kiro_crew.acp.client import _loggable_request_id
+from kiro_crew.acp.client_native_children import UPDATE_SUBAGENT_UPDATE
 from kiro_crew.acp.codex_subagent_wire import (
     SUBAGENT_TERMINAL_STATES,
     UPDATE_SUBAGENT_SPAWNED,
@@ -50,13 +51,12 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 # unbounded STEADY STATE, not a burst. Measured on an operator host: ~60
 # lines/second for 6+ hours from one gateway PID, taking 33–59% of every
 # gateway.log rotation — which, at RotatingFileHandler(maxBytes=2MB,
-# backupCount=3) (see cli_logging.py), rolls the genuine diagnostics needed for an
-# incident out of the retained 8MB window before anyone can read them.
+# backupCount=3) (see cli_logging.py), rolls the genuine diagnostics out of the
+# retained 8MB window before anyone can read them.
 #
 # So the per-frame line is collapsed into a periodic count keyed by
-# (sessionId, method). The key must stay PER SESSION: the incident's decisive
-# signal was that two DIFFERENT session UUIDs were flooding at once, which a
-# single global tally would hide.
+# (sessionId, method). The key must stay PER SESSION: two DIFFERENT session UUIDs
+# flooding at once is a decisive signal, which a single global tally would hide.
 _DROP_SUMMARY_INTERVAL_SECS = 60.0
 # Hard cap on distinct (sessionId, method) keys held between flushes. Both
 # halves of the key are backend-controlled, so an unbounded map would be a
@@ -227,7 +227,8 @@ def _note_announced_child(self: AcpRuntime, frame_sid: str, params: dict) -> boo
 
     codex-acp announces each native subagent with a lifecycle ``session/update``
     on its PARENT's session (``subagent_spawned`` keyed on ``subagentSessionId``)
-    and then streams the child's own work under the child's id. The announcing frame
+    and then streams the child's own work under the child's id; claude-agent-acp
+    does the same with ``subagent_update``, keyed on the update's ``sessionId``. The announcing frame
     names its owner, so the owner is the registered session it arrived on, or,
     for a nested child announced on a child's session, that child's owner. A
     frame on any other session announces nothing.
@@ -268,9 +269,16 @@ def _note_announced_child(self: AcpRuntime, frame_sid: str, params: dict) -> boo
         ):
             del self._announced_children[child]
         return True
-    if kind != UPDATE_SUBAGENT_SPAWNED:
+    if kind == UPDATE_SUBAGENT_SPAWNED:
+        child = update.get("subagentSessionId")
+    elif kind == UPDATE_SUBAGENT_UPDATE:
+        # claude-agent-acp's announcement names the child in the update's own
+        # ``sessionId`` (``client_native_children``). Its later reports keep the
+        # same id and an idle child can still be messaged, so its route is kept
+        # until the owner leaves, under the same cap.
+        child = update.get("sessionId")
+    else:
         return True
-    child = update.get("subagentSessionId")
     if not isinstance(child, str) or not child or len(child) > MAX_ACP_SESSION_ID_LEN:
         return True
     if child in self._session_queues or child in self._announced_children:
@@ -405,7 +413,8 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
     """
     key = (_drop_key_part(session_id), _drop_key_part(method))
     # Hang-resilience series: classify the drop by method so dashboards
-    # can alert on the pre-fix hang signature. ``method_class`` is a
+    # can alert on the hang signature (dropped permission requests or
+    # updates). ``method_class`` is a
     # closed 3-value enum — the raw method (backend-controlled) never
     # becomes an attribute value.
     _m = method if isinstance(method, str) else ""
@@ -413,7 +422,7 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
         _mclass = "permission"
     elif _m in self._notification_aliases().session_update:
         # EVERY session-update spelling this host uses classifies as
-        # "update": a dashboard alerting on the pre-fix hang signature must
+        # "update": a dashboard alerting on the hang signature must
         # see a dropped extension-method child update the same way it sees
         # the plain spelling, and a spelling the host's aliases omit would be
         # counted as "other" and lost.

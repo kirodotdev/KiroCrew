@@ -161,8 +161,8 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # one leaf list means a new secret is added once and covered in both locations.
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 
-
 _CREW_SECRET_LEAVES: list[str] = [
+    "scratch/.trees.json",  # Reads expose other trees; writes remap resumes.
     # Gateway diagnostics, for the reason the sandbox mask gives: the rows carry
     # frame labels, folded stacks and process detail, and the owner-gated read
     # routes redact them on the way out while the files themselves do not. A file
@@ -225,10 +225,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # and after a crash between write and rename — a file in this directory holds
     # the same bytes as the leaves above, PAT included. Classified as the whole
     # DIRECTORY (like ``whatsapp``) so every temp name, present and future, is
-    # covered. A TOP-LEVEL leaf, not one under ``workspace/md-notebook``, so an
-    # agent-writable ancestor cannot be renamed out from under it. The app's own
-    # backend opens it directly rather than through this gate, so writes keep
-    # working.
+    # covered. The previous layout's state directory: ``md_notebook_state`` copies it
+    # into the app's own ``data/state/``, which the Notes manifest declares in
+    # ``credentialMasks`` and so reaches this gate through the shipped declarations,
+    # and the copies it keeps here stay fenced.
     "md-notebook-staging",
     # Where the sandbox launcher stages the live-target pointer's absent-equivalent
     # stub before linking it into place. Classified as the whole DIRECTORY so the
@@ -638,6 +638,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Steering files each chat switched off: a writable record would let an agent
     # drop its own rules. Only ``PUT /api/chat/slots/{slot}/steering`` writes it.
     "chat_steering_off.json",
+    # Recorded consent to send memory to a provider app that keeps it off this
+    # machine (``egress: "remote"``). Same class as ``decisions_consent.json``:
+    # the record AUTHORIZES preferences, lessons and transcripts to leave, so an
+    # agent that could write it would consent to its own egress. The owner's
+    # ``PUT /api/memory/provider`` is the only writer and opens the path directly.
+    "memory_provider_consent.json",
     # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
     # Crew to open to other people on the next start, so an agent that could
     # write it would share the owner's machine on the owner's behalf. The
@@ -655,6 +661,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/security/credential-redaction`` handler is the only writer and opens
     # the path directly, not through this gate.
     "credential_redaction.json",
+    # The MCP message-body fields the owner allowed (``security.mcp_body_fields``).
+    # A row moves a field off the shell matcher and lifts its size ceiling, so an
+    # agent that could write it would allow its own fields. A missing or unreadable
+    # file reads as no rows. The owner-gated ``/api/security/mcp-body-fields``
+    # handler is the only writer and opens the path directly.
+    "mcp_body_fields.json",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as
@@ -678,11 +690,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens these paths directly rather than through this gate, so publishing keeps
     # working.
     "auth-store-staging",
-    # The self-update engine's wheel download directory: the wheel sits here between its
-    # SHA-256 check and pip's install. Same top-level whole-directory shape as the entry
-    # above; the engine opens it directly. Also sandbox-masked
-    # (``sandbox_leaves._UPDATE_STAGING_LEAF``).
+    # Gateway-only staging holds wheels between their digest check and install,
+    # and import trees before restore. Both have the same top-level, whole-directory
+    # sandbox mask as auth-store-staging; the gateway opens them directly.
     "update-staging",
+    "import-staging",
     # Mediated-secret owner-signed egress policy: writable, it would let an agent try
     # to authorize its own origin. Only the gateway and owner CLI open it, directly.
     "secret-request-policy",
@@ -1347,6 +1359,21 @@ _KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 
 
+# ── kiro-cli's tool auto-approve rules (opt-in) ──
+# The engine behind ``kiro`` and ``kas`` reads permission rules from these names in
+# ``settings`` and in ``workspace-roots/<bucket>`` (a hashed name, and nothing else
+# lives there, so the folder is fenced whole). An ``effect: allow`` rule runs its tool
+# with no permission request. Off by default: ``mcp.protect_kiro_permission_rules`` is
+# the owner's switch, and ``security.paths._permission_rule_rows`` adds these to the
+# write tier only while it is on, read at check time.
+# The engine saving a rule the user chose never asks this gate.
+_KIRO_PERMISSION_RULE_LEAVES: tuple[str, ...] = (
+    ".kiro/settings/permissions.yaml",
+    ".kiro/settings/permissions.json",
+    ".kiro/workspace-roots",
+)
+
+
 #: The ``KIRO_HOME``-relative entries on the write-only tier, as ONE list because
 #: they share an anchoring rule rather than an owner: each is re-anchored under
 #: ``KIRO_HOME``, and like every entry each has its ``$HOME``-rooted form
@@ -1357,6 +1384,7 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
+    *_KIRO_PERMISSION_RULE_LEAVES,
     _KIRO_MATE_AGENTS_DIR,
     *_KIRO_MATE_STATE_LEAVES,
 )

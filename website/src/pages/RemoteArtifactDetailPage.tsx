@@ -594,7 +594,7 @@ export default function RemoteArtifactDetailPage() {
             ) : (
               <div ref={mdScrollerRef} className="relative rounded-xl border border-border bg-card overflow-auto p-5" style={{ minHeight: 480, height: 'calc(100vh - 240px)' }}>
                 {isMarkdown
-                  ? <div ref={mdPreviewRef} className="msg-content text-sm leading-relaxed"><MarkdownRenderer content={art.content ?? ''} /></div>
+                  ? <div ref={mdPreviewRef} data-hl-scope="" className="msg-content text-sm leading-relaxed"><MarkdownRenderer content={art.content ?? ''} /></div>
                   : <pre className="text-[13px] text-text whitespace-pre-wrap break-words font-mono">{art.content ?? ''}</pre>}
                 {isMarkdown && comments.length > 0 && (
                   <InlineCommentOverlay

@@ -89,7 +89,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # text (set by `_turn_record_outcome`, read by the same fire gate).
     self._synthesis_final_turn_ran = False
     # Race guard: number of sub-agent completion deliveries
-    # currently in flight for this slot (incremented in gateway._subagent_done
+    # currently in flight for this slot (incremented in subagent_wiring._subagent_done
     # from entry until the completion is queued/launched). The synthesis
     # fire-gate requires this to be 0 so a concurrently-finishing sibling
     # can't let an earlier turn fire synthesis before its result lands.
@@ -161,6 +161,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # go back to (the restore probe re-selects the primary), not by whichever
     # candidate failed last.
     self._fallback_walk_refused = False
+    # Same first-swap snapshot: whether that ladder ended on a provider 5xx. The swap
+    # notice names the selected model, so it describes that model's failure.
+    self._fallback_walk_server_error = False
     self._active_fallback_model = ""
     self._fallback_primary_model = ""
     # Snapshot of slot.model taken when the fallback activated; it heals
@@ -279,7 +282,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # True once any turn of the CURRENT empty-turn episode was productive.
     self._empty_episode_productive = False
     # First-token clock of the last top-level turn, reused by its recovery
-    # turns until one saves the row (``chat_runner._turn_clock``).
+    # turns until one saves the row (``chat_turn.turn_stats._turn_clock``).
     self._carried_ttft_clock = None
     # Context size the last completed turn ended at, in memory only, and the
     # backend session it was read in: the next turn's cache-rewrite check compares

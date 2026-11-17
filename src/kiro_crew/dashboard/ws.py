@@ -18,6 +18,7 @@ from aiohttp import WSCloseCode, WSMsgType, web
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
+from kiro_crew.dashboard import redaction_audience as _redaction_audience
 from kiro_crew.dashboard import websocket_hub as _ws_hub
 from kiro_crew.dashboard import ws_chunk_scope as _ws_chunk_scope
 from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
@@ -61,6 +62,7 @@ from kiro_crew.dashboard.ws_event_scope import (
 )
 from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: callers import them from here
+    LINK_BLOCKS_KEY,
     SIDE_CLOSED_EVENT,
     SIDE_KIND,
     SIDE_QUEUE_EVENT,
@@ -70,6 +72,7 @@ from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: c
     broadcast_side_queue,
     broadcast_side_result,
     broadcast_thread_reply,
+    shown_link_blocks,
 )
 from kiro_crew.dashboard.ws_snapshot_hold import (
     drop_superseded_slot_frames,
@@ -704,9 +707,14 @@ def _handle_slot_focused(
     # circular import: ws -> chat_runner -> handlers/__init__ -> handlers/side -> ws
     from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
 
+    # deferred: keeps the embedding runtime out of this module's import
+    from kiro_crew.embeddings_shared import warm_embedder_for_person_soon
+
     if not owner:
         return prev_task
     slot = state.get_slot(slot_key) if isinstance(slot_key, str) and slot_key else None
+    if slot is not None:  # opened, focused or typed in: a small machine loads the model now
+        warm_embedder_for_person_soon()
     if (
         slot is not None
         and prev_task is not None
@@ -1011,6 +1019,12 @@ async def _serve_ws(
             exc.add_note(_slots_serialization_note(slots_data, path="ws-connect-snapshot"))
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
+        # A direct send, so not the hub's chokepoint: a socket that is not the owner's
+        # reads the list redacted in full while the owner's redaction is off.
+        shown = _redaction_audience.for_socket(ws, snapshot_payload, owner=owner_request)
+        if shown is None:
+            raise RuntimeError("the connect snapshot could not be redacted for this socket")
+        snapshot_payload = shown
         snapshot_send = asyncio.ensure_future(ws.send_str(snapshot_payload))
         # A slot list or patch held meanwhile is older than the snapshot's: it is dropped, the
         # diff base it would have set is reset, and a slots push settles the socket on
@@ -1370,6 +1384,7 @@ async def _serve_ws(
                                 parsed = json.loads(entry)
                                 await ws.send_json({"type": "log", "data": parsed})
                             except Exception:
+                                # One log entry that fails to send must not stop the replay.
                                 pass
                     elif msg_type == "unsubscribe_logs":
                         state.unsubscribe_logs(ws)
@@ -1449,6 +1464,7 @@ async def _serve_ws(
                                         }
                                     )
                             except Exception:
+                                # One card that fails to build is left out; the others still replay.
                                 pass
 
                         # Snapshot of managed subagents + done events for completed ones
@@ -1462,6 +1478,8 @@ async def _serve_ws(
                                         }
                                     )
                                 except Exception:
+                                    # One card that fails to build is left out; the others still
+                                    # replay.
                                     pass
                             # Done events for completed subagents so
                             # reconnecting clients can transition stale cards.
@@ -1498,6 +1516,8 @@ async def _serve_ws(
                                         }
                                     )
                                 except Exception:
+                                    # One card that fails to build is left out; the others still
+                                    # replay.
                                     pass
                         _seen = {
                             str(_f["data"]["id"])

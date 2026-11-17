@@ -195,9 +195,10 @@ class TestBedrockConfirmConflict:
 
         error = _json.loads(resp.text)["error"]
         assert secret not in error
-        assert token not in error and "corp-laptop" not in error
+        assert token not in error
         assert "[REDACTED: credential]" in error
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in error
+        # Only the value is masked: the rest of the URL stays readable.
+        assert "?token=[REDACTED: credential]&host=corp-laptop" in error
         assert "(team-a, us-east-1)" in error
 
     @pytest.mark.asyncio

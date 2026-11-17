@@ -24,6 +24,7 @@ import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanel
 import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
+import { reportForError, type ErrorReport } from '../../utils/errorReport'
 
 // AboutPanel.tsx owns this dialog's Escape (it refuses while an apply or
 // restart is in flight), so the trap is wired with Escape off and a stable
@@ -98,20 +99,27 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   // switch, which re-runs the check): when it finished, on the backend's own
   // clock, and whether it failed. Null = this tab has not checked. A later
   // background check (a newer status-frame stamp) supersedes it.
-  const [local, setLocal] = useState<{ at: number; failed: boolean } | null>(null)
+  // `report` is the failed request's own report when the answer is one: it goes
+  // with the answer, so a newer answer (a channel switch's check) never hands
+  // the agent an older request's failure.
+  const [local, setLocal] = useState<{ at: number; failed: boolean; report?: ErrorReport } | null>(null)
   // An answer with no stamp of its own (a request that failed outright, an
   // older gateway, a check superseded by a channel switch) is dated at the
   // newest stamp seen so far, this tab's previous answer included: newer than
   // every answer already known, older than any later one.
-  const recordLocal = (failed: boolean, d?: { last_checked_at?: unknown }) => {
+  const recordLocal = (failed: boolean, d?: { last_checked_at?: unknown }, report?: ErrorReport) => {
     const stamp = typeof d?.last_checked_at === 'number' ? d.last_checked_at : null
-    setLocal(prev => ({ at: stamp ?? Math.max(prev?.at ?? 0, background.checkedAt ?? 0), failed }))
+    setLocal(prev => ({ at: stamp ?? Math.max(prev?.at ?? 0, background.checkedAt ?? 0), failed, report }))
   }
   // Why there is no verdict when nothing FAILED: this gateway is not the update
   // surface for the install it runs inside. Separate from `gwError` because
   // rendering a deferral under "Couldn't check for updates" would be its own
   // lie — nothing broke, the update arrives through a different surface.
   const [gwUnavailableReason, setGwUnavailableReason] = useState('')
+  // A container's newer release, named only when the gateway confirmed its
+  // image can be pulled. Availability only: nothing here can apply it.
+  const [gwImageVersion, setGwImageVersion] = useState('')
+  const [gwImageNotesUrl, setGwImageNotesUrl] = useState('')
   // Null = not yet known from a check; the redux status flag AboutPanel.tsx reads carries the
   // same fact for the pre-check case.
   const [gwSelfUpdatable, setGwSelfUpdatable] = useState<boolean | null>(null)
@@ -123,6 +131,12 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   const [gwCommandCopyFailed, setGwCommandCopyFailed] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [applyError, setApplyError] = useState('')
+  // The report behind a refusal the notice words from the catalog, kept with the
+  // text it belongs to: the transport filed it under the gateway's own message,
+  // which `ErrorNotice` cannot find by the text it shows. Other writers of
+  // `applyError` outside this hook leave it as is, and a text it does not match
+  // ignores it; the restart failures below clear it.
+  const [applyReport, setApplyReport] = useState<{ message: string; report?: ErrorReport } | null>(null)
   // The apply was refused because the checkout has uncommitted changes: the
   // error then carries guided copy, and a stash command renders beneath it.
   const [applyDirty, setApplyDirty] = useState(false)
@@ -158,6 +172,13 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
       setGwUnavailableReason(
         typeof d?.unavailable_reason === 'string' ? d.unavailable_reason : ''
       )
+      setGwImageVersion(typeof d?.image_available_version === 'string' ? d.image_available_version : '')
+      setGwImageNotesUrl(
+        typeof d?.image_release_notes_url === 'string'
+          && d.image_release_notes_url.startsWith('https://github.com/kirodotdev/KiroCrew/releases/tag/')
+          ? d.image_release_notes_url
+          : ''
+      )
       setGwChannel(typeof d?.channel === 'string' ? d.channel : '')
       setGwCommand(
         typeof d?.remediation?.command === 'string' ? d.remediation.command : ''
@@ -171,14 +192,16 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
     },
     // The request itself failed: that is now the newest answer, so an earlier
     // check's verdict and reason must not outlive it.
-    onError: () => {
+    onError: (e: unknown) => {
       setGwChecked(false)
       setGwFound(false)
       setGwAhead(0)
       setGwBehind(0)
       setGwError('')
       setGwUnavailableReason('')
-      recordLocal(true)
+      setGwImageVersion('')
+      setGwImageNotesUrl('')
+      recordLocal(true, undefined, reportForError(e))
     },
   })
   // Update ARMS the update for the next start (`POST /api/update`): nothing
@@ -194,8 +217,11 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
     onError: (e: unknown) => {
       const changed = dirtyWorktreeChanged(e)
       setApplyDirty(changed !== null)
-      if (changed !== null) setApplyError(i18nT('pages.settings.aboutPanel.update_refused_dirty_worktree', { changed }))
-      else setApplyError(e instanceof ApiError ? (e.message || i18nT('pages.settings.aboutPanel.update_failed')) : i18nT('pages.settings.aboutPanel.update_failed'))
+      const message = changed !== null
+        ? i18nT('pages.settings.aboutPanel.update_refused_dirty_worktree', { changed })
+        : e instanceof ApiError ? (e.message || i18nT('pages.settings.aboutPanel.update_failed')) : i18nT('pages.settings.aboutPanel.update_failed')
+      setApplyError(message)
+      setApplyReport({ message, report: reportForError(e) })
     },
   })
   // Take the armed update back: the next start applies nothing.
@@ -209,6 +235,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   // (a real server rejection) is a failure worth showing.
   const restartRefusal = useRestartRefusal(detail => {
     setRestarting(false)
+    setApplyReport(null)
     setApplyError(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
   })
   const gwRestart = useMutation({
@@ -221,6 +248,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
       if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
       if (e instanceof ApiError) {
         restartRefusal.end()
+        setApplyReport(null)
         setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
       } else setRestarting(true)
     },
@@ -302,10 +330,12 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   return {
     newestIsLocal, newestCheckFailed, newestCheckSucceeded,
     gwChanges, gwTarget, gwTargetDisplay, gwFound, gwAhead, gwBehind, gwChecked, gwError,
-    gwUnavailableReason, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
+    gwUnavailableReason, gwImageVersion, gwImageNotesUrl, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, showConfirm, setShowConfirm,
     applyError, setApplyError, applyDirty, restarting, setRestarting, gwCheck, gwApply, gwRestart,
     gwChannelMutation, gwCancelArm,
+    applyErrorReport: applyReport !== null && applyReport.message === applyError ? applyReport.report : undefined,
+    checkErrorReport: newestIsLocal ? local?.report : undefined,
   }
 }
 
@@ -363,7 +393,8 @@ export function AboutPanelGatewayUpdates({
   restartControls?: boolean
 }) {
   const {
-    gwChanges, gwTarget: localTarget, gwTargetDisplay: localTargetDisplay, gwChecked, gwError, gwUnavailableReason, gwCommandCopied,
+    gwChanges, gwTarget: localTarget, gwTargetDisplay: localTargetDisplay, gwChecked, gwError, gwUnavailableReason,
+    gwImageVersion, gwImageNotesUrl, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, setShowConfirm, applyError,
     setApplyError, restarting, setRestarting, gwCheck, gwRestart, newestIsLocal, newestCheckFailed,
   } = gwUpdate
@@ -398,6 +429,7 @@ export function AboutPanelGatewayUpdates({
       )}
       <ErrorNotice
         message={gwUpdate.gwCancelArm.isError ? i18nT('components.updateFoundModal.cancel_update_failed') : null}
+        report={gwUpdate.gwCancelArm.isError ? reportForError(gwUpdate.gwCancelArm.error) : undefined}
         askAgent
         testId="about-update-cancel-armed-error"
       />
@@ -499,7 +531,7 @@ export function AboutPanelGatewayUpdates({
                   </p>
                   {/* askAgent on: a refused restart leaves nothing unsaved —
                       the installer already ran in the user's terminal. */}
-                  <ErrorNotice message={applyError} askAgent testId="manual-update-restart-error" />
+                  <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="manual-update-restart-error" />
                 </>
               )}
             </div>
@@ -571,6 +603,17 @@ export function AboutPanelGatewayUpdates({
               <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
             )
           )}
+          {gwCheck.isSuccess && newestIsLocal && !!gwUnavailableReason && gwImageVersion && (
+            <span className="text-sm text-muted flex items-center gap-1.5 flex-wrap" data-testid="container-image-available">
+              <ArrowUp size={13} className="lucide-inline text-accent" aria-hidden />
+              {i18nT('pages.settings.aboutPanel.update_check_image_available', { version: gwImageVersion })}
+              {gwImageNotesUrl && (
+                <a href={gwImageNotesUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-text">
+                  {i18nT('pages.settings.aboutPanel.update_check_image_release_notes')}
+                </a>
+              )}
+            </span>
+          )}
           {gwCheck.isSuccess && newestIsLocal && !!gwUnavailableReason && (
             <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwUnavailableReason)}</span>
           )}
@@ -582,6 +625,8 @@ export function AboutPanelGatewayUpdates({
             <ErrorNotice
               variant="inline"
               message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}${newestIsLocal && gwError ? `: ${gwCheckErrorText(gwError)}` : ''}`}
+              // The text is the catalog's, so a request that failed passes its report.
+              report={gwUpdate.checkErrorReport}
               askAgent
               testId="check-failed"
             />
@@ -631,7 +676,7 @@ export function AboutPanelGatewayUpdates({
       {/* askAgent on: a refused restart of a standing action; nothing on
           this card is a draft. */}
       {restartControls && !showManualUpdate && (
-        <ErrorNotice message={applyError} askAgent testId="gateway-restart-error" />
+        <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="gateway-restart-error" />
       )}
     </div>
   )
@@ -704,7 +749,7 @@ export function AboutPanelUpdateConfirm({
             tree, a 400) and this dialog holds no draft. `ErrorNotice` exposes
             no onHandoff, but the hand-off navigates away and unmounts this
             panel — modal included — so nothing is left sitting over the chat. */}
-        <ErrorNotice className="mb-3" message={applyError} askAgent testId="update-apply-error" />
+        <ErrorNotice className="mb-3" message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="update-apply-error" />
         {applyDirty && applyError && (
           <div className="mb-3" data-testid="update-dirty-stash-command">
             <CopyCommand><code>git stash push -u -m "before kirocrew update"</code></CopyCommand>

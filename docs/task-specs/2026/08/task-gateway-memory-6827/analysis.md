@@ -248,6 +248,11 @@ comment:
    gateway fall back to keyword/FTS search instead of loading the in-process
    embedder (`knowledge/embedder.create_embedder_from_config`,
    `vector_memory._try_embed`).
+   > Archive note: in the current code this diagnostic does not work. Embeddings
+   > are always on: `_coerce_embedding_provider`
+   > (`src/kiro_crew/config/memory_sections.py`) keeps only values in
+   > `EMBEDDING_PROVIDERS` (`llama_cpp`, `ollama_http`) and coerces `""` and every
+   > other value to `"llama_cpp"`, so an empty provider still loads the embedder.
 2. Restart the gateway and watch `python.exe` for **10 minutes** with no user
    interaction.
    - If it stays around **~600 MB**: the climb is attributable to the in-process

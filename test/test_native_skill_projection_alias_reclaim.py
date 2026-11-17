@@ -1118,7 +1118,7 @@ def test_same_crew_home_falls_back_to_literal_comparison_when_resolution_fails(m
     # Identical strings still match without ever reaching realpath.
     assert projection._same_crew_home("/home/u/.kirocrew", "/home/u/.kirocrew")
     # Different strings cannot be proven equal once resolution is unavailable, so
-    # they stay foreign -- the pre-fix behaviour, which never widens this home.
+    # they stay foreign, which never widens this home.
     assert not projection._same_crew_home("/home/u/.kirocrew", "/local/home/u/.kirocrew")
 
 

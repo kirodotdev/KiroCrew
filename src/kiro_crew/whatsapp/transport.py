@@ -380,6 +380,21 @@ class WhatsAppTransport(MessagingTransport):
             jid, content, on_sent=lambda message_id: self.echo.remember(jid, message_id)
         )
 
+    async def send_rendered(self, conversation_id: str, chunk: str) -> str:
+        """Send ONE chunk the renderer already converted, as it is, echo-tracked.
+
+        :meth:`edit_text`'s counterpart for a new bubble. ``send_message`` converts
+        Markdown, and converting a converted chunk turns its bold into italic.
+        """
+        jid = normalize_jid(conversation_id)
+        ids = await self._client.send_text(
+            jid,
+            chunk,
+            on_sent=lambda message_id: self.echo.remember(jid, message_id),
+            rendered=True,
+        )
+        return ids[-1] if ids else ""
+
     async def send_image(self, conversation_id: str, data: bytes, caption: str = "") -> str:
         """Upload one image, echo-tracked like every other send this makes."""
         jid = normalize_jid(conversation_id)
@@ -681,12 +696,9 @@ class WhatsAppTransport(MessagingTransport):
         # 4. Group gate (before authorize: an unconfigured group must not
         #    even produce an audit row per message).
         verdict: GroupVerdict | None = None
-        # ``from_me`` means the account sent it, which includes the operator
-        # texting an ordinary contact from their phone. That is NOT a command: the
-        # agent would answer their private conversation and reply into the
-        # contact's chat. Operator authority in a DIRECT chat therefore requires
-        # the self-chat, which is the command surface; in a configured group the
-        # operator addresses the agent normally, gated by mention or rules.
+        # Operator authority: in a DIRECT chat only the self-chat counts (see
+        # 3b); in a configured group the operator addresses the agent normally,
+        # gated by mention or rules.
         self_chat = self._client.me.matches(chat)
         sender_is_operator = (from_me or self._client.me.matches(sender, sender_alt)) and (
             is_group or self_chat

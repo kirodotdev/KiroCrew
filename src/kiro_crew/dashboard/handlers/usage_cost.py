@@ -13,6 +13,7 @@ import math
 import time
 from typing import Any, Iterator
 
+from kiro_crew import model_registry
 from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
     NAVIGABLE_CATEGORY,
@@ -60,14 +61,22 @@ _COMPACTION_PCT = 90.0
 _COMPACTION_DROP_PCT = 1.0
 
 
-def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) -> dict[str, Any]:
+def cost_breakdown(
+    days: float = SPEND_WINDOW_DAYS,
+    until: float | None = None,
+    spend_field: str | None = None,
+) -> dict[str, Any]:
     """Aggregate per-turn spend from the token row store into a cost view.
 
     Answers "what did the last *days* cost, compared with the *days* before it,
     and what drove the difference". ``credits`` is the billing dimension the
     Kiro harnesses populate, with ``context_used`` as the second real signal; a
     window whose turns carry no credits but a dollar ``cost`` (a dollar-billed
-    harness) is aggregated from ``cost`` instead, and ``unit`` names which.
+    harness) is aggregated from ``cost`` instead, and ``unit`` names which. A
+    window holding both kinds of turn is the credits view with the same view
+    over ``cost`` nested under ``usd``, so neither unit's spend reads as zero.
+    *spend_field* (``"credits"`` or ``"cost"``) skips the choice and sums that
+    field alone; it is how the nested view is built.
 
     Three deliberate shapes:
 
@@ -99,6 +108,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         cache_key: tuple[Any, ...] | None = (
             days,
             until,
+            spend_field,
             tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
         )
     except OSError:
@@ -110,6 +120,13 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         and (now - _COST_CACHE_TS) < _COST_CACHE_TTL
     ):
         return _COST_CACHE
+
+    # Imported here, not at module level: a name an owner imports from outside
+    # the usage family is served by the facade, and this helper is not part of it.
+    from kiro_crew.dashboard.handlers.telemetry_spend_advice import (
+        HIGH_CONTEXT_TOKENS,
+        spend_advice,
+    )
 
     def _blank() -> dict[str, Any]:
         return {"credits": 0.0, "turns": 0}
@@ -124,6 +141,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
     by_category: dict[str, dict[str, Any]] = {}
     prev_category: dict[str, float] = {}
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
+    high_context = 0.0
 
     def _window_rows() -> Iterator[tuple[dict[str, Any], str, float]]:
         """Each token row stamped inside the window or the one before it."""
@@ -151,32 +169,40 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
 
     # The unit is read off the rows rather than the configured harness: a
     # dollar-billed harness records `cost` and leaves `credits` empty, and the
-    # store may hold turns from a harness other than the current default. Any
-    # credit-bearing row keeps the view in credits, so a Kiro install stops at
-    # its first billed row; only a window with no credits at all and some
-    # dollar cost is shown in dollars.
-    # shortcut: a store mixing credit and dollar rows shows credits only; split
-    # the view per unit when a crew runs both harnesses side by side.
+    # store may hold turns from a harness other than the current default. A
+    # window with credits and no dollar cost is shown in credits, one with
+    # dollar cost and no credits in dollars, and one with both in credits with
+    # the dollar view beside it.
     # Decided on the rows the headline sums: this window's session turns. The
     # window before it may predate a harness switch, so a credit row there must
     # not hold a window of dollar turns at zero; its amounts are then read as
     # dollars too, and a prior window that billed none reads as no prior spend.
-    field, unit = "credits", "credits"
-    saw_cost = False
-    for obj, _ts_raw, ts_epoch in _window_rows():
-        row_slot = str(obj.get("slot") or "")
-        if ts_epoch < cutoff or (row_slot and not is_session_slot(row_slot)):
-            continue
-        if _billed(obj, "credits"):
-            break
-        saw_cost = saw_cost or _billed(obj, "cost")
+    mixed = False
+    if spend_field is not None:
+        field = spend_field
     else:
-        if saw_cost:
-            field, unit = "cost", "usd"
+        saw_credits = saw_cost = False
+        for obj, _ts_raw, ts_epoch in _window_rows():
+            row_slot = str(obj.get("slot") or "")
+            if ts_epoch < cutoff or (row_slot and not is_session_slot(row_slot)):
+                continue
+            saw_credits = saw_credits or _billed(obj, "credits")
+            saw_cost = saw_cost or _billed(obj, "cost")
+            if saw_credits and saw_cost:
+                break
+        field = "cost" if saw_cost and not saw_credits else "credits"
+        mixed = saw_credits and saw_cost
+    unit = "usd" if field == "cost" else "credits"
+    # A view split by unit counts only its own unit's turns, so the two cards
+    # together hold each turn once: the dollar view keeps the turns billed in
+    # dollars, the credits view drops them and keeps the rest.
+    split = mixed or spend_field is not None
     # Dollars keep their cents; credits read to one decimal as before.
     places = 4 if unit == "usd" else 1
 
     for obj, ts_raw, ts_epoch in _window_rows():
+        if split and not _billed(obj, field) and (field == "cost" or _billed(obj, "cost")):
+            continue
         raw_credits = obj.get(field)
         # Shards written before the persist-side guard can already
         # hold `NaN` / `Infinity` — `json.loads` accepts those bare
@@ -189,7 +215,14 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         credits = 0.0 if not raw_credits else _finite_number(raw_credits)
         if credits is None:
             continue
-        model = str(obj.get("model") or "unknown")
+        # Same canonicalisation the daily chart and the series apply, so a model
+        # that crossed a provider id migration never splits into two rows.
+        model = (
+            model_registry.canonicalize_for_provider(
+                str(obj.get("model") or ""), str(obj.get("provider") or "")
+            )
+            or "unknown"
+        )
         slot = str(obj.get("slot") or "")
 
         # Dropped here, before ANY accumulator sees it, so every
@@ -230,6 +263,8 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         used = _coerce_int(obj.get("context_used"))
         if used > 0 and credits > 0:
             bands.setdefault(min(used // 200_000, 5), []).append(credits)
+            if used >= HIGH_CONTEXT_TOKENS:
+                high_context += credits
 
         if slot:
             c = convos.setdefault(
@@ -259,6 +294,10 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
 
     def _store(result: dict[str, Any]) -> dict[str, Any]:
         global _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS
+        if mixed:
+            # Built before this view is memoised: the nested call stores its
+            # own result in the same single-entry cache, replaced just below.
+            result["usd"] = cost_breakdown(days, until, spend_field="cost")
         if cache_key is not None:
             _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS = result, cache_key, now
         return result
@@ -363,6 +402,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         )
 
     prev_credits = float(prev_tot["credits"])
+    advice = spend_advice(total, high_context, by_model)
     return _store(
         {
             "window_days": days,
@@ -388,6 +428,8 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
             "by_channel": _rank(by_channel, prev_channel),
             "by_category": _rank(by_category, prev_category),
             "context_bands": band_rows,
+            # Measured recommendations with their share of the window, or `[]`.
+            "advice": advice,
             "conversations": convo_rows,
             # Slot -> the transcript its rows recorded, for the endpoint to title
             # a closed linked tab by; the endpoint drops it from the response.

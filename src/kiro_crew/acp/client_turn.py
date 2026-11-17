@@ -2,27 +2,29 @@
 
 The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
 ``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
-opencode and MiMo Code shell-permission deferrals, the liveness consult and the redaction of a
+MiMo Code shell-permission deferral, the liveness consult and the redaction of a
 Claude native child's events, with the flush of their held text for a turn cut short.
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_turn_credits``, ``_cancelled``,
-``_claude_compaction_pending``, ``_claude_native_compaction_id``, ``_codex_compaction_pending``,
+Instance fields written: ``_active_run_id``, ``_active_tool_calls``,
+``_between_turn_credits``, ``_cancelled``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
-``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
-``_prompt_or_tool_seen``, ``_sent_images_req``, ``_sent_images_staged``,
-``_skill_reads``, ``_stale_eligible``,
-``_steers_awaiting_echo``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
-``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
-``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
-``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
-``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
+``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``,
+``_permission_options``, ``_prompt_or_tool_seen``, ``_sent_images_req``,
+``_sent_images_staged``, ``_skill_reads``, ``_stale_eligible``, ``_steers_awaiting_echo``,
+``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
+``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
+``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_params``,
+``_tool_call_tool_name``, ``_tool_call_unclassified``, ``_tool_dispatched``, ``_turn_done``,
+``last_prompt_stats``.
 
-Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
-``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``, ``_sent_images``,
-``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``.
+Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``,
+``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``,
+``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``,
+``_process``, ``_registered_session``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
+``_session_key``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -35,10 +37,12 @@ from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator, Callable
 
 from kiro_crew.acp import (
     batch_guard,
-    claude_background_calls,
     disposed_session,
+    harness_notices,
     launch_tuning,
     pi_steer_turn,
+    plan_checklist,
+    raw_sdk_tasks,
 )
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
@@ -52,7 +56,6 @@ from kiro_crew.acp.client_timeouts import (
     _EOF_EXIT_GRACE_SECS,
     _MAX_CONSECUTIVE_EMPTY,
     _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT,
-    _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _READ_TIMEOUT,
     _STALE_TURN_TIMEOUT,
     _TOOL_STALL_TIMEOUT,
@@ -80,7 +83,6 @@ from kiro_crew.acp.transport_errors import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_MIMOCODE,
-    ACP_BACKEND_OPENCODE,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -120,6 +122,7 @@ from kiro_crew.agent_sdk.backends import (
     prompt_command_issue,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.metrics.chat_runtime_share import record_turn_started
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.tracing import turn_anomalies
 from kiro_crew.tracing import turns as trace_turns
@@ -279,57 +282,6 @@ def _process_message(self: AcpClient, msg: JsonRpcMessage, req_id: int) -> str:
     return "skip"
 
 
-async def _defer_opencode_shell_permission(
-    self: AcpClient, msg: JsonRpcMessage, remaining: float
-) -> bool:
-    """Queue a matching command update before its OpenCode shell permission."""
-    params = msg.params if isinstance(msg.params, dict) else {}
-    tool_call = params.get("toolCall")
-    tool_call = tool_call if isinstance(tool_call, dict) else {}
-    tool_call_id = tool_call.get("toolCallId")
-    if not isinstance(tool_call_id, str) or self._tool_call_is_shell.get(tool_call_id) is not True:
-        return False
-    cached = self._tool_call_params.get(tool_call_id, {})
-    if isinstance(cached, dict) and cached.get("command"):
-        return False
-
-    # OpenCode can ask permission before its command-bearing update. Read
-    # only the next frame to preserve unrelated event order. The request's
-    # own rawInput must never fill the trusted security cache.
-    following = await self._read_message(
-        timeout=min(_OPENCODE_PERMISSION_REFINEMENT_TIMEOUT, remaining)
-    )
-    if following is None:
-        return False
-
-    follow_params = following.params if isinstance(following.params, dict) else {}
-    update = follow_params.get("update")
-    update = update if isinstance(update, dict) else {}
-    raw_input = update.get("rawInput")
-    buffer_capacity = self._buffer.maxlen
-    if not (
-        following.is_method(METHOD_SESSION_UPDATE)
-        and isinstance(params.get("sessionId"), str)
-        and follow_params.get("sessionId") == params.get("sessionId")
-        and update.get("sessionUpdate") == "tool_call_update"
-        and update.get("toolCallId") == tool_call_id
-        and update.get("status") == "in_progress"
-        and isinstance(raw_input, dict)
-        and isinstance(raw_input.get("command"), str)
-        and raw_input["command"]
-        and not update.get("content")
-        and not update.get("rawOutput")
-        and (buffer_capacity is None or len(self._buffer) <= buffer_capacity - 2)
-    ):
-        self._buffer.appendleft(following)
-        return False
-
-    # The normal dispatcher caches the command before building permission.
-    self._buffer.appendleft(msg)
-    self._buffer.appendleft(following)
-    return True
-
-
 #: The permission categories MiMo Code's shell tool asks under with NO metadata,
 #: so their request carries no command: ``tool/bash.ts:399-413`` on 0.1.15 asks
 #: ``external_directory`` and then ``bash`` with ``metadata: {}``, and the ACP layer
@@ -453,8 +405,7 @@ async def _prompt_loop(
         self._steers_awaiting_echo = {}
         self._compaction_failed_at = None
         self._compaction_failed_turn = False
-        self._claude_compaction_pending = False
-        self._claude_native_compaction_id = None
+        self._reset_harness_compaction()
         self._codex_compaction_pending = False
         deadline = time.monotonic() + timeout
         consecutive_empty = 0
@@ -708,8 +659,8 @@ async def _prompt_loop(
             # progress frames (each frame restarts the _TOOL_STALL_TIMEOUT
             # countdown).  Clearing the flag on every inbound frame would
             # disarm the watchdog after a single progress frame, so a tool
-            # that emits one frame then silently stalls would hang anyway —
-            # exactly the bug this watchdog targets.  The flag is cleared
+            # that emits one frame then silently stalls would hang anyway,
+            # which is what this watchdog exists to catch.  The flag is cleared
             # only when a tool actually resolves or the turn completes
             # (see _dispatch_events).
             self.last_prompt_stats.event_count += 1
@@ -726,8 +677,8 @@ async def _prompt_loop(
                 await self._tripwire_mimocode_governed_mcp(msg)
             if action == "permission" and (
                 (
-                    self.backend == ACP_BACKEND_OPENCODE
-                    and await self._defer_opencode_shell_permission(msg, remaining)
+                    self._defers_shell_permission
+                    and await self._defer_shell_permission(msg, remaining)
                 )
                 or (
                     self.backend == ACP_BACKEND_MIMOCODE
@@ -740,8 +691,8 @@ async def _prompt_loop(
             # as the finished turn it is (see claude_background_calls).
             if (
                 action == "error"
-                and self._is_claude
-                and (ended := await claude_background_calls.settle_background_only(self, msg))
+                and self._ends_background_only_turns
+                and (ended := await self._settle_background_only(msg))
             ):
                 action, msg = "complete", ended
             if action == "complete" and req_id == getattr(self, "_sent_images_req", None):
@@ -836,11 +787,27 @@ async def send_message(self: AcpClient, message: str, timeout: float | None = No
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-
-    req_id = await self._send_prompt(message)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     return await self._read_prompt_response(req_id, timeout)
+
+
+def _release_unsent_turn(client: AcpClient) -> None:
+    """End the turn a prompt entry opened and left before its prompt was sent.
+
+    The entry cleared ``_turn_done``, and the turn's read (``_prompt_loop``) sets
+    it again. Left clear, a ``wait_turn_done`` waiter waits out its whole budget,
+    and the idle reader, which starts only once the turn is done, stays off: a
+    reply the agent then sends on its own waits in the pipe and shows under the
+    next prompt.
+    """
+    client._turn_done.set()
+    client._maybe_start_idle_reader()
 
 
 async def send_message_stream(
@@ -855,10 +822,13 @@ async def send_message_stream(
     # streaming subagent adopts this method, mirror that Pre/Post instrumentation here.
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-
-    req_id = await self._send_prompt(message)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
     self._engine_fallback.begin_prompt(self)
@@ -884,7 +854,7 @@ async def send_message_stream(
                 # Close out an automatic claude compaction. The returned
                 # event is discarded — this API yields str — but the context
                 # counts it drops are what the meter reads next turn.
-                self._settle_claude_compaction(reason)
+                self._settle_harness_compaction(reason)
                 self._settle_codex_compaction(reason)
                 reason, _ = self.last_prompt_stats.terminal_refusal(reason)
                 self._last_stop_reason = reason
@@ -923,7 +893,7 @@ async def send_message_stream(
                 # permission frames, this text-only one included.
                 await self._tripwire_pi_gate(msg)
                 await self._tripwire_permission_state(msg)
-                chunk, is_thinking = self._extract_text_chunk(msg)
+                chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
                 if chunk and not is_thinking:
                     # A claude compaction notice is a control frame wearing
                     # assistant text. This API yields str, so the event has
@@ -932,7 +902,7 @@ async def send_message_stream(
                     # guess about bare prose, so dropping it here would let
                     # one wrong guess erase a real answer with nothing left
                     # to recover it from.
-                    self._claude_compaction_event(chunk)
+                    self._harness_compaction_event(chunk)
                     self.last_prompt_stats.text_chunks += 1
                     yield chunk
                     if _is_tool_interrupted_marker(chunk):
@@ -988,9 +958,16 @@ async def stream_events(
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-    req_id = await self._send_prompt(message, allow_image=allow_image, prompt_gate=prompt_gate)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message, allow_image=allow_image, prompt_gate=prompt_gate)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
+    _turn_clock = getattr(self, "_turn_clock", None) or time.monotonic
+    _sent_at = _turn_clock()
+    _started = False
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
@@ -1000,6 +977,20 @@ async def stream_events(
         )
     ) as events:
         async for event in events:
+            if not _started and not event.synthetic_completion:
+                # The same span ``session_handle_turn._run_turn`` counts, on the
+                # arm a session that does not share takes: this client owns its
+                # process alone, so never shared. A session the gateway registered
+                # (a chat on any channel, a cron or task session) is the one
+                # tenant, as its lease reads on the handle arm; an unregistered
+                # one (a subagent, a worker-pool client) holds none and reads 0.
+                _started = True
+                record_turn_started(
+                    tenants=1 if getattr(self, "_registered_session", False) is True else 0,
+                    delay_secs=_turn_clock() - _sent_at,
+                    backend=self.backend,
+                    shared=False,
+                )
             yield event
 
 
@@ -1052,6 +1043,7 @@ async def _dispatch_events(
     """Shared event dispatch loop for prompts and commands."""
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
+    _draws_background = raw_sdk_tasks.begin_draw(self)
     self._engine_fallback.begin_prompt(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
@@ -1109,6 +1101,13 @@ async def _dispatch_events(
 
     _prompt_events = self._prompt_loop(req_id, timeout)
     async for action, msg in _prompt_events:
+        # What Claude Code's background work sent before this frame, drawn above it by the
+        # dashboard turn alone: its first frame comes after what was read between prompts
+        # (``raw_sdk_tasks``).
+        for _raw_event in self._redact_native_child_events(
+            raw_sdk_tasks.pending_events(self) if _draws_background else []
+        ):
+            yield _raw_event
         if action != "update":
             logger.debug(
                 "ACP event: method=%s id=%s action=%s",
@@ -1152,7 +1151,7 @@ async def _dispatch_events(
             # close it out here, BEFORE EVENT_COMPLETE, so a consumer that
             # reads the terminal to leave its compacting state sees it
             # inside the turn rather than after the turn it belongs to.
-            _compaction_settle = self._settle_claude_compaction(reason)
+            _compaction_settle = self._settle_harness_compaction(reason)
             if _compaction_settle is not None:
                 yield _compaction_settle
             # The codex reading of the same hole: a compaction that errored
@@ -1282,7 +1281,13 @@ async def _dispatch_events(
             _codex_compaction = self._codex_compaction_event(msg)
             if _codex_compaction is not None:
                 yield _codex_compaction
-            chunk, is_thinking = self._extract_text_chunk(msg)
+            _plan_todo = plan_checklist.todo_event(self, msg)
+            if _plan_todo is not None:
+                yield _plan_todo
+            _mode_notice = harness_notices.mode_notice_event(self, msg)
+            if _mode_notice is not None:
+                yield _mode_notice
+            chunk, is_thinking, _notice = harness_notices.text_chunk(self, msg)
             _notice_chunk = False
             if chunk and not is_thinking:
                 # The claude backend reports compaction as plain assistant
@@ -1292,7 +1297,7 @@ async def _dispatch_events(
                 # The chunk carries ``control_notice`` so a consumer can show
                 # it without counting it as the turn's answer — the ACP layer
                 # owns the classification, and nothing downstream re-parses.
-                _compaction_event = self._claude_compaction_event(chunk)
+                _compaction_event = self._harness_compaction_event(chunk)
                 if _compaction_event is not None:
                     yield _compaction_event
                     _notice_chunk = True
@@ -1310,6 +1315,7 @@ async def _dispatch_events(
                     text=chunk,
                     control_notice=_notice_chunk,
                     message_id=parse_message_id((msg.params or {}).get("update")),
+                    harness_notice=_notice,
                 )
                 if not is_thinking and _is_tool_interrupted_marker(chunk):
                     # kiro-cli's built-in security filter cancelled the turn's tools.
@@ -1718,7 +1724,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             self._track_prompt_usage(result)
             # See send_message_stream: settle for the context counts, drop
             # the event this API cannot yield.
-            self._settle_claude_compaction(reason)
+            self._settle_harness_compaction(reason)
             self._settle_codex_compaction(reason)
             # Fold a metadata refusal onto the terminal, as the streaming
             # paths do, so a caller reading ``last_stop_reason`` sees the
@@ -1762,7 +1768,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             # See send_message_stream: settle the codex compaction for the
             # context counts, drop the event this API cannot return.
             self._codex_compaction_event(msg)
-            chunk, is_thinking = self._extract_text_chunk(msg)
+            chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
             if chunk and not is_thinking:
                 # Apply the claude compaction state change, then KEEP the
                 # chunk. This path returns one string callers treat as the
@@ -1770,7 +1776,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
                 # that string subtracts it with
                 # strip_claude_compaction_notices; dropping it here would
                 # silently truncate a real answer on a misclassification.
-                self._claude_compaction_event(chunk)
+                self._harness_compaction_event(chunk)
                 output.append(chunk)
                 self.last_prompt_stats.text_chunks += 1
                 if _is_tool_interrupted_marker(chunk):

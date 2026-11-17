@@ -74,6 +74,17 @@ const {
   resumeCrewCompanion,
 } = require("./crew-companion/index");
 const { hostsDashboard, openDashboardSession } = require("./dashboard-session");
+// A session opened from outside the dashboard (a Crew Companion notification, an
+// app window) is a user-intent show: unhide the app a fullscreen tray-close hid,
+// then bring it in front, as the summon hotkey does.
+const SURFACE_APP = {
+  showApp: () => {
+    if (process.platform === "darwin" && typeof app.show === "function") app.show();
+  },
+  focusApp: () => {
+    if (process.platform === "darwin") app.focus({ steal: true });
+  },
+};
 const { openExternalSafely } = require("./external-scheme");
 const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
@@ -899,6 +910,15 @@ app.whenReady().then(async () => {
   });
   if (cleared && !mainWindow.isDestroyed()) await gateway.connect(mainWindow);
 
+  // Each app's shortcut bindings, apart from the shell's own settings. A store that
+  // cannot open leaves the host on an in-memory one.
+  let appWindowPrefsStore;
+  try {
+    appWindowPrefsStore = new Store({ name: "app-window-prefs", configFileMode: STORE_FILE_MODE });
+    tightenStoreFileMode(appWindowPrefsStore.path, { log: (message) => glog("app-window-prefs mode: " + message) });
+  } catch (error) {
+    glog("app-window-prefs: store unavailable — " + (error && error.message));
+  }
   // Optional companion surfaces start only after the primary gateway handoff.
   // Both are best-effort and must never block an otherwise usable dashboard.
   initMochi({
@@ -906,7 +926,10 @@ app.whenReady().then(async () => {
     fetchGatewayAuth: fetchMochiGatewayAuth,
     glog,
     getMainWindow: () => windows.getMainWindow(),
+    // Seeded from Mochi's own store before the host below reads them.
+    hostStores: { gatewayStore: store, prefsStore: appWindowPrefsStore },
   });
+  const appWindowDisplays = path.join(app.getPath("userData"), "app-window-displays.json");
   try {
     initCrewCompanion({
       backendUrl: BACKEND_URL,
@@ -917,6 +940,9 @@ app.whenReady().then(async () => {
       fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
+      surfaceApp: SURFACE_APP,
+      userDataDir: app.getPath("userData"),
+      displayMemoryPath: appWindowDisplays,
     });
   } catch (error) {
     glog("crew-companion: init failed — " + (error && error.message));
@@ -929,11 +955,14 @@ app.whenReady().then(async () => {
       cookieHeader: sessionCookieHeader,
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
-      displayMemoryPath: path.join(app.getPath("userData"), "app-window-displays.json"),
+      displayMemoryPath: appWindowDisplays,
       showDashboardSession: (slotKey) => openDashboardSession(
-        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey,
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
       ),
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
+      // Which crew each app's windows show is this computer's choice, kept by the shell.
+      gatewayStore: store,
+      prefsStore: appWindowPrefsStore,
     });
     appWindowHost.start();
   } catch (error) {

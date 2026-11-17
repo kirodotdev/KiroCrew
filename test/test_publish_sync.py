@@ -28,7 +28,7 @@ from publish_sync_helpers import (  # noqa: F401 -- fixtures are requested by na
     store_fixture,
     wire,
 )
-from redaction_structured_cases import synth
+from redaction_structured_cases import github_classic
 
 from kiro_crew import publish_sync
 from kiro_crew.artifacts import (
@@ -39,8 +39,9 @@ from kiro_crew.artifacts import (
 # ── publish ──────────────────────────────────────────────────────────────────
 
 
-# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
-_SECRET = synth(40, seed=203)
+# A synthetic GitHub token the redactor removes; an AWS key ID and a bare 40-character
+# run stay visible.
+_SECRET = github_classic(seed=203)
 
 
 @pytest.mark.asyncio
@@ -495,6 +496,8 @@ async def test_push_version_noop_when_not_published(store, fake_client):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     await publish_sync.push_version(store.get("d"))
     assert fake_client.called("upload_version") == []
+    art = store.get("d")
+    assert (art.publication, art.version) == (None, 1)
 
 
 # ── sharing ────────────────────────────────────────────────────────────────────

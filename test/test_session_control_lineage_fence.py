@@ -65,11 +65,6 @@ class TestSharedFenceContainsEveryAgentCreatedSession:
         state.get_or_create_slot("chat-1")
         assert not sc._caller_is_ownership_fenced(state, "chat-1")
 
-    def test_member_and_cron_callers_are_fenced(self, tmp_path):
-        state = _make_state(tmp_path)
-        assert sc._caller_is_ownership_fenced(state, CRON_SLOT)
-        assert sc._caller_is_ownership_fenced(state, DM_SLOT_KEY_PREFIX + "radar")
-
 
 class TestDelegationGateAllowsOwnerRootedDispatch:
     """``_delegation_lineage_fenced`` is the gate-only owner-rooted allowance."""

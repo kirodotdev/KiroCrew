@@ -14,19 +14,22 @@ things that registry deliberately does not decide, plus the cap:
 ``eligible_for_chat_sharing``
     Whether a session may share at all. A cron, hook or task-runner session keeps
     its own process, and so does an incognito or temporary session -- see the
-    function's own reasoning. A crew-member session also keeps its own process:
-    member memory and workspace are isolated per member, so a member session is
-    refused with the ``member_session`` reason rather than sharing one runtime
-    across members.
+    function's own reasoning. A Bot (crew-member) session shares only inside its
+    own Bot's tree: its tree root must be a session of the same member on the same
+    memory store, or it is refused with the ``member_session`` reason. Two Bots
+    never share a process.
 
 :class:`ChatRuntimeKey`
     WHICH process, as the registry's compatibility key. Two sessions may land on
-    one process only when every PROCESS-LEVEL spawn input matches. A per-session
-    input (the ACP ``cwd``, the session key, the crew identity) is deliberately
-    absent from the key, because ``create_session`` carries it per session. An
-    input whose scope is ambiguous is IN the key: a key that is too narrow costs
-    memory, while one that is too wide runs a session under another session's
-    process configuration.
+    one process only when every PROCESS-LEVEL spawn input matches AND they belong
+    to the same session tree (:func:`share_tree_root_of`). A per-session input (the
+    ACP ``cwd``, the session key, the crew identity) is deliberately absent from
+    the key, because ``create_session`` carries it per session. On KAS the agent,
+    its spec, the model and the effort are per session too (sent in each
+    ``session/new`` and ``session/set_config_option``), so a KAS key leaves them
+    out. An input whose scope is ambiguous is IN the key: a key that is too narrow
+    costs memory, while one that is too wide runs a session under another
+    session's process configuration.
 
 ``chat_runtime_cap``
     How many sessions one process may serve, which is the blast radius of that
@@ -37,15 +40,23 @@ things that registry deliberately does not decide, plus the cap:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKENDS_CHAT_RUNTIME_SHARING
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_CHAT_RUNTIME_SHARING,
+    CHAT_RUNTIME_SHARING_HARNESSES,
+)
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP
 
@@ -58,23 +69,26 @@ logger = logging.getLogger(__name__)
 #: sharing on. Off when absent, unreadable or anything but ``True``.
 CHAT_RUNTIME_SHARING_PREVIEW: Final[str] = "chat_runtime_sharing"
 
-#: Oldest kiro-cli whose KAS relay may host several chat sessions on one process.
-#: kiro-cli 3.1.0 ships ``@kiro/agent`` 0.66.91, the first engine that admits one
-#: turn per session itself: a second prompt to a session with a running turn is
-#: queued behind it and steered into it (``steering_queued`` then
-#: ``steering_injected``) instead of racing it (``promptAdmitted`` ->
-#: ``runAdmittedPrompt``'s ``steerBehindOlderVisiblePrompt`` and
-#: ``interruptRunningTurn``; absent from 0.66.70 in kiro-cli 3.0.0). Across
-#: sessions the engine keeps its own order: a turn of a Crew custom-agent session
-#: waits in the engine's one-slot model queue (``AgentController.progressModelQueue``)
-#: while another session's turn runs, and every ``session/update`` names its
-#: session. That is why a KAS shared process needs no Crew-side chat turn gate
-#: (``AcpRuntime.chat_turn_gate``): the engine already gives each frame one owner.
-#: Measured: on a raw kiro-cli 3.1.0 relay process, two and four sessions prompted
-#: at once each got only their own text, in order, with every update naming its
-#: session; through Crew on a pod, three shared chats each got their own 30 lines
-#: in order and their turns ran one after another (the gate did not hold them).
-KAS_CHAT_SHARING_MIN_KIRO_CLI: Final[tuple[int, int, int]] = (3, 1, 0)
+#: Oldest KAS engine (``@kiro/agent``) that may host several chat sessions on one
+#: process, on either route. Two engine properties make a shared process safe.
+#: One turn per session (since 0.66.91): a second prompt to a session with a
+#: running turn is queued behind it and steered into it instead of racing it, and
+#: every ``session/update`` names its session, so a KAS shared process needs no
+#: Crew-side turn lock. And, from 0.66.104
+#: (kiro-agent#3741), turns of DIFFERENT sessions run in parallel: only a
+#: spec-generation turn waits for the engine's single active model slot. Before
+#: it (0.66.91 in kiro-cli 3.1.0, 0.66.102 in kiro-cli 3.2.1) every Crew
+#: custom-agent turn waited in that one-slot queue
+#: (``AgentController.progressModelQueue``), so chats on one process answered
+#: one at a time. A shared chat must never wait for another chat's turn, so the
+#: floor is the first engine that does not queue them.
+#: Measured on a pod, bundle route, three shared chats on 0.66.104: all three
+#: answered in parallel, and while one ran ``sleep 60`` the other two answered.
+KAS_CHAT_SHARING_MIN_ENGINE: Final[tuple[int, int, int]] = (0, 66, 104)
+
+#: The engine package's manifest below one kiro-cli ``kas/<version>-<sha256>``
+#: extract (``kas_extract_repair.SERVER_ENTRY_PARTS`` names its server entry).
+_RELAY_ENGINE_PACKAGE_PARTS: Final = ("node_modules", "@kiro", "agent", "package.json")
 
 
 def chat_runtime_sharing_enabled(cfg: Any) -> bool:
@@ -90,28 +104,134 @@ def chat_runtime_sharing_enabled(cfg: Any) -> bool:
     return isinstance(previews, Mapping) and previews.get(CHAT_RUNTIME_SHARING_PREVIEW) is True
 
 
-def kas_chat_sharing_ready() -> bool:
+def chat_runtime_sharing_harness_enabled(cfg: Any, backend: str) -> bool:
+    """Whether *backend*'s own switch under the preview is on in *cfg*.
+
+    The switch is ``agent.chat_runtime_sharing_harnesses[backend]``; one that is
+    absent or not a bool takes its default in ``CHAT_RUNTIME_SHARING_HARNESSES``. A
+    backend outside that table is False whatever is stored.
+    """
+    if backend not in CHAT_RUNTIME_SHARING_HARNESSES:
+        return False
+    stored = getattr(getattr(cfg, "agent", None), "chat_runtime_sharing_harnesses", None)
+    value = stored.get(backend) if isinstance(stored, Mapping) else None
+    return value if isinstance(value, bool) else CHAT_RUNTIME_SHARING_HARNESSES[backend]
+
+
+def engine_shares_chats(version: str | None) -> bool:
+    """Pure gate: may a KAS engine at *version* host several chat sessions?
+
+    True only for a readable version at or above :data:`KAS_CHAT_SHARING_MIN_ENGINE`.
+    An unknown version is False: absence of evidence keeps one process per chat.
+    """
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    parsed = parse_kiro_cli_version(version) if version else None
+    return parsed is not None and parsed >= KAS_CHAT_SHARING_MIN_ENGINE
+
+
+def _bundle_engine_version() -> str | None:
+    """The engine the bundle route runs: the installed pinned bundle's record.
+
+    Read the way the spec ``permissions`` gate reads it (``installed_bundle``,
+    never a spawn). Not installed yet is unknown.
+    """
+    from kiro_crew.acp import kas_bundle  # noqa: PLC0415
+
+    installed = kas_bundle.installed_bundle()
+    return installed.version if installed is not None else None
+
+
+def _relay_engine_version() -> str | None:
+    """The engine kiro-cli's relay runs, or ``None`` when it cannot be known.
+
+    kiro-cli unpacks its embedded engine into ``<data dir>/kas/<version>-<sha256>/``
+    (:mod:`kiro_crew.acp.kas_extract_repair`) and runs it from there; kiro-cli's
+    ``--version`` names no engine and the relay's ``initialize`` carries no
+    ``agentInfo``. So the version is that extract's ``@kiro/agent`` manifest, for
+    the kiro-cli version Crew spawns. No extract yet (kiro-cli never ran v3 here),
+    or a manifest that does not read, is unknown. Several extracts for one
+    kiro-cli version answer the OLDEST, so a stale one can only refuse.
+    """
+    from kiro_crew.identity_stores import state_db_candidates  # noqa: PLC0415
+    from kiro_crew.kiro_cli import installed_kiro_cli_version  # noqa: PLC0415
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    cli = installed_kiro_cli_version()
+    if cli is None:
+        return None
+    prefix = ".".join(str(n) for n in cli) + "-"
+    found: list[tuple[tuple[int, int, int], str]] = []
+    data_dirs = {db.parent for db in state_db_candidates(sys.platform, Path.home(), os.environ)}
+    for data_dir in data_dirs:
+        extracts = data_dir / "kas"
+        if not extracts.is_dir():
+            continue
+        for entry in extracts.iterdir():
+            if not entry.name.startswith(prefix) or not entry.is_dir():
+                continue
+            manifest = entry.joinpath(*_RELAY_ENGINE_PACKAGE_PARTS)
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            raw = data.get("version") if isinstance(data, dict) else None
+            if not isinstance(raw, str):
+                return None
+            parsed = parse_kiro_cli_version(raw)
+            if parsed is None:
+                return None
+            found.append((parsed, raw))
+    return min(found)[1] if found else None
+
+
+def relay_engine_shares_chats() -> bool:
+    """Whether the engine kiro-cli's relay runs may host several chats. Blocking; never raises."""
+    try:
+        return engine_shares_chats(_relay_engine_version())
+    except Exception:  # noqa: BLE001 - an unreadable extract is not a shareable engine
+        return False
+
+
+def kas_chat_sharing_ready(pin: str = "") -> bool:
     """Whether the next KAS spawn runs an engine that may host several chats.
 
-    True only on the kiro-cli relay route at or above
-    :data:`KAS_CHAT_SHARING_MIN_KIRO_CLI`. Crew's own engine bundle
-    (``agent.kas_bundle``, or the automatic switch when the relay cannot run) is
-    pinned to an older engine and keeps one process per chat. An unreadable
-    version or route answers False: absence of evidence keeps the session on its
-    own process. Blocking (reads config, may run ``kiro-cli --version`` once);
-    call it off the event loop.
+    True only when the engine that route will run is at or above
+    :data:`KAS_CHAT_SHARING_MIN_ENGINE`: on the bundle route the installed
+    pinned bundle (:func:`_bundle_engine_version`), on the relay the engine
+    kiro-cli unpacked (:func:`_relay_engine_version`). A kiro-cli version alone
+    is not enough: kiro-cli 3.1.0 through 3.2.1 ship engines that queue chats.
+    With the preview on the route is the bundle (``kas_route`` rule
+    ``REASON_SHARING_PREVIEW``); until the first spawn has installed it, there is
+    no installed engine and the chat keeps its own process. *pin* is the
+    session's own Bot pin, which decides the route as the spawn decides it.
+    An unreadable version or route answers False: absence of evidence keeps the
+    session on its own process. Each refusal is logged with its cause. Blocking
+    (reads config and files, may run ``kiro-cli --version`` once); call it off
+    the event loop.
     """
     try:
         from kiro_crew.acp.kas_route import resolve_kas_route
-        from kiro_crew.kiro_cli import installed_kiro_cli_version
 
-        if resolve_kas_route().bundle:
-            return False
-        version = installed_kiro_cli_version()
+        route = resolve_kas_route(pin=pin)
+        if route.bundle:
+            version = _bundle_engine_version()
+        else:
+            version = _relay_engine_version()
     except Exception:  # noqa: BLE001 - a failed probe keeps the unshared path
-        logger.debug("chat runtime sharing: KAS engine readiness unreadable", exc_info=True)
+        logger.info(
+            "chat-runtime-sharing: KAS engine readiness unreadable; not sharing", exc_info=True
+        )
         return False
-    return version is not None and version >= KAS_CHAT_SHARING_MIN_KIRO_CLI
+    ready = engine_shares_chats(version)
+    if not ready:
+        logger.info(
+            "chat-runtime-sharing: KAS engine not shareable route=%s engine=%s floor=%s",
+            route.name,
+            version or "unknown",
+            ".".join(str(n) for n in KAS_CHAT_SHARING_MIN_ENGINE),
+        )
+    return ready
 
 
 #: Memory modes that may share a process. A shared process OUTLIVES any single
@@ -152,6 +272,8 @@ def chat_sharing_ineligible_reason(
     member_context: bool,
     remote_workspace: bool = False,
     kas_engine_ready: bool = False,
+    member_shares_root: bool = False,
+    harness_enabled: bool = False,
 ) -> str:
     """WHY this session may not share a chat runtime, or ``""`` when it may.
 
@@ -159,7 +281,12 @@ def chat_sharing_ineligible_reason(
     remote workspace or a Kiro Cloud sandbox): that placement is attached to the
     PROCESS, so a second session on it would run in the first one's environment.
     ``kas_engine_ready`` is :func:`kas_chat_sharing_ready`, read by the caller off
-    the loop; it is asked only for a KAS start.
+    the loop; it is asked only for a KAS start. ``member_shares_root`` is True
+    when this Bot session's tree root is a session of the SAME member on the same
+    memory store (:func:`member_scope_of`); a Bot session without it is refused.
+    ``harness_enabled`` is
+    :func:`chat_runtime_sharing_harness_enabled` for *backend*: the harness's own
+    switch under the preview. Off, it refuses before the engine is asked.
 
     The decision itself lives here, and :func:`eligible_for_chat_sharing` is the
     boolean over it, so there is exactly one place the branches are written. The
@@ -175,6 +302,8 @@ def chat_sharing_ineligible_reason(
         return "sharing_disabled"
     if backend not in ACP_BACKENDS_CHAT_RUNTIME_SHARING:
         return "backend_not_chat_shareable"
+    if not harness_enabled:
+        return "harness_switched_off"
     if backend == ACP_BACKEND_KAS and not kas_engine_ready:
         return "kas_engine_not_shareable"
     if remote_workspace:
@@ -183,7 +312,7 @@ def chat_sharing_ineligible_reason(
         return "memory_mode_not_shareable"
     if telemetry_channel_of(session_key) != "dashboard":
         return "origin_not_dashboard"
-    if member_context:
+    if member_context and not member_shares_root:
         return "member_session"
     return ""
 
@@ -197,6 +326,8 @@ def eligible_for_chat_sharing(
     member_context: bool,
     remote_workspace: bool = False,
     kas_engine_ready: bool = False,
+    member_shares_root: bool = False,
+    harness_enabled: bool = False,
 ) -> bool:
     """Whether this session may join (or found) a shared chat runtime.
 
@@ -225,11 +356,13 @@ def eligible_for_chat_sharing(
     unsupported backend have equal keys, so they would share with each other,
     which is the broken case rather than a safe one.
 
-    A crew-member session is refused: it keeps its own process. A member session
-    carries member-specific memory and workspace isolation, so sharing one
-    runtime across member sessions is an isolation boundary this change does not
-    cross -- the safe default wins. Member sharing can return in a follow-up once
-    a maintainer approves it.
+    A Bot (crew-member) session shares only with its own Bot's tree. A member
+    carries its own memory store and identity, so a session of one Bot never runs
+    on another Bot's process: it may share only when its tree root is the same
+    member on the same store (``member_shares_root``), and the key carries that
+    member scope as well, so two Bots' keys never match. What a member session
+    needs per session (the member resource projection, the DM dashboard mount,
+    the memory stub's token) is carried by ``create_session`` for that session.
     """
     return not chat_sharing_ineligible_reason(
         session_key=session_key,
@@ -239,7 +372,60 @@ def eligible_for_chat_sharing(
         backend=backend,
         remote_workspace=remote_workspace,
         kas_engine_ready=kas_engine_ready,
+        member_shares_root=member_shares_root,
+        harness_enabled=harness_enabled,
     )
+
+
+#: Reads a dashboard session key's tree root: the top of its creator chain, by
+#: the rule the slot list nests on (``crew_mode.share_tree_root``). Wired by the
+#: gateway (``DashboardState``); unset in a process with no chat slots.
+_tree_root_reader: Callable[[str], str] | None = None
+
+
+def set_share_tree_reader(reader: Callable[[str], str] | None) -> None:
+    """Install the gateway's session-key -> tree-root reader (``None`` removes it)."""
+    global _tree_root_reader
+    _tree_root_reader = reader
+
+
+def share_tree_root_of(session_key: str) -> str:
+    """The root of *session_key*'s session tree, read once at its start.
+
+    A session with no creator is its own root. With no reader wired, a reader that
+    fails or one that answers nothing, the session is also its own root: it then
+    shares with nobody, which is the safe direction. Two trees never share,
+    because the root is a key field.
+    """
+    reader = _tree_root_reader
+    if reader is None or not session_key:
+        return session_key
+    try:
+        root = reader(session_key)
+    except Exception:  # noqa: BLE001 - an unreadable lineage is a tree of one
+        logger.debug(
+            "chat-runtime-sharing: tree root unreadable for %s", session_key, exc_info=True
+        )
+        return session_key
+    return root if isinstance(root, str) and root else session_key
+
+
+def member_scope_of(session_key: str) -> tuple[str, str]:
+    """``(member id, memory store id)`` of *session_key*, ``("", "")`` for no member.
+
+    Read from the session's execution record, the same trusted record session
+    allocation reads ``member_context`` from. An unreadable record is
+    ``("", "")``. Blocking (reads disk); call it off the event loop.
+    """
+    from kiro_crew.execution_context import read_session_execution
+
+    try:
+        execution = read_session_execution(session_key)
+    except Exception:  # noqa: BLE001 - unreadable is "no member", which refuses a Bot
+        return "", ""
+    if execution is None or execution.member_id is None:
+        return "", ""
+    return str(execution.member_id), str(execution.store.store_id)
 
 
 def _freeze_env(extra_env: dict[str, str] | None) -> tuple[tuple[str, str], ...]:
@@ -326,8 +512,6 @@ class ChatRuntimeKey:
         The same mirror: ``_SHAREABLE_MEMORY_MODES`` admits one mode, so this
         field also carries a single value on every shared key, and for the same
         reason it stays.
-    ``shared_scratch``
-        The session tree's work directory, mounted into the process.
     ``mcp_gateway_overlay`` / ``mcp_gateway_socket``
         Held on the runtime and read when composing each session's MCP array.
         Scope is ambiguous, so both are in the key.
@@ -397,6 +581,38 @@ class ChatRuntimeKey:
         KAS process (``kas_cli_settings.kiro_cli_telemetry_enabled``). KAS takes the
         opt-out once, in ``initialize``, so a chat whose folder opts out must not
         join a process started with telemetry on. Always True for other backends.
+    ``tree_root``
+        The root of the session tree the session belongs to
+        (:func:`share_tree_root_of`): the top of its creator chain, read once at
+        its start. Not a spawn input: it is the sharing SCOPE. Sessions share only
+        inside one tree, so a process dying takes at most one tree with it, and two
+        trees never share. A session adopted into another tree stays on its
+        process until its next restart, which reads the new root.
+    ``member_id`` / ``memory_store``
+        The Bot (crew member) and memory store of the session, ``""`` for a
+        session that is no member. Beside ``tree_root`` so that, whatever a
+        lineage claims, a session of one Bot never lands on another Bot's process.
+    ``tool_surface_pinned``
+        Whether the session's agent decides the process's MCP Tool Search alone
+        (:func:`agent_pins_tool_surface`: Tool Search on, spec grants no loader).
+        Such a session keys ``agent`` and ``spec_generation`` even on KAS, so it
+        neither joins another spec's process nor lets another spec join its own.
+
+    On KAS, ``agent``, ``model``, ``reasoning_effort``, ``spec_generation`` and
+    ``launch_agent`` are left EMPTY (:data:`KAS_PER_SESSION_FIELDS`). Each reason
+    above is about ``kiro-cli`` reading the field once at startup (``--agent``,
+    ``--model``, the ``cli.json`` effort row). KAS has no ``--agent`` and no
+    ``--model``: each session sends its own agent in ``session/new``'s
+    ``customAgents``, activates it with ``session/set_mode``, and sets its model and
+    ``effortLevel`` with ``session/set_config_option``; and the spec freshness and
+    fork-governance gates run for every session when its payload is built.
+    ``work_dir`` stays in the key on KAS too: the spawn mounts and enters the
+    founder's work directory and runs the derived-spec gate against it, and each
+    session's payload gates read the process's work directory, not the session's.
+
+    On claude the same five are left EMPTY (:data:`CLAUDE_PER_SESSION_FIELDS`):
+    claude-agent-acp takes no ``--agent`` and no ``--model``, and each session's own
+    seed, envelope and freshness gate are its own (``ClaudeHarness.prepare_session``).
     """
 
     work_dir: str
@@ -407,7 +623,6 @@ class ChatRuntimeKey:
     acp_backend: str
     tool_search: tuple[object, ...]
     memory_mode: str
-    shared_scratch: str
     mcp_gateway_overlay: str
     mcp_gateway_socket: str
     reasoning_effort: str
@@ -418,6 +633,10 @@ class ChatRuntimeKey:
     harness_pin: str
     agent_env: tuple[tuple[str, str], ...]
     kas_telemetry: bool
+    tree_root: str = ""
+    member_id: str = ""
+    memory_store: str = ""
+    tool_surface_pinned: bool = False
 
     @classmethod
     def build(
@@ -430,7 +649,6 @@ class ChatRuntimeKey:
         acp_backend: str,
         tool_search: "ToolSearchSettings | None",
         memory_mode: str,
-        shared_scratch: Path | None,
         mcp_gateway_overlay: str | Path | None,
         mcp_gateway_socket: str | Path | None,
         model: str | None = None,
@@ -442,6 +660,10 @@ class ChatRuntimeKey:
         harness_pin: str | None = None,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool = True,
+        tree_root: str | None = None,
+        member_id: str | None = None,
+        memory_store: str | None = None,
+        tool_surface_pinned: bool = False,
     ) -> "ChatRuntimeKey":
         """Build the key from the values a caller is about to spawn with.
 
@@ -454,28 +676,131 @@ class ChatRuntimeKey:
         AND the workspace ``cli.json`` writers against these fields, and fails on
         any name that is neither keyed nor listed with a reason. Two channels
         because an input can reach the process as a parameter or as a file.
+
+        *tool_surface_pinned* (:func:`agent_pins_tool_surface`) keys ``agent`` and
+        ``spec_generation`` even where the harness takes them per session.
         """
+        per_session = per_session_fields(acp_backend)
+        if tool_surface_pinned:
+            per_session = per_session - TOOL_SURFACE_FIELDS
         return cls(
             work_dir=_freeze_path(work_dir),
-            agent=agent or "",
-            model=model or "",
+            agent="" if "agent" in per_session else agent or "",
+            model="" if "model" in per_session else model or "",
             sandbox_mode=sandbox_mode or "",
             extra_env=_freeze_env(extra_env),
             acp_backend=acp_backend or "",
             tool_search=_freeze_tool_search(tool_search),
             memory_mode=memory_mode or "",
-            shared_scratch=_freeze_path(shared_scratch),
             mcp_gateway_overlay=_freeze_path(mcp_gateway_overlay),
             mcp_gateway_socket=_freeze_path(mcp_gateway_socket),
-            reasoning_effort=reasoning_effort or "",
+            reasoning_effort="" if "reasoning_effort" in per_session else reasoning_effort or "",
             spawn_identity=spawn_identity or "",
-            spec_generation=spec_generation or "",
+            spec_generation="" if "spec_generation" in per_session else spec_generation or "",
             forward_ssh_auth_sock=bool(forward_ssh_auth_sock),
-            launch_agent=launch_agent or "",
+            launch_agent="" if "launch_agent" in per_session else launch_agent or "",
             harness_pin=harness_pin or "",
             agent_env=_freeze_env(agent_env),
             kas_telemetry=bool(kas_telemetry),
+            tree_root=tree_root or "",
+            member_id=member_id or "",
+            memory_store=memory_store or "",
+            tool_surface_pinned=bool(tool_surface_pinned),
         )
+
+
+#: The key fields a KAS session carries per session, so a KAS key leaves them
+#: empty (see :class:`ChatRuntimeKey`).
+KAS_PER_SESSION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"agent", "model", "reasoning_effort", "spec_generation", "launch_agent"}
+)
+
+#: The key fields a claude session carries per session, so a claude key leaves them
+#: empty. claude-agent-acp takes no ``--agent`` and no ``--model``: the spawn
+#: (``ClaudeHarness.resolve_spawn``) reads none of them, each session writes its own
+#: settings seed and ``_meta.claudeCode`` envelope from its own agent and model
+#: (``ClaudeHarness.prepare_session``, which also runs the spec freshness gate for
+#: that agent), and sets its model and effort with ``session/set_model`` and
+#: ``session/set_config_option``.
+CLAUDE_PER_SESSION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"agent", "model", "reasoning_effort", "spec_generation", "launch_agent"}
+)
+
+#: Per harness: the key fields its sessions carry per session, so sessions that
+#: differ only in them may share one process (a whole session tree). The one place
+#: a harness opts into tree sharing; a harness not listed keys every field, so its
+#: sessions share only when everything matches. A harness joins with its own PR.
+PER_SESSION_FIELDS_BY_BACKEND: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {ACP_BACKEND_KAS: KAS_PER_SESSION_FIELDS, ACP_BACKEND_CLAUDE: CLAUDE_PER_SESSION_FIELDS}
+)
+
+#: Harnesses whose founder's spec decides the process's MCP tool surface at
+#: ``initialize`` (:func:`agent_pins_tool_surface`). claude-agent-acp takes each
+#: session's MCP array and tools in that session's own ``session/new``, so no spec
+#: of its sessions pins the process.
+FOUNDER_TOOL_SURFACE_BACKENDS: Final[frozenset[str]] = frozenset({ACP_BACKEND_KAS})
+
+
+def keys_tool_surface(backend: str) -> bool:
+    """Whether a session of *backend* may have to key its spec for the tool surface:
+    the harness takes the spec per session, and its founder's spec decides the
+    process's tool surface."""
+    return backend in FOUNDER_TOOL_SURFACE_BACKENDS and bool(
+        per_session_fields(backend) & TOOL_SURFACE_FIELDS
+    )
+
+
+def per_session_fields(backend: str) -> frozenset[str]:
+    """The key fields *backend* takes per session (empty for an unlisted harness)."""
+    return PER_SESSION_FIELDS_BY_BACKEND.get(backend, frozenset())
+
+
+#: The key fields that name the agent spec. KAS takes the spec per session, but
+#: MCP Tool Search is decided once per process at ``initialize`` from the
+#: founder's spec (``runtime_spawn_launch`` handshake), and a session whose spec
+#: grants no ``tool_search`` loader is refused on a process that defers
+#: (``_refuse_if_loader_unreachable``). Such a session keeps these fields keyed.
+TOOL_SURFACE_FIELDS: Final[frozenset[str]] = frozenset({"agent", "spec_generation"})
+
+
+def agent_pins_tool_surface(
+    work_dir: str | Path | None, agent: str, tool_search: "ToolSearchSettings | None"
+) -> bool:
+    """Whether *agent* must not share a process founded by another agent spec.
+
+    The founder's spec decides two things for the whole process at spawn: whether
+    MCP runs at all (a spec that mounts nothing switches it off,
+    ``_send_mcp_off_if_toolless``) and, whenever Tool Search settings are sent
+    (enabled or not), the deferral and its ``neverDefer`` list. So the session
+    keys its own agent and spec when its projected spec mounts nothing, when
+    Tool Search settings are sent and the spec grants no loader, or when the
+    spec cannot be read. A loader-granting agent with tools
+    shares across agents: whatever the founder's ``neverDefer`` leaves deferred,
+    its own loader can still reach. Blocking (reads the spec); call it off the
+    event loop.
+
+    shortcut: a loader-granting joiner's job tools may sit behind the loader when
+    the founder is another agent; key ``job_tool_ids`` too if that costs turns.
+    """
+    try:
+        from kiro_crew.acp.client_mcp_array import spec_is_toolless
+        from kiro_crew.acp.harness.kas import resolve_projected_spec
+        from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        # A read, not a spawn: no materialization here. A spec not written yet is
+        # unreadable, which pins the session to its own agent (the safe answer).
+        spec = resolve_projected_spec(kiro_agents_dir(), agent, work_dir)[0]
+    except Exception:  # noqa: BLE001 - an unreadable spec keeps its own agent's process
+        logger.debug("chat-runtime-sharing: tool surface unreadable for %s", agent, exc_info=True)
+        return True
+    if spec_is_toolless(spec):
+        return True
+    # Any Tool Search settings on the wire, enabled or not, carry the founder's
+    # ``neverDefer`` list, which KAS applies even with ``enabled`` false.
+    if tool_search is None:
+        return False
+    return not spec_grants_tool_search(spec)
 
 
 #: Largest agent spec this will hash. A spec is a few kilobytes of JSON or
@@ -626,6 +951,12 @@ def agent_spec_generation(work_dir: str | Path | None, agent: str) -> str:
         if work_dir:
             scopes.append(project_agents_dir(work_dir))
         scopes.append(kiro_agents_dir_path())
+        # The crewmate folder too: KAS resolves the Bot conductor and worker, and a
+        # Bot's own spec, from there (``acp.harness.kas.resolve_projected_spec``),
+        # so an edit there is a different process configuration as well.
+        from kiro_crew.config.paths import mate_agents_dir
+
+        scopes.append(mate_agents_dir())
         for scope in scopes:
             try:
                 candidates.append(agent_spec_path(agent, agents_dir=scope))
@@ -682,12 +1013,16 @@ def spec_grants_native_subagents(spec: object) -> bool:
     return any(t.startswith(("subagent/", "@builtin/subagent")) for t in entries)
 
 
-def agent_spawns_native_subagents(work_dir: str | Path | None, agent: str) -> bool:
+def agent_spawns_native_subagents(
+    work_dir: str | Path | None, agent: str, backend: str = ""
+) -> bool:
     """:func:`spec_grants_native_subagents` for the spec a spawn of *agent* loads.
 
-    Resolved in kiro-cli's order (the work directory's agents, then the user's),
-    with the projection's own reader. Blocking: call it off the event loop. Any
-    failure to find or read the spec answers True (fail closed).
+    On KAS, the spec KAS is handed (``resolve_projected_spec``), which also finds
+    the Bot conductor and worker in the crewmate folder. Elsewhere, kiro-cli's
+    order (the work directory's agents, then the user's), with the projection's
+    own reader. Blocking: call it off the event loop. Any failure to find or read
+    the spec answers True (fail closed).
 
     shortcut: read once before placement, not re-confirmed after acquisition
     like the keyed inputs; a spec edited to grant subagents in that window can
@@ -700,6 +1035,12 @@ def agent_spawns_native_subagents(work_dir: str | Path | None, agent: str) -> bo
 
         if not is_registered_agent_name(agent):
             return True
+        if backend == ACP_BACKEND_KAS:
+            from kiro_crew.acp.harness.kas import resolve_projected_spec
+            from kiro_crew.config.paths import kiro_agents_dir
+
+            spec = resolve_projected_spec(kiro_agents_dir(), agent, work_dir)[0]
+            return spec_grants_native_subagents(spec)
         scopes: list[Path] = []
         if work_dir:
             scopes.append(project_agents_dir(work_dir))
@@ -714,14 +1055,28 @@ def agent_spawns_native_subagents(work_dir: str | Path | None, agent: str) -> bo
 
 __all__ = [
     "CHAT_RUNTIME_SHARING_PREVIEW",
-    "KAS_CHAT_SHARING_MIN_KIRO_CLI",
+    "KAS_CHAT_SHARING_MIN_ENGINE",
+    "CLAUDE_PER_SESSION_FIELDS",
+    "FOUNDER_TOOL_SURFACE_BACKENDS",
+    "KAS_PER_SESSION_FIELDS",
+    "PER_SESSION_FIELDS_BY_BACKEND",
+    "TOOL_SURFACE_FIELDS",
     "ChatRuntimeKey",
+    "agent_pins_tool_surface",
     "agent_spawns_native_subagents",
     "agent_spec_generation",
     "chat_runtime_cap",
     "chat_runtime_sharing_enabled",
+    "chat_runtime_sharing_harness_enabled",
     "chat_sharing_ineligible_reason",
+    "keys_tool_surface",
+    "per_session_fields",
     "eligible_for_chat_sharing",
+    "engine_shares_chats",
     "kas_chat_sharing_ready",
+    "member_scope_of",
+    "relay_engine_shares_chats",
+    "set_share_tree_reader",
+    "share_tree_root_of",
     "spec_grants_native_subagents",
 ]

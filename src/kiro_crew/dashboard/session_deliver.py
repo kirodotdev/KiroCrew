@@ -63,20 +63,23 @@ class Origin:
     label: str = ""
     nudge: dict | None = None
     steer: bool = False
+    #: A peer's own Crew session key, for the trace link its delivery carries.
+    sender: str = ""
 
 
 def cron(label: str) -> Origin:
     return Origin(ORIGIN_CRON, label=label)
 
 
-def peer(*, steer: bool) -> Origin:
+def peer(*, steer: bool, sender: str = "") -> Origin:
     """A peer session's text.
 
     ``steer=True`` is the steer arm only: it never queues or starts a turn, so a
     caller whose turn ended before the steer ran gets :data:`NOT_DELIVERED` and
-    makes the one queue-or-run delivery itself (``steer=False``).
+    makes the one queue-or-run delivery itself (``steer=False``). *sender* is the
+    peer's session key, read only to link the turn the text starts to the sender's.
     """
-    return Origin(ORIGIN_PEER, steer=steer)
+    return Origin(ORIGIN_PEER, steer=steer, sender=sender)
 
 
 def app(label: str) -> Origin:
@@ -396,8 +399,15 @@ async def _deliver_peer(
             return DELIVERED_REQUEUED
         return NOT_DELIVERED
     from kiro_crew.dashboard.chat_runner import _run_chat
+    from kiro_crew.tracing import steps as trace_steps
 
-    started = slot.enqueue_or_run_prompt(
-        text, _run_chat, state, extra_meta=queue_meta, relay_meta=relay_meta
-    )
+    # The turn this starts, now or at its drain, links to the sender's (tracing/steps.py).
+    with trace_steps.sending(origin.sender) as sender_meta:
+        started = slot.enqueue_or_run_prompt(
+            text,
+            _run_chat,
+            state,
+            extra_meta={**(queue_meta or {}), **sender_meta} or queue_meta,
+            relay_meta=relay_meta,
+        )
     return DELIVERED_TURN if started else DELIVERED_QUEUED

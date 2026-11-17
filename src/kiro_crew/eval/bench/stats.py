@@ -273,3 +273,49 @@ def sensitivity_check(
         f"canary cleared: a known degradation moved {metric} by {drop:.4f} "
         f"(band {noise_band:.4f}), so the ruler resolves at least that much"
     )
+
+
+# ── Provider comparison statistics ───────────────────────────────────────────
+
+
+def bootstrap_ci(
+    values: Sequence[float], *, resamples: int = 1_000, seed: int = 7
+) -> tuple[float, float] | None:
+    """A 95% percentile bootstrap interval for the mean of *values*, or ``None`` if empty."""
+    import random
+
+    if not values:
+        return None
+    rng = random.Random(seed)
+    n = len(values)
+    means = sorted(sum(values[rng.randrange(n)] for _ in range(n)) / n for _ in range(resamples))
+    return (means[int(0.025 * resamples)], means[min(resamples - 1, int(0.975 * resamples))])
+
+
+def sign_test(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """Two-sided exact sign test p-value over paired values; ties are dropped.
+
+    ``None`` when no pair differs, which says the two providers cannot be told apart
+    on these queries, not that they are equal.
+    """
+    from math import comb
+
+    wins = sum(1 for x, y in zip(a, b) if x > y)
+    losses = sum(1 for x, y in zip(a, b) if x < y)
+    n = wins + losses
+    if n == 0:
+        return None
+    k = min(wins, losses)
+    tail = sum(comb(n, i) for i in range(k + 1)) / (2**n)
+    return min(1.0, 2 * tail)
+
+
+def percentiles(values: Sequence[float]) -> dict[str, float] | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+
+    def at(q: float) -> float:
+        return round(ordered[min(len(ordered) - 1, int(q * len(ordered)))], 1)
+
+    return {"p50": at(0.5), "p95": at(0.95), "p99": at(0.99)}

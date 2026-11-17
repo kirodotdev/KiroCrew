@@ -167,9 +167,9 @@ export function refreshMilestonesOnMount(queryClient: QueryClient, now: number =
 }
 
 /**
- * Rows this device may show. The Crew Mode row is left out while the Crew Mode
- * preview is off: that preview shows no Crew Mode surface at all, and the
- * server cannot see a per-device flag.
+ * Rows this device may show. The conductor mode row is left out where conductor
+ * mode is off (LTS, or before the edition lock is known), which shows no conductor
+ * mode surface at all.
  */
 export function rowShown(id: string): boolean {
   return !!FEATURE_COPY[id] && (id !== 'crew-mode' || crewModeEnabled())

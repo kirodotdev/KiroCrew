@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_state, crewmate_prompts
+from kiro_crew import agent_spec_injections, agent_state, crewmate_prompts
 from kiro_crew.agent_discovery import skill_resource_uris
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
@@ -31,6 +31,7 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_FILENAM
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
 from kiro_crew.agent_spec_format import parse_markdown_spec, volatile_env_keys
+from kiro_crew.context_assembly.output_contract import ASK_CORE, WORKER_ASK_TAIL
 from kiro_crew.platform import safe_context_call
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
@@ -556,9 +557,12 @@ def _refuse_foreign_worker_spec(path: Path, spec: dict[str, Any] | None) -> None
 
 def worker_prompt() -> str:
     """The kirocrew-worker prompt: its reporting contract, then the coding rules a
-    crewmate's worker carries too (``crewmate_prompts`` ``worker.coding_rules``)."""
+    crewmate's worker carries too (``crewmate_prompts`` ``worker.coding_rules``),
+    then the shared ask core and worker tail (``output_contract``)."""
     rules = crewmate_prompts.text("worker.coding_rules")
-    return f"{agent_mod._WORKER_SYSTEM_PROMPT.rstrip()}\n\n{rules}\n"
+    return (
+        f"{agent_mod._WORKER_SYSTEM_PROMPT.rstrip()}\n\n{rules}\n\n" f"{ASK_CORE}{WORKER_ASK_TAIL}"
+    )
 
 
 def _install_worker_agent() -> None:
@@ -1643,11 +1647,25 @@ def _foreign_dashboard_author_spec_reason(spec: dict[str, Any] | None) -> str | 
     """
     if not isinstance(spec, dict):
         return None
-    if not agent_state.managed_digest_matches(
-        _MANAGED_OWNED_NAME, agent_state.spec_digest(spec), strict=True
-    ):
-        return "its bytes do not reproduce the installer-recorded ownership digest"
-    return None
+    # The raw digest also confirms: it is what a record taken while no filter was
+    # registered holds.
+    for digest in (agent_state.spec_digest(spec), dashboard_author_ownership_digest(spec)):
+        if agent_state.managed_digest_matches(_MANAGED_OWNED_NAME, digest, strict=True):
+            return None
+    return "its bytes do not reproduce the installer-recorded ownership digest"
+
+
+def dashboard_author_ownership_digest(spec: dict[str, Any]) -> str:
+    """The digest every managed writer records for the dashboard-author *spec*.
+
+    Taken over the spec with every edition-registered injection removed
+    (:func:`kiro_crew.agent_spec_injections.without_registered_injections`). A tool that
+    rewrites every spec in the agents directory on each launch adds its own entry here
+    too, with an identifier that can change per launch. Leaving that entry out keeps the
+    file ours across those rewrites. Any other change still alters the digest. With no
+    filter registered this is :func:`kiro_crew.agent_state.spec_digest` of *spec*.
+    """
+    return agent_state.spec_digest(agent_spec_injections.without_registered_injections(spec))
 
 
 def _managed_dashboard_author_install_lands(path: Path) -> bool:
@@ -1897,12 +1915,14 @@ def _write_dashboard_author_spec(path: Path, config: dict) -> None:
     # a ceiling that moves while this runs can change those bytes, never split them
     # from their record.
     current_digest = (
-        agent_state.spec_digest(current_json) if isinstance(current_json, dict) else None
+        dashboard_author_ownership_digest(current_json) if isinstance(current_json, dict) else None
     )
 
     def _record_pending(governed: dict) -> None:
         agent_state.begin_managed_write(
-            _MANAGED_OWNED_NAME, agent_state.spec_digest(governed), current=current_digest
+            _MANAGED_OWNED_NAME,
+            dashboard_author_ownership_digest(governed),
+            current=current_digest,
         )
 
     auto_approve.write_governed_spec(

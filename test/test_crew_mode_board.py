@@ -443,11 +443,13 @@ async def test_the_migrations_move_writes_no_stamp_onto_an_older_conductor_chat(
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock()
     caller = chat_handlers.SlotAgentSwitchCaller.for_crew_mode_migration()
-    # The migration moves onto the CONFIGURED conductor: the default, the team lead.
-    target = "kirocrew-team-lead"
+    # The migration moves onto the CONFIGURED conductor: the default, the conductor,
+    # here off the team lead that was the default before it.
+    target = CONDUCTOR
+    lead = "kirocrew-team-lead"
 
     older = state.get_or_create_slot("older")
-    older.agent, older.agent_kind, older.crew_mode_agent = CONDUCTOR, "template", ""
+    older.agent, older.agent_kind, older.crew_mode_agent = lead, "template", ""
     resp = await chat_handlers.switch_slot_agent(state, older, "older", target, "template", caller)
     assert resp.status == 200, resp.text
     assert older.agent == target and older.crew_mode_agent == ""
@@ -455,7 +457,7 @@ async def test_the_migrations_move_writes_no_stamp_onto_an_older_conductor_chat(
     assert _template_of("older") == ""
 
     on = state.get_or_create_slot("on")
-    on.agent, on.agent_kind, on.crew_mode_agent = CONDUCTOR, "template", CONDUCTOR
+    on.agent, on.agent_kind, on.crew_mode_agent = lead, "template", lead
     resp = await chat_handlers.switch_slot_agent(state, on, "on", target, "template", caller)
     assert resp.status == 200, resp.text
     assert on.agent == target and on.crew_mode_agent == target

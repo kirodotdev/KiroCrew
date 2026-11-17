@@ -10,12 +10,12 @@ import contextlib
 import inspect
 import os
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
 from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     OWNER,
     REPO,
@@ -262,18 +262,17 @@ class TestRevocation(unittest.IsolatedAsyncioTestCase):
     one more unattended turn. The routes' own timing is pinned in the route tests.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        # Use platform_compat.rmtree_force instead of TemporaryDirectory.cleanup
-        # so that read-only files written by the crew store (which the Windows
-        # CRT cannot unlink without first clearing the read-only attribute) do
-        # not leave the directory behind and trip the tmp-residue guard.  Also
-        # unregister the process-global slot-close hook that watchdog_cycle
-        # installs with root=self.root, so no background callback can open
-        # files in the directory while it is being removed.
-        self.addCleanup(platform_compat.rmtree_force, self._tmp.name)
+        # Unregister the process-global slot-close hook that watchdog_cycle installs
+        # with root=self.root, so no background callback opens files in the root
+        # after the test.
         self.addCleanup(teardown.unregister_slot_close_hook, cr.APP_NAME)
-        self.root = Path(self._tmp.name)
         reset_singleton()
         self.addCleanup(reset_singleton)
 
@@ -494,10 +493,13 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
     auto-approved turn. Assertions read the state left when the hook's coroutine returns.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(platform_compat.rmtree_force, self._tmp.name)
-        self.root = Path(self._tmp.name)
         reset_singleton()
         self.addCleanup(reset_singleton)
         # ``watchdog_cycle`` re-registers the dismissal hook, which is process-wide

@@ -196,6 +196,21 @@ describe('TelemetryPanel — Context rows name the conversation', () => {
     expect(screen.getByText('chat-7-1700000700')).toBeTruthy()
   })
 
+  it('names a row whose session spent dollars in a window billed in both units', async () => {
+    localStorage.setItem('telemetry:tab', 'context')
+    // A window with credit-billed and dollar-billed turns carries the dollar-billed
+    // sessions only in the nested `usd` view, so the join has to read both views.
+    await mount({
+      cost: cost({
+        conversations: [convo({ slot: 'chat-9-1700009900', title: 'A credit session' })],
+        usd: cost({ unit: 'usd', conversations: [convo()] }),
+      }),
+    })
+    await waitFor(() => expect(screen.getByText(/152,341|152341/)).toBeTruthy())
+    expect(screen.getByText('Porting the trash containment')).toBeTruthy()
+    expect(screen.queryByText('chat-7-1700000700')).toBeNull()
+  })
+
   it('names a joined row with no title the way Spend does, not by its slot', async () => {
     localStorage.setItem('telemetry:tab', 'context')
     // A title exists only while a conversation is open, so a closed one joins on the

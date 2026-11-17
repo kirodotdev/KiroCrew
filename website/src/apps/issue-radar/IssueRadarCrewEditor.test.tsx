@@ -153,9 +153,13 @@ vi.mock('../../components/SimpleSelect', () => ({
 }))
 
 const ACTIVE = { owner: 'kirodotdev', repo: 'KiroCrew' } // brand-ok: the repository name
+/** The repo the dialog is open on. Reset to `ACTIVE` before every test; the
+ *  GitLab block points it at a GitLab project. */
+const activeRepo: { current: { owner: string; repo: string; provider?: string; host?: string } } =
+  { current: ACTIVE }
 
 vi.mock('./context', () => ({
-  useIssueRadar: () => ({ active: ACTIVE }),
+  useIssueRadar: () => ({ active: activeRepo.current }),
 }))
 
 import CrewEditor from './components/CrewEditor'
@@ -245,6 +249,7 @@ function optionsOf(testId: string): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  activeRepo.current = ACTIVE
   mockApi.suggestCrewNames.mockResolvedValue({ suggestions: SUGGESTIONS })
   mockApi.labels.mockResolvedValue({
     owner: ACTIVE.owner,
@@ -359,6 +364,50 @@ describe('CrewEditor — edit mode', () => {
     fireEvent.click(submitBtn())
     await waitFor(() => expect(mockApi.updateCrew).toHaveBeenCalledTimes(1))
     expect(mockApi.updateCrew).toHaveBeenCalledWith(ACTIVE, CREW.id, {})
+  })
+})
+
+describe('CrewEditor — the auto-merge toggle per forge', () => {
+  const autoMergeSwitch = () =>
+    within(screen.getByTestId('crew-editor-auto-merge')).getByRole('switch')
+
+  it('on GitHub follows the record and says what auto-merge waits for', async () => {
+    renderEditor({ ...CREW, auto_merge: true })
+    await screen.findByTestId('crew-editor')
+    expect(autoMergeSwitch()).toHaveAttribute('aria-checked', 'true')
+    expect(autoMergeSwitch()).not.toHaveAttribute('aria-disabled')
+    expect(screen.getByText(i18nT(`${K}.automerge_hint`))).toBeInTheDocument()
+    expect(screen.queryByText(i18nT(`${K}.automerge_gitlab_hint`))).not.toBeInTheDocument()
+    // GitHub's auto-merge waits for the repo's required reviews and checks, which
+    // need not include a person; the hint used to promise one.
+    expect(i18nT(`${K}.automerge_hint`)).not.toMatch(/human/i)
+  })
+
+  it('on GitLab is shown off and locked, with the reason, and the record is left alone', async () => {
+    // On GitLab arming auto-merge IS the merge call, so the backend never tells a
+    // crew to arm it. A toggle showing "on" there would promise something false.
+    activeRepo.current = { owner: 'group', repo: 'project', provider: 'gitlab', host: 'gitlab.example' }
+    renderEditor({ ...CREW, auto_merge: true })
+    await screen.findByTestId('crew-editor')
+    expect(autoMergeSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(autoMergeSwitch()).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText(i18nT(`${K}.automerge_gitlab_hint`))).toBeInTheDocument()
+    expect(screen.queryByText(i18nT(`${K}.automerge_hint`))).not.toBeInTheDocument()
+
+    fireEvent.click(autoMergeSwitch())
+    expect(autoMergeSwitch()).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(submitBtn())
+    await waitFor(() => expect(mockApi.updateCrew).toHaveBeenCalledTimes(1))
+    expect(mockApi.updateCrew).toHaveBeenCalledWith(activeRepo.current, CREW.id, {})
+  })
+
+  it('on GitLab saves a new crew with auto-merge off, as the switch shows', async () => {
+    activeRepo.current = { owner: 'group', repo: 'project', provider: 'gitlab', host: 'gitlab.example' }
+    await openCreate()
+    expect(autoMergeSwitch()).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(submitBtn())
+    await waitFor(() => expect(mockApi.createCrew).toHaveBeenCalledTimes(1))
+    expect(mockApi.createCrew.mock.calls[0][1].auto_merge).toBe(false)
   })
 })
 

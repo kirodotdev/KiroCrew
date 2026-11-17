@@ -206,13 +206,19 @@ test.describe('E2E: sidebar tag columns', () => {
     const col = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [done], mode: 'any' } })).json()
     // Simulate the drop via API (HTML5 DnD in playwright is notoriously flaky;
     // we trust the UI-path via the explicit button tests + API contract here).
+    // The column renders before the page's own slot-list read returns. A reply
+    // serialized before the drop but applied after the drop's slots push puts
+    // the pre-drop row back, and nothing pushes again. So the drop waits until
+    // that read has finished, and only the push can then change the row.
+    const slotListRead = page.waitForResponse(r =>
+      r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${col.id}"]`)
+    await (await slotListRead).finished()
     const res = await (await request.post(`/api/chat/slots/${slotKey}/drop`, { data: { column_id: col.id } })).json()
     expect(res.ok).toBe(true)
     expect(res.tags).toContain(done)
-    // UI refreshes → slot now appears in Done column
-    await page.waitForTimeout(500)
+    // The drop's slots push moves the slot into the Done column.
     await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${slotKey}"]`)).toBeVisible()
   })
 

@@ -420,8 +420,8 @@ def test_a_worker_that_never_reports_leaves_nothing_to_evaluate(ledger):
 
 
 def test_the_path_screen_guards_a_bar_read_from_the_ledger(ledger, monkeypatch):
-    """A ``file`` bar that names a sensitive path is refused before anything stats it,
-    exactly as when the same entry arrives in a document."""
+    """A ``file`` bar read from the ledger that the path screen rejects gets a
+    ``refused`` verdict, exactly as when the same entry arrives in a document."""
     from kiro_crew import hooks
 
     monkeypatch.setattr(hooks, "validate_file_path", lambda _path: None)

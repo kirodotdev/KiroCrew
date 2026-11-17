@@ -1,7 +1,7 @@
 """Display-redaction verdicts stored beside each transcript, so a reopen skips the scan.
 
-The slot-detail render runs the display battery (``redact_exfiltration_urls`` then
-``redact_credentials``) over every non-user string of a session. The in-memory
+The slot-detail render runs the display battery (``redact_credentials``) over every
+non-user string of a session. The in-memory
 verdict cache in ``chat_utils_display`` makes a repeat render in the same process cheap,
 but a gateway restart, or the first open of a long session, still pays the whole
 scan. This module keeps the verdicts on disk:
@@ -16,7 +16,8 @@ The transcript itself is never touched: verdicts live in ``display-verdicts/``
 under the data home, two files per session named after the transcript stem.
 
 Trust. A verdict is only ever looked up by its TAG, a 128-bit slice of
-``HMAC(K, "tag" || 0 || rules_version || len(text) || text || 0 || exempt hosts)``. ``K`` is a
+``HMAC(K, "tag" || 0 || rules_version || len(text) || text || 0 || prefixes || mark)``
+(``mark`` is :func:`published_mark`, the owner's published setting). ``K`` is a
 subkey of the dashboard token-signing secret, which the agent sandbox masks and
 the file tools fence, so a same-uid agent that can write the sidecar still
 cannot mint a tag for text it chose: a "clean" tag can only come from this
@@ -26,8 +27,8 @@ malformed, truncated or failing its MAC reads as absent, which means "scan".
 
 Invalidation. The rules version is a digest of the battery's own source files
 (``dashboard.display_battery.RULE_SOURCES``) plus the native gate fingerprint,
-the Python and Unicode versions and the host's darwin directory id; the exempt
-hosts (companion-supplied and per-workspace allowed) are part of every tag. Any
+and the Python and Unicode versions; the companion-supplied token-parameter
+prefixes are part of every tag. Any
 change makes every old tag unreachable, so there is no separate invalidation
 step to forget, while a release that leaves the rules alone keeps its verdicts.
 The version is also written in each file header so a stale file is truncated on
@@ -115,7 +116,7 @@ _persist: _Persist | None = None
 
 # --------------------------------------------------------------------- setup
 def rules_version() -> bytes:
-    """Every input the battery's output depends on other than the text and hosts.
+    """Every input the battery's output depends on other than the text and prefixes.
 
     The battery's own source files (``display_battery.RULE_SOURCES``), not the
     whole package: a release that leaves the redaction rules alone keeps every
@@ -124,7 +125,6 @@ def rules_version() -> bytes:
     """
     from kiro_crew.dashboard import display_battery
     from kiro_crew.security import redaction
-    from kiro_crew.security.redaction_structured import compat
 
     source = display_battery.rule_source_digest()
     if display_battery.LOADED_DIGEST is None or source != display_battery.LOADED_DIGEST:
@@ -148,11 +148,32 @@ def rules_version() -> bytes:
         b"native=" + native,
         b"py=" + sys.version.encode("utf-8", "surrogatepass"),
         b"ucd=" + unicodedata.unidata_version.encode(),
-        b"darwin=" + str(redaction._host_darwin_user_dir_id()).encode("utf-8", "surrogatepass"),
-        # The internal switch for the structured detectors (off; no user setting).
-        b"table=" + str(int(compat.use_rule_table())).encode(),
     ]
     return hashlib.sha256(b"\0".join(parts)).digest()[:_VER]
+
+
+def published_mark() -> bytes:
+    """The owner's published redaction setting, as bytes every display cache key folds in.
+
+    Empty while redaction is published on, so such a key is the key it always was.
+    Redaction published off answers differently from on, and a verdict cached under
+    one must not answer under the other, so every key names the position that
+    computed it.
+    """
+    from kiro_crew import redaction_seams
+
+    return b"\x02off" if redaction_seams.published_off() else b""
+
+
+def published_generation() -> int:
+    """The setting's publish count: a round trip back to the same position still moves it.
+
+    A display answer is kept only when this is the same after it was computed as
+    before, since :func:`published_mark` alone reads the same across such a round trip.
+    """
+    from kiro_crew import redaction_seams
+
+    return redaction_seams.generation()
 
 
 def _derive_key() -> bytes | None:
@@ -691,14 +712,14 @@ def commit_written(history_key: str, live: set[int]) -> None:
 #: are simply judged on their first read instead.
 _QUEUE_MAX = 256
 _QUEUE_MAX_CHARS = 32 * 1024 * 1024
-_queue: queue.Queue[tuple[str, str | None, list[str], int, bool]] = queue.Queue(_QUEUE_MAX)
+_queue: queue.Queue[tuple[str, list[str], int, bool]] = queue.Queue(_QUEUE_MAX)
 _queued_chars = 0
 _queued_guard = threading.Lock()
 _worker: threading.Thread | None = None
 _worker_guard = threading.Lock()
 
 
-def submit_committed(workspace: str | None) -> None:
+def submit_committed() -> None:
     """After a save's write committed: queue its new rows for projection.
 
     Runs in the save's thread right after ``atomic_write``. The projection
@@ -726,7 +747,7 @@ def submit_committed(workspace: str | None) -> None:
         _queued_chars += size
     _ensure_worker()
     try:
-        _queue.put_nowait((history_key, workspace, pending, size, first))
+        _queue.put_nowait((history_key, pending, size, first))
     except queue.Full:
         with _queued_guard:
             _queued_chars -= size
@@ -743,9 +764,7 @@ def _ensure_worker() -> None:
         _worker.start()
 
 
-def project(
-    history_key: str, workspace: str | None, lines: list[str], *, preload: bool = False
-) -> None:
+def project(history_key: str, lines: list[str], *, preload: bool = False) -> None:
     """Judge *lines* (transcript rows as written) the way a render would, and store it.
 
     *preload* (the first save of this transcript in this process) reads the
@@ -755,7 +774,6 @@ def project(
     import json
 
     from kiro_crew.dashboard.chat_utils import _prepare_messages
-    from kiro_crew.security.exfil import allowed_host_use_unaudited
 
     rows = []
     for line in lines:
@@ -763,17 +781,16 @@ def project(
             row = json.loads(line)
             if isinstance(row, dict):
                 rows.append(row)
-    # Nobody is reading this render, so a restored link is not a use to audit.
-    with session(history_key, record_all=True, preload=preload), allowed_host_use_unaudited():
-        _prepare_messages(rows, False, live_child="", workspace=workspace)
+    with session(history_key, record_all=True, preload=preload):
+        _prepare_messages(rows, False, live_child="")
 
 
 def _run_worker() -> None:
     global _queued_chars
     while True:
-        history_key, workspace, lines, size, first = _queue.get()
+        history_key, lines, size, first = _queue.get()
         try:
-            project(history_key, workspace, lines, preload=first)
+            project(history_key, lines, preload=first)
         except Exception:
             logger.debug("display-verdicts: projection failed", exc_info=True)
         finally:

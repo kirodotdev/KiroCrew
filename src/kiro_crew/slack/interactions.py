@@ -68,6 +68,7 @@ from kiro_crew.slack.allowlist import (
     persist_tracking_channel,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
+from kiro_crew.slack.events_queue import _configured_approval_mode
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
@@ -806,6 +807,7 @@ async def _handle_resume_choice(
                             json={"replace_original": True, "text": label},
                         )
                 except Exception:
+                    # Updating the button message is cosmetic.
                     pass
             return
 
@@ -1017,6 +1019,7 @@ async def _handle_resume_choice(
                         json={"replace_original": True, "text": label},
                     )
             except Exception:
+                # Updating the button message is cosmetic.
                 pass
 
 

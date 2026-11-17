@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat
@@ -28,13 +29,15 @@ from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
 if TYPE_CHECKING:
     from kiro_crew.kiro_prerequisite import ProcessResult
 
+_logger = logging.getLogger(__name__)
+
 KIRO_CLI_NAME = "kiro-cli"
 
 
 def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
     """The ``kiro-cli-chat`` beside a resolved ``kiro-cli`` launcher, or ``None``.
 
-    The POSIX ``kiro-cli`` is the q_cli launcher (install, update, doctor,
+    The POSIX ``kiro-cli`` below 3.0.0 is the q_cli launcher (install, update, doctor,
     login, shell completion). It ``exec``s ``kiro-cli-chat`` for ``chat`` and
     ``acp`` -- but only after checking ITS OWN sign-in, so ``kiro-cli acp
     --agent-engine v3`` with no ``--auth-method cli`` exits ``You are not logged
@@ -43,7 +46,10 @@ def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
     (verified on 2.25.0: the chat binary starts KAS in ``--auth=acp-callback``
     and asks the host). A KAS spawn that Crew's vault is about to authenticate
     therefore has to enter through the chat binary, which is what the desktop
-    bundle already does (:data:`BUNDLED_KIRO_CLI_ENTRY`).
+    bundle already does (:data:`BUNDLED_KIRO_CLI_ENTRY`). From 3.0.0
+    (:func:`standalone_kiro_cli`) ``kiro-cli`` is the chat binary itself; this
+    function does not read the version, so the KAS spawn and doctor skip the
+    swap there themselves.
 
     ``None`` whenever the swap does not apply, so callers fall back to *binary*
     unchanged: on Windows (one self-contained ``kiro-cli.exe``), when *binary*
@@ -245,6 +251,48 @@ def _probe_ran(result: ProcessResult) -> bool:
     )
 
 
+def _launcher_exit_line(output: str) -> str | None:
+    """The first line in *output* the sandbox launcher writes when it exits, or ``None``.
+
+    Any ``sandbox_unavailable.LAUNCHER_EXIT_PREFIXES`` line, whatever
+    ``launcher_refusal`` makes of it. For a probe reading what a binary supports,
+    such a line means the launcher ended the run, whether or not its trusted re-run
+    later passed, so the output is not the binary's answer. Untrusted like every
+    such line: a binary that prints it only makes its own answer unknown.
+    """
+    from kiro_crew.sandbox_unavailable import LAUNCHER_EXIT_PREFIXES  # noqa: PLC0415
+
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith(LAUNCHER_EXIT_PREFIXES):
+            return line
+    return None
+
+
+def _launcher_refused(binary: str, argv: Sequence[str], result: ProcessResult) -> bool:
+    """Whether *result* is the sandbox launcher's own exit, not kiro-cli's answer. Logs it.
+
+    The launcher exits nonzero with a ``sandbox:`` line when it could not set the run
+    up. Its re-run around a trusted no-op can then succeed, so *result* carries no
+    ``sandbox_failure`` (:func:`_probe_ran` passes it), yet the text says nothing
+    about the engine. A probe reading engine support treats it as unknown. A
+    candidate can print the same prefix, which only makes its answer unknown.
+    """
+    if result.ok:
+        return False
+    line = _launcher_exit_line(result.output)
+    if line is None:
+        return False
+    _logger.warning(
+        "%s %s exited %s before kiro-cli answered, so what it supports is unknown: %s",
+        binary,
+        " ".join(argv),
+        result.returncode,
+        line[:200],
+    )
+    return True
+
+
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
     """Whether *version* meets the verified floor for deferring Crew's MCP servers."""
     return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
@@ -264,6 +312,31 @@ def kas_auth_client_flag_supported(version: tuple[int, int, int] | None) -> bool
 def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
     """Whether a ``kiro-cli`` at *version* is the standalone chat binary, not a launcher."""
     return version is not None and version >= STANDALONE_KIRO_CLI_MIN_VERSION
+
+
+def resolved_kiro_cli_version(binary: str, *, wait: bool = False) -> tuple[int, int, int] | None:
+    """The version of a resolved *binary*, read the way its trust allows.
+
+    The pinned install (:func:`pin_kiro_cli`, compared by real path) is read by
+    :func:`kiro_cli_version_at`. Any other file, such as one found only through
+    ``PATH``, is read only inside the strict sandbox
+    (:mod:`kiro_crew.kiro_cli_path_probe`): never waited for, so its first call
+    answers ``None``, unless *wait* is set, which reads a miss inline. Only
+    ``kirocrew doctor`` sets *wait*: its process never warms the cache. The KAS
+    spawn, its route and doctor all ask this, so the three agree on whether a
+    ``kiro-cli`` is the standalone chat binary. Blocking: stats directories,
+    and the pin's ``--version`` on its first read.
+    """
+    pinned, _unpinned = pin_kiro_cli()
+    if pinned is not None and os.path.normcase(os.path.realpath(pinned)) == os.path.normcase(
+        os.path.realpath(binary)
+    ):
+        return kiro_cli_version_at(pinned)
+    from kiro_crew import kiro_cli_path_probe  # noqa: PLC0415
+
+    if wait:
+        return kiro_cli_path_probe.version_now(binary)
+    return kiro_cli_path_probe.version_if_known(binary)
 
 
 def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
@@ -520,9 +593,14 @@ def kas_relay_help(binary: str) -> str | None:
     """``acp --help`` text for this kiro-cli, or ``None`` when the probe FAILED.
 
     Read from help output because there is no machine-readable capability surface
-    for the engine selector. ``None`` means only one thing — the probe could not
-    run (spawn error, timeout) — so the caller reports genuinely-unknown as
-    unknown. Help text that RAN and simply lacks the engine selector is returned
+    for the engine selector. ``None`` means only one thing — the probe gave no
+    answer from kiro-cli (a spawn error, a timeout, or a nonzero exit carrying the
+    sandbox launcher's own exit line) — so the caller reports genuinely-unknown as
+    unknown. The launcher exits 1 with a ``sandbox:`` line when it could not set the
+    run up, and its re-run around a trusted no-op can then succeed, so the result
+    carries no ``sandbox_failure``; that line is not help and says nothing about the
+    engine (:func:`_launcher_refused`, which logs it). Help text that RAN and
+    simply lacks the engine selector, whatever its exit code, is returned
     as-is, not as ``None``: a kiro-cli too old to offer ``--agent-engine`` cannot
     serve KAS at all, and reporting that as "unknown" would let a broken
     configuration pass the readiness check and fail later at spawn instead.
@@ -533,6 +611,8 @@ def kas_relay_help(binary: str) -> str | None:
     """
     result = _sandboxed_probe(binary, ["acp", "--help"], _KAS_HELP_PROBE_TIMEOUT_SECS)
     if result is None or not _probe_ran(result):
+        return None
+    if _launcher_refused(binary, ("acp", "--help"), result):
         return None
     return result.output
 
@@ -574,7 +654,7 @@ def kas_relay_start_output(binary: str, argv_tail: Sequence[str]) -> str | None:
     if cached is not None:
         return cached
     result = _sandboxed_probe(binary, argv, _KAS_START_PROBE_TIMEOUT_SECS)
-    if result is None or not _probe_ran(result):
+    if result is None or not _probe_ran(result) or _launcher_refused(binary, argv, result):
         # Not cached: a start that failed, was refused or never exited says nothing
         # about the host.
         return None

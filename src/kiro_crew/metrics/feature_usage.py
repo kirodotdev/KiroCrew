@@ -20,7 +20,8 @@ counter                                        one increment per
 
 **Every attribute value is closed.** Each list is a tuple below, and each
 ``record_*`` function maps anything outside it to ``other`` (or the bucket the
-list names for it). ``test/metrics/test_feature_usage.py`` pins every list. No
+list names for it). ``test/metrics/test_feature_usage.py`` and
+``test/test_recommendation_metrics.py`` pin the lists the ``record_*`` functions read. No
 query, result, lesson key, skill name the operator chose, app name a third party
 chose, channel or sender id, or control text is ever an attribute.
 

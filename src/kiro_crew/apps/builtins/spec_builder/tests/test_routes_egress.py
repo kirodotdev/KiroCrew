@@ -27,6 +27,10 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import (  # noqa:
     _RecordingSlot,
     _redirect_state,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
+
+#: A GitLab personal access token in its published form (``glpat-`` and 20 characters).
+_GITLAB_TOKEN = "glpat-" + synth(20, seed=7)
 
 # ── symlink containment, state normalization, create pre-checks ──────────────
 #
@@ -84,7 +88,7 @@ async def test_persisted_transcript_is_served_and_redacted():
             calls.append(key)
             return [
                 {"role": "system", "content": "internal", "ts": "1"},
-                {"role": "user", "content": "key is glpat-IOSFODNN7EXAMPLE ok", "ts": "2"},
+                {"role": "user", "content": f"key is {_GITLAB_TOKEN} ok", "ts": "2"},
                 {"role": "assistant", "content": "ok", "ts": "3"},
             ]
 
@@ -98,7 +102,7 @@ async def test_persisted_transcript_is_served_and_redacted():
     assert calls, "the persisted transcript was never read"
     roles = [m["role"] for m in out]
     assert roles == ["user", "assistant"], roles
-    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(out), "credential not redacted"
+    assert _GITLAB_TOKEN not in json.dumps(out), "credential not redacted"
 
 
 # ── redaction fails closed ───────────────────────────────────────────────────
@@ -110,7 +114,7 @@ def test_redaction_fails_closed_without_the_security_module(monkeypatch):
     (spec documents, transcripts, agent-written state), so a credential in an
     agent-written file would have gone straight to the browser. The same
     fail-closed reasoning as the is_sensitive_path fallback."""
-    secret = "glpat-IOSFODNN7EXAMPLE"
+    secret = _GITLAB_TOKEN
 
     # With security available, the credential is scrubbed but the prose survives.
     scrubbed = routes._redact(f"key is {secret} ok")
@@ -527,7 +531,7 @@ def test_queued_append_is_redacted_before_it_is_broadcast(monkeypatch):
     """`queued` is broadcast, so the credential in a queued message would have
     gone to every connected dashboard client verbatim."""
     slot = _RecordingSlot()
-    secret = "ghp" + "_" + "0123456789abcdef0123456789abcdef0123"
+    secret = github_classic(seed=25)
 
     routes._dispatch_turn(_NoopState(), slot, f"deploy with {secret} please")
 
@@ -590,7 +594,7 @@ async def test_get_settings_redacts_an_agent_written_base_path(tmp_path, monkeyp
     """settings.json is agent-writable and _load_settings validates only its SHAPE,
     so a credential parked in base_path would be rendered verbatim in the dashboard.
     """
-    secret = "ghp" + "_" + "0123456789abcdef0123456789abcdef0123"
+    secret = github_classic(seed=25)
     async with _make_client(monkeypatch, tmp_path) as client:
         routes._save_settings({"base_path": f"/srv/{secret}/specs"})
 

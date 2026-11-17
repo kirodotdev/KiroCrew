@@ -304,7 +304,7 @@ class TestScopedMap:
         assert composed.posture_permits("slack", "allowed_team_ids", "T1").permitted
 
     def test_three_tier_members_all_tighten(self):
-        # Regression: once one fold has produced an ``_AndRuleset``, the next
+        # Once one fold has produced an ``_AndRuleset``, the next
         # fold must still honour that tier's narrowing instead of returning
         # the existing pair unchanged.
         t1 = ScopedMap.from_dict(

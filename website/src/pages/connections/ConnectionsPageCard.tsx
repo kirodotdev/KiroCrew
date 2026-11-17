@@ -13,7 +13,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   AlertTriangle,
@@ -37,7 +37,13 @@ import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
 import type { ConnectionProvider } from './registry'
-import { isGoogleSlug } from './connectionsLinks'
+import { isGoogleSlug, MCP_SERVERS_HREF } from './connectionsLinks'
+import { Link } from 'react-router-dom'
+import { settingsPath } from '../../components/settingsPath'
+
+/** The Settings entry of the preview that turns on Crew's own sign-in
+ *  (its id in `settingsRegistry.gen.ts`). */
+const CREW_SIGN_IN_SETTING_ID = 'developer.mcp-sign-in-by-kiro-crew'
 // The loopback pre-check lives in `utils/loopbackReturnAddress` (shared with
 // the chat banner's relay affordance).
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
@@ -100,6 +106,15 @@ interface ConnectionCardProps {
    *  on the connected row; it never removes an action, because the sign-in runs
    *  on Kiro CLI and its grant is real for Kiro CLI chats. */
   backendLacksOauth?: boolean
+  /** The `needs-configuration` card is waiting for Crew's own sign-in, not for an
+   *  OAuth app: its instruction and its link point at that setting. */
+  needsCrewSignIn?: boolean
+  /** The `needs-configuration` card whose configured entry Crew's sign-in does not
+   *  serve: no Connect, no OAuth app step and no step to turn that sign-in on. */
+  crewSignInNotOwned?: boolean
+  /** The mint refuses this card's sign-in, grant or not (the status row's
+   *  `crewMintRefused`): no Connect or Reconnect, the setup line in their place. */
+  crewMintRefused?: ConnectionStatus['crewMintRefused']
   /** True on a connected row while chats run on KAS: a KAS chat signs in once
    *  when the user names the server, so the row says which word to type. */
   signInInChat?: boolean
@@ -164,6 +179,7 @@ const PREREQUISITE_KEYS = {
   'google-sheets': 'pages.connectionsPage.prerequisite_google_sheets',
   'google-docs': 'pages.connectionsPage.prerequisite_google_docs',
   'google-slides': 'pages.connectionsPage.prerequisite_google_slides',
+  slack: 'pages.connectionsPage.prerequisite_slack',
 } as const
 
 /**
@@ -185,7 +201,8 @@ const PREREQUISITE_KEYS = {
 function PrerequisiteTip({ label, heading, text, redirect }: {
   label: string
   heading: string
-  text: string
+  /** A plain string, or a `Trans` when a step links somewhere. */
+  text: ReactNode
   /** Where this card's sign-in returns, shown as selectable lines an org admin
    *  can be handed (`signInRedirect` on the status row). */
   redirect?: { caption: string; values: string[] }
@@ -307,7 +324,7 @@ function PrerequisiteTip({ label, heading, text, redirect }: {
 }
 
 /** A card's status label, also shown on the closed Google entry. */
-function ConnectionStateBadge({ state }: { state: ConnectionCardState }) {
+function ConnectionStateBadge({ state, managedInMcpServers = false }: { state: ConnectionCardState; managedInMcpServers?: boolean }) {
   const { t } = useTranslation()
   const stateMeta: Record<ConnectionCardState, { label: string; icon: ReactNode; tone: string }> = {
     'not-connected': {
@@ -347,7 +364,11 @@ function ConnectionStateBadge({ state }: { state: ConnectionCardState }) {
       tone: 'bg-bg-hover text-muted',
     },
   }
-  const meta = stateMeta[state]
+  // An entry Crew's sign-in does not own has nothing left to configure here, so
+  // it keeps the muted tone but says where the entry is managed instead.
+  const meta = managedInMcpServers && state === 'needs-configuration'
+    ? { ...stateMeta[state], label: t('pages.connectionsPage.managed_in_mcp_servers'), icon: <Settings2 className="w-3.5 h-3.5" aria-hidden="true" /> }
+    : stateMeta[state]
   return (
     <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${meta.tone}`}>
       {meta.icon}
@@ -370,6 +391,9 @@ function ConnectionCard({
   grantSharedWith,
   grantSharedUnconfirmed,
   backendLacksOauth = false,
+  needsCrewSignIn = false,
+  crewSignInNotOwned = false,
+  crewMintRefused,
   signInInChat = false,
   crewHeld = false,
   signInRedirect,
@@ -701,6 +725,41 @@ function ConnectionCard({
       redirect={redirect}
     />
   ) : null
+  const notOwnedHelp = (
+    <span className="text-[12px] text-muted" data-testid="crew-sign-in-not-owned">
+      <Trans
+        i18nKey="pages.connectionsPage.crew_sign_in_not_owned_help"
+        values={{ provider: provider.name }}
+        components={{ mcpLink: <Link to={MCP_SERVERS_HREF} className="underline hover:text-accent" /> }}
+      />
+    </span>
+  )
+  const crewSignInSetup = (
+    <>
+      <PrerequisiteTip
+        label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+        heading={t('pages.connectionsPage.before_you_connect')}
+        text={(
+          <Trans
+            i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
+            values={{ provider: provider.name }}
+            components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
+          />
+        )}
+      />
+      <Link
+        to={settingsPath({ tab: 'developer', sub: 'feature-previews', highlight: CREW_SIGN_IN_SETTING_ID })}
+        className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[12px] font-medium text-accent-fg hover:opacity-90"
+      >
+        <Settings2 className="w-3.5 h-3.5" aria-hidden="true" />
+        {t('pages.connectionsPage.open_crew_sign_in_setting')}
+      </Link>
+    </>
+  )
+  // What stands in for Connect and Reconnect while the mint refuses this card: a
+  // press would change the entry and then get 409 `crew_sign_in_required`.
+  const mintRefusedHelp = crewMintRefused === 'not_owned' ? notOwnedHelp
+    : crewMintRefused === 'sign_in_off' ? crewSignInSetup : null
   const runRelay = async () => {
     // Normalize a scheme-less mobile paste (#7406) and submit the normalized
     // form, mirroring the chat banner's relay affordance.
@@ -723,7 +782,9 @@ function ConnectionCard({
   // open card cannot close, and a card with no OAuth app part already shows
   // its whole action row closed while it is not connected or needs setup, so
   // a chevron there would point at nothing.
-  const showsMoreOpen = oauthPanel !== undefined || (state !== 'not-connected' && state !== 'needs-configuration')
+  // An entry Crew's sign-in does not own never uses the OAuth app, so its card has no app part.
+  const oauthPart = crewSignInNotOwned ? undefined : oauthPanel
+  const showsMoreOpen = oauthPart !== undefined || (state !== 'not-connected' && state !== 'needs-configuration')
   const toggle = expand !== undefined && !forcedOpen && showsMoreOpen ? expand : undefined
   const reduceMotion = useReducedMotion()
   return (
@@ -733,7 +794,7 @@ function ConnectionCard({
       id={`connection-${provider.slug}`}
       hidden={hidden}
       data-state={state}
-      className={`relative flex flex-col rounded-lg border bg-card p-3.5 shadow-sm transition-colors ${open && oauthPanel !== undefined ? 'xl:col-span-2 2xl:col-span-3 ' : ''}${
+      className={`relative flex flex-col rounded-lg border bg-card p-3.5 shadow-sm transition-colors ${open && oauthPart !== undefined ? 'xl:col-span-2 2xl:col-span-3 ' : ''}${
         highlighted ? 'border-accent ring-1 ring-accent/40' : state === 'needs-attention' ? 'border-danger/40' : 'border-border'
       }`}
     >
@@ -764,7 +825,7 @@ function ConnectionCard({
             </button>
           ) : provider.name}
         </h3>
-        <ConnectionStateBadge state={state} />
+        <ConnectionStateBadge state={state} managedInMcpServers={crewSignInNotOwned} />
       </header>
 
       {/* A two-line FLOOR with a three-line ceiling, not a fixed height. The
@@ -801,11 +862,13 @@ function ConnectionCard({
               {t('pages.connectionsPage.documentation')} <ExternalLink className="w-3 h-3" aria-hidden="true" />
             </a>
             <div className="flex items-center gap-2">
-              {prerequisiteTip}
-              <Btn primary onClick={() => void startMint(onConnect)} disabled={!!busy}>
-                {busy === 'connect' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
-                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
-              </Btn>
+              {mintRefusedHelp ?? <>
+                {prerequisiteTip}
+                <Btn primary onClick={() => void startMint(onConnect)} disabled={!!busy}>
+                  {busy === 'connect' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
+                  {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
+                </Btn>
+              </>}
             </div>
           </div>
         )}
@@ -932,7 +995,15 @@ function ConnectionCard({
               {/* Not on a Google product row: its OAuth app is the shared part
                   below the rows, and this tip names a Configure button the row
                   does not have. */}
-              {expand && !open && (
+              {/* An entry Crew's sign-in does not own gets none of the blocks
+                  below: the mint refuses it, and its sign-in is already on. One
+                  line says why there is no Connect and links to the entry. */}
+              {crewSignInNotOwned && notOwnedHelp}
+              {/* No Connect and no OAuth app step yet: this provider's client
+                  never leaves the vault, so the card can connect only once Crew
+                  does the sign-in. The link opens the switch that turns that on. */}
+              {needsCrewSignIn && !crewSignInNotOwned && crewSignInSetup}
+              {!needsCrewSignIn && !crewSignInNotOwned && expand && !open && (
                 <PrerequisiteTip
                   label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
                   heading={t('pages.connectionsPage.before_you_connect')}
@@ -943,7 +1014,7 @@ function ConnectionCard({
                   which opens in place on this card. Only the owner can save it. */}
               {/* Shown only while closed: once open, the form below is the
                   next step and the name toggle closes the card. */}
-              {expand && !open && oauthPanel !== undefined && (
+              {!needsCrewSignIn && !crewSignInNotOwned && expand && !open && oauthPanel !== undefined && (
                 <Btn
                   primary
                   onClick={expand.onToggle}
@@ -977,11 +1048,13 @@ function ConnectionCard({
               </span>
             </div>
             <div className="flex items-center justify-end gap-2">
-              {prerequisiteTip}
-              <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
-                {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
-                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
-              </Btn>
+              {mintRefusedHelp ?? <>
+                {prerequisiteTip}
+                <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
+                  {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
+                  {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
+                </Btn>
+              </>}
             </div>
           </div>
         )}
@@ -1092,15 +1165,17 @@ function ConnectionCard({
               askAgent={handOffAllowed}
             />
             <div className="flex items-center justify-end gap-2">
-              {prerequisiteTip}
               {/* Reconnect runs the mint, which moves the card to
                   waiting-for-approval and unmounts this button; the handoff
                   there lands focus on Cancel. It has no in-flight state of its
                   own to stay mounted for -- hence native `disabled`. */}
-              <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
-                {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
-                {busy === 'connect' ? t('pages.connectionsPage.reconnecting') : t('pages.connectionsPage.reconnect')}
-              </Btn>
+              {mintRefusedHelp ?? <>
+                {prerequisiteTip}
+                <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
+                  {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
+                  {busy === 'connect' ? t('pages.connectionsPage.reconnecting') : t('pages.connectionsPage.reconnect')}
+                </Btn>
+              </>}
             </div>
           </div>
         )}
@@ -1108,9 +1183,9 @@ function ConnectionCard({
 
       {/* Hidden, not unmounted, while closed: closing the card keeps a typed
           but unsaved Client ID and secret. */}
-      {oauthPanel !== undefined && (
+      {oauthPart !== undefined && (
         <div className="mt-3 border-t border-border pt-3" hidden={!open}>
-          {oauthPanel}
+          {oauthPart}
         </div>
       )}
 

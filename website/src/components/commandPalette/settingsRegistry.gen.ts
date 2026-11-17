@@ -53,6 +53,26 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
+    "id": "advanced.all-settings",
+    "labelKey": "settings.advanced.title",
+    "tab": "advanced",
+    "type": "input",
+    "occurrence": 1,
+    "label": "All settings",
+    "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
+  },
+  {
+    "id": "agent.orchestrator-memory",
+    "label": "Orchestrator memory",
+    "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
+    "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+    "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+    "tab": "agent",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "agent.orchestrator_memory"
+  },
+  {
     "id": "agent.kiro-sign-in",
     "labelKey": "pages.developer.kiroSignInCard.search_label",
     "tab": "agent",
@@ -314,7 +334,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Code channels (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
     "labelSuffix": "Slack",
-    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and pin messages and keep notes there under its own name. Your Slack app gets 6 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -816,6 +836,21 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "imessage"
     }
+  },
+  {
+    "id": "channels.show-slack-conversations-in-the-session-list-slack",
+    "label": "Show Slack conversations in the session list (Slack)",
+    "labelKey": "pages.settings.slackPanel.show_in_session_list",
+    "labelSuffix": "Slack",
+    "description": "Lists conversations that start in Slack with your other sessions.",
+    "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.show_in_session_list"
   },
   {
     "id": "channels.show-thinking-slack",
@@ -1647,7 +1682,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.recall-sent-messages-with-arrow-keys",
     "label": "Recall Sent Messages with Arrow Keys",
     "labelKey": "pages.settings.chatPanel.arrow_key_prompt_history",
-    "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
+    "hint": "In an empty message input, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -1912,7 +1947,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "chat.start-new-chats-in-conductor-mode",
-    "label": "Start New Chats in Conductor Mode",
+    "label": "Start New Chats in conductor mode",
     "labelKey": "pages.settings.chatPanel.new_chat_crew_mode",
     "description": "Conductor mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
     "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
@@ -2042,7 +2077,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "sessions"
-    }
+    },
+    "configKey": "dashboard.topic_tags_enabled"
   },
   {
     "id": "chat.turn-time-limit-seconds",
@@ -2163,6 +2199,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "connections.oauth-client-slack",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Slack",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-slack",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
     "id": "connections.oauth-client-google",
     "labelKey": "pages.settings.connectionsPanel.oauth_app",
     "labelSuffix": "Google",
@@ -2172,6 +2219,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "connections-oauth-client-google",
     "label": "OAuth app",
     "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
+  },
+  {
+    "id": "developer.acp-runtime-sharing",
+    "label": "ACP runtime sharing",
+    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
+    "description": "Saves computer memory by running several chats in one background program. You choose which kinds of chat share it. They reply at the same time and can't see each other's messages. Turn it off and each new chat gets its own program again.",
+    "hint": "Chats whose harness switch below is on share one background program and reply at the same time, so a long reply in one chat never makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Kiro CLI chats, KAS chats on an older engine, and chats whose switch is off keep a program each. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.agent-harness-for-worker-chats",
@@ -2208,8 +2268,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "type": "toggle",
     "occurrence": 1,
-    "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
-    "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
+    "label": "Also send snippets of recalled memories so the decision model can drop the ones that do not help",
+    "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to the decision model, which then says which ones to keep. It can only remove them, never add one or reorder them, and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
   },
   {
     "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
@@ -2220,8 +2280,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "type": "toggle",
     "occurrence": 1,
-    "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
-    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+    "label": "Also send the conversation and tool-call inputs so the decision model can score compaction",
+    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to the decision model, and asks which ones would have been worth keeping. Tool OUTPUT is never sent, only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever the decision model answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments (a whole session's conversation goes, not one call), so it is off until you turn it on, whatever else you have already agreed to."
   },
   {
     "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
@@ -2232,8 +2292,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "type": "toggle",
     "occurrence": 1,
-    "label": "Also send tool-call arguments so Jev can flag risky calls",
-    "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+    "label": "Also send tool-call arguments so the decision model can flag risky calls",
+    "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
   },
   {
     "id": "developer.artifact-deploy",
@@ -2262,19 +2322,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.dynamic_dashboard_cards"
   },
   {
-    "id": "developer.bot-sessions-on-the-bot-s-profile",
-    "label": "Bot sessions on the bot's profile",
-    "labelKey": "pages.developer.featurePreviewsTab.mate_sessions",
-    "description": "Moves a bot's chats to its Sessions tab.",
-    "hint": "Moves the chats a bot opens out of your Sessions list, Recents and grid, onto that bot's Sessions tab. The bot's own chat stays where it is, and History and search still find every chat.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
@@ -2301,21 +2348,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.conductor-mode",
-    "label": "Conductor mode",
-    "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
-    "description": "Hands a chat's tasks to a crew.",
-    "hint": "Lets a chat hand tasks to a crew and track them on a Board.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.decisions-jev",
-    "label": "Decisions (Jev)",
+    "id": "developer.decisions",
+    "label": "Decisions",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",
     "hint": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up.",
     "tab": "developer",
@@ -2330,7 +2364,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Earlier conversation one decision may carry, in characters",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_history_label",
     "description": "A larger number sends more of the conversation off this machine.",
-    "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine.",
+    "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main decision model switch was agreed for, so a larger number sends more off the machine.",
     "tab": "developer",
     "type": "input",
     "occurrence": 1,
@@ -2410,6 +2444,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one.",
     "tab": "developer",
     "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.quick-worker-check-before-a-hard-choice",
+    "label": "Quick worker check before a hard choice",
+    "labelKey": "pages.developer.featurePreviewsTab.worker_grill",
+    "description": "Two or three workers test a high-stakes choice and hand you a short brief.",
+    "hint": "When a conductor meets a choice with two paths and a wrong pick is hard to undo, it offers to let two or three workers talk it through first, instead of a 45-minute debate. They check the facts themselves and finish with a short brief: the answer, why, and what they picked for you. Not happy with it? Start another one.",
+    "tab": "developer",
+    "type": "toggle",
     "occurrence": 1,
     "params": {
       "sub": "feature-previews"
@@ -2497,19 +2544,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "sessionEnvironments.title",
     "description": "Runs a chat in its own remote workspace.",
     "hint": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.share-one-background-program-across-chats",
-    "label": "Share one background program across chats",
-    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
-    "description": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
-    "hint": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2860,6 +2894,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.show-channels",
+    "label": "Show Channels",
+    "labelKey": "pages.settings.displayPanel.channels",
+    "description": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "configKey": "dashboard.channels_enabled"
+  },
+  {
     "id": "display.show-search-in-the-top-bar",
     "label": "Show search in the top bar",
     "labelKey": "pages.settings.displayPanel.show_topbar_search",
@@ -3120,6 +3167,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "notifications.only-notify-for-longer-turns",
+    "label": "Only notify for longer turns",
+    "labelKey": "pages.settings.notificationsPanel.notify_min_turn",
+    "hint": "Skips the notification for a turn that finishes faster than this, so quick replies do not ping you. A turn that stops to ask you something or fails still notifies.",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
+  },
+  {
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",
@@ -3263,6 +3322,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
+    "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "labelKey": "pages.settings.securityPanel.safetySwitches.ask_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "safety"
+    },
+    "configKey": "mcp.honour_auto_approve",
+    "label": "Ask me before running tools an MCP server pre-approves",
+    "description": "Tools you set to Always allow still run without asking."
+  },
+  {
     "id": "security.denied-commands",
     "labelKey": "pages.settings.securityPanel.denied_commands",
     "tab": "security",
@@ -3308,7 +3380,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Live Security Posture"
   },
   {
-    "id": "security.redact-credentials-in-files-the-dashboard-opens-for-you",
+    "id": "security.redact-credentials",
     "labelKey": "pages.settings.securityPanel.credential_redaction_toggle",
     "tab": "security",
     "type": "toggle",
@@ -3316,8 +3388,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "section": "redaction"
     },
-    "label": "Redact credentials in files the dashboard opens for you",
-    "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+    "label": "Redact credentials",
+    "description": "Hides keys, tokens and passwords in chat, messaging channels, the agent's prompt, files and logs."
   },
   {
     "id": "security.config-pending",
@@ -3331,6 +3403,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "security.config-pending",
     "label": "Settings files changed outside Kiro Crew",
     "description": "Review edits made to settings files outside Kiro Crew, then apply or discard them."
+  },
+  {
+    "id": "security.stop-the-agent-from-editing-its-own-permission-rules",
+    "labelKey": "pages.settings.securityPanel.safetySwitches.protect_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "safety"
+    },
+    "configKey": "mcp.protect_kiro_permission_rules",
+    "label": "Stop the agent from editing its own permission rules",
+    "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way."
   },
   {
     "id": "security.trust-every-third-party-app",

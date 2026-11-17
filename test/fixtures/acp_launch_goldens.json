@@ -1,10 +1,27 @@
 {
+  "antigravity": {
+    "argv": [
+      "/opt/bin/agy_acp_server.par"
+    ],
+    "env_added": {
+      "ANTIGRAVITY_HARNESS_PATH": "/opt/bin/localharness_external",
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "agy_acp_server",
+    "stderr_label": "agy_acp_server"
+  },
   "claude": {
     "argv": [
       "/opt/bin/node",
       "/opt/lib/claude-agent-acp/index.js"
     ],
     "env_added": {
+      "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1",
+      "CLAUDE_CODE_THINKING_DISPLAY": "summarized",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",

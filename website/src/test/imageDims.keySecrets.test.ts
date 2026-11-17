@@ -172,6 +172,20 @@ describe('imageDims cache keys: the allowlist still discriminates', () => {
     expect(getImageDims('/api/file-raw?path=%2Ftmp%2Fa.png&v=2')).toBeUndefined()
   })
 
+  it('keeps `path` and `v` on the stream route a local video plays from', async () => {
+    const { cacheKeyFor, rememberImageDims, getImageDims } = await freshModule()
+    expect(cacheKeyFor('/api/file-stream?path=%2Ftmp%2Fa.mp4&v=1&token=SECRET123'))
+      .toBe('/api/file-stream?path=%2Ftmp%2Fa.mp4&v=1')
+    rememberImageDims('/api/file-stream?path=%2Ftmp%2Fa.mp4&v=1', 1280, 720)
+    rememberImageDims('/api/file-stream?path=%2Ftmp%2Fb.mp4&v=1', 720, 1280)
+    expect(getImageDims('/api/file-stream?path=%2Ftmp%2Fa.mp4&v=1')).toEqual({ w: 1280, h: 720 })
+    expect(getImageDims('/api/file-stream?path=%2Ftmp%2Fb.mp4&v=1')).toEqual({ w: 720, h: 1280 })
+    expect(getImageDims('/api/file-stream?path=%2Ftmp%2Fa.mp4&v=2')).toBeUndefined()
+    // The same route on another host is not ours: its query is dropped whole.
+    expect(cacheKeyFor('https://proxy.example/api/file-stream?path=SECRET123'))
+      .toBe('https://proxy.example/api/file-stream')
+  })
+
   it('is order-independent, so one image yields one entry', async () => {
     const { cacheKeyFor } = await freshModule()
     expect(cacheKeyFor('/api/file-raw?v=2&path=%2Ftmp%2Fa.png'))

@@ -24,6 +24,15 @@ from kiro_crew.crew_log.session_tree import TreeNode
 from kiro_crew.dashboard.handlers import crew_workers
 
 
+def _yielding(serialize):
+    """The state's ``serialize_slots_yielding`` over a stub's synchronous rows."""
+
+    async def serialize_slots_yielding(**kwargs):
+        return serialize(**kwargs)
+
+    return serialize_slots_yielding
+
+
 class _Tree:
     """A seeded session tree whose ``nodes()`` object is replaced when it changes."""
 
@@ -97,6 +106,7 @@ class _World:
 
         return SimpleNamespace(
             serialize_slots=serialize_slots,
+            serialize_slots_yielding=_yielding(serialize_slots),
             get_slot=lambda key: None,
             conversation_log=self.log,
         )

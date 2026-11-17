@@ -20,6 +20,7 @@ import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, toggleActivity } from '../store/chatSlice'
 import { paneCovered } from '../hooks/paneVisibility'
 import { closeCrewWindow, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
+import { setRailWidth, __resetRailWidth } from '../hooks/useRailWidth'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -550,5 +551,59 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
     const group = reserved()
     expect(group, 'reserve survives an open bottom-docked panel').not.toBeNull()
     expect(group!.classList.contains('ml-auto')).toBe(true)
+  })
+})
+
+/**
+ * #37165: the embedded chat frame (`/embed/chat`) mounts no session sidebar,
+ * so the stored sidebar width must not come off the width its activity panel
+ * decides beside-or-fill from. A companion chat (`embedMode="chat"` inside the
+ * main window, beside the real chrome) keeps the main window's arithmetic.
+ */
+describe('ChatPage — activity panel in an embedded chat frame', () => {
+  beforeEach(() => { localStorage.clear(); __resetRailWidth() })
+  afterEach(() => { __resetRailWidth() })
+
+  function renderEmbedded(path: string, routePath: string) {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-embed', 'slot-embed'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-embed',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-embed', 'slot-embed'))
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={[path]}>
+              <Routes><Route path={routePath} element={<ChatPage embedded embedMode="chat" noUrlSync />} /></Routes>
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    act(() => { store.dispatch(toggleActivity()) })
+    return store
+  }
+
+  it('sits the panel beside the chat when the frame itself seats both', async () => {
+    // The embed document's shell publishes no rail. 800 >= 640, but 800 minus
+    // the default 260px sidebar it never draws would not.
+    setWindowWidth(800)
+    act(() => { setRailWidth(0) })
+    renderEmbedded('/embed/chat', '/embed/chat/:slug?')
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
+  })
+
+  it('keeps the sidebar in the arithmetic for a companion chat in the main window', async () => {
+    // 900 - rail 74 - sidebar 260 = 566 < 640: the narrow companion still fills.
+    setWindowWidth(900)
+    act(() => { setRailWidth(74) })
+    renderEmbedded('/apps/papyrus', '/apps/papyrus')
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '566')
   })
 })

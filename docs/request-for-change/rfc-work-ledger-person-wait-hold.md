@@ -17,7 +17,7 @@ superseded-by: []
 - Status: implemented. The decision was made by the operator who owns the conductor patrol (2026-10-08). This document landed on its own first, as GOVERNANCE.md asks of an RFC, and its implementation [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109) (`c8da67c030`) has merged. [monitor-architecture](../system-specs/modules/monitor-architecture.md) owns the shipped behaviour.
 - Amends [rfc-goal-loop-approval-hold.md](rfc-goal-loop-approval-hold.md) in one place, named in section 3.3: a `work-ledger` watch whose open items all wait on a person is no longer extended.
 - Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the ledger and `work_report`), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor).
-- Amended by [rfc-work-ledger-resource-pressure.md](rfc-work-ledger-resource-pressure.md) §12: the section 3.2 fingerprint also carries the host-pressure episode and level, so a level change releases a held loop once.
+- An amendment proposed in [rfc-work-ledger-resource-pressure.md](rfc-work-ledger-resource-pressure.md) §12 (a host-pressure level change releases a held loop once) was withdrawn by the repository owner on 2026-11-14 and never built. Section 3.2 stands as written.
 - Measured at `230b9141c8`.
 
 ## 1. Problem

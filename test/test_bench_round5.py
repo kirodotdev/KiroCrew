@@ -117,7 +117,7 @@ def _embed(text: str) -> list[float]:
     return [float(len(text) % 7), 0.5]
 
 
-# ── Finding 2: the identity must describe what actually ran ──────────────────
+# ── the identity must describe what actually ran ─────────────────────────────
 
 
 def test_recorded_identity_comes_from_the_live_embedder(monkeypatch) -> None:
@@ -152,7 +152,7 @@ def test_an_unreadable_identity_refuses_rather_than_claiming_the_bundled_one(
     assert "does not report its identity" in str(excinfo.value)
 
 
-# ── Finding 3: a mid-run inference failure must refuse ───────────────────────
+# ── a mid-run inference failure must refuse ──────────────────────────────────
 
 
 def test_a_null_embedding_after_readiness_aborts_the_run(tmp_path: Path) -> None:
@@ -194,7 +194,7 @@ def test_a_healthy_run_is_unaffected(tmp_path: Path, monkeypatch: pytest.MonkeyP
         loaded.close()
 
 
-# ── Finding 4: session granularity has no turn level ────────────────────────
+# ── session granularity has no turn level ────────────────────────────────────
 
 
 def _one_result() -> list[QueryRetrieval]:
@@ -283,7 +283,7 @@ def test_turn_mode_dropped_gold_is_unchanged(tmp_path: Path) -> None:
         loaded.close()
 
 
-# ── Finding 5: the corpus readers must not follow a final symlink ────────────
+# ── the corpus readers must not follow a final symlink ───────────────────────
 
 
 @posix_symlinks

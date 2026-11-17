@@ -648,7 +648,26 @@ async def test_reconnect_gives_up_within_its_budget(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(stub_mod, "_RECONNECT_BACKOFF_MAX_SECS", 0.1)
 
     session = _session_with_captured_init(_SERVER_RESULT)
-    started = asyncio.get_running_loop().time()
+    budget = stub_mod._RECONNECT_TOTAL_BUDGET_SECS
+    # Reconnect time moves only by the backoff waits the loop asks for, so the
+    # host's speed cannot spend or stretch the budget.
+    now = [1_000.0]
+    waits: list[float] = []
+
+    async def _wait(stop_event: asyncio.Event, delay: float) -> bool:
+        if stop_event.is_set():
+            return False
+        assert now[0] - 1_000.0 <= 100 * budget, (
+            f"the reconnect was still retrying {now[0] - 1_000.0:.1f}s into a "
+            f"{budget}s budget, so the budget is not what bounds it"
+        )
+        waits.append(delay)
+        now[0] += delay
+        await asyncio.sleep(0)
+        return True
+
+    monkeypatch.setattr(stub_mod, "_reconnect_now", lambda: now[0])
+    monkeypatch.setattr(stub_mod, "_reconnect_wait", _wait)
     attached = await stub_mod._reconnect(
         str(tmp_path / "definitely-not-bound.sock"),
         {"stub_uuid": "u", "session_key": "dashboard:x"},
@@ -657,11 +676,14 @@ async def test_reconnect_gives_up_within_its_budget(tmp_path: Path, monkeypatch)
         poolable=True,
         pool_label="probe:fake",
     )
-    elapsed = asyncio.get_running_loop().time() - started
+    spent = now[0] - 1_000.0
     assert attached is None
-    assert elapsed < 10.0, (
-        f"reconnect ran {elapsed:.1f}s against a 0.4s budget, so the budget is "
-        "not what bounds it"
+    # The loop gives up at its first check past the budget: it spent at least
+    # the budget, and at most one more backoff step past it (both within float
+    # error, since the clock is an absolute deadline minus a start).
+    assert budget - 1e-6 <= spent <= budget + stub_mod._RECONNECT_BACKOFF_MAX_SECS + 1e-6, (
+        f"reconnect gave up after {spent:.2f}s of backoff ({waits!r}) against a "
+        f"{budget}s budget, so the budget is not what bounds it"
     )
 
 

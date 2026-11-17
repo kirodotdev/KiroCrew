@@ -47,6 +47,23 @@ const SCROLL_AFTER_RENDER_MS = 100
 /** What a pane send consumed, in the shape the pane's `restoreIntoComposer` puts back. A crewmate
  *  pane raises none: its transcript draws messages only, so the notice that a removed send was
  *  delivered after all could never reach the user there. */
+/** What an option send came to, in ChatPage.send's delivery classes. */
+export type PaneSendOutcome = 'sent' | 'refused' | 'indeterminate'
+
+/**
+ * Classify one doSend receipt. `landed`: an echo or queue custody already
+ * proved this send reached the server. A refusal did not go out. A lost answer
+ * (the fetch failed, or the deadline passed) may still be running, so a retry
+ * could start it twice. Anything accepted, `unknown` included (a 2xx whose body
+ * did not parse), counts as sent, as ChatPage.send counts it.
+ */
+function paneSendOutcome(status: SendReceiptStatus, landed: boolean): PaneSendOutcome {
+  if (landed) return 'sent'
+  if (status === 'refused') return 'refused'
+  if (status === 'transport-error' || status === 'response-late') return 'indeterminate'
+  return 'sent'
+}
+
 export interface PaneSentRestore {
   text: string
   files: string[]
@@ -211,7 +228,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
 
-  const doSend = useCallback((optionText?: string, steerNow?: boolean) => {
+  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void) => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
@@ -222,6 +239,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // parent turn already ended, so there is no live turn to inject into). It
     // asks the server to skip the hold that parks a message behind them and
     // start a real turn instead of queueing. Same `/api/chat` flag as a steer.
+    //
+    // `onOutcome` hears once what an option send came to (a discussion card
+    // shows it), in ChatPage.send's delivery classes: see `paneSendOutcome`.
     const text = (optionText || input).trim()
     // A staged quote alone is a sendable message. An option pill's send is its
     // own text and leaves the stage untouched, as it leaves files and pastes.
@@ -241,7 +261,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // quote stays staged for the real one.
     if (!optionText && interceptPaneSlash()) return
     const sentQuote = optionText ? null : consumeQuote('').quote
-    if (isEmptyTurn({ text, files: pendingFiles, quote: sentQuote })) return
+    if (isEmptyTurn({ text, files: pendingFiles, quote: sentQuote })) { onOutcome?.('refused'); return }
     // A send while STREAMING dictation is live ends the dictation, before the
     // composer is read and cleared (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
@@ -333,7 +353,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: true } : {}) }).then((receipt) => {
+    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
+      // Read before the rulings below settle the bubble: an echo that already
+      // proved this send landed outranks a lost or refused answer.
+      onOutcome?.(paneSendOutcome(receipt.status, selectSendConfirmed(store.getState(), slotKey, sendId) || (!!crewmate && selectSendAccepted(store.getState(), slotKey, sendId))))
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/

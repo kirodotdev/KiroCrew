@@ -79,8 +79,13 @@ function normalizedUrl(value: string | undefined): string {
  * Connections creates remote entries under the provider slug. Requiring both
  * that stable name and the registry URL prevents a hand-authored custom server
  * that happens to use the same endpoint from being labelled as managed.
+ *
+ * The URL is compared without regard to a trailing slash or letter case, so the
+ * card owns such a row and its Connect writes the registry URL onto it before
+ * signing in. A card that does not own the row adds a second entry under the
+ * slug instead, which the gateway refuses.
  */
-export function connectionProviderForServer(server: McpServer): ConnectionProvider | undefined {
+export function providerOwningRow(server: McpServer): ConnectionProvider | undefined {
   const serverUrl = normalizedUrl(server.url)
   if (!serverUrl) return undefined
   return CONNECTION_PROVIDERS.find(provider =>
@@ -88,9 +93,26 @@ export function connectionProviderForServer(server: McpServer): ConnectionProvid
   )
 }
 
+/**
+ * The provider whose card the MCP Servers table sends this row's sign-in to.
+ *
+ * A row the gateway marks `connectionUnconfigured` is left alone: its provider
+ * has no OAuth Apps record yet, so the card could only fail, and the row's own
+ * chat guidance is where the client the user wrote signs in on Kiro CLI (and on
+ * any backend while the `crew_oauth` preview is off). The row is still
+ * the card's own (`serverForConnection`). A configured row marked
+ * `connectionNeedsCrewSignIn` offers setup guidance until Crew can sign in.
+ */
+export function connectionProviderForServer(server: McpServer): ConnectionProvider | undefined {
+  return server.connectionUnconfigured === true || server.connectionNeedsCrewSignIn === true
+    ? undefined
+    : providerOwningRow(server)
+}
+
+/** The row a provider's card owns, marked `connectionUnconfigured` or not. */
 export function serverForConnection(
   provider: ConnectionProvider,
   servers: readonly McpServer[],
 ): McpServer | undefined {
-  return servers.find(server => connectionProviderForServer(server)?.slug === provider.slug)
+  return servers.find(server => providerOwningRow(server)?.slug === provider.slug)
 }

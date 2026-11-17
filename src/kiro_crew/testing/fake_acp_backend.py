@@ -84,6 +84,10 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
 * ``[[ERROR]]`` -> reply with a JSON-RPC error instead of a result.
 * ``[[MAXTOKENS]]`` / ``[[REFUSAL]]`` -> alternate terminal ``stopReason``.
 
+With ``KIROCREW_FAKE_ACP_SCRIPT`` naming a JSON file, a chat prompt the script
+answers gets the script's reply instead of any of the above
+(:mod:`kiro_crew.testing.scripted_replies` documents the file).
+
 Observing a cancel mid-turn requires reading stdin while a prompt is streaming,
 so ``main()`` reads on a background thread into a queue rather than looping
 read->handle. Calling ``_handle`` directly (as the unit tests do) leaves that
@@ -226,6 +230,14 @@ _POLL_INTERVAL_SECS = 0.02
 ERROR_CODE = -32603
 ERROR_MESSAGE = "fake ACP backend: injected failure"
 
+#: Names the reply script (``kiro_crew.testing.scripted_replies.SCRIPT_ENV``,
+#: spelled here so this module stays stdlib-only at import time).
+SCRIPT_ENV = "KIROCREW_FAKE_ACP_SCRIPT"
+_SCRIPT_TOOL_IDS = itertools.count(1)
+#: Characters per scripted message chunk. A character grows to at most 12 bytes
+#: once JSON-escaped, so a chunk stays near 3 MiB, well under the 10 MiB line
+#: limit of the transports that read these frames.
+_SCRIPT_CHUNK_CHARS = 256 * 1024
 _SESSION_IDS = itertools.count(1)
 _SESSION_ID = "fake-1"
 _SESSIONS: dict[str, tuple[list[dict[str, Any]], str]] = {}
@@ -742,6 +754,66 @@ def _stream_slowly(
     return bool(cancelled or (cancel_aware and _cancel_requested(session_id)))
 
 
+def _script() -> Any:
+    """The reply script, or ``None`` when ``SCRIPT_ENV`` is unset or unusable.
+
+    With the variable unset nothing below changes. The script module is
+    imported only then: it reads the file through Kiro Crew's guarded reader,
+    which this stdlib-only module cannot import at load time.
+    """
+    if not os.environ.get(SCRIPT_ENV, "").strip():
+        return None
+    try:
+        from kiro_crew.testing import scripted_replies
+    except ImportError:
+        sys.stderr.write(
+            f"fake ACP backend script: {SCRIPT_ENV} ignored: "
+            "kiro_crew is not importable by this interpreter\n"
+        )
+        return None
+    return scripted_replies.active_script()
+
+
+def _send_scripted(req_id: Any, session_id: str, reply: Any) -> None:
+    """Stream one ``scripted_replies.ScriptedReply``, then its result or error."""
+    if reply.error is not None:
+        _error(req_id, message=reply.error)
+        return
+    for tool in reply.tools:
+        tool_call_id = f"fake-script-tool-{next(_SCRIPT_TOOL_IDS)}"
+        _update(
+            session_id,
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": tool_call_id,
+                "title": tool.title,
+                "kind": tool.kind,
+                "status": "pending",
+                "rawInput": tool.input,
+            },
+        )
+        _update(
+            session_id,
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "status": tool.status,
+            },
+        )
+    for start in range(0, len(reply.text), _SCRIPT_CHUNK_CHARS):
+        _update(
+            session_id,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {
+                    "type": "text",
+                    "text": reply.text[start : start + _SCRIPT_CHUNK_CHARS],
+                },
+            },
+        )
+    _result(req_id, {"stopReason": reply.stop})
+
+
 def _handle(msg: dict[str, Any]) -> None:
     global _SESSION_ID
 
@@ -834,6 +906,11 @@ def _handle(msg: dict[str, Any]) -> None:
                 },
             )
             _result(req_id, {"stopReason": "end_turn"})
+            return
+        script = _script()
+        scripted = script.reply_for(session_id, text) if script is not None else None
+        if scripted is not None:
+            _send_scripted(req_id, session_id, scripted)
             return
         if ERROR_TRIGGER in text:
             # A JSON-RPC error instead of a result: the turn fails, not stops.

@@ -1229,6 +1229,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _annotate_kas_chat_sign_in,
         _annotate_owner_sign_in,
         _annotate_quarantine,
+        _annotate_unconfigured_connection,
         _arm_reprobe,
         _bg_mcp_probe,
         _bg_measure_all,

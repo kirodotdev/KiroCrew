@@ -30,10 +30,8 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HOME_PREFIXES,
     _CREW_READONLY_LEAVES,
     _CREW_SANDBOX_VISIBLE_LEAVES,
-    _MD_NOTEBOOK_STAGING_LEAF,
     _POLICY_CACHE_LEAF,
     _RELOCATED_CREW_HIDDEN_LEAVES,
-    MD_NOTEBOOK_APP_NAME,
     _crew_home_entries,
 )
 
@@ -223,12 +221,10 @@ _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
     # the SAME namespace — and a worktree's lifecycle script could then pick the code
     # the gateway execs next. The pointer stays masked; Dev Fleet moves the cutover to a
     # gateway-process route instead (``dev_fleet/gateway_routes.py``).
-    MD_NOTEBOOK_APP_NAME: (
-        # The whole state directory, handed back as one unit: the state files, their staged
-        # temps and the migration marker all live inside it, so the publish rename stays on
-        # one mount. The retired bare spellings are NOT here; the backend never reads them.
-        _MD_NOTEBOOK_STAGING_LEAF,
-    ),
+    #
+    # NOT here either: the Notes state. It lives under the app's own data directory, in
+    # the directory its manifest declares in ``credentialMasks`` ("state/"), and its
+    # backend gets it back through :func:`app_declared_mask_targets` like any app's.
 }
 
 
@@ -287,7 +283,8 @@ def app_declared_mask_targets(
     Only a path that is absent or a regular file with ONE name is handed back
     (:func:`_liftable_declared_file`). A second hard link makes the file's bytes another
     path's bytes too, maybe a core credential's, and a path comparison cannot tell; a
-    directory is not a declared entry at all. Either one stays masked for the backend.
+    directory at a file entry stays masked for the backend too. A directory entry
+    (``"state/"``) is handed back while it is absent or a real directory, never a link.
 
     Returns ``()`` for an app that declares nothing.
     """
@@ -306,15 +303,21 @@ def app_declared_mask_targets(
     )
     if not leaves:
         return ()
+    directories = credential_masks.declared_crew_dir_leaves_for(app_name, builtin=builtin)
     home = str(Path.home())
-    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
-    targets.extend(_relocated_crew_targets(leaves))
+    targets: list[tuple[str, bool]] = []
+    for leaf in leaves:
+        directory = leaf in directories
+        targets.extend((os.path.join(home, e), directory) for e in _crew_home_entries((leaf,)))
+        targets.extend((t, directory) for t in _relocated_crew_targets((leaf,)))
     return tuple(
-        target
-        for target in targets
-        if not carveout_shadowed_by_foreign_mask(target, mode=mode)
-        and not carveout_chain_has_planted_link(target)
-        and _liftable_declared_file(target)
+        dict.fromkeys(
+            target
+            for target, directory in targets
+            if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+            and not carveout_chain_has_planted_link(target)
+            and (_liftable_declared_dir(target) if directory else _liftable_declared_file(target))
+        )
     )
 
 
@@ -361,6 +364,27 @@ def app_declared_readonly_targets(
         if not carveout_shadowed_by_foreign_mask(target, mode=mode)
         and not carveout_chain_has_planted_link(target)
     )
+
+
+def _liftable_declared_dir(target: str) -> bool:
+    """Whether a declared directory *target* may go back to its backend: absent, or a real dir.
+
+    Judged with ``lstat``, so a link at the name is never followed or handed back.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        info = None
+    if info is not None and stat.S_ISDIR(info.st_mode):
+        return True
+    logger.warning(
+        "sandbox: not handing the declared directory mask %s back to its app's backend: it "
+        "is not a directory, so it stays masked for that backend too.",
+        target,
+    )
+    return False
 
 
 def _liftable_declared_file(target: str) -> bool:

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
-from kiro_crew.auth.refresh import IdentitySignedOut, ensure_fresh
+from kiro_crew.auth.refresh import HTTP_TIMEOUT, IdentitySignedOut, ensure_fresh
 from kiro_crew.auth.store import KasToken, TokenStore
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class KasAuthProvider:
     async def _session_or_temp(self):
         if self._session is not None:
             return self._session, False
-        return aiohttp.ClientSession(), True
+        return aiohttp.ClientSession(timeout=HTTP_TIMEOUT), True
 
     def _env_api_key(self) -> str | None:
         if not self._allow_env_api_key:

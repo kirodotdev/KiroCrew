@@ -683,7 +683,7 @@ describe('SageMaker endpoint', () => {
     const saved = { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }
     await renderPicker({ consentOn: false, data: withSageMaker('sagemaker', saved) })
     const line = await screen.findByText(/Not sending decisions to this endpoint yet/)
-    expect(line).toHaveTextContent('“Decisions (Jev)” switch at the top of this card')
+    expect(line).toHaveTextContent('“Decisions” switch at the top of this card')
     expect(line).toHaveTextContent("“Also send screenshots of the agent's browser tab” under Browser steps: pick and check")
     expect(screen.queryByText('In use')).toBeNull()
     // An edited draft is not the saved endpoint, so the line no longer describes it.

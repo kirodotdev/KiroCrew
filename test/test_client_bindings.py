@@ -35,7 +35,15 @@ from typing import Any
 import pytest
 
 from kiro_crew.acp import client as acp_client
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import (
+    AcpClient,
+    ClaudeAcpClient,
+    DeepseekAcpClient,
+    GooseAcpClient,
+    MimocodeAcpClient,
+    OpencodeAcpClient,
+)
+from kiro_crew.acp.transport_errors import AcpError
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_client_bindings")
 
@@ -57,6 +65,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_agent_turn_held": ("data", False, "", ""),
     "_agent_turn_pending": ("function", False, "a6632a57e602", "client_transport"),
     "_agent_turn_start": ("data", False, "", ""),
+    "_antigravity_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_append_member_dispatch_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
     "_append_member_panel_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
     "_apply_session_identity_env": ("function", False, "1b5cd29daa82", "client_spawn_env"),
@@ -72,77 +81,60 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_build_permission_event": ("function", False, "e64128661dfa", "client_permissions"),
     "_cancel_idle_reader": ("function", False, "b60c5fea256e", "client_transport"),
     "_capture_available_models": ("function", False, "8e047a255b27", "client_model_selection"),
-    "_claim_pathname_if_ours": ("staticmethod", False, "af30c5c7e262", "client_class"),
     "_claim_stdout": ("function", True, "b60c5fea256e", "client_transport"),
     "_claiming_stdout": ("function", False, "202eff0259ef", "client_transport"),
+    "_claims_native_compaction": ("function", False, "c19e582b2edc", "client_class"),
     "_classify_failed_start": ("function", True, "05bb8f207290", "client_lifecycle"),
-    "_claude_adapter_below_setting_sources_floor": (
-        "function",
-        False,
-        "a6632a57e602",
-        "client_claude_session",
-    ),
-    "_claude_adapter_disk_version": ("annotation", False, "", ""),
-    "_claude_compaction_event": ("function", False, "0d6b4eecc1f2", "client_usage"),
-    "_claude_local_settings_path": ("function", False, "b08d8e6a45bd", "client_seed_ownership"),
-    "_claude_session_excludes_local": ("function", False, "a6632a57e602", "client_claude_session"),
-    "_claude_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
-    "_claude_session_meta": ("function", False, "16d9fe32838b", "client_claude_session"),
-    "_claude_settings_is_still_ours": ("function", False, "a6632a57e602", "client_seed_ownership"),
     "_cleanup_failed_live_spawn": ("function", True, "b60c5fea256e", "client_lifecycle"),
+    "_client_class_by_backend": ("data", False, "", ""),
     "_close_steer_turn": ("function", False, "f604c3478f16", "client_turn_control"),
     "_codex_compaction_event": ("function", False, "e64128661dfa", "client_usage"),
+    "_confirm_copilot_mcp_identity": ("function", False, "87459833bc5c", "client_copilot"),
     "_confirm_member_projection": ("function", False, "0e165137f085", "client_class"),
     "_consult_liveness_model_wait": ("function", True, "0329a680bb66", "client_turn"),
-    "_copy_aside_back_without_clobber": (
-        "staticmethod",
-        False,
-        "460afeb00773",
-        "client_seed_ownership",
-    ),
     "_copilot_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_decline_elicitation": ("function", True, "87459833bc5c", "client_elicitation"),
-    "_deepseek_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_defer_mimocode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
-    "_defer_opencode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
-    "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "client_permissions"),
+    "_defer_shell_permission": ("function", True, "7c70a056d5ef", "client_class"),
+    "_defers_shell_permission": ("data", False, "", ""),
     "_delegate_launch_failure": ("function", True, "35f56320d7d1", "client_lifecycle"),
+    "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "client_permissions"),
     "_deny_zero_tools": ("function", True, "2dfacffa6279", "client_permissions"),
     "_discard_bound_workspace": ("function", True, "b60c5fea256e", "client_lifecycle"),
-    "_discard_claude_settings_seed": ("function", True, "b60c5fea256e", "client_seed_ownership"),
     "_discard_copilot_mcp_config": ("function", True, "b60c5fea256e", "client_mcp_array"),
     "_discard_pi_mcp_handoff": ("function", True, "b60c5fea256e", "client_mcp_array"),
     "_discard_sandbox_cleanup": ("function", False, "b60c5fea256e", "client_lifecycle"),
+    "_discard_settings_seed": ("function", True, "b60c5fea256e", "client_class"),
     "_dispatch_events": ("function", "agen", "f222467c1516", "client_turn"),
     "_dispatch_prompt_events": ("function", "agen", "69109bbc58c2", "client_turn_control"),
     "_drain_notifications": ("function", True, "23967cf3fb9c", "client_transport"),
     "_drain_post_compaction_metadata": ("function", True, "65fe4b4d1210", "client_usage"),
     "_drain_stderr": ("function", True, "550410b8da31", "client_lifecycle"),
+    "_drop_superseded_config_frames": ("function", False, "b60c5fea256e", "client_permissions"),
     "_emit_tool_interrupted_sel": ("function", False, "866fc4f75f7c", "client_tool_events"),
+    "_ends_background_only_turns": ("data", False, "", ""),
     "_enforces_zero_tool_ban": ("property", False, "a6632a57e602", "client_class"),
     "_ensure_served_default": ("function", True, "b60c5fea256e", "client_model_selection"),
     "_entitlement_probe_answer": ("function", True, "1ca8e8c3a438", "client_model_selection"),
     "_entitlement_probe_client": ("function", False, "4d5584e1d14b", "client_model_selection"),
-    "_exclude_foreign_local_settings": ("function", False, "0b50a902117a", "client_claude_session"),
-    "_expected_settings_fingerprint": ("function", False, "77be1e224b87", "client_seed_ownership"),
     "_extract_text_chunk": ("function", False, "0d1d31659e5f", "client_tool_events"),
     "_extract_tool_call_refinement": ("function", False, "e64128661dfa", "client_tool_events"),
     "_extract_tool_call_update": ("function", False, "e64128661dfa", "client_tool_events"),
     "_extract_tool_event": ("function", False, "e64128661dfa", "client_tool_events"),
     "_foreign_mcp_identity": ("function", False, "2dfacffa6279", "client_permissions"),
-    "_foreign_settings_is_crew_seed": ("function", False, "a6fc7539bdf3", "client_seed_ownership"),
-    "_foreign_settings_owner": ("function", False, "0d96e8ab9b17", "client_seed_ownership"),
     "_forget_sent_images": ("function", False, "b60c5fea256e", "client_turn"),
-    "_fork_session": ("function", True, "bca802976336", "client_start"),
-    "_goose_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
+    "_fork_session": ("function", True, "bca802976336", "client_class"),
     "_guard_unresolved_mcp_refs": ("function", False, "779b51571c73", "client_mcp_array"),
-    "_hand_back_unrevoked_claim": ("function", False, "d12bff1e2bd1", "client_seed_ownership"),
+    "_gate_tripwire_remedy": ("data", False, "", ""),
     "_handle_compaction_status": ("function", False, "50405edf7b6a", "client_usage"),
     "_handle_config_option_update": ("function", False, "87459833bc5c", "client_model_selection"),
     "_handle_elicitation_request": ("function", True, "e64128661dfa", "client_elicitation"),
     "_handle_permission": ("function", True, "87459833bc5c", "client_permissions"),
+    "_harness_compaction_event": ("function", False, "0d6b4eecc1f2", "client_class"),
     "_harness_mcp_server_names": ("function", False, "9d5ab4ea1828", "client_mcp_array"),
     "_harness_read_back": ("function", False, "3097b1f67b44", "client_start"),
+    "_harness_session_mcp_servers": ("function", False, "7eb96c2fda05", "client_class"),
+    "_harness_session_meta": ("function", False, "ab37557cb48c", "client_class"),
     "_held_steer_task": ("data", False, "", ""),
     "_held_steer_writes": ("function", False, "67a56d539800", "client_turn_control"),
     "_held_steers": ("function", False, "f7ad662c995f", "client_turn_control"),
@@ -155,13 +147,10 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_initialize_session": ("function", True, "b60c5fea256e", "client_start"),
     "_install_idle_reader": ("function", False, "b60c5fea256e", "client_transport"),
     "_invalidate_session_mcp_projection": ("function", False, "b60c5fea256e", "client_mcp_array"),
-    "_is_claude": ("property", False, "a6632a57e602", "client_class"),
+    "_is_antigravity": ("property", False, "a6632a57e602", "client_class"),
     "_is_copilot": ("property", False, "a6632a57e602", "client_class"),
-    "_is_deepseek": ("property", False, "a6632a57e602", "client_class"),
-    "_is_goose": ("property", False, "a6632a57e602", "client_class"),
     "_is_kiro": ("property", False, "a6632a57e602", "client_class"),
     "_is_mimocode": ("property", False, "a6632a57e602", "client_class"),
-    "_is_opencode": ("property", False, "a6632a57e602", "client_class"),
     "_is_pi": ("property", False, "a6632a57e602", "client_class"),
     "_is_process_alive": ("function", False, "a6632a57e602", "client_lifecycle"),
     "_is_strands": ("property", False, "a6632a57e602", "client_class"),
@@ -170,8 +159,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_judges_permission_requests": ("property", False, "a6632a57e602", "client_class"),
     "_kill_process": ("function", True, "6134da811033", "client_lifecycle"),
     "_last_steer_monotonic": ("data", False, "", ""),
-    "_log_claude_adapter_below_floor": ("function", False, "0453b971e505", "client_claude_session"),
-    "_log_declined_share": ("function", False, "276d416344a7", "client_claude_seed"),
+    "_local_settings_exclusion": ("function", False, "9b2f6da70957", "client_class"),
     "_maybe_audit_tool_call": ("function", True, "7518800ca3bd", "client_tool_events"),
     "_maybe_audit_unasked_tool_call": ("function", True, "2197dd9c2867", "client_tool_events"),
     "_maybe_fire_post_tool_hooks": ("function", True, "2197dd9c2867", "client_tool_events"),
@@ -179,6 +167,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_maybe_start_idle_reader": ("function", False, "b60c5fea256e", "client_transport"),
     "_mcp_timeout_progress": ("function", False, "0295d0f4c71a", "client_mcp_array"),
     "_member_mount_withheld": ("function", False, "78c5bf8e0fe2", "client_mcp_array"),
+    "_mimocode_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_mirrorless_member_mounts": ("function", False, "286e411ff644", "client_mcp_array"),
     "_model_config_candidates": ("staticmethod", False, "f9fa998bdaf1", "client_model_selection"),
     "_model_is_unusable": ("function", False, "fa34fb34dc41", "client_model_selection"),
@@ -194,15 +183,15 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_agent_switched": ("function", False, "d552841f483c", "client_model_selection"),
     "_note_asked_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_note_background_launch": ("function", False, "87459833bc5c", "client_turn_control"),
-    "_refuse_unverified_copilot_version": ("function", False, "b60c5fea256e", "client_copilot"),
-    "_note_goose_version": ("function", False, "b60c5fea256e", "client_permissions"),
+    "_note_harness_adapter_version": ("function", False, "b60c5fea256e", "client_class"),
     "_note_pi_adapter_version": ("function", False, "b60c5fea256e", "client_permissions"),
     "_note_pi_gate_asked": ("function", False, "87459833bc5c", "client_permissions"),
     "_note_pi_gate_denied": ("function", False, "84bed4474307", "client_permissions"),
+    "_note_native_child_request": ("function", False, "87459833bc5c", "client_native_children"),
     "_note_session_message": ("function", False, "5abf4b8bc309", "client_native_children"),
     "_note_subagent_update": ("function", False, "58208c681b15", "client_native_children"),
-    "_mimocode_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
-    "_opencode_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
+    "_note_unhandled_session_update": ("function", False, "20ec496728df", "client_class"),
+    "_note_worker_builtin_tools": ("function", False, "84f60ad5a315", "client_class"),
     "_parked_on_permission": ("data", False, "", ""),
     "_permission_surface_governed": ("property", False, "a6632a57e602", "client_class"),
     "_persist_advertised_models_if_changed": (
@@ -212,11 +201,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "client_model_selection",
     ),
     "_pi_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
-    "_pin_claude_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
+    "_pin_starting_mode": ("function", True, "4d0ed6879afd", "client_class"),
+    "_pins_starting_mode": ("data", False, "", ""),
     "_placed_mcp_server_names": ("function", False, "9d5ab4ea1828", "client_mcp_array"),
     "_pooled_broker_stubs": ("function", False, "7eb96c2fda05", "client_mcp_array"),
     "_pooled_mcp_servers": ("function", False, "7eb96c2fda05", "client_mcp_array"),
-    "_prepare_claude_side_read_denies": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_prepare_session_mcp": ("function", True, "b60c5fea256e", "client_mcp_array"),
     "_prepare_spawn_workspace": ("function", False, "b60c5fea256e", "client_spawn_env"),
     "_probe_advertised_models": ("function", True, "1ca8e8c3a438", "client_model_selection"),
@@ -226,6 +215,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_prune_unstartable_mcp": ("function", True, "4dfb79f9f73b", "client_mcp_array"),
     "_push_model_config_option": ("function", True, "e60b4fb0cbfc", "client_model_selection"),
     "_read_mcp_ref_spec": ("function", False, "e7ed4605a35e", "client_mcp_array"),
+    "_reads_back_session_mode": ("data", False, "", ""),
     "_read_message": ("function", True, "1159757afded", "client_transport"),
     "_read_new_tool_results": ("function", True, "58ee5ea89856", "client_tool_events"),
     "_read_new_tool_results_sync": ("function", False, "58ee5ea89856", "client_tool_events"),
@@ -233,70 +223,66 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_read_steer_answers": ("function", True, "68f218dcd574", "client_turn_control"),
     "_read_turn": ("function", "agen", "fc134720be48", "client_transport"),
     "_record_sent": ("function", False, "60178f849457", "client_transport"),
-    "_reassert_adapter_resolved_model": (
-        "function",
-        True,
-        "b60c5fea256e",
-        "client_model_selection",
-    ),
+    "_recover_copilot_mcp_identity": ("function", False, "14fbb2bb120a", "client_tool_events"),
     "_redact_native_child_events": ("function", False, "4ae22451457c", "client_turn"),
     "_refuse_identity_drift": ("function", True, "2dfacffa6279", "client_permissions"),
+    "_refuse_session_config_drift": ("function", True, "b60c5fea256e", "client_permissions"),
+    "_refuse_unverified_antigravity_version": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "client_antigravity",
+    ),
+    "_refuse_unverified_copilot_version": ("function", False, "b60c5fea256e", "client_copilot"),
     "_registration_throttle_line": ("function", True, "f21e39ec5ffb", "client_lifecycle"),
     "_reject_unknown_server_request": ("function", True, "87459833bc5c", "client_permissions"),
     "_release_accepted_steers": ("function", False, "9a0e503e4e3e", "client_turn_control"),
     "_release_held_steers": ("function", False, "b60c5fea256e", "client_turn_control"),
     "_release_stdout": ("function", False, "b60c5fea256e", "client_transport"),
-    "_rename_aside_noreplace": ("staticmethod", False, "58d10dda6fc2", "client_seed_ownership"),
-    "_render_claude_settings_payload": ("function", False, "bb418bb7ece8", "client_claude_seed"),
+    "_refuse_harness_default_model": ("function", False, "b60c5fea256e", "client_class"),
     "_republish_pi_mcp_handoff": ("function", True, "b60c5fea256e", "client_mcp_array"),
-    "_reseed_after_capture": ("function", True, "b60c5fea256e", "client_claude_seed"),
+    "_reseed_after_capture": ("function", True, "b60c5fea256e", "client_class"),
+    "_reset_harness_compaction": ("function", False, "b60c5fea256e", "client_class"),
     "_reset_native_child_turn": ("function", False, "b60c5fea256e", "client_native_children"),
+    "_reset_settings_seed_state": ("function", False, "b60c5fea256e", "client_class"),
     "_reset_state": ("function", False, "b60c5fea256e", "client_lifecycle"),
     "_resolve_session_mcp_servers": ("function", False, "7eb96c2fda05", "client_mcp_array"),
     "_resolve_spawn_agent_argv": ("function", False, "bb418bb7ece8", "client_spawn_env"),
-    "_restore_aside_without_clobber": ("staticmethod", False, "276fb30edb8b", "client_class"),
+    "_restore_copilot_edit_seed": ("function", False, "e5b64ebeb24e", "client_copilot"),
     "_retire_liveness_state": ("function", False, "b60c5fea256e", "client_lifecycle"),
-    "_retract_reseed": ("function", False, "a76c82664804", "client_claude_seed"),
+    "_retry_after_model_substitution": ("function", True, "56a9ed3b2989", "client_class"),
     "_sandbox_init_failure": ("function", True, "cc2578c6512d", "client_lifecycle"),
     "_scrub_observed": ("staticmethod", False, "b1a850b0b873", "client_permissions"),
-    "_seed_session_settings": ("function", True, "b60c5fea256e", "client_claude_seed"),
-    "_seeds_local_settings": ("property", False, "a6632a57e602", "client_class"),
+    "_seed_copilot_edit_targets": ("function", False, "bb6b4dedb69c", "client_copilot"),
+    "_seeds_local_settings": ("data", False, "", ""),
     "_send_error": ("function", True, "f8eeeb44db9e", "client_transport"),
     "_send_held_steers": ("function", True, "b60c5fea256e", "client_turn_control"),
     "_send_prompt": ("function", True, "057f09dddcbf", "client_turn"),
     "_send_request": ("function", True, "336d8d8a68cc", "client_transport"),
     "_send_response": ("function", True, "79c6f4daabf0", "client_transport"),
     "_send_steering_request": ("function", True, "c122cc373c2c", "client_turn_control"),
+    "_session_excludes_local_settings": ("function", False, "a6632a57e602", "client_class"),
     "_session_mcp_servers": ("function", False, "7eb96c2fda05", "client_mcp_array"),
     "_session_work_dir": ("function", True, "bb418bb7ece8", "client_lifecycle"),
-    "_settings_path_bytes": ("staticmethod", False, "faf5a3c79c9e", "client_seed_ownership"),
-    "_settings_path_holds": ("staticmethod", False, "d9ca34c8f528", "client_class"),
-    "_settle_claude_compaction": ("function", False, "01ddf3eeedf2", "client_usage"),
-    "_settle_claude_settings_seed": ("function", False, "cf5eff128c4c", "client_seed_ownership"),
-    "_settle_claude_settings_seed_locked": (
-        "function",
-        False,
-        "cf5eff128c4c",
-        "client_seed_ownership",
-    ),
+    "_settle_background_only": ("function", True, "4d400551f899", "client_class"),
     "_settle_codex_compaction": ("function", False, "01ddf3eeedf2", "client_usage"),
     "_settle_concurrent_steers": ("function", True, "91bb89060371", "client_turn_control"),
+    "_settle_harness_compaction": ("function", False, "01ddf3eeedf2", "client_class"),
     "_settle_orphan_steers": ("function", True, "b60c5fea256e", "client_turn_control"),
     "_settle_stderr": ("function", True, "8fe4e298f96b", "client_lifecycle"),
     "_settle_steer_answer": ("function", False, "50405edf7b6a", "client_turn_control"),
     "_settle_steering_answer": ("function", False, "50405edf7b6a", "client_turn_control"),
-    "_share_settings_seed_if_identical": ("function", False, "0b50a902117a", "client_claude_seed"),
-    "_share_sibling_settings_seed": ("function", False, "0b50a902117a", "client_claude_seed"),
     "_snapshot_process_tree": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "_spawn": ("function", True, "b60c5fea256e", "client_start"),
-    "_start_mount_check": ("function", False, "b60c5fea256e", "client_mcp_array"),
     "_speaks_steering_request": ("property", False, "a6632a57e602", "client_class"),
+    "_start_mount_check": ("function", False, "b60c5fea256e", "client_mcp_array"),
     "_stdin_write_lock": ("function", False, "fd738ff11600", "client_transport"),
     "_stdout_claims": ("data", False, "", ""),
     "_steer_echo_event": ("function", False, "e64128661dfa", "client_turn_control"),
     "_steer_via_concurrent_prompt": ("function", True, "e2662ac6ac7a", "client_turn_control"),
     "_steer_via_request": ("function", True, "89e0aff1cade", "client_turn_control"),
     "_steer_via_steering_request": ("function", True, "e2662ac6ac7a", "client_turn_control"),
+    "_steering_adapter_floor_met": ("function", False, "a6632a57e602", "client_class"),
     "_steering_advertised": ("data", False, "", ""),
     "_steering_request_ready": ("function", False, "a6632a57e602", "client_turn_control"),
     "_steering_turn_req": ("data", False, "", ""),
@@ -307,50 +293,40 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_store_session_config": ("function", False, "4d0ed6879afd", "client_model_selection"),
     "_sync_effort_levels": ("function", False, "b60c5fea256e", "client_model_selection"),
     "_to_thread_guarding_sandbox": ("function", True, "8dbe076fd22d", "client_lifecycle"),
+    "_tool_call_ids_repeat_in_turn": ("data", False, "", ""),
     "_track_metadata": ("function", False, "c20f6a9efea3", "client_usage"),
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "client_usage"),
     "_track_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_track_usage_update": ("function", False, "87459833bc5c", "client_usage"),
-    "_tripwire_goose_mode": ("function", True, "87459833bc5c", "client_permissions"),
-    "_tripwire_pi_gate": ("function", True, "87459833bc5c", "client_permissions"),
     "_tripwire_mimocode_governed_mcp": ("function", True, "cdc60cf69a99", "client_permissions"),
-    "_drop_superseded_config_frames": ("function", False, "b60c5fea256e", "client_permissions"),
-    "_refuse_session_config_drift": ("function", True, "b60c5fea256e", "client_permissions"),
     "_tripwire_permission_state": ("function", True, "87459833bc5c", "client_permissions"),
-    "_recover_copilot_mcp_identity": ("function", False, "14fbb2bb120a", "client_tool_events"),
-    "_confirm_copilot_mcp_identity": ("function", False, "87459833bc5c", "client_copilot"),
-    "_restore_copilot_edit_seed": ("function", False, "e5b64ebeb24e", "client_copilot"),
-    "_seed_copilot_edit_targets": ("function", False, "bb6b4dedb69c", "client_copilot"),
+    "_tripwire_pi_gate": ("function", True, "87459833bc5c", "client_permissions"),
     "_tripwire_session_config": ("function", True, "87459833bc5c", "client_permissions"),
+    "_tripwire_session_mode": ("function", True, "87459833bc5c", "client_class"),
     "_tripwire_spec_disabled_tool": ("function", False, "42c6e584f488", "client_permissions"),
     "_unanswered_steering_id_set": ("annotation", False, "", ""),
     "_unanswered_steering_ids": ("function", False, "6e67e49bb5fd", "client_turn_control"),
     "_unclassified_tool_call": ("function", False, "2dfacffa6279", "client_permissions"),
     "_uses_advertised_model_selection": ("property", False, "a6632a57e602", "client_class"),
-    "_verify_claude_project_denies_unchanged": (
-        "function",
-        True,
-        "b60c5fea256e",
-        "client_claude_session",
-    ),
-    "_verify_goose_routing": ("function", False, "4d0ed6879afd", "client_permissions"),
+    "_verify_session_mode": ("function", False, "4d0ed6879afd", "client_class"),
     "_wait_for_response": ("function", True, "9d13604697d8", "client_transport"),
-    "_withdraw_shared_reader_lease": ("function", False, "af8a01ae1d8e", "client_seed_ownership"),
     "_withhold_is_the_only_deny_channel": ("function", False, "a6632a57e602", "client_mcp_array"),
-    "_write_claude_local_settings": ("function", False, "b60c5fea256e", "client_claude_seed"),
+    "_worker_settings_lag": ("function", False, "61b6ef5a7c97", "client_class"),
     "_write_request_bounded": ("function", True, "905771de4943", "client_transport"),
     "_write_response_bounded": ("function", True, "1aa0c9bf750c", "client_transport"),
+    "_write_settings_seed": ("function", False, "b60c5fea256e", "client_class"),
     "_write_steer_cancel": ("function", True, "b60c5fea256e", "client_turn_control"),
     "acp_config_options": ("property", False, "3b4687b0c546", "client_class"),
     "advertised_commands": ("function", False, "92d6193dbe19", "client_transport"),
     "agent_version": ("property", False, "bb418bb7ece8", "client_class"),
-    "initialize_result": ("property", False, "44dc9acb7120", "client_class"),
     "answer_elicitation": ("function", True, "8ba26aba28fc", "client_elicitation"),
     "approve_tool": ("function", True, "dedeacb52f8f", "client_permissions"),
     "authored_spec_declares_zero_tools": ("function", False, "a6632a57e602", "client_mcp_array"),
     "available_models": ("function", False, "92d6193dbe19", "client_model_selection"),
     "backend": ("property", False, "bb418bb7ece8", "client_class"),
     "background_launch": ("function", False, "d85112f1c4e4", "client_turn_control"),
+    "cancel_native_child": ("function", True, "c809563db429", "client_native_children"),
+    "native_child_requests": ("function", False, "eaf9ac925104", "client_native_children"),
     "cancel_pending_elicitations": ("function", True, "fa6cfecd5574", "client_elicitation"),
     "cancel_session": ("function", True, "0e6ce85f9f06", "client_turn_control"),
     "capability_projection_gaps": ("property", False, "9d5ab4ea1828", "client_class"),
@@ -364,6 +340,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "has_active_turn": ("function", False, "a6632a57e602", "client_turn_control"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "client_turn_control"),
     "held_steers_possibly_delivered": ("property", False, "602c14087aa8", "client_class"),
+    "initialize_result": ("property", False, "44dc9acb7120", "client_class"),
     "is_process_alive": ("function", False, "a6632a57e602", "client_class"),
     "is_ready": ("property", False, "a6632a57e602", "client_class"),
     "is_responsive": ("function", False, "4b2fc7c136b8", "client_lifecycle"),
@@ -371,13 +348,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "loaded_capability_template": ("property", False, "bb418bb7ece8", "client_class"),
     "mcp_session_report": ("function", False, "ac691973b9b4", "client_mcp_array"),
     "member_dispatch_mounted": ("property", False, "16180c63d5e6", "client_class"),
-    "native_child_resume_refusal": (
-        "function",
-        False,
-        "61b23cbd0173",
-        "client_native_children",
-    ),
-    "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
+    "native_child_resume_refusal": ("function", False, "61b23cbd0173", "client_native_children"),
+    "new_conversation": ("function", True, "b60c5fea256e", "client_class"),
     "on_agent_turn": ("data", False, "", ""),
     "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "client_mcp_array"),
     "process_instance": ("property", False, "bb418bb7ece8", "client_class"),
@@ -387,8 +359,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "refresh_process_tree": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "reject_tool": ("function", True, "8f224062db90", "client_permissions"),
     "rekey": ("function", False, "d58f70d0bd6a", "client_lifecycle"),
+    "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_class"),
     "report_native_children": ("function", False, "ccfc57bdf135", "client_native_children"),
-    "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_seed_ownership"),
     "resumed": ("property", False, "a6632a57e602", "client_class"),
     "send_command": ("function", True, "b66667c61d53", "client_turn_control"),
     "send_message": ("function", True, "c63d2b398c21", "client_turn"),
@@ -398,7 +370,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_fork_request": ("function", False, "09f226933c39", "client_lifecycle"),
     "set_model": ("function", True, "bcd0cd3aa159", "client_model_selection"),
     "set_resume_session_id": ("function", False, "df97aaea4e38", "client_lifecycle"),
-    "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_seed_ownership"),
+    "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_class"),
     "shutdown": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "spec_zero_tools": ("property", False, "a6632a57e602", "client_class"),
     "steer": ("function", True, "b0a837a37097", "client_turn_control"),
@@ -418,11 +390,190 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "work_scratch_dir": ("property", False, "d921fd8d443d", "client_class"),
 }
 
+#: ``ClaudeAcpClient``'s own members: what only a claude-agent-acp session does,
+#: bound from the claude owners, and the ``AcpClient`` hooks it fills.
+_CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "__init__": ("function", False, "79ccca4df994", "client_claude"),
+    "_adopted_substitute_model": ("annotation", False, "", ""),
+    "_claim_pathname_if_ours": ("staticmethod", False, "af30c5c7e262", "client_claude"),
+    "_claims_native_compaction": ("function", False, "c19e582b2edc", "client_claude_turn"),
+    "_claude_adapter_argv": ("annotation", False, "", ""),
+    "_claude_adapter_below_setting_sources_floor": (
+        "function",
+        False,
+        "a6632a57e602",
+        "client_claude_session",
+    ),
+    "_claude_adapter_disk_version": ("annotation", False, "", ""),
+    "_claude_compaction_event": ("function", False, "0d6b4eecc1f2", "client_claude_turn"),
+    "_claude_local_settings_path": ("function", False, "b08d8e6a45bd", "client_seed_ownership"),
+    "_claude_session_excludes_local": ("function", False, "a6632a57e602", "client_claude_session"),
+    "_claude_session_mcp_servers": ("function", False, "f5423acdeebc", "client_claude_session"),
+    "_claude_session_meta": ("function", False, "16d9fe32838b", "client_claude_session"),
+    "_claude_session_needs_options": ("function", False, "a6632a57e602", "client_claude_session"),
+    "_claude_set_mode": ("function", True, "7dc70e359c70", "client_claude_session"),
+    "_claude_settings_is_still_ours": ("function", False, "a6632a57e602", "client_seed_ownership"),
+    "_claude_shipped_restrictions": ("annotation", False, "", ""),
+    "_claude_stop_session": ("function", True, "b60c5fea256e", "client_claude_session"),
+    "_copy_aside_back_without_clobber": (
+        "staticmethod",
+        False,
+        "460afeb00773",
+        "client_seed_ownership",
+    ),
+    "_discard_claude_settings_seed": ("function", True, "b60c5fea256e", "client_seed_ownership"),
+    "_discard_settings_seed": ("function", True, "b60c5fea256e", "client_seed_ownership"),
+    "_ends_background_only_turns": ("data", False, "", ""),
+    "_ensure_served_default": ("function", True, "b60c5fea256e", "client_claude_session"),
+    "_exclude_foreign_local_settings": ("function", False, "0b50a902117a", "client_claude_session"),
+    "_expected_settings_fingerprint": ("function", False, "77be1e224b87", "client_seed_ownership"),
+    "_foreign_settings_is_crew_seed": ("function", False, "a6fc7539bdf3", "client_seed_ownership"),
+    "_foreign_settings_owner": ("function", False, "0d96e8ab9b17", "client_seed_ownership"),
+    "_fork_session": ("function", True, "bca802976336", "client_claude_session"),
+    "_hand_back_unrevoked_claim": ("function", False, "d12bff1e2bd1", "client_seed_ownership"),
+    "_harness_compaction_event": ("function", False, "0d6b4eecc1f2", "client_claude_turn"),
+    "_harness_session_mcp_servers": ("function", False, "f5423acdeebc", "client_claude_session"),
+    "_harness_session_meta": ("function", False, "fc8c60fdad4c", "client_claude_session"),
+    "_local_settings_exclusion": ("function", False, "9b2f6da70957", "client_claude_session"),
+    "_log_claude_adapter_below_floor": ("function", False, "0453b971e505", "client_claude_session"),
+    "_log_declined_share": ("function", False, "276d416344a7", "client_claude_seed"),
+    "_note_claude_adapter_version": ("function", False, "b60c5fea256e", "client_claude_session"),
+    "_note_harness_adapter_version": ("function", False, "b60c5fea256e", "client_claude_session"),
+    "_note_unhandled_session_update": ("function", False, "20ec496728df", "client_claude_turn"),
+    "_note_worker_builtin_tools": ("function", False, "84f60ad5a315", "client_claude_session"),
+    "_permission_surface_governed": ("property", False, "a6632a57e602", "client_claude"),
+    "_pin_claude_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
+    "_pin_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
+    "_pins_starting_mode": ("data", False, "", ""),
+    "_prepare_claude_held_asks": ("function", True, "b60c5fea256e", "client_claude_session"),
+    "_prepare_claude_side_read_denies": ("function", True, "b60c5fea256e", "client_claude_session"),
+    "_reassert_adapter_resolved_model": ("function", True, "b60c5fea256e", "client_claude_session"),
+    "_refuse_claude_session_below_floor_before_spawn": (
+        "function",
+        False,
+        "38be69b9d88a",
+        "client_claude_session",
+    ),
+    "_rename_aside_noreplace": ("staticmethod", False, "58d10dda6fc2", "client_seed_ownership"),
+    "_render_claude_settings_payload": ("function", False, "bb418bb7ece8", "client_claude_seed"),
+    "_reseed_after_capture": ("function", True, "b60c5fea256e", "client_claude_seed"),
+    "_reset_harness_compaction": ("function", False, "b60c5fea256e", "client_claude_turn"),
+    "_reset_settings_seed_state": ("function", False, "b60c5fea256e", "client_seed_ownership"),
+    "_restore_aside_without_clobber": ("staticmethod", False, "276fb30edb8b", "client_claude"),
+    "_retract_reseed": ("function", False, "a76c82664804", "client_claude_seed"),
+    "_retry_after_model_substitution": ("function", True, "56a9ed3b2989", "client_claude_session"),
+    "_seed_session_settings": ("function", True, "b60c5fea256e", "client_claude_seed"),
+    "_seeds_local_settings": ("data", False, "", ""),
+    "_session_excludes_local_settings": (
+        "function",
+        False,
+        "a6632a57e602",
+        "client_claude_session",
+    ),
+    "_settings_path_bytes": ("staticmethod", False, "faf5a3c79c9e", "client_seed_ownership"),
+    "_settings_path_holds": ("staticmethod", False, "d9ca34c8f528", "client_claude"),
+    "_settle_background_only": ("function", True, "4d400551f899", "client_claude_turn"),
+    "_settle_claude_compaction": ("function", False, "01ddf3eeedf2", "client_claude_turn"),
+    "_settle_claude_settings_seed": ("function", False, "cf5eff128c4c", "client_seed_ownership"),
+    "_settle_claude_settings_seed_locked": (
+        "function",
+        False,
+        "cf5eff128c4c",
+        "client_seed_ownership",
+    ),
+    "_settle_harness_compaction": ("function", False, "01ddf3eeedf2", "client_claude_turn"),
+    "_share_settings_seed_if_identical": ("function", False, "0b50a902117a", "client_claude_seed"),
+    "_share_sibling_settings_seed": ("function", False, "0b50a902117a", "client_claude_seed"),
+    "_steering_adapter_floor_met": ("function", False, "a6632a57e602", "client_claude_turn"),
+    "_verify_claude_project_denies_unchanged": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "client_claude_session",
+    ),
+    "_withdraw_shared_reader_lease": ("function", False, "af8a01ae1d8e", "client_seed_ownership"),
+    "_worker_settings_lag": ("function", False, "61b6ef5a7c97", "client_seed_ownership"),
+    "_write_claude_local_settings": ("function", False, "b60c5fea256e", "client_claude_seed"),
+    "_write_settings_seed": ("function", False, "b60c5fea256e", "client_claude_seed"),
+    "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
+    "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_seed_ownership"),
+    "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_seed_ownership"),
+}
+
+#: ``GooseAcpClient``'s own members: what only a goose session does, bound from the goose
+#: owner, and the ``AcpClient`` hooks it fills.
+_GOOSE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_goose_session_mcp_servers": ("function", False, "f5423acdeebc", "client_goose_session"),
+    "_harness_session_mcp_servers": ("function", False, "f5423acdeebc", "client_goose_session"),
+    "_note_goose_version": ("function", False, "b60c5fea256e", "client_goose_session"),
+    "_note_harness_adapter_version": ("function", False, "b60c5fea256e", "client_goose_session"),
+    "_reads_back_session_mode": ("data", False, "", ""),
+    "_tripwire_goose_mode": ("function", True, "87459833bc5c", "client_goose_session"),
+    "_tripwire_session_mode": ("function", True, "87459833bc5c", "client_goose_session"),
+    "_verify_goose_routing": ("function", False, "4d0ed6879afd", "client_goose_session"),
+    "_verify_session_mode": ("function", False, "4d0ed6879afd", "client_goose_session"),
+}
+
+#: ``OpencodeAcpClient``'s own members: what only an opencode session does, bound from the
+#: opencode owner, and the ``AcpClient`` hooks it fills.
+_OPENCODE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_defer_shell_permission": ("function", True, "7c70a056d5ef", "client_opencode_session"),
+    "_defers_shell_permission": ("data", False, "", ""),
+    "_harness_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_opencode_session",
+    ),
+    "_opencode_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_opencode_session",
+    ),
+    "_refuse_harness_default_model": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "client_opencode_session",
+    ),
+}
+
+#: ``DeepseekAcpClient``'s own members: what only a DeepSeek Harness session carries,
+#: bound from the deepseek owner, and the ``AcpClient`` hooks it fills.
+_DEEPSEEK_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "__init__": ("function", False, "79ccca4df994", "client_deepseek"),
+    "_deepseek_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_deepseek_session",
+    ),
+    "_gate_tripwire_remedy": ("data", False, "", ""),
+    "_harness_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_deepseek_session",
+    ),
+    "_tool_call_ids_repeat_in_turn": ("data", False, "", ""),
+}
+
+#: ``MimocodeAcpClient``'s own members: the ``AcpClient`` hook it fills, bound from the
+#: MiMo Code owner.
+_MIMOCODE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_refuse_harness_default_model": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "client_mimocode_session",
+    ),
+}
+
 #: Class-level annotations the split adds: fields first set by a member an owner defines,
 #: declared in the class so type checkers know them. An annotation creates no attribute.
 _DECLARED = frozenset(
     {
-        "_claude_shipped_restrictions",
         "_entitlement_probe_inflight",
         "_member_dispatch_mounted",
         "_session_mcp_excludes_local",
@@ -434,6 +585,27 @@ _DECLARED = frozenset(
 )
 
 _PACKAGE = "kiro_crew.acp"
+
+#: Each client class and its frozen inventory. ``ClaudeAcpClient`` is checked on its own
+#: members (``vars``), which are what it adds to or overrides on ``AcpClient``.
+_INVENTORIES: dict[type, dict[str, tuple[str, object, str, str]]] = {
+    AcpClient: _MEMBERS,
+    ClaudeAcpClient: _CLAUDE_MEMBERS,
+    GooseAcpClient: _GOOSE_MEMBERS,
+    OpencodeAcpClient: _OPENCODE_MEMBERS,
+    DeepseekAcpClient: _DEEPSEEK_MEMBERS,
+    MimocodeAcpClient: _MIMOCODE_MEMBERS,
+}
+
+#: Every member name some client class binds.
+_ALL_MEMBERS = (
+    frozenset(_MEMBERS)
+    | frozenset(_CLAUDE_MEMBERS)
+    | frozenset(_GOOSE_MEMBERS)
+    | frozenset(_OPENCODE_MEMBERS)
+    | frozenset(_DEEPSEEK_MEMBERS)
+    | frozenset(_MIMOCODE_MEMBERS)
+)
 
 
 def _owners() -> list[ModuleType]:
@@ -448,8 +620,8 @@ def _signature_digest(fn: Any) -> str:
     return hashlib.sha256(str(sig.replace(parameters=params)).encode()).hexdigest()[:12]
 
 
-def _member_function(name: str) -> Any:
-    value = vars(AcpClient)[name]
+def _member_function(name: str, cls: type = AcpClient) -> Any:
+    value = vars(cls)[name]
     if isinstance(value, staticmethod):
         return value.__func__
     if isinstance(value, property):
@@ -468,7 +640,8 @@ def _self_functions(
     ones the inventory records as static methods of *owner*."""
     statics = {
         name
-        for name, (kind, _, _, home) in _MEMBERS.items()
+        for inventory in _INVENTORIES.values()
+        for name, (kind, _, _, home) in inventory.items()
         if kind == "staticmethod" and home and f"{_PACKAGE}.{home}" == owner
     }
     return [
@@ -479,40 +652,51 @@ def _self_functions(
     ]
 
 
-def test_the_member_set_is_the_frozen_inventory() -> None:
+@pytest.mark.parametrize("cls", list(_INVENTORIES), ids=lambda cls: cls.__name__)
+def test_the_member_set_is_the_frozen_inventory(cls: type) -> None:
+    declared = _DECLARED if cls is AcpClient else frozenset()
     present = {
         name
-        for name in vars(AcpClient)
+        for name in vars(cls)
         if not (name.startswith("__") and name.endswith("__")) or name == "__init__"
     }
-    present |= set(AcpClient.__dict__.get("__annotations__", {}))
-    assert sorted(present ^ (set(_MEMBERS) | _DECLARED)) == []
-    assert not _DECLARED & set(vars(AcpClient))
+    present |= set(cls.__dict__.get("__annotations__", {}))
+    assert sorted(present ^ (set(_INVENTORIES[cls]) | declared)) == []
+    assert not declared & set(vars(cls))
 
 
-@pytest.mark.parametrize("name", sorted(_MEMBERS))
-def test_each_member_keeps_its_kind_shape_and_owner(name: str) -> None:
-    kind, coroutine, digest, owner = _MEMBERS[name]
+@pytest.mark.parametrize(
+    ("cls", "name"),
+    [(cls, name) for cls, inventory in _INVENTORIES.items() for name in sorted(inventory)],
+    ids=lambda value: value.__name__ if isinstance(value, type) else value,
+)
+def test_each_member_keeps_its_kind_shape_and_owner(cls: type, name: str) -> None:
+    kind, coroutine, digest, owner = _INVENTORIES[cls][name]
     if kind in ("data", "annotation"):
-        assert (name in vars(AcpClient)) is (kind == "data")
+        assert (name in vars(cls)) is (kind == "data")
         return
-    value = vars(AcpClient)[name]
+    value = vars(cls)[name]
     assert {
         "staticmethod": isinstance(value, staticmethod),
         "property": isinstance(value, property),
         "function": inspect.isfunction(value),
     }[kind], f"{name} is no longer a {kind}"
-    fn = _member_function(name)
+    fn = _member_function(name, cls)
     shape = inspect.iscoroutinefunction(fn) or (inspect.isasyncgenfunction(fn) and "agen")
     assert (shape or False) == coroutine
     assert _signature_digest(fn) == digest, f"{name}{inspect.signature(fn)} changed signature"
     assert fn.__module__ == f"{_PACKAGE}.{owner}"
-    if fn.__qualname__ != f"AcpClient.{name}":  # bound from an owner, not class-resident
+    if fn.__qualname__ != f"{cls.__name__}.{name}":  # bound from an owner, not class-resident
         assert vars(sys.modules[f"{_PACKAGE}.{owner}"])[name] is fn
 
 
 def test_every_owner_lists_in_the_facade_and_holds_its_members() -> None:
-    homes = {owner for _kind, _c, _d, owner in _MEMBERS.values() if owner and owner != "client"}
+    homes = {
+        owner
+        for inventory in _INVENTORIES.values()
+        for _kind, _c, _d, owner in inventory.values()
+        if owner and owner != "client"
+    }
     listed = {name.rsplit(".", 1)[-1] for name in acp_client._CLIENT_OWNERS}
     assert homes <= listed
 
@@ -521,8 +705,12 @@ def test_every_owner_lists_in_the_facade_and_holds_its_members() -> None:
 def test_no_owner_keeps_an_unbound_self_function(owner: str) -> None:
     module = sys.modules[owner]
     for node in _self_functions(_tree(module), owner):
-        assert node.name in _MEMBERS, f"{owner}.{node.name} is bound on no class"
-        assert _member_function(node.name) is vars(module)[node.name]
+        assert node.name in _ALL_MEMBERS, f"{owner}.{node.name} is bound on no class"
+        assert any(
+            _member_function(node.name, cls) is vars(module)[node.name]
+            for cls in _INVENTORIES
+            if node.name in vars(cls)
+        ), f"{owner}.{node.name} is not what any class binds under that name"
 
 
 def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
@@ -629,7 +817,7 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
                 and isinstance(node.args[1].value, str)
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
-    return written - set(_MEMBERS), read - written - set(_MEMBERS)
+    return written - _ALL_MEMBERS, read - written - _ALL_MEMBERS
 
 
 def _listed(doc: str, label: str) -> set[str]:
@@ -682,9 +870,10 @@ def test_the_kiro_trust_error_names_the_facade_in_an_error_chain() -> None:
 def test_the_bound_function_scans_include_every_static_method() -> None:
     statics = {
         name: f"{_PACKAGE}.{home}"
-        for name, (kind, _, _, home) in _MEMBERS.items()
+        for cls, inventory in _INVENTORIES.items()
+        for name, (kind, _, _, home) in inventory.items()
         if kind == "staticmethod"
-        and _member_function(name).__qualname__ != f"AcpClient.{name}"  # bound, not resident
+        and _member_function(name, cls).__qualname__ != f"{cls.__name__}.{name}"  # bound
     }
     assert statics
     scanned = {
@@ -922,34 +1111,63 @@ _INIT_HINTS = {
 
 
 def _class_resident() -> dict[str, Any]:
-    """The members whose body is still in the class statement, by name."""
+    """The members whose body is still in a class statement, by ``Class.name``."""
     found = {}
-    for name in vars(AcpClient):
-        fn = _member_function(name) if name in _MEMBERS else None
-        if inspect.isfunction(fn) and fn.__qualname__ == f"AcpClient.{name}":
-            found[name] = fn
+    for cls, inventory in _INVENTORIES.items():
+        for name in vars(cls):
+            fn = _member_function(name, cls) if name in inventory else None
+            if inspect.isfunction(fn) and fn.__qualname__ == f"{cls.__name__}.{name}":
+                found[fn.__qualname__] = fn
     return found
 
 
 def test_the_class_keeps_the_facade_as_its_module_name_and_pickle_path() -> None:
     import importlib
 
-    from kiro_crew.acp import client_class
+    from kiro_crew.acp import client_class, client_claude
 
     assert AcpClient is client_class.AcpClient is acp_client.AcpClient
-    assert (AcpClient.__module__, AcpClient.__qualname__) == (acp_client.__name__, "AcpClient")
-    assert inspect.getdoc(AcpClient)
-    # A pickle stores a class as module + qualname and loads it back by that lookup.
-    assert (
-        getattr(importlib.import_module(AcpClient.__module__), AcpClient.__qualname__) is AcpClient
-    )
+    assert ClaudeAcpClient is client_claude.ClaudeAcpClient is acp_client.ClaudeAcpClient
+    for cls in (AcpClient, ClaudeAcpClient):
+        assert (cls.__module__, cls.__qualname__) == (acp_client.__name__, cls.__name__)
+        assert inspect.getdoc(cls)
+        # A pickle stores a class as module + qualname and loads it back by that lookup.
+        assert getattr(importlib.import_module(cls.__module__), cls.__qualname__) is cls
+
+
+def test_the_backend_picks_the_client_class() -> None:
+    """``AcpClient(acp_backend=...)`` builds the class that serves the backend, and a
+    backend whose settings file Crew seeds is refused by a class that seeds none."""
+    assert type(AcpClient(acp_backend="claude")) is ClaudeAcpClient
+    assert type(AcpClient(acp_backend="deepseek")) is DeepseekAcpClient
+    assert type(AcpClient(acp_backend="")) is AcpClient
+    assert type(AcpClient(acp_backend="opencode")) is OpencodeAcpClient
+    assert type(AcpClient(acp_backend="mimocode")) is MimocodeAcpClient
+    assert type(AcpClient(acp_backend="pi")) is AcpClient
+    assert type(AcpClient.__new__(AcpClient)) is AcpClient
+
+    class EditionClient(AcpClient):
+        pass
+
+    with pytest.raises(AcpError, match="seeds settings"):
+        EditionClient(acp_backend="claude")
+    # A class that holds no shell permission back behind its command is refused
+    # opencode, whose permission can arrive ahead of the command it asks about.
+    with pytest.raises(AcpError, match="defers shell permissions"):
+        EditionClient(acp_backend="opencode")
+    assert type(EditionClient(acp_backend="")) is EditionClient
 
 
 def test_every_class_resident_member_resolves_its_type_hints() -> None:
     import typing
 
     resident = _class_resident()
-    assert {"__init__", "backend", "_restore_aside_without_clobber"} <= set(resident)
+    assert {
+        "AcpClient.__init__",
+        "AcpClient.backend",
+        "ClaudeAcpClient.__init__",
+        "ClaudeAcpClient._restore_aside_without_clobber",
+    } <= set(resident)
     for fn in resident.values():
         typing.get_type_hints(fn)
     init = typing.get_type_hints(AcpClient.__init__)
@@ -960,19 +1178,19 @@ def test_every_class_resident_member_resolves_its_type_hints() -> None:
 def test_a_facade_patch_of_the_class_reaches_its_class_resident_statics(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The class's own statics call each other through the ``AcpClient`` global, which a
-    patch of ``kiro_crew.acp.client.AcpClient`` still replaces for them."""
+    """The class's own statics call each other through the ``ClaudeAcpClient`` global,
+    which a patch of ``kiro_crew.acp.client.ClaudeAcpClient`` still replaces for them."""
     calls: list[tuple[Path, Path]] = []
 
-    class StandIn(AcpClient):
+    class StandIn(ClaudeAcpClient):
         @staticmethod
         def _rename_aside_noreplace(aside: Path, path: Path) -> bool:
             calls.append((aside, path))
             return True
 
-    monkeypatch.setattr(acp_client, "AcpClient", StandIn)
+    monkeypatch.setattr(acp_client, "ClaudeAcpClient", StandIn)
     aside, path = tmp_path / "aside", tmp_path / "settings.json"
-    assert AcpClient._restore_aside_without_clobber(aside, path, (0, 0)) is True
+    assert ClaudeAcpClient._restore_aside_without_clobber(aside, path, (0, 0)) is True
     assert calls == [(aside, path)]
 
 

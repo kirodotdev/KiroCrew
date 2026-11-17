@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type ProjectAwsProfile } from '../api/client'
 import { ApiError } from '../api/apiError'
-import { isDeadlineError, retryThroughRestart } from '../api/queryClient'
+import { isDeadlineError, refetchWhileFailed, retryThroughRestart } from '../api/queryClient'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 
@@ -25,6 +25,8 @@ function useProjectAwsProfile(project: string) {
     // A failure is a standing notice, so a gateway restart or a dropped link is
     // ridden out first (see `retryThroughRestart`).
     retry: retryThroughRestart,
+    // Re-read while failed, so a read that failed during a restart recovers on its own.
+    refetchInterval: refetchWhileFailed,
     enabled: !!project,
   })
   const refused = query.error instanceof ApiError && query.error.status === 403
@@ -35,11 +37,14 @@ function useProjectAwsProfile(project: string) {
  *  502/503/504 means the gateway did not answer, which says nothing about the project's
  *  AWS profile; saying "could not read the profile" sends the user to fix credentials
  *  that are fine. A 500 is the handler itself failing to read, so it keeps that text. */
-function readFailureText(error: Error): string {
-  const unreachable = isDeadlineError(error)
+function isUnreachable(error: Error): boolean {
+  return isDeadlineError(error)
     || error instanceof TypeError
     || (error instanceof ApiError && [502, 503, 504].includes(error.status))
-  return i18nT(unreachable
+}
+
+function readFailureText(error: Error): string {
+  return i18nT(isUnreachable(error)
     ? 'components.projectAwsProfile.read_unreachable'
     : 'components.projectAwsProfile.read_failed')
 }
@@ -64,8 +69,11 @@ function statusTitle(data: ProjectAwsProfile, profile: string): string {
  * (`ProjectAwsProfileSection`). Renders nothing for an unbound project or a refused read.
  */
 export default function ProjectAwsProfileStatus({ project, shelfCompact }: { project: string; shelfCompact?: boolean }) {
-  const { data, error, refused } = useProjectAwsProfile(project)
-  if (error && !refused) {
+  const { data, error, errorUpdateCount, refused } = useProjectAwsProfile(project)
+  // Keep cached data when the gateway does not answer. Without cached data, keep
+  // the first settled failure quiet through one 30s re-read; a second unanswered
+  // read shows the failure so a lasting outage cannot look like an unbound project.
+  if (error && !refused && (!isUnreachable(error) || (!data && errorUpdateCount >= 2))) {
     // A failed read must not look like an unbound project. Compact on purpose: the pill
     // has no room for a sentence, so the reason rides the tooltip.
     // No hand-off: this segment renders inside the chat composer (ChatInput), whose unsent

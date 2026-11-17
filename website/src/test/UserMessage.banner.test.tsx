@@ -91,6 +91,8 @@ describe('UserMessage banner and transcript search', () => {
     const range = getCurrentSearchRange()
     expect(range?.toString().toLowerCase()).toBe('rebase')
     expect(screen.getByTestId('user-message-banner-full').contains(range!.startContainer)).toBe(true)
+    // The highlight rules reach only `[data-hl-scope]`: a match outside one is registered and never painted.
+    expect(range!.startContainer.parentElement!.closest('[data-hl-scope]')).not.toBeNull()
   })
 
   it('counts a carried quote and the full message in order, never the label or toggle', () => {

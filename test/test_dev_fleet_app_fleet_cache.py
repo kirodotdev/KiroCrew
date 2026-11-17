@@ -194,7 +194,7 @@ async def test_restart_gateway_start_id_none_safe_when_probe_fails():
 
 @pytest.mark.asyncio
 async def test_api_health_includes_start_id():
-    """/health carries the current start identity for the restart handshake."""
+    """/api/health carries the current start identity for the restart handshake."""
     with patch.object(live_mod, "_gateway_start_id", new_callable=AsyncMock, return_value="98765"):
         resp = await mod.api_health(MagicMock())
     payload = json.loads(resp.text)
@@ -205,7 +205,7 @@ async def test_api_health_includes_start_id():
 
 @pytest.mark.asyncio
 async def test_api_health_start_id_none_safe():
-    """/health stays 200/ok with start_id=None when identity is unavailable."""
+    """/api/health stays 200/ok with start_id=None when identity is unavailable."""
     with patch.object(live_mod, "_gateway_start_id", new_callable=AsyncMock, return_value=None):
         resp = await mod.api_health(MagicMock())
     payload = json.loads(resp.text)

@@ -189,6 +189,40 @@ class TestKasNeverDefer:
     def test_no_mcp_grant_lists_nothing(self, spec):
         assert self._ids(spec) == []
 
+    def test_an_added_server_s_whole_grant_and_wildcard_share_stay_deferred(self):
+        from kiro_crew.agent_sdk.tool_search import kas_never_defer_ids
+
+        spec = {
+            "tools": ["*", "@kirocrew-core", "@example-app:example-mcp"],
+            "mcpServers": {"kirocrew-core": {}, "example-app:example-mcp": {}},
+        }
+        assert kas_never_defer_ids(spec, self.TOOLS.get, added_servers=("kirocrew-core",)) == [
+            "example-app:example-mcp::read_state",
+            "example-app:example-mcp::write_state",
+        ]
+
+    def test_an_added_server_s_tool_the_author_names_stays_direct(self):
+        from kiro_crew.agent_sdk.tool_search import kas_never_defer_ids
+
+        spec = {
+            "tools": ["@kirocrew-core", "@kirocrew-core/memory_recall", "@kirocrew-core/skill_f*"]
+        }
+        assert kas_never_defer_ids(spec, self.TOOLS.get, added_servers=("kirocrew-core",)) == [
+            "kirocrew-core::memory_recall",
+            "kirocrew-core::skill_fetch",
+        ]
+
+    def test_a_custom_agent_keeps_the_server_wait_direct(self):
+        from kiro_crew.agent_sdk.tool_search import custom_agent_never_defer_ids
+
+        tools = {"kirocrew-core": ["mcp_server_wait", "memory_recall"], "srv": ["one", "two"]}
+        spec = {"tools": ["fs_read", "@srv", "@kirocrew-core"]}
+        assert custom_agent_never_defer_ids(spec, tools.get, ("kirocrew-core",)) == [
+            "kirocrew-core::mcp_server_wait",
+            "srv::one",
+            "srv::two",
+        ]
+
     def test_without_the_loader_the_payload_carries_the_list(self):
         out = kas_client_meta_settings(
             ToolSearchSettings(True, 5, 50_000),
@@ -258,6 +292,34 @@ class TestHandshakeNeverDefer:
             "kirocrew-core::skill_search",
             "srv::one",
         ]
+
+    def test_a_custom_agent_defers_the_crew_servers_crew_added(self, monkeypatch):
+        """Only the added server's whole grant leaves the list; the author's tools stay."""
+        from kiro_crew.acp import runtime_spawn_launch
+
+        seen = []
+
+        def added(agent, spec):
+            seen.append(agent)
+            return ("kirocrew-core",)
+
+        monkeypatch.setattr(runtime_spawn_launch, "crew_added_servers", added)
+        wire = self._caps(monkeypatch, {"tools": ["@kirocrew-core", "@srv/one"]}, agent="mine")
+        assert seen == ["mine"]
+        assert wire["enabled"] is False
+        assert wire["neverDefer"] == ["kirocrew-core::mcp_server_wait", "srv::one"]
+
+    def test_a_host_that_does_not_read_the_channel_is_not_asked(self, monkeypatch):
+        from kiro_crew.acp import runtime_spawn_launch
+
+        def added(agent, spec):
+            raise AssertionError("judged only for a host that reads _meta.kiro.settings")
+
+        monkeypatch.setattr(runtime_spawn_launch, "crew_added_servers", added)
+        wire = self._caps(
+            monkeypatch, {"tools": ["@kirocrew-core"]}, agent="mine", backend=ACP_BACKEND_KIRO
+        )
+        assert wire["neverDefer"] == ["kirocrew-core::memory_recall", "kirocrew-core::skill_search"]
 
     def test_a_spec_with_the_loader_and_no_declared_job_tools_still_defers(self, monkeypatch):
         """An operator's own agent, an app's agent, a crew member's template: no

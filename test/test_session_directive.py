@@ -22,6 +22,7 @@ _CASES = {
     "nothing_to_do": {"note": "patrol: no new activity"},
     "reset_conversation": {},
     "chat_tag": {"set_state": "review"},
+    "chat_rename": {"title": "Release notes"},
 }
 
 
@@ -436,6 +437,95 @@ class TestNothingReadableMeansNothingReattached:
         assert len(kept) <= MAX
 
 
+class _RecordedFrame(str):
+    """``full`` as the locate walk sees it, recording what the walk reads out of it.
+
+    ``copies`` holds the length of every slice taken from the frame, ``windows``
+    one ``(sub, span, scanned)`` row per ``find``/``rfind`` (``span`` the window
+    handed in, ``scanned`` the chars the search walks before its hit or the whole
+    window on a miss), and ``refused`` every other ``str`` method the walk reached
+    for: those are refused by name, so a per-occurrence ``split``, ``index`` or
+    ``count`` over the frame fails here. The walk's own cost is C work no
+    interpreter counter sees, so these are what shows whether each occurrence costs
+    a bounded line or a suffix of the frame. Not seen: a C function handed the
+    frame directly (``re.search(p, full)``, ``str.split(full)``).
+    """
+
+    _ALLOWED = frozenset({"find", "rfind", "copies", "windows", "refused"})
+
+    copies: list[int]
+    windows: list[tuple[str, int, int]]
+    refused: list[str]
+
+    def __new__(cls, value: str) -> "_RecordedFrame":
+        frame = super().__new__(cls, value)
+        frame.copies = []
+        frame.windows = []
+        frame.refused = []
+        return frame
+
+    def __getattribute__(self, name):
+        if not name.startswith("_") and name not in _RecordedFrame._ALLOWED and hasattr(str, name):
+            object.__getattribute__(self, "refused").append(name)
+            raise AssertionError(f"the walk called full.{name}(), which reads the whole frame")
+        return object.__getattribute__(self, name)
+
+    def __getitem__(self, key):  # type: ignore[override]
+        part = str.__getitem__(self, key)
+        self.copies.append(len(part))
+        # Refused on the spot so a suffix-copying walk fails here, not after N*L copies.
+        assert len(part) <= MAX, f"the walk copied {len(part)} chars out of the frame"
+        return part
+
+    def _search(self, method, sub, start, end, *, from_right: bool) -> int:
+        low, high, _ = slice(start, end).indices(str.__len__(self))
+        hit = method(self, sub, start, end)
+        if hit < 0:
+            scanned = max(high - low, 0)
+        elif from_right:
+            scanned = high - hit
+        else:
+            scanned = hit + len(sub) - low
+        self.windows.append((sub, high - low, scanned))
+        if sub == "\n":
+            assert high - low <= MAX, f"the walk searched {high - low} chars for a line end"
+        return hit
+
+    def find(self, sub, start=None, end=None):  # type: ignore[override]
+        return self._search(str.find, sub, start, end, from_right=False)
+
+    def rfind(self, sub, start=None, end=None):  # type: ignore[override]
+        return self._search(str.rfind, sub, start, end, from_right=True)
+
+
+def _assert_bounded_per_occurrence(frame: _RecordedFrame) -> None:
+    """No slice of the frame and no newline search in it spans more than one frame
+    budget, and everything the walk scanned and copied together stays within
+    O(len(full) + occurrences * MAX)."""
+    assert frame.refused == [], f"the walk read the frame through {frame.refused}"
+    assert frame.copies, "the walk never read a line out of the frame"
+    assert max(frame.copies) <= MAX, (
+        f"the walk copied {max(frame.copies)} chars out of the frame in one slice "
+        "-- a per-occurrence suffix copy is back"
+    )
+    line_ends = [span for sub, span, _ in frame.windows if sub == "\n"]
+    assert max(line_ends, default=0) <= MAX, (
+        f"the walk searched {max(line_ends)} chars for one line end "
+        "-- a per-occurrence unbounded scan is back"
+    )
+    length = str.__len__(frame)
+    occurrences = str.count(frame, SENTINEL)
+    # One left-to-right pass for the directive sentinel and one right-to-left pass
+    # for the refusal tag (twice over, as slack), plus one bounded line per occurrence.
+    budget = 4 * length + occurrences * (MAX + len(SENTINEL))
+    total = sum(scanned for _, _, scanned in frame.windows) + sum(frame.copies)
+    assert total <= budget, (
+        f"the walk scanned and copied {total} chars of a {length}-char frame with "
+        f"{occurrences} occurrences (budget {budget}) -- per-occurrence work scales "
+        "with the frame"
+    )
+
+
 class TestRepeatedSentinelBytesStayLinear:
     """The locate walk pays a bounded cost per occurrence, never a suffix of the frame.
 
@@ -445,10 +535,8 @@ class TestRepeatedSentinelBytesStayLinear:
 
     def test_a_frame_dense_with_sentinel_bytes_parses_in_bounded_time(self):
         """Repeated sentinel bytes with no readable marker until the genuine one
-        at the tail: a quadratic locate stalls for minutes, the bounded walk
-        finishes far under the ceiling."""
-        import time
-
+        at the tail: every occurrence is judged on a line of at most one frame
+        budget, never on a suffix of the frame."""
         directive = sd.encode("autonudge_stop", {"reason": "goal met"}, "stopping")
         # ~1.3 MB carrying ~32,000 sentinel occurrences on one line, so a
         # suffix-slicing walk pays ~40 GB of copies. The noise sits BEYOND the
@@ -458,32 +546,24 @@ class TestRepeatedSentinelBytesStayLinear:
         full = "y" * MAX + "\n" + noise + "\n" + directive
         cut = _cut_dropping_the_tail(full)
 
-        start = time.monotonic()
-        kept = sd.preserve_tail_marker(full, cut)
-        elapsed = time.monotonic() - start
+        frame = _RecordedFrame(full)
+        kept = sd.preserve_tail_marker(frame, cut)
 
-        assert elapsed < 5.0, (  # flake-ok: 5 s ceiling only catches a quadratic walk
-            f"locate walk took {elapsed:.1f}s -- quadratic cost is back"
-        )
+        _assert_bounded_per_occurrence(frame)
         assert sd.decode(kept, "autonudge_stop") == {"reason": "goal met"}
 
     def test_sentinel_dense_frame_with_no_marker_at_all_is_also_bounded(self):
         """Same attack without any genuine marker: the walk still visits every
         occurrence (the ambiguity bar requires it), so the bound must hold on
         the pure-noise path too, and the cut must stand untouched."""
-        import time
-
         noise = (SENTINEL + "x" * 32) * 32000
         full = "y" * MAX + "\n" + noise + "\nplain tail, no marker"
         cut = _cut_dropping_the_tail(full)
 
-        start = time.monotonic()
-        kept = sd.preserve_tail_marker(full, cut)
-        elapsed = time.monotonic() - start
+        frame = _RecordedFrame(full)
+        kept = sd.preserve_tail_marker(frame, cut)
 
-        assert elapsed < 5.0, (  # flake-ok: 5 s ceiling only catches a quadratic walk
-            f"locate walk took {elapsed:.1f}s -- quadratic cost is back"
-        )
+        _assert_bounded_per_occurrence(frame)
         assert kept == cut
 
 

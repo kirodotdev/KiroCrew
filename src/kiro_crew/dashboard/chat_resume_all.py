@@ -376,6 +376,7 @@ async def _memory_preparation_settled(state: DashboardState) -> None:
         if not task.done():
             raise
     except Exception:
+        # A failed preparation has ended too; the turn then refuses on its own.
         pass
 
 

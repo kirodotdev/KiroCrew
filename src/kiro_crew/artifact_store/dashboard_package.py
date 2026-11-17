@@ -256,12 +256,12 @@ def _refuse_credential_shaped_name(name: str) -> None:
     would put it exactly where this check exists to keep it out of.
     """
     from kiro_crew.platform.context import redact_via_context
+    from kiro_crew.security import refuses
 
-    redacted = redact_via_context(name)
-    if redacted == name:
+    if not refuses(name, redact_via_context):
         return
     raise _refuse(
-        f"model.types.{redacted}",
+        f"model.types.{redact_via_context(name)}",
         "is shaped like a credential, so it is refused as a field NAME. Field "
         "names are served in the package's field list and written into the "
         "page's data island, where only values are redacted -- rename the field",
@@ -607,16 +607,15 @@ def _validate_model(raw: Any) -> dict[str, Any]:
     return {"types": fields}
 
 
+#: The attribute name a page binds a field with, as :data:`_HTML_BINDING_RE` reads it.
+_BINDING_RUN = "data-dashboard-field"
 #: A text binding in an agent-written page, in either quote an author may have typed.
 #:
 #: MIRRORS :data:`kiro_crew.dashboard_frame.BINDING_ATTRIBUTE`, pinned equal by test.
-#: Matched with a regex rather than parsed, because this check runs on the artifact
-#: write path and pulling in the html parser there would put it behind every caller of
-#: :mod:`kiro_crew.artifacts`. The cost is a page that MENTIONS the attribute in its own
-#: prose being read as binding it -- a refusal the author can act on, where the parse's
-#: own cost would be paid by every artifact write in the product.
-#: The attribute name a page binds a field with, as :data:`_HTML_BINDING_RE` reads it.
-_BINDING_RUN = "data-dashboard-field"
+#: A regex, not a parse: this runs on the artifact write path, and the html parser
+#: would then load for every caller of :mod:`kiro_crew.artifacts`. The cost is that
+#: a page which only MENTIONS the attribute in its prose is read as binding it, a
+#: refusal the author can act on.
 _HTML_BINDING_RE = re.compile(
     r"data-dashboard-field\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>=`]+))"
 )
@@ -975,11 +974,9 @@ def _decode_package(content: str) -> Any:
     """
     if not isinstance(content, str) or not content.strip():
         raise _refuse("package", "is empty: a dashboard artifact stores a JSON package")
-    # The submitted text is scanned before it is MEASURED, because measuring it
-    # encodes it. A surrogate reaches a package two ways and each is caught at
-    # the point it becomes a code point: written literally by a Python caller it
-    # is already one here, and written as the escape ``\\ud800`` it is six ASCII
-    # characters until the decoder below turns it into one.
+    # Scanned before it is measured, because measuring encodes it. A surrogate
+    # passed literally by a Python caller is a code point here already; the escape
+    # ``\\ud800`` only becomes one in the decoder, so the result is scanned again.
     _refuse_lone_surrogates(content)
     if len(content.encode("utf-8")) > MAX_PACKAGE_BYTES:
         raise _refuse(
@@ -992,20 +989,17 @@ def _decode_package(content: str) -> Any:
     except ValueError as exc:
         raise _refuse("package", f"is not valid JSON: {exc}") from None
     except RecursionError:
-        # The byte cap above bounds a package's SIZE, not its DEPTH, and the two
-        # come apart: a few thousand ``[`` are small enough to pass the cap and
-        # deep enough that the decoder runs out of stack. ``RecursionError``
-        # is a ``RuntimeError``, so the ``ValueError`` arm does not see it, and
-        # letting it escape turns a refusable package into a 500 at every caller
-        # that answers an ``ArtifactValidationError`` with a 400.
+        # The byte cap bounds SIZE, not DEPTH: a few thousand ``[`` pass the cap
+        # and still exhaust the decoder's stack. ``RecursionError`` is not a
+        # ``ValueError``, so without this arm a refusable package becomes a 500
+        # where callers answer ``ArtifactValidationError`` with a 400.
         raise _refuse(
             "package",
             "nests deeper than the JSON decoder can follow: a layout is a few "
             "levels of objects and arrays, so this is not one",
         ) from None
-    # Before any validator touches a string: a validator that measures a string
-    # in bytes, and the serializer that writes one, both encode, and an encode
-    # that meets an unpaired surrogate raises where nothing catches it.
+    # Before any validator runs: byte-measuring validators and the serializer
+    # both encode, and encoding an unpaired surrogate raises where nothing catches it.
     _refuse_lone_surrogates(raw)
     return raw
 

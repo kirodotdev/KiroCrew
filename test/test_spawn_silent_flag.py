@@ -213,7 +213,7 @@ class TestBellRoutesHonorSilent:
     def test_every_completion_bell_note_in_the_injection_routes_is_guarded(self):
         # A ratchet, not a behaviour test: a NEW completion bell note added to
         # the injection routes without an `info.silent` guard reintroduces the
-        # unconditional ring this change removes. Each notify("subagent", ...)
+        # unconditional ring. Each notify("subagent", ...)
         # call must have `info.silent` decided within the ten lines above it.
         source = Path(inj_mod.__file__).read_text(encoding="utf-8").splitlines()
         sites = [

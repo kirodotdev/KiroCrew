@@ -493,7 +493,7 @@ class TestOnLoopFdCleanupDeferred:
         )
 
 
-# ── GPT 5.6 HIGH: append_if_absent collapses the workflow/cron double-append ─
+# ── append_if_absent collapses the workflow/cron double-append ─────────────
 class TestAppendIfAbsent:
     """``inject_workflow_result`` / ``inject_cron_result_to_dashboard`` reflect
     a result in the DIRTY in-memory slot (``slot.append``) AND schedule a

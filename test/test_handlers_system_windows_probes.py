@@ -8,6 +8,7 @@ own parsing and struct layout are checked directly.
 from __future__ import annotations
 
 import ctypes
+import os
 import subprocess
 import sys
 import time
@@ -18,11 +19,12 @@ import pytest
 
 from kiro_crew.dashboard import handlers_system, system_windows_probes
 from kiro_crew.dashboard.system_windows_probes import (
+    _command_line_from_buffer,
     _MibIfRow2,
-    _parse_process_rows,
     _sum_interface_octets,
-    _wql_literal,
+    _UnicodeString,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 def _collect_on_windows(
@@ -152,69 +154,210 @@ class TestWindowsNetwork:
             assert key not in data
 
 
-class TestProcessRowParsing:
-    def test_reads_a_json_array(self) -> None:
-        out = '[{"ProcessId":10,"CommandLine":"kiro-cli acp"},{"ProcessId":11,"CommandLine":null}]'
-        assert _parse_process_rows(out) == [(10, "kiro-cli acp")]
+class TestProcessTableRead:
+    """The in-process reader: a Toolhelp snapshot of pids, then one command line per pid."""
 
-    def test_reads_a_single_object(self) -> None:
-        assert _parse_process_rows('{"ProcessId":5,"CommandLine":"x"}') == [(5, "x")]
-
-    def test_empty_output_is_no_rows(self) -> None:
-        assert _parse_process_rows("  \r\n") == []
-
-    def test_non_json_is_unreadable(self) -> None:
-        assert _parse_process_rows("Get-CimInstance : Access denied") is None
-
-    def test_wql_literal_matches_pattern_characters_literally(self) -> None:
-        assert _wql_literal("kirocrew_sandbox") == "%kirocrew[_]sandbox%"
-        assert _wql_literal("a[b'c") == "%a[[]b''c%"
-
-
-class TestProcessQuery:
-    def test_runs_one_filtered_powershell_query(self) -> None:
-        seen: dict = {}
-
-        def fake_check_output(argv, **kwargs):
-            seen["argv"] = argv
-            return '[{"ProcessId":3,"CommandLine":"kiro-cli acp"}]'
-
+    def _read(self, table: dict[int, str | None], signatures=("kirocrew_sandbox", "kiro-cli")):
+        parent_map = {pid: 4 for pid in table}
         with (
-            patch.object(system_windows_probes, "trusted_system_bin", return_value="PS.EXE"),
-            patch.object(system_windows_probes.subprocess, "check_output", fake_check_output),
+            patch.object(
+                system_windows_probes.platform_compat,
+                "_windows_process_parent_map",
+                return_value=parent_map,
+            ),
+            patch.object(system_windows_probes, "_command_line_reader", return_value=table.get),
         ):
-            rows = system_windows_probes.windows_process_command_lines(("kiro-cli",))
+            return system_windows_probes.windows_process_command_lines(signatures)
 
-        assert rows == [(3, "kiro-cli acp")]
-        assert seen["argv"][0] == "PS.EXE"
-        assert "CommandLine LIKE '%kiro-cli%'" in seen["argv"][-1]
-        # The query's own PowerShell holds the signature in its command line.
-        assert "Where-Object { $_.ProcessId -ne $PID }" in seen["argv"][-1]
+    def test_keeps_the_processes_holding_a_signature_in_any_case(self) -> None:
+        rows = self._read(
+            {
+                10: r"C:\Python\python.exe C:\u\.kiro\crew\run\kirocrew_sandbox_a.py",
+                20: r"C:\u\.local\bin\Kiro-CLI.EXE acp",
+                40: r"C:\Windows\explorer.exe",
+            }
+        )
+        assert rows == [
+            (10, r"C:\Python\python.exe C:\u\.kiro\crew\run\kirocrew_sandbox_a.py"),
+            (20, r"C:\u\.local\bin\Kiro-CLI.EXE acp"),
+        ]
 
-    @pytest.mark.parametrize("signature", ["x$(whoami)", 'a"b', "a`b", "a'b", "a%b", "a b", ""])
-    def test_refuses_a_signature_powershell_could_read_as_syntax(self, signature: str) -> None:
+    def test_skips_a_process_whose_command_line_cannot_be_read(self) -> None:
+        assert self._read({30: None, 20: "kiro-cli.exe chat"}) == [(20, "kiro-cli.exe chat")]
+
+    def test_no_signatures_reads_nothing(self) -> None:
+        with patch.object(system_windows_probes, "_command_line_reader") as reader:
+            assert system_windows_probes.windows_process_command_lines(()) == []
+        reader.assert_not_called()
+
+    def test_an_unreadable_snapshot_is_unreadable(self) -> None:
         with (
-            patch.object(system_windows_probes, "trusted_system_bin", return_value="PS.EXE"),
-            patch.object(system_windows_probes.subprocess, "check_output") as spawn,
-            pytest.raises(ValueError),
+            patch.object(
+                system_windows_probes.platform_compat,
+                "_windows_process_parent_map",
+                side_effect=OSError("Windows process enumeration failed"),
+            ),
+            patch.object(system_windows_probes, "_command_line_reader", return_value=dict().get),
         ):
-            system_windows_probes.windows_process_command_lines(("kiro-cli", signature))
-        spawn.assert_not_called()
-
-    def test_missing_powershell_is_unreadable(self) -> None:
-        with patch.object(system_windows_probes, "trusted_system_bin", return_value=None):
             assert system_windows_probes.windows_process_command_lines(("kiro-cli",)) is None
 
-    def test_failed_query_is_unreadable(self) -> None:
+    def test_no_reader_is_unreadable_and_takes_no_snapshot(self) -> None:
         with (
-            patch.object(system_windows_probes, "trusted_system_bin", return_value="PS.EXE"),
             patch.object(
-                system_windows_probes.subprocess,
-                "check_output",
-                side_effect=subprocess.TimeoutExpired("PS.EXE", 10),
+                system_windows_probes.platform_compat, "_windows_process_parent_map"
+            ) as snapshot,
+            patch.object(system_windows_probes, "_command_line_reader", return_value=None),
+        ):
+            assert system_windows_probes.windows_process_command_lines(("kiro-cli",)) is None
+        snapshot.assert_not_called()
+
+    def test_starts_no_child_process(self) -> None:
+        with (
+            patch.object(subprocess, "Popen", side_effect=AssertionError("spawned")),
+            patch.object(
+                system_windows_probes.platform_compat,
+                "_windows_process_parent_map",
+                return_value={7: 4},
+            ),
+            patch.object(
+                system_windows_probes, "_command_line_reader", return_value={7: "kiro-cli"}.get
             ),
         ):
-            assert system_windows_probes.windows_process_command_lines(("kiro-cli",)) is None
+            assert system_windows_probes.windows_process_command_lines(("kiro-cli",)) == [
+                (7, "kiro-cli")
+            ]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="checks the non-Windows answer")
+    def test_the_table_is_unreadable_off_windows(self) -> None:
+        assert system_windows_probes.windows_process_command_lines(("kiro-cli",)) is None
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="reads the real Windows process table")
+    def test_finds_a_real_child_by_its_command_line_on_windows(self) -> None:
+        marker = f"kcprobe-{os.getpid()}-{time.monotonic_ns()}"
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()", marker],
+            stdin=subprocess.PIPE,
+        )
+        try:
+            rows = system_windows_probes.windows_process_command_lines((marker,))
+        finally:
+            try:
+                child.communicate(input=b"", timeout=FALLBACK_TIMEOUT_SECS)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate(timeout=FALLBACK_TIMEOUT_SECS)
+        assert rows is not None
+        # A venv interpreter is a launcher that starts the base python.exe with the same
+        # argv, so the marker may appear in two processes; the child is always one.
+        assert child.pid in [pid for pid, _cmd in rows]
+        assert all(marker in cmd for _pid, cmd in rows)
+
+
+class TestCommandLineBuffer:
+    """``ProcessCommandLineInformation`` answers a ``UNICODE_STRING`` pointing into itself."""
+
+    def _answer(self, text: str, *, offset_delta: int = 0, length_delta: int = 0):
+        head = ctypes.sizeof(_UnicodeString)
+        data = text.encode("utf-16-le")
+        buf = ctypes.create_string_buffer(head + len(data))
+        ctypes.memmove(ctypes.addressof(buf) + head, data, len(data))
+        string = _UnicodeString.from_buffer(buf)
+        string.Length = len(data) + length_delta
+        string.MaximumLength = len(data)
+        string.Buffer = ctypes.addressof(buf) + head + offset_delta
+        return buf
+
+    def test_reads_the_command_line(self) -> None:
+        line = '"C:\\bin\\kiro-cli.exe" acp --agent kirocrew \u00e9'
+        assert _command_line_from_buffer(self._answer(line)) == line
+
+    def test_refuses_a_string_reaching_past_the_answer(self) -> None:
+        assert _command_line_from_buffer(self._answer("kiro-cli", length_delta=2)) is None
+
+    def test_refuses_a_pointer_before_the_answer(self) -> None:
+        assert _command_line_from_buffer(self._answer("kiro-cli", offset_delta=-64)) is None
+
+    def test_refuses_an_odd_length(self) -> None:
+        assert _command_line_from_buffer(self._answer("kiro-cli", length_delta=-1)) is None
+
+
+class _FakeCall:
+    """A stand-in for one ctypes foreign function: takes argtypes/restype, records calls."""
+
+    def __init__(self, impl):
+        self._impl = impl
+        self.calls: list[tuple] = []
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        return self._impl(*args)
+
+
+class TestCommandLineReader:
+    """``_command_line_reader`` against fake kernel32 and ntdll, so it runs on every host."""
+
+    _BUFFER_TOO_SMALL = 0xC0000023
+
+    def _reader(self, *, handle: int, answers: list[tuple[int, int, str | None]]):
+        """Build a reader whose query returns each ``(status, needed, text)`` in turn."""
+        pending = list(answers)
+
+        def query(_handle, _klass, buf, size, needed):
+            status, wanted, text = pending.pop(0)
+            needed._obj.value = wanted
+            if text is not None:
+                head = ctypes.sizeof(_UnicodeString)
+                data = text.encode("utf-16-le")
+                assert head + len(data) <= size
+                ctypes.memmove(ctypes.addressof(buf) + head, data, len(data))
+                string = _UnicodeString.from_buffer(buf)
+                string.Length = len(data)
+                string.MaximumLength = len(data)
+                string.Buffer = ctypes.addressof(buf) + head
+            return status
+
+        calls = {
+            "OpenProcess": _FakeCall(lambda _access, _inherit, _pid: handle),
+            "CloseHandle": _FakeCall(lambda _h: 1),
+            "NtQueryInformationProcess": _FakeCall(query),
+        }
+        dll = SimpleNamespace(**calls)
+        with patch.object(ctypes, "WinDLL", lambda *_a, **_k: dll, create=True):
+            reader = system_windows_probes._command_line_reader()
+        assert reader is not None
+        return reader, calls
+
+    def test_reads_a_command_line_and_closes_the_handle(self) -> None:
+        reader, calls = self._reader(handle=5, answers=[(0, 40, "kiro-cli.exe acp")])
+        assert reader(42) == "kiro-cli.exe acp"
+        assert calls["OpenProcess"].calls[0][2] == 42
+        assert calls["CloseHandle"].calls == [(5,)]
+
+    def test_reads_again_at_the_size_windows_asks_for(self) -> None:
+        line = "kiro-cli " + "x" * 3000
+        reader, calls = self._reader(
+            handle=5, answers=[(self._BUFFER_TOO_SMALL, 8192, None), (0, 8192, line)]
+        )
+        assert reader(42) == line
+        sizes = [call[3] for call in calls["NtQueryInformationProcess"].calls]
+        assert sizes == [4096, 8192]
+        assert calls["CloseHandle"].calls == [(5,)]
+
+    def test_an_answer_past_the_command_line_limit_is_refused(self) -> None:
+        reader, calls = self._reader(handle=5, answers=[(self._BUFFER_TOO_SMALL, 10_000_000, None)])
+        assert reader(42) is None
+        assert calls["CloseHandle"].calls == [(5,)]
+
+    def test_a_failed_query_is_unreadable(self) -> None:
+        reader, calls = self._reader(handle=5, answers=[(0xC0000022, 0, None)])
+        assert reader(42) is None
+        assert calls["CloseHandle"].calls == [(5,)]
+
+    def test_a_process_that_cannot_be_opened_is_skipped_without_a_query(self) -> None:
+        reader, calls = self._reader(handle=0, answers=[])
+        assert reader(42) is None
+        assert calls["NtQueryInformationProcess"].calls == []
+        assert calls["CloseHandle"].calls == []
 
 
 class TestInterfaceRowLayout:

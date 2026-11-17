@@ -121,7 +121,7 @@ class TestList:
     async def test_empty(self, isolated_store, patch_restricted) -> None:
         resp = await api_artifacts_list(_request())
         assert resp.status == 200
-        assert _json_body(resp) == {"artifacts": []}
+        assert _json_body(resp) == {"artifacts": [], "output_cap": 200}
 
     @pytest.mark.asyncio
     async def test_returns_items(self, isolated_store, patch_restricted, monkeypatch) -> None:
@@ -709,7 +709,11 @@ class TestCreate:
         }
         resp = await api_artifacts_create(_request(body=body))
         assert resp.status == 201
-        assert _json_body(resp)["content"] == real
+        # The artifact holds the source's bytes. The response shows them as every
+        # surfaced copy is shown, with the value masked by the server's own tag, not
+        # the client's placeholder.
+        assert isolated_store.get(_json_body(resp)["slug"]).content == real
+        assert _json_body(resp)["content"] == "secret = [REDACTED: credential]"
 
     @pytest.mark.asyncio
     async def test_promotion_of_an_oversized_source_is_refused_not_a_500(

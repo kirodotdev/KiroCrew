@@ -32,6 +32,7 @@ The conductor's route is not touched, so nothing reading it today can break.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable, Mapping
 from datetime import datetime
@@ -40,7 +41,9 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import session_ledger, work_ledger
+from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
 from kiro_crew.dashboard.handlers.work_ledger import (
     _MAX_EVENT_TAIL,
     _audit,
@@ -57,7 +60,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.context import redact_via_context
-from kiro_crew.work_vocab import WORK_BLOCKED_REASONS
+from kiro_crew.work_vocab import waits_on_person
 
 logger = logging.getLogger(__name__)
 
@@ -380,11 +383,8 @@ def awaits_person(
     A running turn means the worker moved on: the conductor messaged it or a loop
     woke it, and neither writes a ledger answer. A tool approval it waits on mid-turn
     has its own approval card, so it is not lost here."""
-    return (
-        not running
-        and item.status in work_ledger.WAITING_STATUSES
-        and item.reason in WORK_BLOCKED_REASONS
-        and not answered_since_report(item, events)
+    return waits_on_person(
+        item.status, item.reason, answered=answered_since_report(item, events), running=running
     )
 
 
@@ -506,6 +506,71 @@ def pr_facts(slot: str, items: list[work_ledger.WorkItem]) -> dict[str, dict[str
                 "reads": reads,
             }
     return out
+
+
+async def own_worker_records(
+    slot_key: str,
+) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
+    """*slot_key*'s conductor and items, each worker key kept only when it binds BACK.
+
+    The gateway-owned reader behind a code channel's work board, which publishes a
+    conductor's own workers into its channel. The slot comes from the channel's
+    stored binding, never from a request. The read is one snapshot under the
+    board's own lock, like this module's page read, and a board whose cache is
+    flagged dirty reads as no board: what it holds may be a mutation the record
+    rolled back, and the board's alerts cannot be taken back once posted.
+
+    An item's ``worker_session_key`` is a conductor-written field, so it alone does
+    not make a session that conductor's worker: the worker's own binding file must
+    name this conductor and this item too. Where it does not, the key is blanked
+    and the row reads as not dispatched, so no other session's liveness or deep
+    link can reach the board.
+    """
+    async with _board_lock(slot_key):
+        return await asyncio.to_thread(_own_worker_records_locked, slot_key)
+
+
+def _own_worker_records_locked(
+    slot_key: str,
+) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
+    if work_ledger.cache_dirty(slot_key) is not None:
+        return None, []
+    record = work_ledger.read_conductor(slot_key)
+    if record is None:
+        return None, []
+    items = work_ledger.list_work_items(slot_key)
+    for item in items:
+        worker = item.worker_session_key or ""
+        if not worker:
+            continue
+        bound = False
+        for candidate in dict.fromkeys((worker, session_ledger.ledger_key(worker))):
+            if work_ledger.read_binding(candidate) == (slot_key, item.item_id):
+                bound = True
+                break
+        if not bound:
+            item.worker_session_key = None
+    for item in items:
+        # A person's steer answers a worker's question as a decide does
+        # (:func:`answered_since_report`, the Crew page's rule): the board's row
+        # reads it from the same snapshot, so the two never disagree on who must
+        # act. A read-only mark on this snapshot's copy; the ledger is untouched.
+        # It is computed for EVERY asking item and is authoritative, False
+        # included: a decide in the same second as a newer question has a stamp
+        # equal to the report's, and only the event tail's order tells them apart.
+        answered = False
+        if item.status in {"blocked", "question"}:
+            events = [
+                dataclasses.asdict(e)
+                for e in work_ledger.read_events(slot_key, item.item_id, limit=_BOARD_EVENT_TAIL)
+            ]
+            answered = answered_since_report(item, events)
+        setattr(item, "answered_by_event", answered)  # noqa: B010 - a snapshot mark, not a field
+    return record, items
+
+
+#: Events per item the work board reads to see whether a report was answered.
+_BOARD_EVENT_TAIL = 20
 
 
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
@@ -669,7 +734,34 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
             status=400,
         )
     key = session_ledger.ledger_key(requested)
+    # Single flight (see crew_board_flight): concurrent reads share one build that
+    # started after each of them arrived; nothing is kept afterwards. The owner gate and
+    # the request's own validation ran above, so only an admitted caller joins a build.
+    answer = await shared_board(
+        key, requested, lambda: _build_board(request.app["state"], requested, key, caller)
+    )
+    if answer.status != 200:
+        return web.Response(body=answer.body, status=answer.status, content_type="application/json")
+    # Record the ALLOWED read, not only denials: an owner gate that logs a grant
+    # nowhere leaves an operator unable to prove which conductor ledgers were read
+    # and by whom. Safe GET methods skip the dashboard chain's audit middleware, so
+    # the grant is logged here or not at all. Caller is the operator; the conductor
+    # whose ledger was read is a resource, never the caller. Once per read, shared build or not.
+    _audit(caller, "crew_board_read", "ok", resources=f"conductor={key} items={answer.items}")
+    return await conditional_json_response(request, answer.body)
 
+
+def _answer_of(response: web.Response) -> BoardAnswer:
+    """A refusal built by a shared helper, as a shareable (status, bytes) pair."""
+    return BoardAnswer(response.status, bytes(response.body or b""))  # type: ignore[arg-type]
+
+
+async def _build_board(state: DashboardState, requested: str, key: str, caller: str) -> BoardAnswer:
+    """One build of the board answer: ledger snapshot, liveness join, mask, redaction.
+
+    Takes the gateway state and plain strings, never the request: the build is shared and
+    outlives the caller that started it.
+    """
     # A cache commit and its record append are two steps, and a read landing
     # between them serves a mutation the record may yet roll back -- or, once an
     # undo has failed, one the record never holds at all. The ledger header, the
@@ -680,10 +772,10 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         async with _board_lock(key):
             record, refusal = await _own_ledger(key, "work_ledger_board", caller)
             if refusal is not None:
-                return refusal
+                return _answer_of(refusal)
             dirty = await _refuse_if_dirty(key, caller, "work_ledger_board")
             if dirty is not None:
-                return dirty
+                return _answer_of(dirty)
             items = await asyncio.to_thread(work_ledger.list_work_items, key)
             event_tails: dict[str, list[work_ledger.WorkEvent]] = {}
             for item in items:
@@ -693,13 +785,14 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
     except work_ledger.WorkLedgerError as exc:
         if exc.code != work_ledger.CODE_INVALID_VALUE:
             raise
-        return web.json_response(
-            {"error": _INVALID_CONDUCTOR[1], "code": _INVALID_CONDUCTOR[0]},
-            status=400,
+        return _answer_of(
+            web.json_response(
+                {"error": _INVALID_CONDUCTOR[1], "code": _INVALID_CONDUCTOR[0]},
+                status=400,
+            )
         )
     assert record is not None
 
-    state: DashboardState = request.app["state"]
     conductor_alive = _slot_open(state, key)
     # The worker's transport, not the ledger: a report the harness never delivered.
     # Read outside the board hold because it is not part of the ledger snapshot.
@@ -757,6 +850,26 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
     )
     # What the warm welcome last read about each item's pull request, with its read time.
     facts_by_item = await asyncio.to_thread(pr_facts, requested, items)
+    # Done or stopped: the item states and whether the conductor's patrol is still on.
+    from kiro_crew import conductor_patrol
+    from kiro_crew.autonudge import get_instance
+    from kiro_crew.dashboard import conductor_mode_run
+
+    open_items, accepted, not_done = conductor_mode_run.item_counts(item.state for item in items)
+    run = conductor_mode_run.run_facts(
+        open_items=open_items,
+        accepted=accepted,
+        not_done=not_done,
+        # The current goal's own creates; a header from before that count says nothing.
+        goal_items=(
+            None
+            if record.goal_items_base == work_ledger.LEGACY_GOAL_BASE
+            else record.goal_items_used
+        ),
+        patrol=conductor_mode_run.patrol_of(
+            get_instance(), (conductor_patrol.nudge_slot_for(state, key) or "", key)
+        ),
+    )
 
     payload = {
         "conductor": record.to_dict(),
@@ -764,6 +877,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         "items": rows,
         "asks": asks,
         "pr_facts": facts_by_item,
+        "run": run,
         # The ONE capability the page actually reads, because it changes what the
         # page renders: no take-over button is rendered while this is false.
         #
@@ -775,16 +889,11 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         # reader.
         "take_over_available": _TAKE_OVER_AVAILABLE,
     }
-    # Record the ALLOWED read, not only denials: an owner gate that logs a grant
-    # nowhere leaves an operator unable to prove which conductor ledgers were read
-    # and by whom. Safe GET methods skip the dashboard chain's audit middleware, so
-    # the grant is logged here or not at all. Caller is the operator; the conductor
-    # whose ledger was read is a resource, never the caller.
-    _audit(caller, "crew_board_read", "ok", resources=f"conductor={key} items={len(rows)}")
     # Off the loop: the redaction stack is a wide regex sweep over every string in
     # up to 32 items and their event tails, which is real CPU and would otherwise
     # block the gateway's loop for the duration.
-    return web.json_response(await asyncio.to_thread(_redact_deep, payload))
+    redacted = await asyncio.to_thread(_redact_deep, payload)
+    return BoardAnswer(200, web.json_response(redacted).body, len(rows))  # type: ignore[arg-type]
 
 
 def _refuse(code: str, message: str, status: int) -> web.Response:

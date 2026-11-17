@@ -10,7 +10,11 @@ import and patch; this module never imports it."""
 from __future__ import annotations
 
 import kiro_crew.config.session_environments as _session_environments
-from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
+from kiro_crew.acp_backends import (
+    CHAT_RUNTIME_SHARING_HARNESSES,
+    selectable_backend_values,
+    selectable_stored_backend_values,
+)
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
@@ -182,6 +186,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
+    "agent.role_models.subagent_light": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+        "validate_fn": _validate_role_model,
+    },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
     # to the backend's availability-aware routing; a concrete id is tried first
     # with "auto" as the final fallthrough; "" disables the feature. Same
@@ -209,6 +219,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # default; "" = inherit. Applies only on reasoning-capable models.
     "agent.role_efforts.background": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.role_efforts.subagent": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
+    "agent.role_efforts.subagent_light": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
     # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
     # every value here still ends: the timed ones are capped at the SafetyOverride
@@ -225,6 +236,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.sandbox": {"type": "enum", "values": ["auto", "strict", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.tool_search": {"type": "bool"},
+    # Opt-in KAS memory recall for the owner's own new dashboard chats. Read at
+    # session creation, so no restart; see ``acp/kas_memory.py``.
+    "agent.orchestrator_memory": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",
@@ -373,6 +387,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Display -> View). Default on; only a literal `false` opens the search
     # palette instead.
     "dashboard.command_bar_enabled": {"type": "bool"},
+    # Channels' sidebar row and Search Everywhere result (the former `channels`
+    # app's enabled state). Default off; only a literal `true` shows them.
+    "dashboard.channels_enabled": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in
@@ -519,6 +536,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Memory → Repeated failures: the opt-in weekly bell note
     # (dashboard/repeated_failures_notice.py). Default OFF in MemoryConfig.
     "memory.repeated_failures_notice": {"type": "bool"},
+    # Seconds, or "auto" (600 on a machine with 16 GiB or less, 3600 elsewhere). The
+    # field is ``int | str``, which the schema-derived rule cannot edit, so the row
+    # keeps its number box here and also takes the one word.
+    "memory.embedding_idle_evict_secs": {
+        "type": "int",
+        "min": 0,
+        "max": 365 * 24 * 3600,
+        "allow_auto": True,
+    },
     # Knowledge Library ingestion. Chunk budget max mirrors the point past which
     # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
     "knowledge.auto_add_documents": {"type": "bool"},
@@ -702,6 +728,16 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
 for _preview in FEATURE_PREVIEW_FLAGS:
     _EDITABLE_CONFIG[f"dashboard.feature_previews.{_preview}"] = {"type": "bool"}
 
+# The per-harness switches under the ACP runtime sharing preview, one boolean per
+# harness in ``CHAT_RUNTIME_SHARING_HARNESSES``. Only those names are writable, so
+# the route cannot switch on a harness that is not safe to share.
+_EDITABLE_CONFIG.update(
+    {
+        f"agent.chat_runtime_sharing_harnesses.{name}": {"type": "bool"}
+        for name in CHAT_RUNTIME_SHARING_HARNESSES
+    }
+)
+
 
 # The wake judge's two per-point settings. In the editable set where
 # ``provider.*`` is not, and the difference is what each one decides: the endpoint
@@ -754,7 +790,9 @@ _APP_MUTE_SESSIONS_SPEC: dict = {"type": "bool"}
 
 
 def _editable_config_spec(path_key: object) -> dict | None:
-    """The PATCH spec for *path_key*: a listed field, or a per-app setting path."""
+    """The PATCH spec for *path_key*: a listed field, a per-app setting path, or the
+    schema-derived rule ``config_all_settings.generic_spec`` gives a key with
+    no listed one."""
     if not isinstance(path_key, str):
         return None
     spec = _EDITABLE_CONFIG.get(path_key)
@@ -766,4 +804,8 @@ def _editable_config_spec(path_key: object) -> dict | None:
                 return _APP_MODEL_SPEC
             if parts[2] == "mute_sessions":
                 return _APP_MUTE_SESSIONS_SPEC
+        # The Advanced page's schema-derived rule, for a key with no curated one.
+        from kiro_crew.dashboard.handlers.config_all_settings import generic_spec
+
+        return generic_spec(path_key)
     return spec

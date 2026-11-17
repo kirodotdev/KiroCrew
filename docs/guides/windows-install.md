@@ -112,6 +112,18 @@ Current status:
   bounded retry prompts. The build-time patch is
   pinned to the installed app-builder-lib version and fails closed if its NSIS
   template changes, so an upgrade cannot silently remove that fallback.
+- **An update never meets a file the old uninstaller cannot move** — an update
+  runs the previous version's uninstaller, which moves every installed file into
+  `%TEMP%\nsXXXX.tmp\old-install`, a path about 11 characters longer than the
+  installed one. Before it runs, `KiroClearUnmovableFiles` in
+  `website/electron/build/installer.nsh` measures every installed file against
+  that limit. A too-deep bytecode cache (a `.pyc` in `__pycache__`) is deleted,
+  since Python compiles the module from its source. Any other too-deep file stops
+  the installer with exit code 2 before anything moves, naming the file: the
+  installed version keeps working, and uninstalling then installing again (which
+  keeps your sessions and settings) gets the update. The release build also drops
+  over-budget caches and fails on any other over-budget file
+  (`packaging/check_windows_path_budget.py --prune-caches`).
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and any “start with Windows” Run entry left by an earlier custom installer,
@@ -729,6 +741,33 @@ Two details are load-bearing rather than incidental:
   handle, and ending that runtime ends the job after the exact-handle drain, so a
   member whose parent exited first goes too; a gateway exit just closes it.
 
+### Sub-agent work as background work (opt-in)
+
+With `agent.windows_background_qos` set to `true` (off by default), two
+separate processes are marked as background work while still suspended, through
+the same `apply_windows_resource_ceiling` seam: the process a chat's task runs
+use, and the shared sub-agent runtime a chat's sub-agents use when the chat
+cannot host them in its own process
+(`session_allocation_parts.companions`). The process's Job object gets a
+weight-based CPU share of 3 (Windows' default is 5), it moves to
+`BELOW_NORMAL_PRIORITY_CLASS`, which the git, build and test processes it
+starts inherit, and it gets EcoQoS (`SetProcessInformation(ProcessPowerThrottling)`,
+what Task Manager's Efficiency mode sets). The priority class and the weight
+only matter when the CPU is contended, so the chat you are in gets the CPU
+first; EcoQoS asks Windows to lower clocks and prefer efficiency cores whether
+or not it is, so it can slow that work on an idle machine too. A process a
+person's own task run started (`FOREGROUND` start priority) is not marked, but
+the process is cached per chat, so a person's task run that reuses one that
+background work started runs marked until that process is replaced. Each
+call fails soft: a build without EcoQoS logs once and keeps the other two.
+
+Sub-agents that share the chat's own kiro-cli process, the default while
+`agent.session_sharing` is on, are not marked: the chat runs in that process,
+and a process-level hint cannot tell the two apart. Not covered yet: dedicated
+sub-agent processes (session sharing off, `keep`, a remote workspace), the
+`_bg` helper runtime, MCP gateway backends and cron scripts
+([#35537](https://github.com/kirodotdev/KiroCrew/issues/35537)).
+
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
 validates that handle's creation identity against the record, then retains exact
@@ -989,7 +1028,9 @@ supervision is a separate piece of work, proposed in
   `taskkill /F /PID` only after confirming a Kiro Crew executable or
   `python -m kiro_crew` process. Localized listener-state text is ignored.
   SSH forwards and unrelated processes are never terminated, and a failed or
-  timed-out `netstat` probe is treated as unknown rather than as a free port.
+  timed-out `netstat` probe is treated as unknown rather than as a free port:
+  the launcher then tries to bind the port itself and starts the gateway only
+  when that bind succeeds.
 - **`port-owner: :5476 held by NON-KiroCrew pid=...` naming our own
   `python.exe`** - the launcher binds Windows gateway identity to the executable
   path it resolved. An install reached through a directory junction (a Toolbox

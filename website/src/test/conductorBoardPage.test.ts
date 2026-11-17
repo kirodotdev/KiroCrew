@@ -268,6 +268,29 @@ describe('kirocrew-conductor page', () => {
     expect(text('#cb-you .v')).toBe('stuck one \u2014 is stuck (approval)')
   })
 
+  it("drops an answered ask from needs you when the host's awaits_person says so", () => {
+    mount({
+      items: [
+        item({ item_id: 'a', title: 'answered', status: 'question', awaits_person: false }),
+        item({ item_id: 'b', title: 'still asking', status: 'blocked', reason: 'needs_human', awaits_person: true }),
+      ],
+    })
+    expect(text('#cb-you .v')).toBe('still asking \u2014 is stuck (needs a person)')
+    expect(all('#cb-you .v')).toHaveLength(1)
+    const pills = all('#cb-tasks .card').map((c) => [c.querySelector('.t')?.textContent, c.querySelector('.pill')?.textContent])
+    expect(pills).toContainEqual(['still asking', 'needs you'])
+    expect(pills).not.toContainEqual(['answered', 'needs you'])
+  })
+
+  it('redraws a task card once its ask is answered and nothing else changed', () => {
+    const asked = { item_id: 'a', title: 'one', status: 'question', reason: 'approval', worker: 'idle' }
+    mount({ items: [item({ ...asked, awaits_person: true })] })
+    expect(text('#cb-tasks .card .pill')).toBe('needs you')
+    refill({ items: [item({ ...asked, awaits_person: false })] })
+    expect(text('#cb-tasks .card .pill')).not.toBe('needs you')
+    expect(document.querySelector('#cb-tasks .card button.reply')).toBeNull()
+  })
+
   it('shows the published note as the Bot wrote it', () => {
     mount({
       items: [],

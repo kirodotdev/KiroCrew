@@ -22,6 +22,9 @@ import type { RootState } from '../store'
 /** Task Runner's rail mark: a theme-painted SVG, inlined by `AppIcon` like an app's. */
 const TASK_RUNNER_ICON_URL = '/app-assets/projects/icon.svg'
 
+/** Channels' rail mark, the one its app row showed, inlined the same way. */
+const CHANNELS_ICON_URL = '/app-assets/channels/icon.svg'
+
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
 // reference (which is the standard Redux Toolkit pattern).
@@ -43,13 +46,15 @@ registerBuiltinSurface({
   // Slot-bearing: default chat slots have surface === '' (or no mode set).
   icon: <MessageSquare size={16} />,
   badgeLabel: 'unread conversations',
+  badgeLabelKey: 'nav.badge_unread_conversations',
   // Expanded-rail activity stays separate from unread attention: sub-agents
   // in flight are not unread conversations, and folding them into that count
   // would corrupt both the number and the tab-title attention sum. The
   // collapsed rail omits this context-poor signal; session rows identify the
   // specific work when the user opens Sessions.
   activitySelector: selectSubagentActivityCount,
-  activityLabel: 'subagents in flight',
+  // No `activityLabel`: the rail's own fallback is the catalog key for
+  // "subagents in flight", resolved per render, where a string here is English.
 })
 
 // Crewmates — one durable, pinned DM thread per crew member. Sits directly
@@ -62,6 +67,7 @@ registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.members,
   icon: <CrewMemberMark />,
   badgeLabel: 'unread member threads',
+  badgeLabelKey: 'nav.badge_unread_member_threads',
 })
 
 registerBuiltinSurface({
@@ -70,6 +76,7 @@ registerBuiltinSurface({
   // Non-slot: count comes from the notifications panel.
   unreadSelector: selectUnacknowledgedNotificationCount,
   badgeLabel: 'notifications',
+  badgeLabelKey: 'nav.badge_notifications',
   // Surfaced as the topbar bell (shellHeader.tsx NotificationsBellButton), not a rail
   // item. Route + badge + tab-title attention count stay wired via the
   // selectors above; only the left-rail entry is suppressed.
@@ -86,6 +93,13 @@ registerBuiltinSurface({
   // and `NavBadge` picks it up via the appBadges fallback. The label here
   // is what the fallback path's aria-label uses.
   badgeLabel: 'approvals needed',
+  badgeLabelKey: 'nav.badge_approvals_needed',
+})
+
+registerBuiltinSurface({
+  ...BUILTIN_SURFACE_NAV.channels,
+  // The mark and size its app row had, so the row looks as it did among the apps.
+  icon: <AppIcon iconUrl={CHANNELS_ICON_URL} icon="Users" size={20} />,
 })
 
 registerBuiltinSurface({

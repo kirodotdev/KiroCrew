@@ -10,8 +10,9 @@ Only a top-level turn takes the sub-agent completions handed over by the queue d
 (``tracing.subagents.delivered``), and only while tracing is on: one joins that run's
 trace, several give links. A top-level turn reporting a finished workflow run
 (``tracing.workflows.delivering``) joins that run's trace instead and links to the
-turn that launched it. The work-item read touches disk, so it runs on a worker
-thread before anything is bound.
+turn that launched it. A top-level turn also takes its queue wait and a link to each
+session that sent it (``tracing.steps.drained`` / ``sending``). The work-item read
+touches disk, so it runs on a worker thread before anything is bound.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ import logging
 from typing import Any
 
 from kiro_crew.tracing import crew as trace_crew
+from kiro_crew.tracing import inbound as trace_inbound
 from kiro_crew.tracing import provider as trace_provider
+from kiro_crew.tracing import steps as trace_steps
 from kiro_crew.tracing import subagents as trace_subagents
 from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.tracing import work as trace_work
@@ -60,7 +63,7 @@ async def _crew_attrs(
 
 
 def root_kind(state: Any, slot_key: str) -> str:
-    """``ultra`` or ``mate`` when *slot_key* is on a crew tree, else ``""``. No I/O."""
+    """``conductor_mode`` or ``mate`` when *slot_key* is on a crew tree, else ``""``. No I/O."""
     return trace_crew.root_of(slot_key, _stamped_row(state, slot_key))[2]
 
 
@@ -73,11 +76,14 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
     read is done, so a cancelled read leaves nothing to release.
     """
     join, links, attrs, rollup_key = None, (), None, ""
+    span_attrs: dict[str, Any] = {}
     trace = trace_provider.peek()
     if trace is not None:
         # Taken first, so a failed attribute read below cannot leave them for a
         # later turn of this task.
         causes = trace_subagents.take_causes(turn_id) if top else ()
+        # A queued turn's wait and the sessions that sent it (tracing/steps.py).
+        sent_links, span_attrs = trace_steps.take_queued() if top else ((), {})
         # A turn reporting a finished workflow run joins that run (tracing/workflows.py).
         wf_join, wf_links, wf_attrs = (
             trace_workflows.completion_binding(turn_id) if top else (None, (), {})
@@ -101,6 +107,17 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
         if wf_attrs:
             # After the crew read, so its failure cannot strip the run id off a joined turn.
             attrs = {**(attrs or {}), **wf_attrs}
+        links = tuple(links) + sent_links
+    caller = trace_inbound.join_for(turn_id)
+    if caller is not None:
+        # The caller asked (``telemetry.accept_traceparent``): its span parents the turn;
+        # a board round keeps this turn's spend through its own ``rollup_key``.
+        join = caller
     return trace_turns.bind_turn_root(
-        turn_id, join=join, links=links, attrs=attrs, rollup_key=rollup_key
+        turn_id,
+        join=join,
+        links=links,
+        attrs=attrs,
+        rollup_key=rollup_key,
+        span_attrs=span_attrs,
     )

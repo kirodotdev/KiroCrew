@@ -3,8 +3,8 @@
 Display redaction of row text and metadata, with its bounded cache and the memo of
 verdicts already found clean; the redaction records and variants a row carries; wire
 serialisation; and preparing a slot's stored rows for the client -- collapsing wire
-rows, expiring a dead child's OAuth banners, restoring allowed links and dropping
-unknown row fields.
+rows, expiring a dead child's OAuth banners, attaching the blocked-link records of the
+text being shown and dropping unknown row fields.
 
 Served through :mod:`kiro_crew.dashboard.chat_utils`, which callers and tests import and
 patch; this module never imports it.
@@ -22,23 +22,17 @@ from collections.abc import Callable
 from threading import RLock
 from typing import Any, cast
 
+from kiro_crew import redaction_seams
 from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.display_battery import display_battery
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
-    _exempt_exact_hosts,
-    bounded_blocked_links,
     oauth_url_contains_credential,
 )
+from kiro_crew.security.blocked_links import allowed_link_hosts, scoped_blocked_links
 from kiro_crew.security.credential_sources import bounded_credential_records
-from kiro_crew.security.exfil import (
-    current_scoped_exempt_hosts,
-    restore_allowed_links,
-    scoped_exempt_hosts,
-)
 from kiro_crew.security.redaction import _token_param_exempt_prefixes
 from kiro_crew.security.redaction_allow import allowed_hosts_for
 
@@ -64,15 +58,56 @@ def _redact_value(v):  # type: ignore[no-untyped-def]
 #: anything. One table, so a helper that moves or bounds records covers every
 #: kind at once and a new kind is one row, not a new call site to forget.
 REDACTION_RECORD_FIELDS: dict[str, tuple[Callable[[object], list[dict]], tuple[str, ...]]] = {
-    "blocked_links": (bounded_blocked_links, (EXFILTRATION_REDACTION_TAG_PREFIX,)),
     "redactions": (bounded_credential_records, tuple(CREDENTIAL_REDACTION_TAGS)),
 }
 
-#: Set (True) beside ``blocked_links`` when the writer vouches they are in reply
-#: order, which is what lets ``restore_allowed_links`` pair several different
-#: addresses on one host. Rows written before it existed may be out of order, so
-#: its absence keeps the older rule. It travels with its records, never alone.
-BLOCKED_LINKS_ORDERED_KEY = "blocked_links_ordered"
+#: Record keys an older build wrote beside a row's text or a variant's: the
+#: blocked-link records of a URL that was replaced whole, and the flag that said
+#: they were in reply order. A transcript line may still carry them, beside the
+#: placeholder that replaced the URL, so a retention point keeps them as the line
+#: carried them and a saved transcript round-trips unchanged; every emit path
+#: (:func:`_redact_meta_for_role`, :func:`_variant_for_emit`) drops them, so they
+#: never reach a client.
+RETIRED_RECORD_KEYS: tuple[str, ...] = ("blocked_links", "blocked_links_ordered")
+#: The placeholder an older build wrote in place of a suspicious URL, beside them.
+_LEGACY_PLACEHOLDER = "[REDACTED: suspicious URL to "
+
+#: The key an assistant row's ``meta`` (and a regenerate variant) carries its
+#: blocked-link records under (``security.blocked_links``): the links the dashboard
+#: renders as a Blocked link card instead of a live link. The display pass computes
+#: them from the text it sends, on every render, and nothing saves them; a value a
+#: transcript line carries under this key is dropped (:func:`with_blocked_links`).
+BLOCKED_LINKS_KEY = "link_blocks"
+
+
+def _renders_links(role: object, content: object) -> bool:
+    """Whether a row's links render as Blocked link chips: an assistant reply, and a
+    subagent completion, whose card draws its text as markdown whatever the row's role.
+    """
+    # Imported here so the chat_utils facade serves no new name.
+    from kiro_crew.dashboard.state import SUBAGENT_COMPLETION_PREFIXES
+
+    if role == "assistant":
+        return True
+    return isinstance(content, str) and content.startswith(SUBAGENT_COMPLETION_PREFIXES)
+
+
+def with_blocked_links(out: dict, text: object) -> dict:
+    """*out* (a wire row's meta, or a variant) with the blocked-link records of *text*.
+
+    The records are computed here from the text being sent, under the hosts the
+    render's :func:`allowed_link_hosts` scope allows; *text* is only read, never
+    changed. A value *out* already holds under :data:`BLOCKED_LINKS_KEY` came off a
+    transcript line and is dropped, never sent. Returns *out* itself when there is
+    nothing to add or drop, so the common row costs one substring test.
+    """
+    records = scoped_blocked_links(text) if isinstance(text, str) else []
+    if not records and BLOCKED_LINKS_KEY not in out:
+        return out
+    shown = {k: v for k, v in out.items() if k != BLOCKED_LINKS_KEY}
+    if records:
+        shown[BLOCKED_LINKS_KEY] = records
+    return shown
 
 
 def variant_from_row(row: dict) -> dict:
@@ -96,12 +131,16 @@ def variant_from_row(row: dict) -> dict:
             records = bound(meta.get(key))
             if records:
                 entry[key] = records
-        if entry.get("blocked_links") and meta.get(BLOCKED_LINKS_ORDERED_KEY) is True:
-            entry[BLOCKED_LINKS_ORDERED_KEY] = True
         stats = meta.get("turn_stats")
         if isinstance(stats, dict):
             # Redacted as the row's meta is when it is saved: the list is saved too.
             entry["turn_stats"] = _redact_value(stats)
+        # An older build's suspicious-URL placeholder keeps the records that hold its
+        # address, so the stashed text can still be shown as that address.
+        if _LEGACY_PLACEHOLDER in str(entry["content"]):
+            for key in RETIRED_RECORD_KEYS:
+                if key in meta:
+                    entry[key] = meta[key]
     return entry
 
 
@@ -111,8 +150,10 @@ def with_bounded_redaction_records(container: dict) -> dict:
 
     Every place that RETAINS a row's meta or a variant read off a transcript line
     goes through this, not only the places that display it: a bound applied at
-    render leaves the slot holding whatever the line carried. Returns the same
-    object when there is no such key, so the common row costs nothing.
+    render leaves the slot holding whatever the line carried. A retired record key
+    (:data:`RETIRED_RECORD_KEYS`) is kept as the line carried it, for the save to
+    write back; the emit paths drop it. Returns the same object when there is no
+    record set, so the common row costs nothing.
     """
     if not any(key in container for key in REDACTION_RECORD_FIELDS):
         return container
@@ -139,30 +180,43 @@ def drop_records_without_placeholders(container: dict, text: str) -> None:
             container.pop(key, None)
 
 
+def blocked_links_for_workspace(text: object, workspace: str | None) -> list[dict]:
+    """The blocked-link records of *text* under the hosts allowed in *workspace*.
+
+    For a surface that sends one finished text outside :func:`_prepare_messages`
+    (the side chat, a reply thread), so its links render as the main chat's do: the
+    same decision, the same allowed-host scope and use audit, and *text* only read.
+    """
+    if not isinstance(text, str):
+        return []
+    # Imported here so the chat_utils facade serves no new name.
+    from kiro_crew.security.blocked_links import allowed_host_audit_epoch
+    from kiro_crew.security.redaction_allow import normalize_workspace
+
+    # The epoch is read before the hosts, so a revoke between them marks it stale.
+    epoch = allowed_host_audit_epoch()
+    with allowed_link_hosts(allowed_hosts_for(workspace), normalize_workspace(workspace), epoch):
+        return scoped_blocked_links(text)
+
+
 def _variant_for_emit(variant: dict) -> dict:
-    """A regenerate variant as the client receives it: allowed links restored,
-    display-redacted text, and its redaction records rebuilt through their
-    bounded constructors. Runs inside the same allowed-host scope as the row it
-    belongs to, so a variant shows the links its row shows."""
+    """A regenerate variant as the client receives it: display-redacted text, its
+    redaction records rebuilt through their bounded constructors, and the
+    blocked-link records of that text. Runs inside the same allowed-host scope as
+    the row it belongs to, so a variant shows the links its row shows."""
+    from kiro_crew.security.blocked_links import restore_legacy_blocked_links
+
     bounded = with_bounded_redaction_records(variant)
-    text = bounded.get("content", "")
-    if isinstance(text, str) and "blocked_links" in bounded:
-        text, left = restore_allowed_links(
-            text,
-            bounded["blocked_links"],
-            current_scoped_exempt_hosts(),
-            ordered=bounded.get(BLOCKED_LINKS_ORDERED_KEY) is True,
-        )
-        bounded = {**bounded, "content": text}
-        if left:
-            bounded["blocked_links"] = left
-        else:
-            bounded.pop("blocked_links", None)
-    out = {**bounded, "content": redact_display_content(bounded.get("content", ""))}
+    out = {
+        **{k: v for k, v in bounded.items() if k not in RETIRED_RECORD_KEYS},
+        "content": redact_display_content(
+            restore_legacy_blocked_links(bounded.get("content", ""), variant)
+        ),
+    }
     # The page reads a reply's stats from its row, which a switch updates; the
     # variant's copy is only there for the switch to put back.
     out.pop("turn_stats", None)
-    return with_bounded_redaction_records(out)
+    return with_blocked_links(with_bounded_redaction_records(out), out["content"])
 
 
 def adopt_variant_text(row: dict, variant: dict) -> None:
@@ -188,10 +242,17 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
         elif isinstance(meta, dict):
             meta.pop(key, None)
     if isinstance(meta, dict):
-        # The marker describes the records just moved, so it moves with them.
-        meta.pop(BLOCKED_LINKS_ORDERED_KEY, None)
-        if meta.get("blocked_links") and variant.get(BLOCKED_LINKS_ORDERED_KEY) is True:
-            meta[BLOCKED_LINKS_ORDERED_KEY] = True
+        # A retired record set described the row's previous text, which is gone.
+        for key in RETIRED_RECORD_KEYS:
+            meta.pop(key, None)
+    # The variant's own, when its text still holds an older build's placeholder.
+    if _LEGACY_PLACEHOLDER in str(row["content"]):
+        carried = {key: variant[key] for key in RETIRED_RECORD_KEYS if key in variant}
+        if carried:
+            if not isinstance(meta, dict):
+                meta = {}
+                row["meta"] = meta
+            meta.update(carried)
     # The page reads a row's turn stats as the end of its turn, so they move only
     # on the row its turn stamped, which is when the newest variant carries them.
     # The first row of a reply that ran tools carries none and stays unstamped; a
@@ -243,7 +304,8 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
     # set is rebuilt through its one bounded constructor: it re-validates each
     # record, drops any that fails on its own -- never the message -- and bounds
     # the count, because this is a RETENTION point that reads the line and it
-    # runs on every render of the message that holds it.
+    # runs on every render of the message that holds it. A retired record set
+    # (RETIRED_RECORD_KEYS) an older build wrote is dropped, never served.
     validated_records = {
         key: bound(meta.get(key)) for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items()
     }
@@ -254,7 +316,7 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
 
         out: dict = {}
         for k, v in list(meta.items()):
-            if k in REDACTION_RECORD_FIELDS:
+            if k in REDACTION_RECORD_FIELDS or k in RETIRED_RECORD_KEYS:
                 continue
             if (
                 k == "oauth_url"
@@ -304,7 +366,11 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 out[k] = _redact_value(v)
         out.update({k: v for k, v in validated_records.items() if v})
         return out
-    out = {k: _redact_value(v) for k, v in list(meta.items()) if k not in REDACTION_RECORD_FIELDS}
+    out = {
+        k: _redact_value(v)
+        for k, v in list(meta.items())
+        if k not in REDACTION_RECORD_FIELDS and k not in RETIRED_RECORD_KEYS
+    }
     out.update({k: v for k, v in validated_records.items() if v})
     if role == "user" and isinstance(meta.get("quote"), dict):
         # The whole-message quote record (``chat_delivery.quote_meta``) must
@@ -342,14 +408,12 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
 # nothing else, and never the raw credential-bearing key material.
 #
 # The digest covers every input the battery's OUTPUT depends on, not just the
-# text: ``redact_exfiltration_urls`` also reads the active PlatformContext's
-# exempt-host set, which changes mid-process (a companion loads after boot, a
-# policy tightens). Keyed on content alone, a hot entry computed under the old set
-# kept being served -- a tenant link stayed ``[REDACTED]`` after its host was
-# exempted, or a URL the tightened policy now redacts kept displaying in plaintext
-# until eviction. The host set is folded INTO the digest rather than carried as a
-# key component: a container per entry would sit outside the byte cap, and with
-# a large tenant list it would dwarf the payload the cap is declared to bound.
+# text: ``redact_credentials`` also reads the active PlatformContext's pass-4
+# token-parameter prefix set, which changes mid-process (a companion loads after
+# boot, a policy tightens). Keyed on content alone, a hot entry computed under the
+# old set would keep being served until eviction. The set is folded INTO the
+# digest rather than carried as a key component: a container per entry would sit
+# outside the byte cap the cache is declared to keep.
 #
 # The entry cap counts individual STRINGS, and a rendered row costs several --
 # ``_prepare_messages`` redacts the content plus every meta string (a row's
@@ -391,42 +455,41 @@ _NO_BASE = object()
 def _display_redaction_cache_key(
     text: str,
     base: object = _NO_BASE,
-    exempt_hosts: frozenset[str] | None = None,
     *,
     token_param_prefixes: tuple[str, ...] | None = None,
 ) -> tuple[_DisplayRedactionKey, int]:
-    """Digest the exact string entering the battery together with the exempt sets it reads.
-
-    ``exempt_hosts`` is the caller's one read of the platform set and the scoped
-    override, the same snapshot it hands the battery, so the key names the set
-    the output is computed under. ``None`` reads the set here.
+    """Digest the exact string entering the battery together with the prefix set it reads.
 
     ``token_param_prefixes`` is the caller's one read of the pass-4 prefix set,
     the same snapshot it hands the battery, so the key names the set the output
     is computed under. ``None`` reads the set here.
 
-    The key is fixed-size: a 32-byte digest and the input byte length. The host set
-    is sorted and folded into the MAC input behind a NUL separator (a host never
-    contains NUL), so a changed set yields a different key while no per-entry
-    container is retained. A non-empty pass-4 token-parameter prefix set follows
-    behind a ``\\x01`` separator (a host never contains one either); an empty set adds
-    nothing, so the MAC input is the host-only form whenever no companion sets one.
+    The key is fixed-size: a 32-byte digest and the input byte length. The text is
+    followed in the MAC input by a NUL separator. A non-empty pass-4 token-parameter
+    prefix set follows behind a ``\\x01`` separator; an empty set adds nothing, so a
+    changed set yields a different key while no per-entry container is retained.
+    Every key also takes the published setting's mark (``display_verdicts.published_mark``,
+    empty while redaction is published on) last: a stored verdict outlives a switch
+    change, and the render memo reuses this key with or without a store; the salt-keyed
+    process caches are also emptied when the published setting changes
+    (:func:`_sync_cache_mark`).
     The length component constrains a digest collision.
     The digest is an HMAC under the per-process ``_DISPLAY_REDACTION_SALT``: one
     hash per lookup, so the cache stays cheaper than the battery it fronts.
     """
     raw = text.encode("utf-8", errors="surrogatepass")
-    if exempt_hosts is None:
-        exempt_hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
-    hosts = "\0".join(sorted(exempt_hosts)).encode("utf-8", errors="surrogatepass")
     prefixes = token_param_prefixes
     if prefixes is None:
         prefixes = _token_param_exempt_prefixes()
-    tail = hosts
+    tail = b""
     if prefixes:
         tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
     if base is _NO_BASE:
         base = _display_verdicts.mac_base()
+    # Every key names the published setting it was judged under (empty while on): a
+    # stored verdict outlives a switch change, and the render memo keys its rows on
+    # this key with no store at all (Windows, or before the store is enabled).
+    tail += _display_verdicts.published_mark()
     if base is None:
         digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + tail, hashlib.sha256).digest()
     else:
@@ -434,8 +497,8 @@ def _display_redaction_cache_key(
         # gateway's verdict subkey with the rules version already absorbed, so a
         # digest names the same text under the same rules across restarts. The
         # stored tag is the digest alone, so the text's length goes INTO the MAC:
-        # without it ``T + NUL + host`` under a smaller host set would hash the
-        # same bytes as ``T`` under the larger one.
+        # without it the MAC input would not say where the text ends, and a text
+        # that ends in what the tail holds could share a tag with a shorter one.
         mac = cast("hmac.HMAC", base).copy()
         mac.update(len(raw).to_bytes(8, "big"))
         mac.update(raw)
@@ -454,19 +517,44 @@ def display_redaction_stamp() -> tuple[object, ...] | None:
     """Everything besides the text that the display battery's answer depends on.
 
     The same material :func:`_display_redaction_cache_key` folds into every
-    digest -- the exempt-host set, the token-parameter prefixes and the verdict
-    MAC base -- plus the cache epoch. Equal stamps mean ``_redact_for_display``
-    and ``_redacted_preview`` give the same answer for the same text, so a
-    caller may memo their outputs under it. ``None`` inside a scope that changes
-    the battery's answer, where nothing may be memoized
-    (:func:`_display_scope_changes_battery`). Read it once per pass: it costs a
-    few microseconds, the digest's set reads.
+    digest -- the token-parameter prefixes and the verdict MAC base -- plus the
+    cache epoch and the published setting's mark. Equal
+    stamps mean ``_redact_for_display`` and ``_redacted_preview`` give the same
+    answer for the same text, so a caller may memo their outputs under it.
+    ``None`` inside a scope that changes the battery's answer, where nothing may
+    be memoized (:func:`_display_scope_changes_battery`). Read it once per pass:
+    it costs a few microseconds, the digest's set read.
     """
     if _display_scope_changes_battery():
         return None
-    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
     base = _display_verdicts.mac_base()
-    return (_display_cache_epoch, hosts, _token_param_exempt_prefixes(), base)
+    mark = _display_verdicts.published_mark()
+    return (_display_cache_epoch, mark, _token_param_exempt_prefixes(), base)
+
+
+#: The published setting's mark (``display_verdicts.published_mark``) the process caches
+#: hold answers for. Read and moved only under ``_display_redaction_cache_lock``.
+_display_cache_mark: bytes = b""
+
+
+def _sync_cache_mark() -> bytes:
+    """Empty the process caches if the published setting changed; return its mark.
+
+    The salt-keyed caches hold one position's answers at a time, so a lookup made
+    after a switch change never finds an answer the other position computed.
+    """
+    global _display_cache_mark
+    mark = _display_verdicts.published_mark()
+    with _display_redaction_cache_lock:
+        if mark != _display_cache_mark:
+            _clear_display_redaction_cache()
+            _display_cache_mark = mark
+    return mark
+
+
+def _cache_mark_is(mark: bytes) -> bool:
+    """Whether the caches still hold *mark*'s answers; call under the cache lock."""
+    return _display_cache_mark == mark
 
 
 def _clear_display_redaction_cache() -> None:
@@ -504,8 +592,8 @@ def _display_redaction_cache_info() -> tuple[int, int]:
 # thousand rows, while one slot-detail render of a long session redacts hundreds
 # of thousands: every render evicted the previous one and the cache never hit.
 # For an unchanged string the input IS the output, so the verdict needs only the
-# key -- 128 bits of the same keyed digest (which already covers the exempt-host
-# set) plus the input byte length, as one int of about 86 bytes with its set
+# key -- 128 bits of the same keyed digest (which already covers the prefix set)
+# plus the input byte length, as one int of about 86 bytes with its set
 # slot. Strings the battery changes still go
 # through the output cache, so a returned value is always either a cached output
 # for this exact key or the caller's own string the battery left untouched.
@@ -526,10 +614,11 @@ _display_clean_old: set[int] = set()
 def _clean_verdict_key(key: _DisplayRedactionKey) -> int:
     """128 bits of the digest with the input byte length above them.
 
-    The MAC input ``text + NUL + hosts`` alone does not say where the text ends:
-    a text that itself ends in ``NUL + host`` under a smaller host set yields the
-    same bytes. The length in the key is what separates those two, exactly as it
-    does for the output cache, so the verdict must keep it too.
+    The MAC input ``text + NUL + tail`` alone does not say where the text ends: a
+    text that itself ends in what a tail holds can yield the same bytes as a
+    shorter text under another tail. The length in the key is what separates
+    those two, exactly as it does for the output cache, so the verdict must keep
+    it too.
     """
     digest, length = key
     return (length << 128) | int.from_bytes(digest[:16], "big")
@@ -557,21 +646,21 @@ def _display_clean_add(ck: int) -> None:
 def _display_scope_changes_battery() -> bool:
     """Whether this call runs inside a scope that changes the battery's answer.
 
-    The owner-view scope stands the credential pass down and ``code_text`` relaxes the
-    bare-secret pass. Neither is part of :func:`_display_redaction_cache_key`, so
+    The owner-view scope, and an output seam opened while redaction is off, stand the
+    credential pass down. Neither is part of :func:`_display_redaction_cache_key`, so
     inside either the display caches must be neither read nor filled: a cached
     answer would be the wrong one there, and the scoped one wrong everywhere else.
     """
     # Imported here, as ``display_verdicts.active`` does, so the chat_utils facade
-    # does not forward the two predicates as names of its own.
-    from kiro_crew.security.redaction_switch import (
-        bare_secret_pass_enabled,
-        credential_pass_bypassed,
-    )
+    # does not forward the predicate as a name of its own. Asked as the battery's own
+    # CHAT seam answers it: a caller outside the seam (a slot pass, a preview, a row
+    # memo) would otherwise key an owner's raw answer as everyone's.
+    from kiro_crew.security.redaction_switch import bypassed_in
 
-    return credential_pass_bypassed() or not bare_secret_pass_enabled()
+    return bypassed_in(redaction_seams.CHAT)
 
 
+@redaction_seams.in_seam(redaction_seams.CHAT)
 def _redact_for_display(text: str) -> str:
     """Apply all display redactors, reusing only an exact content-hash match.
 
@@ -579,20 +668,18 @@ def _redact_for_display(text: str) -> str:
     (:func:`_display_scope_changes_battery`) the battery runs uncached: no cache
     and no stored verdict is read or written.
 
-    The exempt-host set and the pass-4 token-parameter prefix set are each read
-    ONCE and those snapshots feed both the key and the battery. A second read
-    inside the battery (the host set in ``redact_exfiltration_urls``, the prefix
-    set in ``redact_credentials``) could see another set -- the platform read
-    moves mid-process and degrades a failure to the empty set -- and the cache
-    would store one set's output under another set's key.
+    The pass-4 token-parameter prefix set is read ONCE and that snapshot feeds
+    both the key and the battery. A second read inside the battery (in
+    ``redact_credentials``) could see another set -- the platform read moves
+    mid-process and degrades a failure to the empty set -- and the cache would
+    store one set's output under another set's key.
     """
     scoped = _display_scope_changes_battery()
+    generation = _display_verdicts.published_generation()
+    mark = _sync_cache_mark()
     stored, base = (None, None) if scoped else _display_verdicts.active()
-    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
     prefixes = _token_param_exempt_prefixes()
-    key, input_bytes = _display_redaction_cache_key(
-        text, base, hosts, token_param_prefixes=prefixes
-    )
+    key, input_bytes = _display_redaction_cache_key(text, base, token_param_prefixes=prefixes)
     ck = _clean_verdict_key(key)
     tag = key[0]
     if not scoped:
@@ -611,39 +698,53 @@ def _redact_for_display(text: str) -> str:
     if stored is not None:
         # The session's stored verdicts (display_verdicts): read once per render,
         # only after the process cache missed, and only ever under a tag that
-        # binds this exact text to the current rules and host set.
+        # binds this exact text to the current rules and prefix set.
         verdict = stored.lookup(tag)
         if verdict is _display_verdicts.CLEAN:
             with _display_redaction_cache_lock:
-                _display_clean_add(ck)
+                if _cache_mark_is(mark):
+                    _display_clean_add(ck)
             return text
         if isinstance(verdict, str):
-            _remember_redacted(key, input_bytes, verdict)
+            _remember_redacted(key, input_bytes, verdict, mark=mark)
             return verdict
 
-    redacted = display_battery(text, exempt_hosts=hosts, token_param_prefixes=prefixes)
+    redacted = display_battery(text, token_param_prefixes=prefixes)
     if scoped:
+        return redacted
+    if _display_verdicts.published_generation() != generation:
+        # The setting was published while the battery ran -- even back to the same
+        # one, which the mark alone cannot see -- so the key may name the other
+        # position: this answer is neither cached nor stored.
         return redacted
     if redacted == text:
         with _display_redaction_cache_lock:
-            _display_clean_add(ck)
+            if _cache_mark_is(mark):
+                _display_clean_add(ck)
         if stored is not None:
             stored.note(tag, _display_verdicts.CLEAN, from_memory=False)
         return text
     if stored is not None:
         stored.note(tag, redacted, from_memory=False)
-    _remember_redacted(key, input_bytes, redacted)
+    _remember_redacted(key, input_bytes, redacted, mark=mark)
     return redacted
 
 
-def _remember_redacted(key: _DisplayRedactionKey, input_bytes: int, redacted: str) -> None:
-    """File one changed string's output in the bounded output cache."""
+def _remember_redacted(
+    key: _DisplayRedactionKey, input_bytes: int, redacted: str, *, mark: bytes | None = None
+) -> None:
+    """File one changed string's output in the bounded output cache.
+
+    With *mark*, filed only while the caches still hold that mark's answers.
+    """
     global _display_redaction_cache_bytes
     entry_bytes = len(key[0]) + input_bytes + len(redacted.encode("utf-8", errors="surrogatepass"))
     if entry_bytes > _DISPLAY_REDACTION_CACHE_MAX_BYTES:
         return
 
     with _display_redaction_cache_lock:
+        if mark is not None and not _cache_mark_is(mark):
+            return
         cached = _display_redaction_cache.get(key)
         if cached is not None:
             _display_redaction_cache.move_to_end(key)
@@ -663,8 +764,7 @@ def _remember_redacted(key: _DisplayRedactionKey, input_bytes: int, redacted: st
 # slot-list read and slots broadcast re-projects every open tab on the event loop,
 # and stripping and redacting each whole message is most of that cost while the
 # message rarely changes between two reads. The key is the string cache's keyed
-# digest of the RAW text (exempt-host and token-parameter sets folded in) plus the
-# limit, and the value is the redacted, cut preview, so an entry retains no
+# digest of the RAW text (the token-parameter set folded in) plus the limit, and the value is the redacted, cut preview, so an entry retains no
 # credential-bearing text. Bounded by entries and by bytes of key plus output;
 # ``_clear_display_redaction_cache`` empties it with the string cache.
 _DISPLAY_PREVIEW_CACHE_MAX_ENTRIES = 8_192
@@ -679,9 +779,9 @@ _display_preview_cache_bytes = 0
 #: holds; past either it is emptied, not trimmed. A text longer than the character
 #: bound is never held here (it goes through the digest-keyed cache only). The
 #: preview is cut to ``limit``. Every entry answers for ONE redaction context
-#: (exempt hosts, token-parameter prefixes, verdict base), held once in
+#: (token-parameter prefixes, verdict base, published setting), held once in
 #: ``_display_preview_by_object_context``; a different context empties the map, so
-#: the host set is retained once however many entries there are.
+#: the context is retained once however many entries there are.
 _DISPLAY_PREVIEW_BY_OBJECT_MAX = 4_096
 _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS = 4 * 1024 * 1024
 _display_preview_by_object: dict[int, tuple[str, int, str]] = {}
@@ -693,8 +793,9 @@ def _same_preview_context(held: tuple | None, context: tuple) -> bool:
     return (
         held is not None
         and held[0] == context[0]
-        and held[1] == context[1]
-        and held[2] is context[2]
+        and held[1] is context[1]
+        and held[2] == context[2]
+        and held[3] == context[3]
     )
 
 
@@ -715,14 +816,16 @@ def _redacted_preview(text: str, limit: int) -> str:
     if _display_scope_changes_battery():
         # _redact_for_display runs the battery uncached here too.
         return _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
+    _sync_cache_mark()
     # Every slots broadcast previews each tab's last message, and the same string
     # object comes back until that message changes. Matching on the object and on
-    # the inputs the key folds in (exempt hosts, token-parameter prefixes, verdict
-    # base) answers it without hashing the whole text on the event loop again.
+    # the inputs the key folds in (token-parameter prefixes, verdict base, published
+    # setting) answers it without hashing the whole text on the event loop again.
     context = (
-        _exempt_exact_hosts() | current_scoped_exempt_hosts(),
         _token_param_exempt_prefixes(),
         _display_verdicts.mac_base(),
+        _display_verdicts.published_mark(),
+        _display_verdicts.published_generation(),
     )
     with _display_redaction_cache_lock:
         if _same_preview_context(_display_preview_by_object_context, context):
@@ -731,9 +834,10 @@ def _redacted_preview(text: str, limit: int) -> str:
                 return seen[2]
     preview = _redacted_preview_by_digest(text, limit)
     after = (
-        _exempt_exact_hosts() | current_scoped_exempt_hosts(),
         _token_param_exempt_prefixes(),
         _display_verdicts.mac_base(),
+        _display_verdicts.published_mark(),
+        _display_verdicts.published_generation(),
     )
     # Remembered only when the inputs did not move while it was computed, the
     # same rule the digest-keyed cache applies before it files an entry.
@@ -768,6 +872,8 @@ def _redacted_preview_by_digest(text: str, limit: int) -> str:
     # Imported here so the chat_utils facade does not forward the strip as its own name.
     from kiro_crew.preview_text import strip_markdown_preview
 
+    generation = _display_verdicts.published_generation()
+    mark = _sync_cache_mark()
     (digest, length), _ = _display_redaction_cache_key(text)
     key = (digest, length, limit)
     with _display_redaction_cache_lock:
@@ -776,17 +882,23 @@ def _redacted_preview_by_digest(text: str, limit: int) -> str:
             _display_preview_cache.move_to_end(key)
             return cached[0]
     preview = _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
-    # Filed only when the sets the key folds in did not change while it was
-    # computed, so an entry never holds an answer from a context its key does not name.
-    if _display_redaction_cache_key(text)[0][0] == digest:
-        _remember_preview(key, preview)
+    # Filed only when the set the key folds in did not change while it was
+    # computed, nor the setting's publication (a round trip leaves the key the
+    # same), so an entry never holds an answer from a context its key does not name.
+    if (
+        _display_redaction_cache_key(text)[0][0] == digest
+        and _display_verdicts.published_generation() == generation
+    ):
+        _remember_preview(key, preview, mark=mark)
     return preview
 
 
-def _remember_preview(key: _DisplayPreviewKey, preview: str) -> None:
+def _remember_preview(key: _DisplayPreviewKey, preview: str, *, mark: bytes | None = None) -> None:
     global _display_preview_cache_bytes
     entry_bytes = len(key[0]) + len(preview.encode("utf-8", errors="surrogatepass"))
     with _display_redaction_cache_lock:
+        if mark is not None and not _cache_mark_is(mark):
+            return
         if key in _display_preview_cache:
             _display_preview_cache.move_to_end(key)
             return
@@ -819,8 +931,7 @@ def redact_display_content(content: Any) -> str:
     helper; do not add another copy of the guard.
 
     Delegates to :func:`_redact_value`, the same recursive walker the meta
-    redaction uses: ``str`` leaves get ``redact_exfiltration_urls`` then
-    ``redact_credentials`` (the order the existing sites apply), dict VALUES
+    redaction uses: ``str`` leaves get the display battery, dict VALUES
     are recursed, and list/tuple elements are recursed into a new list. The
     result is then passed through :func:`serialize_wire_content`, so a
     non-string value leaves as JSON text — and that text gets one final
@@ -1127,63 +1238,6 @@ def without_unknown_row_fields(m: dict) -> dict:
     return {key: value for key, value in m.items() if key != UNKNOWN_ROW_FIELDS_KEY}
 
 
-def _prepare_messages(
-    messages: list[dict], running: bool, *, live_child: str, workspace: str | None = None
-) -> list[dict]:
-    """Prepare messages for API response.
-
-    ``live_child`` is the process-instance identity of the ACP child currently
-    serving the slot ("" when none is alive) — see
-    :func:`_expire_dead_child_oauth_meta`. REQUIRED and keyword-only on
-    purpose: a caller that forgot it would silently withdraw every live OAuth
-    banner it renders, and no test would see the omission. Resolve it with
-    :func:`_live_child_instance` on the event loop, as close to the render as
-    possible (a verdict sampled long before use can name a child that has
-    since died, serving one stale read).
-
-    ``workspace`` is the slot's workspace: the display redaction relaxes the
-    hosts a reader allowed there, the same hosts the segment flush relaxed, so
-    an allowed link reaches the page it was kept for.
-    """
-    # Imported here so the chat_utils facade serves no new name.
-    from kiro_crew.security.exfil import allowed_host_audit_epoch
-    from kiro_crew.security.redaction_allow import normalize_workspace
-
-    # The epoch is read before the hosts, so a revoke between them marks it stale.
-    epoch = allowed_host_audit_epoch()
-    with scoped_exempt_hosts(allowed_hosts_for(workspace), normalize_workspace(workspace), epoch):
-        return _prepare_messages_scoped(messages, running, live_child=live_child)
-
-
-def with_allowed_links_restored(m: dict) -> dict:
-    """``m`` with the blocked links its reader has since allowed shown again.
-
-    Runs inside an allowed-host scope (:func:`_prepare_messages` and the live
-    ``chat_message`` frame), before the
-    display redaction, so a restored address is checked by the same pass that
-    let the host through (see :func:`restore_allowed_links`).
-    """
-    text = m.get("content")
-    meta = m.get("meta")
-    if not isinstance(text, str) or not isinstance(meta, dict) or "blocked_links" not in meta:
-        return m
-    records = bounded_blocked_links(meta.get("blocked_links"))
-    new_text, left = restore_allowed_links(
-        text,
-        records,
-        current_scoped_exempt_hosts(),
-        ordered=meta.get(BLOCKED_LINKS_ORDERED_KEY) is True,
-    )
-    if new_text == text:
-        return m
-    new_meta = dict(meta)
-    if left:
-        new_meta["blocked_links"] = left
-    else:
-        new_meta.pop("blocked_links", None)
-    return {**m, "content": new_text, "meta": new_meta}
-
-
 def _carry_row_mid(meta: dict, msg: dict) -> dict:
     """*meta* (parsed from a row's ``cls``) with the row's own ``mid`` kept.
 
@@ -1200,6 +1254,33 @@ def _carry_row_mid(meta: dict, msg: dict) -> dict:
     if isinstance(mid, str) and mid and "mid" not in meta:
         return {**meta, "mid": mid}
     return meta
+
+
+def _prepare_messages(
+    messages: list[dict], running: bool, *, live_child: str, workspace: str | None = None
+) -> list[dict]:
+    """Prepare messages for API response.
+
+    ``live_child`` is the process-instance identity of the ACP child currently
+    serving the slot ("" when none is alive) — see
+    :func:`_expire_dead_child_oauth_meta`. REQUIRED and keyword-only on
+    purpose: a caller that forgot it would silently withdraw every live OAuth
+    banner it renders, and no test would see the omission. Resolve it with
+    :func:`_live_child_instance` on the event loop, as close to the render as
+    possible (a verdict sampled long before use can name a child that has
+    since died, serving one stale read).
+
+    ``workspace`` is the slot's workspace: the hosts a reader allowed there let
+    their links render live again (:func:`with_blocked_links`). It changes no text.
+    """
+    # Imported here so the chat_utils facade serves no new name.
+    from kiro_crew.security.blocked_links import allowed_host_audit_epoch
+    from kiro_crew.security.redaction_allow import normalize_workspace
+
+    # The epoch is read before the hosts, so a revoke between them marks it stale.
+    epoch = allowed_host_audit_epoch()
+    with allowed_link_hosts(allowed_hosts_for(workspace), normalize_workspace(workspace), epoch):
+        return _prepare_messages_scoped(messages, running, live_child=live_child)
 
 
 def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
@@ -1224,6 +1305,11 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
                     # floor from before a gateway restart apart (chunk_generation).
                     if isinstance(m.get("gen"), str):
                         row["gen"] = m["gen"]
+                # The streamed text so far, so a link the live stream holds is
+                # not drawn live before its row lands.
+                shown = with_blocked_links({}, text)
+                if shown:
+                    row["meta"] = shown
                 out.append(row)
             continue
         text = m.get("content", "")
@@ -1239,8 +1325,12 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
         # Content may be structured (a legacy or hand-edited row):
         # redact_display_content recurses into it rather than raising.
         if role != "user" and text:
-            m = with_allowed_links_restored(m)
-            m = {**m, "content": redact_display_content(m.get("content", ""))}
+            # An older build's suspicious-URL placeholder goes back as the address its
+            # records kept, so the chip, an allowed host and the masks decide it now.
+            from kiro_crew.security.blocked_links import restore_legacy_blocked_links
+
+            text = restore_legacy_blocked_links(text, m.get("meta"))
+            m = {**m, "content": redact_display_content(text)}
         else:
             # The wire-string invariant covers EVERY row, not just the
             # redacted ones: a structured user row or a falsy container
@@ -1255,9 +1345,8 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # worker thread (slot-detail render offload) while the event
             # loop may still be appending variants to the live list. A variant's
             # records are re-validated here exactly as a row's are in
-            # _redact_meta_for_role: they can hold a full address a reader may
-            # open, and a transcript line is attacker-writable, so no record
-            # reaches a client without the serve-time check.
+            # _redact_meta_for_role: a transcript line is attacker-writable, so
+            # no record reaches a client without the serve-time check.
             msg_out["variants"] = [
                 _variant_for_emit(v) for v in list(msg_out["variants"]) if isinstance(v, dict)
             ]
@@ -1268,7 +1357,7 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # bound to that id (register_approval). Keep it for permission and
             # elicitation rows only (the two the approval registry binds, and
             # the two whose resolution frame names a `mid`), so every other
-            # row's wire meta stays exactly as before.
+            # row's wire meta is unchanged.
             if role in ("permission", "elicitation"):
                 meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(
@@ -1283,5 +1372,14 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, msg_out["meta"]), live_child
             )
+        held = msg_out.get("meta")
+        base = held if isinstance(held, dict) else {}
+        # Only an assistant reply's links render as Blocked link cards; any
+        # other row only loses a value a transcript line carried under the key.
+        shown = with_blocked_links(
+            base, msg_out.get("content") if _renders_links(role, msg_out.get("content")) else None
+        )
+        if shown is not base:
+            msg_out["meta"] = shown
         out.append(msg_out)
     return out

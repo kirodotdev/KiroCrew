@@ -414,7 +414,9 @@ class TestResetInvalidation:
     def _state(reset_result: bool) -> MagicMock:
         state = MagicMock()
 
-        async def _reset(_key: str, *, skip_if_busy: bool = False) -> bool:
+        async def _reset(
+            _key: str, *, skip_if_busy: bool = False, forget_unused_start: bool = False
+        ) -> bool:
             return reset_result
 
         state.sessions.reset = _reset
@@ -465,10 +467,10 @@ class TestLiveEventOwnershipIsWired:
 
         report = McpSessionReport()
         slot = _ChatSlot("s1")
-        # The PROVIDER carries the accessor, per the LLMProvider contract. The
-        # earlier shape reached `slot._acp_client` — the provider's INNER client
-        # — which the shared runtime's provider does not have, so the report went
-        # missing on that transport while a test built this way stayed green.
+        # The PROVIDER carries the accessor, per the LLMProvider contract.
+        # Reading `slot._acp_client` (the provider's INNER client) would miss the
+        # shared runtime's provider, which has none, and this fixture would still
+        # stay green.
         provider = SimpleNamespace(mcp_session_report=lambda: report)
         return slot, provider, report
 

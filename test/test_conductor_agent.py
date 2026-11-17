@@ -457,8 +457,15 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Call the `accept_eval` tool with NO arguments" in body
         assert "It evaluates `done` items only" in body
-        assert "keep only the entries whose item is currently `status: done`" in body
-        assert "Never pipe the unfiltered document" in body
+        assert "Never hand the evaluator an unfiltered `accept_batch`" in body
+        assert "references/accept-eval-fallback.md` first" in body
+        ref = " ".join(
+            (SKILL_DIR / "references" / "accept-eval-fallback.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        assert "keep only the entries whose item is currently `status: done`" in ref
+        assert "Never pipe the unfiltered document" in ref
 
     def test_prompt_and_skill_settle_a_pass_with_one_write(self, tmp_path, monkeypatch):
         """A pass is recorded and closed by one ``close`` that carries the verdict,
@@ -531,7 +538,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         for text in (prompt, body):
             assert "Round-0 go-ahead" in text
             assert "7-day runaway backstop" in text
-            assert "credentials, spend, deleting or overwriting someone's work" in text
+            assert "Is it one of the ask cases (a)-(e)?" in text
             assert "Park just this item" in text
 
     def test_needs_human_checklist_puts_the_risk_check_before_the_default(
@@ -544,22 +551,30 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         for text in (prompt, body):
-            assert text.index("Is it credentials, spend") < text.index("Not risky? Pick a default")
+            assert text.index("Is it one of the ask cases") < text.index(
+                "Not risky? Pick a default"
+            )
             assert "Can you pick a default?" not in text
             assert "Can I pick a default?" not in text
 
     def test_back_to_back_rounds_keep_a_spend_bound(self, tmp_path, monkeypatch):
-        """Without a pause between rounds, a default concurrency cap and a no-progress
-        back-off are the only hard spend gates when the user set no bound. The item
-        total has no cap and no notice; it stays readable as ``goal_items_used``.
+        """Without a pause between rounds, resource_status sizes each wave, a bound the
+        user set is the concurrency cap, and a no-progress back-off stops the loop. The
+        item total has no cap and no notice; it stays readable as ``goal_items_used``.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         for text in (prompt, body):
-            assert "spend is bounded" in text
+            assert "they are bounded" in text
             assert "two rounds in a row" in text
             assert "goal_concurrency_cap_reached" in text
             assert "concurrency_cap=<N>" in text
+            assert "`resource_status` decides the wave" in text
+            # Whole words, so "at most 600 characters" elsewhere is not the old bound.
+            words = [w.strip(".,;:()`*") for w in text.split()]
+            triples = {tuple(words[i : i + 3]) for i in range(len(words) - 2)}
+            assert ("at", "most", "6") not in triples
+            assert ("more", "than", "6") not in triples
             assert "goal_items_used" in text
             # The advisory item cap and its one-time notice are gone
             # (rfc-drop-goal-item-cap.md).
@@ -567,8 +582,6 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "cap_exceeded" not in text
             assert "keep going?" not in text.lower()
             assert "goal_item_cap_reached" not in text
-        assert "at most 6 ledger items OPEN at once" in prompt
-        assert "at most **6 ledger items open at once**" in body
 
     def test_prompt_names_its_own_skill_and_not_the_deprecated_alias(self, tmp_path, monkeypatch):
         """The procedure lives in ``goal-conductor``. ``goal-ledger-conductor`` is a
@@ -638,10 +651,13 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         the shell, which ``execute_bash`` then runs after one approval. A quoted
         heredoc is the one form the shell copies to stdin without interpreting.
         """
-        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        skill = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "a quoted heredoc only, never `printf` or `echo`" in skill
+        body = (SKILL_DIR / "references" / "accept-eval-fallback.md").read_text(encoding="utf-8")
         assert "<<'ACCEPT_BATCH'" in body
-        assert "printf '%s' '<" not in body
-        assert "printf '%s' '{" not in body
+        for text in (skill, body):
+            assert "printf '%s' '<" not in text
+            assert "printf '%s' '{" not in text
 
     def test_dashboard_entry_omits_managed_metadata_on_a_default_install(
         self, tmp_path, monkeypatch
@@ -937,6 +953,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "Assumptions" in text
         # And a goal that already authorizes execution must not be re-gated.
         assert "Skip the gate when the user already gave one" in text
+        # A turn nobody typed has nobody to give the go-ahead, so it is not gated.
+        assert "[cron notification" in text and "[sent by session" in text
+        assert "Then stop and wait for exactly one go-ahead" not in text
 
     def test_skill_states_the_real_approval_cost(self):
         """The cost note must match the spec, or patrol plans for wrong prompts.
@@ -947,11 +966,40 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         interval around approvals it does not pay — or walking into ones it does.
         """
         text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-        assert "Reads and creates do not prompt" in text
-        assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
+        assert "**What prompts.** Granted by name" in text
+        # Own-child sends and closes are auto-approved (tool_approval._conductor_own_child_call).
+        assert (
+            "`session_send` and `session_close` into a session you created do not prompt"
+            " either (`agent.conductor_own_child_verbs`, on by default)"
+        ) in text
+        assert "aimed at any other session they prompt" in text
+        assert "`work_dispatch` prompts once per item" in text
+        assert (
+            "`session_stop` (it discards the target's in-flight work), `execute_bash`"
+            " and every other core tool prompt"
+        ) in text
         # The checks run as granted tools; only their shell fallback prompts.
         assert "`accept_eval` tool" in text
-        assert "each such call blocks on one approval" in text
+        assert "so every shell call prompts" in text
+
+    def test_skill_never_blocks_a_wake_on_a_question_card(self):
+        """A patrol wake has nobody at the keyboard, so a blocking card there stalls
+        the loop for up to 30 minutes; an unassertable item gets a report to check
+        instead of an invented ask.
+        """
+        skill = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "references/rare-cases.md` before you act on it" in skill
+        text = " ".join(
+            (SKILL_DIR / "references" / "rare-cases.md").read_text(encoding="utf-8").split()
+        )
+        assert (
+            "In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]`,"
+            " `[sent by session` or `[headless run`, or a cron fired it), never call"
+            " `ask_question`"
+        ) in text
+        assert "In a turn the user typed, ask with `ask_question`." in text
+        assert "make it a `file` item (a report the worker writes)" in skill
+        assert "treat it as a needs-human item" not in skill
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
         """One record per item, in the one place the evaluator batch reads.
@@ -1000,7 +1048,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         assert "chat_folder_" not in text
         assert "<goal folder>" not in text and "<goal>/<agent>" not in text
-        dispatch = text.split("### Dispatch a round")[1].split("### Patrol")[0]
+        dispatch = (SKILL_DIR / "references" / "manual-dispatch.md").read_text(encoding="utf-8")
+        assert "manual-dispatch.md" in text.split("### Dispatch a round")[1].split("### Patrol")[0]
         assert "2. `session_create`" in dispatch, "dispatch must reach the create"
         assert "and no `folder`" in dispatch, "dispatch must say it passes no folder"
         opening = text.split("### Round 0")[1].split("### Dispatch a round")[0]
@@ -1419,11 +1468,13 @@ class TestDraftPullRequest:
         verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
         assert verdict == "refused", "the ratchet below pins the doc to THIS word"
 
-        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8") + (
+            SKILL_DIR / "references" / "acceptance-kinds.md"
+        ).read_text(encoding="utf-8")
         draft_sentences = [
             " ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+", body) if "draft" in s.lower()
         ]
-        assert draft_sentences, "SKILL.md says nothing about a draft PR"
+        assert draft_sentences, "the skill says nothing about a draft PR"
         assert any(
             f"`{verdict}`" in s for s in draft_sentences
         ), f"no draft sentence in SKILL.md names the `{verdict}` verdict the script returns"

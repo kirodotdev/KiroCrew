@@ -131,9 +131,10 @@ def _install_dashboard_middlewares(
 
     The order is a security contract: route latency outermost, then the relay-path
     header rule, the client-sent relay-header strip just inside it, the deny-audit
-    boundary outer to every barrier that can refuse, the host canonicalization, the
-    ``Host`` barrier, the header policy, CSRF, token auth, the SEL request audit and
-    the per-slot ownership checkpoint, with the SPA fallback innermost.
+    boundary outer to every barrier that can refuse, the app web origin router, the
+    host canonicalization, the ``Host`` barrier, the header policy, CSRF, token
+    auth, the redaction audience, the SEL request audit and the per-slot ownership
+    checkpoint, with the SPA fallback innermost.
     ``_register_workflow_lifecycle`` and ``_register_crewmate_prune_gate`` append
     their gates after it. The barriers are built by the entrypoint from the shared
     factories; the layers only this chain uses are built here.
@@ -217,10 +218,12 @@ def _install_dashboard_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
+    from kiro_crew.apps.app_web_origin import build_app_web_origin_middleware
     from kiro_crew.dashboard.card_send import (
         card_turn_arrival_middleware,
         card_turn_delegation_middleware,
     )
+    from kiro_crew.dashboard.redaction_audience import redaction_audience_middleware
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
@@ -252,6 +255,14 @@ def _install_dashboard_middlewares(
         # latency middleware and the two relay-header layers only, which keeps the
         # latency layer's "times the FULL in-gateway handling" contract intact.
         deny_audit_middleware,
+        # Inner to the deny-audit boundary and outer to the host canonicalization
+        # and the ``Host`` barrier: a request for an app web origin
+        # (``<app>.apps.localhost``) is served or refused here and reaches no
+        # dashboard layer, so it is never redirected, never answered by a dashboard
+        # route and never given dashboard credentials (apps/app_web_origin.py).
+        # It runs before token auth's SSM gate, so it is built with the same
+        # holder and refuses a request on the SSM listener by its socket.
+        build_app_web_origin_middleware(ssm_gate),
         host_canonical_redirect,
         host_validation_middleware,
         # Compressed request bodies are refused outright (415): the hardened
@@ -272,6 +283,10 @@ def _install_dashboard_middlewares(
             tailnet_direct=tailnet_direct,
             ssm_gate=ssm_gate,
         ),
+        # Right after token auth, whose claims it reads: a request the owner does not
+        # alone read runs its handler with every credential pass in full, whatever the
+        # owner's redaction setting (dashboard/redaction_audience.py).
+        redaction_audience_middleware,
         sel_audit_middleware,
         # Inner to token auth (it reads ``internal_auth``) and to the audit record:
         # a turn started by a Dashboard card hands no work to another session or job
@@ -325,9 +340,9 @@ def _install_api_middlewares(
     At parity with :func:`_install_dashboard_middlewares` over the MCP route surface
     both servers mount: route latency outermost, then the relay-path header rule, the
     client-sent relay-header strip just inside it, the deny-audit boundary, the
-    ``Host`` barrier, CSRF, token auth with no SPA shell, the SEL request audit and
-    the per-slot ownership checkpoint. ``_register_workflow_lifecycle`` appends its
-    gate after it.
+    ``Host`` barrier, CSRF, token auth with no SPA shell, the redaction audience, the
+    SEL request audit and the per-slot ownership checkpoint.
+    ``_register_workflow_lifecycle`` appends its gate after it.
     """
     # SEL audit middleware — log mutating MCP tool calls
     _sel_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
@@ -370,8 +385,10 @@ def _install_api_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
+    from kiro_crew.dashboard.redaction_audience import redaction_audience_middleware
+
     # Explicit ordering mirrors start_dashboard: latency → relay rule → relay strip →
-    # deny-audit → host → csrf → token → audit.
+    # deny-audit → host → csrf → token → redaction audience → audit.
     app.middlewares[:] = [
         # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
         # The MCP routes are registered AFTER this assignment, so the middleware
@@ -403,6 +420,8 @@ def _install_api_middlewares(
             spa_shell_handler=None,
             tailnet_trust=tailnet_trust,
         ),
+        # Same audience rule as the dashboard chain, right after token auth.
+        redaction_audience_middleware,
         sel_audit_middleware,
         # Same per-slot app-ownership checkpoint as the dashboard chain, so a
         # per-slot route registered on this server is decided the same way.

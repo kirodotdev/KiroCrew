@@ -942,7 +942,7 @@ class TestBackendAllowlist:
         direct = ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED
         shared = ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
         assert direct == {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE}
-        assert shared == {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+        assert shared == {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
         for verified in (direct, shared):
             assert not child_calls_marked(ACP_BACKEND_CODEX, verified)
             # Unknown and unreadable backends fail closed.
@@ -951,7 +951,7 @@ class TestBackendAllowlist:
             assert not child_calls_marked(MagicMock(), verified)
 
     @pytest.mark.parametrize(
-        "backend, marked", [("", True), ("kas", True), ("codex", False), ("claude", False)]
+        "backend, marked", [("", True), ("kas", True), ("codex", False), ("claude", True)]
     )
     def test_the_shared_runtime_stamps_the_mark(self, backend, marked):
         handle = TestNativeKasChild._handle()
@@ -1053,6 +1053,21 @@ class TestOverlayNeverWaived:
         other = ToolHookResult.deny(f"{DENY_REASON_PREFIX}{_RM_ROOT}")
         other.tier = "deny-rules"
         assert override_offer_key(other, _make_slot(), _shell_event()) == _RM_ROOT
+
+    def test_no_card_is_offered_for_the_substitution_depth_cap(self, monkeypatch):
+        from kiro_crew.dashboard.deny_override import override_offer_key
+
+        _no_pins(monkeypatch)
+        command = 'echo "$(' * 33 + "true" + ')"' * 33
+        reason = is_denied(command)
+        key = deny_reason_key(reason or "")
+        assert key == "substitution nesting deeper than 32"
+        assert deny_key_is_self_guard(key)
+        verdict = ToolHookResult.deny(reason)
+        verdict.tier = "deny-rules"
+        assert override_offer_key(verdict, _make_slot(), _shell_event()) is None
+        # A waiver naming the key, however it arrived, still refuses.
+        assert is_denied(command, waived=frozenset({key})) == reason
 
     def test_an_unreadable_overlay_offers_nothing(self, monkeypatch):
         from kiro_crew.dashboard.deny_override import override_offer_key

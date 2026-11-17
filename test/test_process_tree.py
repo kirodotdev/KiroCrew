@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import inspect
+import os
 import subprocess
 import sys
 import threading
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from spawn_test_helpers import plain_sleeper_argv
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
@@ -99,10 +101,12 @@ class TestKillEscapedChildren:
             _kill_escaped_children({42: 100})
 
         # The same sweep, unpatched, on a child this test spawned and recorded.
-        child = subprocess.Popen(["sleep", "30"])
+        argv = plain_sleeper_argv(30)
+        name = os.path.basename(argv[0]).encode()
+        child = subprocess.Popen(argv)
         try:
-            wait_until(lambda: _read_basename(child.pid) == b"sleep")
-            record = (platform_compat.get_process_start_id(child.pid), b"sleep")
+            wait_until(lambda: _read_basename(child.pid) == name)
+            record = (platform_compat.get_process_start_id(child.pid), name)
             _kill_escaped_children({child.pid: record})
             assert child.wait(timeout=10) == -signal.SIGKILL
         finally:

@@ -54,9 +54,9 @@ _CLOSE_ALL_CONCURRENCY = 8
 # SessionManager.drain_active_turns). Kept small: a restart must stay snappy, and
 # a turn that will not reach a safe boundary in this window is unlikely to in any
 # reasonable one — on timeout we fall through to the (SIGTERM-first) kill path.
-# This is the co-operative drain the empty-response-after-Make-Live incident
-# needed; the subsequent SIGTERM grace (AcpRuntime 5s / AcpClient 3s) is what
-# then lets kiro-cli release its native-session lock.
+# Without this drain a Make-Live cutover can leave a turn with an empty
+# response; the SIGTERM grace that follows (AcpRuntime 5s / AcpClient 3s) lets
+# kiro-cli release its native-session lock.
 _DRAIN_ACTIVE_TURNS_TIMEOUT_SECS = 5.0
 
 # Bound on the won-race stale-retry recursion in get_or_create. Each retry

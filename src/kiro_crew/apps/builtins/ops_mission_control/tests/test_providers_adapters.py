@@ -12,9 +12,10 @@ import os
 import shutil
 import tempfile
 import unittest
-from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend.registry import (
     OpsProviderRegistry,
@@ -35,10 +36,15 @@ class TestDatadogCredentialsOnlyReachDatadog(unittest.IsolatedAsyncioTestCase):
     domain there is).
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self._tmp = Path(tempfile.mkdtemp())
+        self._tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self._tmp)
 
@@ -49,7 +55,6 @@ class TestDatadogCredentialsOnlyReachDatadog(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
-        shutil.rmtree(self._tmp, ignore_errors=True)
 
     def test_a_documented_site_is_honoured(self):
         """The gate must not break the multi-region support it protects."""
@@ -134,10 +139,15 @@ class TestACloudWatchFaultIsNotAQuietEstate(unittest.IsolatedAsyncioTestCase):
     is exactly what they need told.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self._tmp = Path(tempfile.mkdtemp())
+        self._tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self._tmp)
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
@@ -153,7 +163,6 @@ class TestACloudWatchFaultIsNotAQuietEstate(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
-        shutil.rmtree(self._tmp, ignore_errors=True)
 
     async def test_an_unavailable_client_raises_rather_than_polling_empty(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import cloudwatch
@@ -223,10 +232,15 @@ class TestTheCloudWatchConsoleLinkCannotBeRedirected(unittest.IsolatedAsyncioTes
     Datadog monitor link.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self._tmp = Path(tempfile.mkdtemp())
+        self._tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self._tmp)
 
@@ -237,7 +251,6 @@ class TestTheCloudWatchConsoleLinkCannotBeRedirected(unittest.IsolatedAsyncioTes
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
-        shutil.rmtree(self._tmp, ignore_errors=True)
 
     def test_a_real_region_still_builds_a_real_console_link(self):
         """Including the gov and cn partitions — a shape check must not break them."""
@@ -333,8 +346,13 @@ class TestPagerDutyCannotBorrowATeammatesShift(unittest.IsolatedAsyncioTestCase)
     any other configured rotation still decides.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -343,7 +361,6 @@ class TestPagerDutyCannotBorrowATeammatesShift(unittest.IsolatedAsyncioTestCase)
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _adapter(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import pagerduty
@@ -449,8 +466,13 @@ class TestCloudWatchAlarmsArePaged(unittest.IsolatedAsyncioTestCase):
     page. Found in review (GPT 5.6).
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -459,7 +481,6 @@ class TestCloudWatchAlarmsArePaged(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     class _FakeCW:
         """Returns ``pages`` pages of ``per`` alarms, with a NextToken until the last."""
@@ -568,8 +589,13 @@ class TestPollersMarkTruncationSoAbsenceIsNotRecovery(unittest.IsolatedAsyncioTe
     (GPT 5.6).
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -578,7 +604,6 @@ class TestPollersMarkTruncationSoAbsenceIsNotRecovery(unittest.IsolatedAsyncioTe
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_datadog_marks_a_full_page_as_truncated(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
@@ -686,6 +711,12 @@ class TestPollersMarkTruncationSoAbsenceIsNotRecovery(unittest.IsolatedAsyncioTe
                     for i in range(n)
                 ]
             )
+
+        # `configured()` also needs `gh` on PATH; pin that seam so the result does not
+        # depend on whether the host running the test has the CLI installed.
+        gh_on_path = mock.patch.object(github_issues, "_gh_available", return_value=True)
+        gh_on_path.start()
+        self.addCleanup(gh_on_path.stop)
 
         async def _fake_over(args):
             return 0, _issues(DEFAULT_POLL_LIMIT + 1), ""

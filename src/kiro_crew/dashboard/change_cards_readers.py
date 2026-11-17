@@ -1176,18 +1176,17 @@ async def _mcp_detail(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _crewmate_label(key: str) -> str:
-    """The name the user knows a crewmate by: its display name, else its key.
+    """The name the user knows a crewmate by: its display name, else its default.
 
     A card raised in the crewmate's own chat is read under that display name, so
     a title or scope line naming the key would name a crewmate the user has never
     seen. Display-only, so it rides in the context rather than the compared
     snapshot: a rename between propose and apply is not a conflict.
     """
+    from kiro_crew.agent_files import member_label
     from kiro_crew.config.loader import KiroCrewConfig
 
-    agent = KiroCrewConfig.load().agents.get(key)
-    label = getattr(agent, "display_name", "") if agent is not None else ""
-    return label.strip() if isinstance(label, str) and label.strip() else key
+    return member_label(key, KiroCrewConfig.load().agents.get(key))
 
 
 async def read_context(

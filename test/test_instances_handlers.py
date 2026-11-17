@@ -656,7 +656,7 @@ class TestHandlers:
             )
         )
         assert r.status == 200 and calls == ["cd-1"]
-        # Regression: the diagnosis must be surfaced even with no live tunnel,
+        # The diagnosis must be surfaced even with no live tunnel,
         # otherwise Diagnose on a disconnected instance shows nothing.
         body = _body(r)
         assert body["diagnosis"]["code"] == "remote_down"

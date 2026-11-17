@@ -43,6 +43,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import (  # noqa:
     _redirect_state,
     _slot_stub,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def test_route_facade_covers_every_backend_module() -> None:
@@ -309,7 +310,7 @@ def test_valid_name_rules():
 
 
 def test_redact_scrubs_credentials():
-    secret = "glpat-IOSFODNN7EXAMPLE"
+    secret = github_classic(seed=133)
     out = routes._redact(f"key is {secret} ok")
     assert secret not in out
 
@@ -323,7 +324,7 @@ async def test_spec_state_is_redacted_on_get(tmp_path, monkeypatch):
     # value — the GET handler must recursively scrub it before serving.
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "demo"
     spec_dir.mkdir(parents=True)
-    secret = "glpat-IOSFODNN7EXAMPLE"
+    secret = github_classic(seed=133)
     (spec_dir / ".spec-state.json").write_text(
         json.dumps(
             {

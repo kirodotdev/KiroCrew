@@ -32,6 +32,7 @@ from kiro_crew.agent_discovery import (
     project_agent_names,
     spec_by_declared_name,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # caplog collects records from EVERY logger, not just the one at_level() names, so
 # a negative "logged no warning" assertion must filter by logger: an unrelated
@@ -1273,7 +1274,7 @@ class TestSpecByDeclaredName:
         input from a user-writable directory, and it persists in gateway.log;
         it goes through the same log-egress redaction as every other line
         carrying text this process did not author."""
-        token = "ghp_" + "C" * 36
+        token = github_classic(seed=95)
         for stem in ("Alpha", "Beta"):
             (tmp_path / f"{stem}-{token}.json").write_text(
                 json.dumps({"name": token, "description": "shared"}), encoding="utf-8"

@@ -91,7 +91,7 @@ _WORK_PLAIN_TEXT_FIELDS = frozenset(
     {"title", "goal", "decision", "summary", "event", "what", "why", "pick", "pick_why"}
 )
 
-_WORK_NESTED_TEXT_FIELDS = frozenset({"acceptance", "artifacts", "ask", "options"})
+_WORK_NESTED_TEXT_FIELDS = frozenset({"acceptance", "artifacts", "ask", "options", "discussion"})
 
 
 class WorkFieldError(ValueError):
@@ -232,8 +232,8 @@ def _fits_one_line(text: str, extra: "dict[str, Any] | None" = None) -> bool:
 
 
 #: How a message body is represented in ``data``. ``text`` puts the redacted body
-#: IN the log, which is the decided behaviour: FR-7 was amended in this change to
-#: include bodies, because they are redacted before they are written. ``ref`` names
+#: IN the log, which is the decided behaviour (FR-7 includes bodies, because they
+#: are redacted before they are written). ``ref`` names
 #: the migration shape -- a pointer at a transcript position -- which the dual-write
 #: bridge adds alongside the body, NOT instead of it. The mode stays a single name
 #: read in one place (:func:`_append_body_entry`) so the bridge is a change there

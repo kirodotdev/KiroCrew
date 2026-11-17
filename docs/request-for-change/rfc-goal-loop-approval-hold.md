@@ -3,8 +3,8 @@ title: Goal loop approval hold -- an unanswered approval pauses a loop, and a wo
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-05
-last-audited: 2026-11-11
-audited-at: a97659dfc3
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [16993, 35016]
 tracking-issues: [16976]
@@ -17,7 +17,7 @@ superseded-by: []
 - Status: implemented. The decision was made by the operator who owns the conductor patrol (2026-10-05). The implementation is [#16993](https://github.com/kirodotdev/KiroCrew/pull/16993). That PR's First Principles lane reads an RFC's status off the base branch, so this document lands on its own first, as GOVERNANCE.md asks of an RFC. The implementation then rebased onto it and has since landed on main.
 - Amended 2026-11-11 by the repository owner's ruling in the conductor chat: a new turn in the slot ends the hold, whoever sent it. See [Amendment: 2026-11-11](#amendment-2026-11-11--a-new-turn-in-the-slot-ends-the-hold). The amendment takes effect when this document merges; its implementation is [#35016](https://github.com/kirodotdev/KiroCrew/pull/35016).
 - Amends [rfc-goal-popover-pause-play-controls.md](rfc-goal-popover-pause-play-controls.md) in two places, both named in section 3: how an unanswered approval ends a loop, and whether held time spends the runtime budget. That document's other decisions stand.
-- Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the `work-ledger` watch), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor), and the goal-conductor skill's `scripts/patrol_budget.py` (agent-side renewal).
+- Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the `work-ledger` watch), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor), and the goal-conductor skill's `scripts/patrol_budget.py` (agent-side renewal; since removed by [#33599](https://github.com/kirodotdev/KiroCrew/pull/33599)).
 - Measured at `a97659dfc3`.
 
 ## 1. Problem
@@ -84,7 +84,7 @@ then the spent bound is raised instead of the loop being stopped:
 
 Each raise is logged at WARNING and shows as the new bound on the loop record. The tick takes itself off the timer table before the update, so the update cannot cancel it before the log line runs.
 
-**Runaway backstop.** This is the configured monitoring runtime ceiling, `monitoring.max_runtime_secs`, measured as the loop's age from `created_ts`. It is seven days as shipped, and an operator may raise it (up to 30 days). Past it, nothing is raised: the bound stops the loop as before, and the refusal is logged at WARNING. `patrol_budget.py` has its own fixed seven-day limit for agent-side renewals. The two agree at the shipped default; an operator who raises the ceiling raises only the server-side backstop.
+**Runaway backstop.** This is the configured monitoring runtime ceiling, `monitoring.max_runtime_secs`, measured as the loop's age from `created_ts`. It is seven days as shipped, and an operator may raise it (up to 30 days). Past it, nothing is raised: the bound stops the loop as before, and the refusal is logged at WARNING. `patrol_budget.py` had its own fixed seven-day limit for agent-side renewals (the script was since removed by #33599). The two agree at the shipped default; an operator who raises the ceiling raises only the server-side backstop.
 
 Because a hold moves `created_ts` forward (3.1), held time does not count toward the backstop either. A loop that is often held can therefore live past seven days of wall clock. It cannot fire past seven days of unheld time, and held time fires nothing.
 

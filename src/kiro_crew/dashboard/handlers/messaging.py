@@ -23,7 +23,7 @@ from typing import Any, Callable, cast  # noqa: F401
 
 from aiohttp import web
 
-from kiro_crew import platform_compat  # noqa: F401
+from kiro_crew import platform_compat, redaction_seams  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE  # noqa: F401
 from kiro_crew.config import live  # noqa: F401
@@ -197,11 +197,14 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _session_link_blocks,
     _slack_rate_limited,
     _slack_rejected_outright,
+    _update_message,
     _with_source_line,
     api_delete_message,
-    api_update_message,
 )
 from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
+    _app_token_batch_refusal,
+    _app_token_caller,
+    _app_token_parent_refusal,
     _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
@@ -254,11 +257,14 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     STOPPED_BEFORE_START_CODE,
+    _app_bot_spawn_refusal,
+    _app_token_spawn_refusal,
     _backend_name,
     _chain_note,
     _continue_on_loop,
     _failover_backend,
     _inherited_backend_name,
+    _light_tier_pins,
     _lts_kiro_successor,
     _parent_run_is_silent,
     _qualified_model_refusal,
@@ -299,6 +305,9 @@ from kiro_crew.dashboard.messaging_api.wecom_settings import (  # noqa: F401
 )
 from kiro_crew.dashboard.notification_coordinator import unread_count  # noqa: F401
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request  # noqa: F401
+from kiro_crew.dashboard.slot_ownership import (  # noqa: F401 -- read by messaging_api.run_control, .spawn
+    _record_isolation_denial,
+)
 from kiro_crew.dashboard.state import (  # noqa: F401
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
@@ -612,6 +621,13 @@ _SLACK_ONLY_BODY_FIELDS = (
 _SLACK_SECTION_TEXT_MAX = 3000
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
+async def api_update_message(request: web.Request) -> web.Response:
+    """POST /api/update-message: :func:`_update_message` inside the channel egress seam."""
+    return await _update_message(request)
+
+
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 async def api_send_message(request: web.Request) -> web.Response:
     """POST /api/send-message — send a message to a chat surface and/or dashboard.
 

@@ -514,8 +514,7 @@ class TestFactoryDropWarning:
     def test_explicit_override_warns_every_time(self, caplog, tmp_path):
         # A caller's own request being dropped is the event this gate exists
         # to surface — an explicit override never dedupes, so a config-default
-        # drop cannot burn the key and silence a later per-slot request
-        # (Design review on this PR).
+        # drop cannot burn the key and silence a later per-slot request.
         cfg = KiroCrewConfig()
         cfg.agent.provider = "acp"
         with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
@@ -666,10 +665,12 @@ class TestPoolEffortPostClaim:
         pooled.change_effort = AsyncMock(return_value=True)
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
 
         provider, is_new, resumed = await mgr.get_or_create(
             "slot-1",
@@ -705,10 +706,12 @@ class TestPoolEffortPostClaim:
         pooled.change_effort = AsyncMock(return_value=False)
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
 
         with caplog.at_level(logging.WARNING):
             provider, is_new, resumed = await mgr.get_or_create(
@@ -749,10 +752,12 @@ class TestPoolEffortPostClaim:
         pooled.change_effort = AsyncMock(side_effect=RuntimeError("KAS effort unsupported"))
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
 
         with caplog.at_level(logging.WARNING):
             provider, is_new, resumed = await mgr.get_or_create(

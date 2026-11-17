@@ -21,6 +21,7 @@ import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord, type Upd
 import { foldStableStamp } from '../utils/displayVersion'
 import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { reportForError } from '../utils/errorReport'
 
 /**
  * Proactive "update found" modal — the one interruption between an update
@@ -644,6 +645,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             variant="inline"
             className="mt-2"
             message={gwCancelArm.isError ? i18nT('components.updateFoundModal.cancel_update_failed') : null}
+            report={gwCancelArm.isError ? reportForError(gwCancelArm.error) : undefined}
             askAgent={!required}
             onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
             testId="update-cancel-armed-error"

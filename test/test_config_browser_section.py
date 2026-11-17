@@ -77,6 +77,11 @@ class TestDefaults:
             enabled=True, quality="auto", max_fps=60, mask_passwords=True
         )
 
+    def test_the_change_report_is_off_by_default_and_reads_as_a_flag(self):
+        assert KiroCrewConfig().browser.report_changes is False
+        assert BrowserConfig.from_raw({"report_changes": True}).report_changes is True
+        assert BrowserConfig.from_raw({"report_changes": "yes please"}).report_changes is False
+
     def test_the_enums_are_the_contract_values(self):
         assert BROWSER_CHOICES == ("auto", "user_chrome", "kiro_chromium", "headless")
         assert LIVE_QUALITIES == ("auto", "high", "medium", "low")
@@ -181,6 +186,7 @@ class TestRoundTrip:
         after = json.loads(cfg_home.read_text(encoding="utf-8"))
         assert after["browser"] == {
             "choice": "kiro_chromium",
+            "report_changes": False,
             "live": {"enabled": True, "quality": "medium", "max_fps": 30, "mask_passwords": True},
             # Unset: ``None`` and ``[]`` both mean "follow the edition's default".
             "credentials": {"enabled": None, "domains": []},

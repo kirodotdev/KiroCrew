@@ -47,6 +47,7 @@ import NoticeCard from './NoticeCard'
 import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
+import McpSignInNeededNotice, { isMcpSignInNeededNotice } from './McpSignInNeededNotice'
 import TrustResetNoticeCard, { type LostMode } from './TrustResetNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
@@ -445,6 +446,14 @@ export function createTranscriptRenderers(
           onOpenCrewTab={o.onOpenCrewTab}
         />,
       ),
+    },
+    {
+      // The row a chat shows once when its MCP servers wait for a sign-in; its
+      // sentence names the chat message that signs in.
+      id: 'mcp_sign_in_needed',
+      roles: ['notice'],
+      match: isMcpSignInNeededNotice,
+      render: (m, ctx) => ctx.row(<McpSignInNeededNotice key={ctx.key} content={m.content} meta={m.meta} />),
     },
     {
       // The main chat's one "You paused the crew" row (conductor mode Pause all).
@@ -858,6 +867,11 @@ export function createTranscriptRenderers(
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
+            // The newest row only, where the gateway's wait lives (it ends once the
+            // chat no longer ends on that row). The card offers a new wait only
+            // where Resume itself could run, so never on a relay archive
+            // (`continuable` is false there), and keeps Cancel while one is held.
+            limitContinueSlot={isUsageLimit(m) && newest ? o.slot : undefined}
             kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}
             onOpenCapabilities={openCapabilities}
             onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
@@ -907,6 +921,7 @@ export function createTranscriptRenderers(
                   meta: mt,
                   onFileOpen: ctx.onFileOpen,
                   onFolderOpen: ctx.onFolderOpen,
+                  onArtifactOpen: ctx.onArtifactOpen,
                   onSessionOpen: o.onSessionOpen,
                   sessions: o.sessions,
                   activeSession: o.activeSession,

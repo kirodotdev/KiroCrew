@@ -65,6 +65,40 @@ def is_recoverable_auth_failure(error_message: object) -> bool:
     return is_auth_failure_output(error_message)
 
 
+# KAS's wording for a refresh the token endpoint answered with a client error
+# and no OAuth error code. Anchored on the closing parenthesis: the engine names
+# a code there only for ``server_error`` and ``temporarily_unavailable``, and a
+# 5xx or an unreachable endpoint may answer the same tokens later.
+_REFRESH_REFUSED = re.compile(r"could not be refreshed \(token endpoint answered (4\d\d)\)")
+# Timeouts, early-data refusals and throttling do not reject the saved sign-in.
+_TRANSIENT_REFRESH_STATUSES = frozenset({408, 425, 429})
+# An OAuth error code as the whole message: KAS reports a token endpoint's own
+# ``error`` that way when it is neither one it drops the tokens for nor one it
+# reads as passing.
+_OAUTH_ERROR_CODE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+_PASSING_OAUTH_ERRORS = frozenset({"server_error", "temporarily_unavailable"})
+
+
+def is_refused_sign_in(error_message: object) -> bool:
+    """Whether a failed server's error says its OAuth server refused the saved sign-in.
+
+    KAS deletes a remote server's tokens, and reports ``failedAuthorization``,
+    only for ``invalid_grant``, ``invalid_client`` and ``unauthorized_client``.
+    Any other refusal of a refresh keeps the tokens and reports the server
+    ``failed`` with one of the two shapes read here, so signing in again is the
+    only cure. An answer a later attempt may reverse (a 5xx, an unreachable
+    endpoint, ``server_error``) is not one: a sign-in reset drops the tokens.
+    """
+    if not isinstance(error_message, str) or not error_message:
+        return False
+    if match := _REFRESH_REFUSED.search(error_message):
+        return int(match.group(1)) not in _TRANSIENT_REFRESH_STATUSES
+    return (
+        _OAUTH_ERROR_CODE.fullmatch(error_message) is not None
+        and error_message not in _PASSING_OAUTH_ERRORS
+    )
+
+
 # A host's own connect timeout ("connection timed out after 60000ms" from KAS).
 # Word-bounded so a config error that merely names a "timeout" does not qualify.
 _TIMED_OUT = re.compile(r"\btimed\s+out\b", re.IGNORECASE)

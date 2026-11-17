@@ -58,7 +58,8 @@ def init_todo_fields(self: _ChatSlot) -> None:
     """Set this module's slot fields to their defaults (``_ChatSlot.__init__``)."""
     # Agent-authored TODO list, replaced wholesale from each todo_list tool
     # result (every command echoes the full list, so there is nothing to
-    # merge). Shape: {description: str, tasks: [{id, text, completed}]}.
+    # merge). Shape: {description: str, tasks: [{id, text, completed}]}, plus
+    # read_only: True on a list the harness keeps itself (an ACP plan).
     # None = the agent has never used its todo tool in this slot, which the
     # UI renders as "no pill" rather than "an empty list".
     self._todo = None
@@ -109,6 +110,12 @@ def set_todo(self: _ChatSlot, todo: dict[str, Any] | None) -> bool:
             "description": str(todo.get("description") or ""),
             "tasks": list(tasks) if isinstance(tasks, list) else [],
         }
+        if todo.get("read_only") is True:
+            # A list the harness keeps itself (an ACP ``plan``, see
+            # ``acp.plan_checklist``) takes no person's tick, so an override
+            # left from an editable list has nothing to hold over it.
+            normalised["read_only"] = True
+            self._todo_overrides = {}
         # A person's tick outranks the agent's stale copy of the same row.
         # The agent's list lives in its native conversation and it re-sends
         # the WHOLE list on every todo_list call, so without this a click is
@@ -212,20 +219,24 @@ def todo_payload(self: _ChatSlot) -> dict[str, Any] | None:
     the pill's "N of M" cannot drift from the list it labels. ``current`` is
     the first not-completed task's text — kiro-cli's todo model is a plain
     ``completed`` boolean with NO in-progress state, so "current task" is
-    this derivation, not something the agent reports.
+    this derivation, not something the agent reports. A list the harness keeps
+    itself carries ``read_only: true``, and the pill offers no toggle on it.
     """
     if self._todo is None:
         return None
     tasks = [t for t in self._todo.get("tasks", []) if isinstance(t, dict)]
     completed = sum(1 for t in tasks if t.get("completed"))
     current = next((str(t.get("text") or "") for t in tasks if not t.get("completed")), "")
-    return {
+    payload: dict[str, Any] = {
         "description": self._todo.get("description", ""),
         "tasks": tasks,
         "completed": completed,
         "total": len(tasks),
         "current": current,
     }
+    if self._todo.get("read_only") is True:
+        payload["read_only"] = True
+    return payload
 
 
 def todo_task_text(self: _ChatSlot, task_id: str) -> str | None:
@@ -245,10 +256,10 @@ def set_todo_task_completed(self: _ChatSlot, task_id: str, completed: bool) -> b
     inside its native conversation (kiro-cli's ``todo_list`` tool). A person
     ticking a row here writes only this copy; the next fresh native session
     picks the copy up through :meth:`todo_recovery_prompt`, so the tick is
-    not lost when the conversation restarts. Unknown ids and an absent list
-    change nothing.
+    not lost when the conversation restarts. Unknown ids, an absent list and a
+    ``read_only`` list (one the harness keeps itself) change nothing.
     """
-    if self._todo is None:
+    if self._todo is None or self._todo.get("read_only") is True:
         return False
     tasks = self._todo.get("tasks", [])
     for task in tasks:

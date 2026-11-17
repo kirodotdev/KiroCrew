@@ -16,6 +16,7 @@ from kiro_crew.hooks import _normalize_tool_name
 from kiro_crew.platform.tool_paths import edit_target_candidates
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
+    MAX_SCANNABLE_SOURCE_BODY_CHARS,
     is_denied,
     is_sensitive_bash_command,
     is_unverifiable_path_refusal,
@@ -156,8 +157,11 @@ def _extract_tool_input_strings(tool_input: str, *, split_oversize_diff: bool = 
 # its target path instead (``_edit_target_denial``), and every other non-shell
 # tool with trusted provenance has its document-body fields skipped
 # (``platform.tool_paths.command_shaped_strings``), so neither reaches this
-# ceiling on a body; the residual is the unclassified frame, which keeps the
-# full scan by design. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
+# ceiling on a body. A trusted MCP tool's message-body field named in
+# ``security.mcp_body_fields`` is split out too and judged by the path tier
+# under the 256 KiB source-body ceiling. The residual is the
+# unclassified frame and any other MCP field, which keep the full scan by
+# design. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
 #
 # One number for both tiers: the shell gate refuses a command above
 # ``security.MAX_SCANNABLE_COMMAND_CHARS`` on its own (every caller, not only
@@ -347,24 +351,28 @@ def _first_tool_input_denial(
     denied rather than scanned or skipped.
 
     ``command_rules=False`` applies the size ceiling and the path tier only:
-    the caller passes it for a named MCP document body
-    (``platform.tool_paths.MCP_DOCUMENT_BODY_FIELDS``), which is stored text
-    and not a command line.
+    the caller passes it for every MCP document or message body (a Kiro Crew
+    row in ``platform.tool_paths.MCP_DOCUMENT_BODY_FIELDS`` and a third-party
+    row in ``security.mcp_body_fields``), which is stored or delivered text and
+    not a command line. The 20 KiB ceiling bounds the command matchers, which
+    this path never runs, so it uses the 256 KiB
+    :data:`~kiro_crew.security.MAX_SCANNABLE_SOURCE_BODY_CHARS` instead.
 
     The tuple is ``(kind, reason, matched_string)`` where *kind* is
     ``"path"`` / ``"bash"`` / ``"regex"`` / ``"oversize"``. Mechanism
     classification stays with the caller on the event loop, because it consults
     the HookManager.
     """
+    limit = _MAX_SCANNABLE_TOOL_INPUT_CHARS if command_rules else MAX_SCANNABLE_SOURCE_BODY_CHARS
     for s in strings:
-        if len(s) > _MAX_SCANNABLE_TOOL_INPUT_CHARS:
+        if len(s) > limit:
             # Fail closed: too long to scan inside the loop's liveness budget,
             # so it cannot be shown safe and is refused.
             return (
                 "oversize",
                 (
                     "Blocked: a tool_input string is too large to security-scan "
-                    f"({len(s)} chars > {_MAX_SCANNABLE_TOOL_INPUT_CHARS} limit); "
+                    f"({len(s)} chars > {limit} limit); "
                     "refused rather than left unscanned"
                 ),
                 s[:64],

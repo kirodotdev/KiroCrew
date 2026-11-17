@@ -214,6 +214,7 @@ equal by a test):
 | `screenshot` | `path, full=False, max_dim=None` | `capture_screenshot` |
 | `screenshot_clip` | `path, x, y, width, height, max_dim, magnify` | the worker's own `Page.captureScreenshot` of one box (an element, or a region magnified up to `magnify`), fitted to `max_dim` device pixels |
 | `page_info` | -- | `page_info` (`{url,title,w,h,sx,sy,pw,ph}` or `{dialog}`) |
+| `dialog` | `action=None, text=None` | the worker's own read of the dialog `page_info` reports, and with `action` (`accept` or `dismiss`) a `Page.handleJavaScriptDialog` (`text` goes to a prompt on accept only). The `dialog` op reads it first because an open dialog holds the page: any other helper that needs the page's script times out after Harness's 5 s, and `run_op` then answers `dialog_open` instead of the helper's error |
 | `wait_for_load` | `timeout=15.0` | `wait_for_load` |
 | `new_tab`, `switch_tab`, `list_tabs`, `close_tab`, `current_tab` | `url` / `target, activate` / `include_chrome` / `target` / -- | the tab helpers |
 | `js` | `expression, target_id=None` | `js`, ONLY for `snapshot_walker.js` |
@@ -231,8 +232,13 @@ caller waits for the first), reports `status()` (`installed`, `version`,
 `{version, platform, build, present, executable}`),
 and stops all of it in `stop()`. `waiting_allow` has no deadline because the
 connection is what keeps Chrome's Allow sheet on screen. The gateway stops the
-supervisor on shutdown and before an in-place restart's exec
-(`server_runtime/browser_lifecycle.py`, registered with `pre_exec_stops`), and
+supervisor on shutdown, before an in-place restart's exec, and before the hard
+exit of a graceful shutdown that ran out of time (`server_runtime/browser_lifecycle.py`,
+registered with `pre_exec_stops`; the cleanup hook unregisters it once its own
+stop has returned; a teardown cut before its last child sets that handle aside,
+never to be reused, so the next stop reaches the children it never got to
+without retrying the tab close; that best-effort close is bounded at 3 s, so a
+stalled CDP connection cannot spend the stop's bound before the children stop), and
 reclaims a stray daemon from a previous life at startup, then runs the startup
 auto-install (see the driver section).
 
@@ -1105,6 +1111,19 @@ action answers `redirect_refused` through the existing blank-tab refusal path.
 The quick ask's hit test at a field in a
 frame passes when the browser's topmost node there is the frame's `<iframe>`, or,
 for a same-process frame, a node of that same frame.
+
+**What a step changed.** With `browser.report_changes` on (off by default), a
+`click`, `type` or `select_option` result also carries `changes`
+(`browser_harness/change_report.py`, reached from `ops.py`): the walker's `glance`
+reads the page's own document before and after the step, and `diff` names a new address or
+title, dialogs that opened or closed, new alert or status text, fields that failed
+validation, and controls that appeared or went away; a JavaScript dialog the step
+opened reads `js_dialog`, and `{"no_change_seen": true}` means none moved. Frames are
+not compared. The reads around the step are bounded by `budgets.CHANGE_BEFORE_S`
+(4 s) and `CHANGE_AFTER_S` (8 s), and while the setting is on the route adds their sum
+(`CHANGE_REPORT_S`) to those ops' budget, so a slow read costs the report and never the
+step's own answer. The user-facing rules (redaction, length caps, what counts as a
+field) are in `src/kiro_crew/docs/browser-control.md`.
 
 ### Decision-model help (`browser.step`)
 

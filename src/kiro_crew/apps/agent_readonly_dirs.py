@@ -58,25 +58,29 @@ def declaration_errors(value: object) -> list[str]:
 
 
 def mask_conflict_errors(dirs: object, masks: object) -> list[str]:
-    """Errors for ``agentReadOnlyDirs`` entries at or beneath a ``credentialMasks`` file.
+    """Errors for ``agentReadOnlyDirs`` entries at or beneath a ``credentialMasks`` entry.
 
-    A credential mask names a FILE, and the sandbox creates an absent read-only directory
-    so it can seal it, so such an entry would put a directory where the mask expects a
-    file and refuse every sandboxed spawn. A directory that holds a masked file is fine:
-    the seal is placed first and the mask on top of it.
+    A credential mask file entry names a FILE, and the sandbox creates an absent read-only
+    directory so it can seal it, so such an entry would put a directory where the mask
+    expects a file and refuse every sandboxed spawn. A masked directory (``"state/"``)
+    already hides everything beneath it from every agent, so a read-only directory there
+    seals nothing an agent can see. A directory that holds a masked file is fine: the seal
+    is placed first and the mask on top of it.
     """
-    files = valid_entries(masks)
+    masked = [
+        (mask, credential_masks.entry_path(mask)) for mask in credential_masks.valid_entries(masks)
+    ]
     return [
-        f"{MANIFEST_KEY}[{index}] must not be or sit beneath a credentialMasks file ({mask})"
+        f"{MANIFEST_KEY}[{index}] must not be or sit beneath a credentialMasks entry ({mask})"
         for index, entry in enumerate(valid_entries(dirs))
-        for mask in files
-        if entry == mask or entry.startswith(mask + credential_masks.ENTRY_SEPARATOR)
+        for mask, path in masked
+        if entry == path or entry.startswith(path + credential_masks.ENTRY_SEPARATOR)
     ]
 
 
 def valid_entries(value: object) -> tuple[str, ...]:
     """The admissible entries of *value*, deduplicated in declaration order."""
-    return credential_masks.valid_entries(value)
+    return credential_masks.valid_entries(value, kind=KIND)
 
 
 def declared_dirs(*, builtin: bool = True, installed: bool = True) -> dict[str, tuple[str, ...]]:

@@ -9,7 +9,8 @@ tracked background tasks. The dashboard never waits on a transport.
 Routing comes from each source channel's settings
 (``notifications.settings.ChannelSettings``): ``deliver_to`` names the transports,
 ``deliver_min_priority`` the floor a note's EFFECTIVE priority (after the user's
-overrides and mutes) must clear. A silenced note never routes, whatever the floor.
+overrides and mutes) must clear. A silenced note never routes, whatever the floor, and
+neither does a quiet keyed replacement, which raises no alert anywhere else either.
 
 Transports plug in as :class:`BridgeSink` objects (``bridge_slack.py`` is the
 first); a routed transport with no registered sink is skipped. Each delivery is
@@ -30,6 +31,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from kiro_crew import redaction_seams
 from kiro_crew.notifications.bridge_egress import audit_delivery, redact_note, vet_delivery
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 
@@ -184,7 +186,9 @@ class BridgeDispatcher:
 
     def routes(self, note: Mapping[str, Any]) -> tuple[str, ...]:
         """The transports *note* routes to, after the local sink applied the user's settings."""
-        if note.get("silenced"):
+        # A quiet keyed replacement updates a note already shown: it plays no sound,
+        # shows no banner and skips Web Push, so it posts no new chat message either.
+        if note.get("silenced") or note.get("quiet"):
             return ()
         rule = self.rule_for(note.get("channel"))
         if not rule.transports or not rule.admits(note.get("priority")):
@@ -279,6 +283,9 @@ class BridgeDispatcher:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
+    # A delivery is a channel post: its redaction and its sink run in full whatever
+    # seam the note was pushed from (a dashboard chat turn included).
+    @redaction_seams.in_seam(redaction_seams.CHANNELS)
     async def _deliver_one(
         self, sink: BridgeSink, note: dict[str, Any], subjects: tuple[str, ...]
     ) -> None:

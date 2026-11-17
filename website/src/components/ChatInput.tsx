@@ -8,8 +8,8 @@ import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
-import RejectDropdown from './RejectDropdown'
-import DenyOverrideDropdown, { DenyOverrideWarning } from './DenyOverrideDropdown'
+import { ApprovalActions } from './chat-input/ApprovalActions'
+import { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -22,6 +22,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
+import { ProjectPendingBadge, useStagedProject } from './chat-input/stagedProject'
 import { motion, AnimatePresence } from 'framer-motion'
 import { COMPOSER_ROW_SPRING, ComposerSizer, ONE_ROW_TEXT_PULL_PX, SHAPE_FLIP_WINDOW_MS } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
@@ -29,7 +30,6 @@ import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
-import TrustDropdown, { TrustUnavailable } from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -59,12 +59,13 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtDateFields } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
+import { COMPOSER_RADIUS } from './composerRadius'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
 import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/lazyChips'
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
-import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -218,6 +219,7 @@ function ChatInput({
   showContextPct,
   showContextTokens,
   isRunning = false,
+  projectTurnKey,
   projectLocked = false,
   projectSwitching = false,
   compacting = false,
@@ -326,7 +328,7 @@ function ChatInput({
     voiceDeviceLabel = '',
     voiceDeviceId = '',
     voiceDictationPanel = false,
-    voiceSubmitOnRelease = false, voiceSlideToSend = false, voicePttBinding = null,
+    voiceSubmitOnRelease = false, voiceSlideToSend = false, voicePttBinding = null, voiceMuted = false, onVoiceToggleMute,
     voiceStreaming = false,
     voiceSampleRef,
     voicePartial = '',
@@ -374,15 +376,15 @@ function ChatInput({
           : i18nT('components.chatInput.terminal_attachments'))
           : terminalRefusal === 'pending' ? i18nT('components.chatInput.terminal_pending')
             : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
+  const approval = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const {
-    pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
+    pendingApproval, hasApproval, approvalId, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalToolInput, approvalIsUnattended,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
-  } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat,
+  } = approval
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
   // render site of this component honours it and none can forget to pass it.
@@ -488,32 +490,11 @@ function ChatInput({
       ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [projectProp, projectBranch, projectDetached])
-  // The project this reply started in. A pick made while it runs updates
-  // `project` at once (the chip shows the next turn's project), but the reply
-  // itself keeps its start-of-turn directory, so the mid-turn tooltip names
-  // this snapshot. Captured when a response starts, and adjusted during
-  // render rather than in an effect so the first running frame is right.
-  // Re-taken when the composer moves to another chat as well: the composer is
-  // not remounted per chat, so going from one running chat to another keeps
-  // `isRunning` true and would otherwise name the previous chat's project.
-  const [turnStartProject, setTurnStartProject] = useState(projectProp)
-  const [sawRunning, setSawRunning] = useState(isRunning)
-  const [sawSlot, setSawSlot] = useState(slotId)
-  if (slotId !== sawSlot) {
-    setSawSlot(slotId)
-    setSawRunning(isRunning)
-    setTurnStartProject(projectProp)
-  } else if (isRunning !== sawRunning) {
-    setSawRunning(isRunning)
-    if (isRunning) setTurnStartProject(projectProp)
-  }
-  const midTurnProjectNote = useMemo(() => {
-    if (!isRunning) return ''
-    const name = turnStartProject
-      ? pathBasename(stripTrailingSeparators(turnStartProject)) || turnStartProject
-      : i18nT('components.chatInput.project')
-    return `${i18nT('components.chatInput.project_switch_applies_next_turn', { project: name })}\n${i18nT('components.chatInput.project_switch_links_follow_pick')}`
-  }, [isRunning, turnStartProject])
+  // A pick made while the composer is busy is staged: the chip names it at
+  // once, marks it pending, and the tooltip names the running reply's project.
+  const stagedProject = useStagedProject(projectProp, isRunning, slotId, projectTurnKey, projectLocked)
+  const midTurnProjectNote = stagedProject.midTurnNote
+  const lockedProjectNote = [stagedProject.pendingNote, i18nT('components.chatInput.project_locked_while_subagents_run')].filter(Boolean).join('\n')
   const { ctxPopoverOpen, setCtxPopoverOpen } = useContextPopover()
   // The project chip opens its picker on the mouse press (usePressActivation);
   // keyboard and touch stay on click. ProjectPicker's outside-press dismiss
@@ -931,7 +912,7 @@ function ChatInput({
   const fillFromSuggestion = useCallback((v: string) => { valueFromUserRef.current = true; onChange(v) }, [onChange])
   const followUpGhost = useFollowUpGhost({ options: followUpOptions, value, onUserEdit: fillFromSuggestion, composerControl, claimKey: ime.claimKey,
     enabled: !touchInput && !!onFollowUpSelect && !showGhost && connected && !typingLock && !disabledProp && !voiceRecording && !transcribingIsHonest && !continuePlaceholder && !voiceModePlaceholder && !optimizing })
-  const activePlaceholder = !connected ? offlinePlaceholder : typingLock ? '' : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || followUpGhost.placeholder || resolvedPlaceholder
+  const activePlaceholder = !connected ? offlinePlaceholder : typingLock ? '' : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT(voiceMuted ? 'components.chatInput.muted_click_mic_to_stop' : 'components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || followUpGhost.placeholder || resolvedPlaceholder
   // The sigil hint is a label and may be cut to one line. Every other
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
@@ -1109,7 +1090,7 @@ function ChatInput({
         // (44px of text line inside a 1px border), and 16px otherwise. The rim
         // is sized from the TWO-row height in both shapes, or the lit edge
         // would thin to half its width every time the draft is cleared.
-        radius={inlineToolbar ? COMPOSER_ONE_ROW_RADIUS : 16}
+        radius={inlineToolbar ? COMPOSER_ONE_ROW_RADIUS : COMPOSER_RADIUS}
         rimSize={inlineToolbarWhileFits ? COMPOSER_RIM_FROM_PX : undefined}
         data-testid="composer-dock"
         {...GUIDE_KEEP_CLEAR}
@@ -1177,38 +1158,7 @@ function ChatInput({
                           {i18nT('components.chatInput.show_in_chat')}
                       </button>
                   )}
-                  {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
-                      resolves — a keyboard chord lands on this row's first enabled
-                      control, and the reject chord's event arrives on the row. A `data-`
-                      hook rather than button text because every catalog translates the labels. */}
-                  <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
-                      {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
-                      <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {/* One dropdown carries every standing grant (trust-reads is a tier in it), and a card with none
-                          keeps its place disabled: `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) ? (
-                        <TrustDropdown
-                            fullCommand={approvalFullCommand}
-                            baseCommand={approvalBaseCommand}
-                            isShell={approvalIsShell && approvalTrustBaseGrantable}
-                            hasCommand={approvalTrustCommandGrantable}
-                            trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
-                            showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
-                            disabled={approvalSubmitting}
-                            className={approvalBtnClass}
-                            timedGrants
-                            onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
-                        />
-                      ) : <TrustUnavailable className={approvalBtnClass} />}
-                      </>}
-                      {/* Keyed per card row: a typed reason never reaches another card. */}
-                      <RejectDropdown
-                          key={`${activeSlot}:${approvalId}:${approvalMid ?? ''}`}
-                          disabled={approvalSubmitting} takesReason={approvalTakesReason}
-                          className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
-                          onAction={(action, reason) => { handleApprovalAction(action, undefined, undefined, reason) }}
-                      />
-                  </div>
+                  <ApprovalActions approval={approval} slotId={slotId} />
               </div>
               {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
               {/* A1 hint: points at the footer mode picker. Withheld for unattended
@@ -1418,7 +1368,7 @@ function ChatInput({
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
           voiceStreaming={voiceStreaming} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
           onClearVoiceError={onClearVoiceError} voiceDrainCancellable={voiceDrainCancellable} cancelVoiceDrain={cancelVoiceDrain} onVoiceToggle={onVoiceToggle}
-          micHeldElsewhere={micHeldElsewhere} micHeldElsewhereLabel={micHeldElsewhereLabel} micHeldElsewhereAction={micHeldElsewhereAction} voiceHeldLanded={voiceHeldLanded}
+          micHeldElsewhere={micHeldElsewhere} micHeldElsewhereLabel={micHeldElsewhereLabel} micHeldElsewhereAction={micHeldElsewhereAction} voiceHeldLanded={voiceHeldLanded} voiceMuted={voiceMuted} onVoiceToggleMute={onVoiceToggleMute}
         />
 
         {/* The overlay itself lets taps through; only the pill's Cancel takes
@@ -1943,8 +1893,8 @@ function ChatInput({
                armed while children share the runtime, so a pick there would
                not land at the next turn. */
             disabled={projectLocked}
-            title={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
-            aria-label={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
+            title={projectLocked ? `${projectChipTitle}\n${lockedProjectNote}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
+            aria-label={projectLocked ? `${projectChipTitle}\n${lockedProjectNote}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
             /* A pick waits on the turn-preparation lock, which a cold spawn
                holds for seconds: the spinner says the pick was taken, the
                same signal as the memory-mode chip (#20351). */
@@ -1961,6 +1911,7 @@ function ChatInput({
                 alone, so both segments still shrink below these caps on a
                 narrow window. */}
             {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
+            {stagedProject.pending && !projectSwitching && <ProjectPendingBadge compact={shelfCompact} project={project || ''} />}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
@@ -1977,7 +1928,7 @@ function ChatInput({
             </>
           )}
           {!!project && <ProjectAwsProfileStatus project={project} shelfCompact={shelfCompact} />}
-          <span role="status" className="sr-only" data-testid="composer-project-switch-status">{projectSwitching ? i18nT('components.chatInput.switching_project') : ''}</span>
+          <span role="status" className="sr-only" data-testid="composer-project-switch-status">{projectSwitching ? i18nT('components.chatInput.switching_project') : stagedProject.pendingNote}</span>
           </div>
           )}
           </div>

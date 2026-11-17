@@ -52,6 +52,7 @@ import threading
 from pathlib import Path
 from typing import Iterator, MutableMapping
 
+from kiro_crew.agent_capabilities_resources import object_resource_key
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
@@ -266,6 +267,9 @@ def _capability_value_valid(section: str, key: str, value: object) -> bool:
     if section in ("prompt", "model"):
         return key == section and isinstance(value, str)
     if section == "resources":
+        # A knowledge base is an object row, keyed as ``_rows`` keys it.
+        if isinstance(value, dict):
+            return key == object_resource_key(value)
         return isinstance(value, str) and value == key
     # Skill requests use True, but the writer persists the resolved catalog URI.
     return isinstance(value, str)

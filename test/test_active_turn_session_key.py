@@ -305,7 +305,7 @@ class TestTheKeyIsPublishedBeforeAdmission:
         release = asyncio.Event()
         verdict: dict[str, str] = {"admit": "refuse"}
 
-        async def _park_then_decide(task) -> None:
+        async def _park_then_decide(task, **_kw) -> None:
             parked.set()
             await release.wait()
             if verdict["admit"] == "refuse":

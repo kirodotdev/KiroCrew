@@ -60,6 +60,7 @@ _OWNER_MODULES = frozenset(
         "acp_recovery",
         "agent_started",
         "app_agent_binding",
+        "builtin_tools_notice",
         "context_cap",
         "crew_log_attribution",
         "decisions_hooks",
@@ -68,6 +69,7 @@ _OWNER_MODULES = frozenset(
         "eager_spawn",
         "elicitation_prompt",
         "file_changes",
+        "mcp_oauth_notice",
         "mcp_session",
         "model_fallback",
         "native_cards",
@@ -289,7 +291,7 @@ _BASE_NAMES = frozenset("""
         record_activity record_agent_selection record_interaction_event
         record_provider_agent_switch redact redact_and_truncate redact_credentials
         redact_credentials_with_records redact_exfiltration_urls
-        redact_exfiltration_urls_with_records redact_for_display redact_log_via_context
+        redact_for_display redact_log_via_context
         redact_via_context reflow_and_label_glued_option_marker refresh_materialized_agents
         refresh_tag_grants_cache refusal_card_text refusal_for_command_off_loop
         refuse_stale_switch register_guarded_history_write register_images_off_loop
@@ -1272,10 +1274,12 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"\b\w*redact\w*\(": (
         _RUNNER_HOME,
         "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/builtin_tools_notice.py",
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/elicitation_prompt.py",
         "dashboard/chat_turn/file_changes.py",
+        "dashboard/chat_turn/mcp_oauth_notice.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/native_cards.py",
@@ -1400,7 +1404,11 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/slash_commands.py",
     ),
     r"capabilities_of\(": (
+        "dashboard/chat_turn/builtin_tools_notice.py",
+        "dashboard/chat_turn/mcp_oauth_notice.py",
+        "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",
+        "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/slash_commands.py",
         "dashboard/chat_turn/tool_approval.py",
         "dashboard/chat_turn/tool_rows.py",

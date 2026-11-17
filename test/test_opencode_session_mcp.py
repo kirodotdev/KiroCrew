@@ -18,7 +18,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -1124,8 +1123,36 @@ def test_the_real_adapter_guard_is_reachable_at_all(monkeypatch):
     assert os.environ.get("OPENCODE_BIN") is None or _BIN is not None
 
 
+def _record_driver_drains(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> list[tuple[object, str]]:
+    """Record the timeout and the outcome of every pipe drain on the process run as *argv*.
+
+    Records only, so every thread may pass through it; other processes' drains are untouched.
+    The entry is appended on the calling thread before the call returns or raises.
+    """
+    drains: list[tuple[object, str]] = []
+    real = subprocess.Popen.communicate
+
+    def communicate(self, *args, **kwargs):
+        if self.args != argv:
+            return real(self, *args, **kwargs)
+        try:
+            result = real(self, *args, **kwargs)
+        except subprocess.TimeoutExpired:
+            drains.append((kwargs.get("timeout"), "timed out"))
+            raise
+        drains.append((kwargs.get("timeout"), "returned"))
+        return result
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", communicate)
+    return drains
+
+
 @pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups only")
-def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
+def test_the_driver_runner_reaps_descendants_on_the_timeout_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The leak the outer bound exists to prevent, driven end to end.
 
     ``subprocess.run(timeout=...)`` kills the driver alone. The real driver spawns
@@ -1159,9 +1186,16 @@ def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         script = Path(w) / "parent.py"
         script.write_text(parent, encoding="utf-8")
-        started = time.monotonic()
-        result = _run_driver_reaping_group([sys.executable, str(script)], timeout=5, cwd=w)
-        assert time.monotonic() - started < 90
+        argv = [sys.executable, str(script)]
+        drains = _record_driver_drains(monkeypatch, argv)
+        result = _run_driver_reaping_group(argv, timeout=5, cwd=w)
+        # The bound is the control here: the first drain runs out its 5 s, and the reap
+        # must leave no live writer on the pipes, so the second drain returns on EOF
+        # instead of waiting out its own 60 s bound.
+        assert drains == [(5, "timed out"), (60, "returned")], (
+            f"driver pipe drains were {drains}: the reap left a process holding the "
+            "driver's pipes, so draining them waited out the whole second bound"
+        )
         reported = (result.stdout or "").strip().splitlines()[0].split()
         grandchild = int(reported[0])
         assert len(reported) == 2, (

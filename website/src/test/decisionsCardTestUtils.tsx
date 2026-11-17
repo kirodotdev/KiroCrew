@@ -23,7 +23,7 @@ export function renderSection() {
 }
 
 /** The card's own switch. Named in full so "Decisions" cannot match another row. */
-export const decisionsSwitch = () => screen.getByRole('switch', { name: 'Decisions (Jev)' })
+export const decisionsSwitch = () => screen.getByRole('switch', { name: 'Decisions' })
 
 export const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 
@@ -129,11 +129,11 @@ export const openPoint = (name: string) => pointRow(name).click()
 
 /** The accessible name of each scope's consent switch, as the card labels it. */
 export const SCOPE_SWITCH: Record<string, string> = {
-  tool_args: 'Also send tool-call arguments so Jev can flag risky calls',
-  compaction: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+  tool_args: 'Also send tool-call arguments so the decision model can flag risky calls',
+  compaction: 'Also send the conversation and tool-call inputs so the decision model can score compaction',
   memory_text:
-    'Also send snippets of recalled memories so Jev can drop the ones that do not help',
-  nudge_evidence: 'Also send what a watching loop has found so Jev can skip a turn',
+    'Also send snippets of recalled memories so the decision model can drop the ones that do not help',
+  nudge_evidence: 'Also send what a watching loop has found so the decision model can skip a turn',
   browser: "Send outlines of the agent's browser tab",
   browser_images: "Also send screenshots of the agent's browser tab",
 }

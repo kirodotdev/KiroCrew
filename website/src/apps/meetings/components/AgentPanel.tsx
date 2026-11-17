@@ -20,12 +20,13 @@
 //      prepends a CSP that denies all egress (`connect-src 'none'`, `img-src`
 //      with no `https:`) and pins scripts to the same-origin vendored Mermaid
 //      file. The frame needs no network, so it is granted none.
-//   3. Nor was the CSP sufficient on its own, because it must grant `script-src
-//      'unsafe-inline'` for the Mermaid bootstrap. That let the MODEL's inline
-//      script run too, and script can stream the transcript out through
+//   3. Nor was the CSP sufficient on its own while it granted `script-src
+//      'unsafe-inline'` for the Mermaid bootstrap: the MODEL's inline script ran
+//      too, and script can stream the transcript out through
 //      `<link rel="dns-prefetch">` lookups that no CSP directive governs. So
-//      `buildSketchSrcdoc` also strips the model's scripts, event handlers, and
-//      speculative/navigational elements before serializing.
+//      `buildSketchSrcdoc` strips the model's scripts, event handlers, and
+//      speculative/navigational elements before serializing, and the CSP now
+//      admits inline script only by the SHA-256 of our own bootstrap.
 //
 // The diagram still renders: Mermaid is driven by OUR bootstrap from the
 // declarative `div.mermaid` markup the agent is instructed to emit, so removing

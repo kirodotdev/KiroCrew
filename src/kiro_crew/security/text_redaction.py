@@ -32,6 +32,7 @@ from kiro_crew.jwt_header import is_jwt_header
 from kiro_crew.security import _submodule
 
 from . import pass_compose, redaction, stream_aws_anchor
+from .redaction_switch import credential_pass_bypassed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -229,32 +230,78 @@ def _complete_token_match_crossing(
     return None
 
 
+def _batch_spans(buf: str) -> list[tuple[int, int]]:
+    """The spans the batch credential plan replaces in ``buf``, in text order."""
+    spans, _warnings, _rules = _submodule("redaction")._credential_redaction_plan(buf)
+    return [(start, end) for start, end, _tag in spans]
+
+
 def _aws_label_cut(buf: str, key_start: int) -> tuple[int, bool]:
     """Where an AWS label's safety cut goes, and whether its key is inside a batch match.
 
-    A key name can be the tail of a longer secret-bearing token: a bare secret
-    run that ends in `AccessKeyId`, a URL carrying an encoded key, or a value
-    like `aws_session_token=...AccessKeyId`. The cut lands only at whitespace
-    or at the start of the held buffer, and never inside a batch match, so
-    every secret before the key reaches one batch call whole. The cost: a whitespace-free run that holds the key past the ceiling
-    is dropped whole behind the fail-closed tag.
+    A key name can be the tail of a longer secret-bearing token: a URL carrying an
+    encoded key, or a value like `aws_session_token=...AccessKeyId`. The cut lands
+    only at whitespace or at the start of the held buffer, and never inside a batch
+    match, so every secret before the key reaches one batch call whole. The cost: a
+    whitespace-free run that holds the key past the ceiling is dropped whole behind
+    the fail-closed tag.
     """
     cut = _token_start(buf, key_start)
     inside = False
     if key_start > 0:
         spans = []
-        for match in _submodule("redaction")._credential_matches(buf):
-            if match.start() >= key_start:
+        for start, end in _batch_spans(buf):
+            if start >= key_start:
                 break
-            inside = inside or key_start < match.end()
-            spans.append(match.span())
+            inside = inside or key_start < end
+            spans.append((start, end))
         # Latest start first, so a span that crosses an earlier move is seen too.
         # A match can start mid-token, so each move walks back to whitespace
-        # again: a bare secret glued in front of the match stays whole.
+        # again: a value glued in front of the match stays whole.
         for start, end in sorted(spans, reverse=True):
             if start < cut < end:
                 cut = _token_start(buf, start)
     return cut, inside
+
+
+def _snap_back(buf: str, cut: int) -> int:
+    """``cut`` moved back to the start of the credential-class run it falls in."""
+    while cut > 0 and buf[cut - 1] in _CRED_CLASS:
+        cut -= 1
+    return cut
+
+
+def _word_start(buf: str, cut: int) -> int:
+    """The detectors' ``cut`` moved back to whitespace, as the natural cut ends at one.
+
+    Their hold is a fixed tail, so it can land on a non-class character inside a
+    word (``?data=!`` in a URL) and commit half of something a later pass reads
+    whole. A word longer than ``_STREAM_HOLDBACK_MAX`` keeps the class-run snap,
+    so the hold stays bounded.
+    """
+    start = _token_start(buf, cut)
+    if cut - start <= _STREAM_HOLDBACK_MAX:
+        return start
+    return _snap_back(buf, cut)
+
+
+def _outside_batch_spans(buf: str, cut: int) -> int:
+    """``cut`` moved back so no span the batch plan replaces in ``buf`` straddles it.
+
+    The detectors' hold, once snapped back to whitespace, can land inside a value the
+    plan reads whole (a token glued to the word before the cut). Each move walks back
+    to whitespace, as :func:`_aws_label_cut` does, and is checked again against every
+    span, so the commit never splits one.
+    """
+    spans = [(start, end) for start, end in _batch_spans(buf) if start < cut]
+    # One walk from the last span back. A move only lowers ``cut`` to at most the start
+    # of the span that moved it, so a span that starts later cannot straddle the new
+    # cut, and every earlier one is still ahead. Restarting the scan after each move
+    # would cost quadratic time in the spans an attacker can chain.
+    for start, end in sorted(spans, reverse=True):
+        if start < cut < end:
+            cut = _snap_back(buf, _token_start(buf, start))
+    return cut
 
 
 def _token_start(buf: str, pos: int) -> int:
@@ -283,6 +330,7 @@ class StreamRedactor:
         "_ctx",
         "_engine_tail",
         "_engine_pad",
+        "_boundary",
     )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
@@ -292,11 +340,12 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind: tuple[str, ...] | None = None
         self._discarded = 0
-        # With the structured detectors on: the raw text already emitted (their
-        # look-behind), and the kind of a unit being dropped to its end.
+        # The raw text already emitted (the detectors' look-behind), and the kind of
+        # a unit being dropped to its end.
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._boundary = False
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
@@ -312,9 +361,8 @@ class StreamRedactor:
 
     def _left(self, raw: str) -> None:
         """Note raw text that left the buffer (emitted or dropped), for the look-behind."""
-        if self._ctx or _submodule(_SEAM).use_rule_table():
-            keep = _submodule(_SEAM).stream_context_max()
-            self._ctx = (self._ctx + raw)[-keep:]
+        keep = _submodule(_SEAM).stream_context_max()
+        self._ctx = (self._ctx + raw)[-keep:]
 
     def _engine_discard(self) -> str | None:
         """Drop a structured unit's continuation; None once the unit has ended."""
@@ -332,11 +380,13 @@ class StreamRedactor:
 
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
+        if credential_pass_bypassed():
+            return self._feed_bypassed(chunk)
         # Owners of the re-exported names read below, resolved through the
         # import system so the value is read from the one place it lives.
         _redaction = _submodule("redaction")
 
-        if not chunk:
+        if not chunk and not self._boundary:
             return ""
         self._buf += chunk
 
@@ -371,6 +421,7 @@ class StreamRedactor:
                 # keep it in the discard until that chunk decides.
                 waiting = stream_aws_anchor.label_awaiting_separator(self._buf, run)
                 if waiting is not None:
+                    self._left(self._buf[:waiting])
                     self._buf = self._buf[waiting:]
                     return ""
             # The carried tail was counted on the pass that first dropped it.
@@ -379,7 +430,9 @@ class StreamRedactor:
                 # Keep the tail still in the discard, so a label split across
                 # chunks is seen whole on the next pass.
                 carry = stream_aws_anchor.LABEL_CARRY if "aws-keyed" in kinds else 0
-                self._buf = self._buf[max(0, len(self._buf) - carry) :]
+                kept = max(0, len(self._buf) - carry)
+                self._left(self._buf[:kept])
+                self._buf = self._buf[kept:]
                 self._discard_kind = kinds
                 if self._discarded < _STREAM_DISCARD_MAX:
                     return ""
@@ -387,6 +440,7 @@ class StreamRedactor:
                 return _redaction._REDACTED_CREDENTIAL_TAG
             self._discarding = False
             self._discard_kind = None
+            self._left(self._buf[:run])
             self._buf = self._buf[run:]
 
         # PHASE A -- SAFETY CUT.
@@ -471,22 +525,24 @@ class StreamRedactor:
             if not strong_token_anchor:
                 weak_token_anchor = token_anchor
 
-        # With the structured detectors on, a unit they have not decided yet is
-        # held whole, and one decided while still running is dropped to its end.
-        engine = _submodule(_SEAM).stream_read(self._ctx, self._buf)
+        # A unit the detectors have not decided yet is held whole, and one decided
+        # while still running is dropped to its end.
+        engine = _submodule(_SEAM).stream_read(self._ctx, self._buf, boundary=self._boundary)
         if engine is not None and engine.tail:
             commit, raw = self._buf[: engine.cut], self._buf[engine.cut :]
             self._buf = ""
             out = self._redact_window(commit) if commit else ""
             self._left(raw)
             self._engine_tail, self._engine_pad = engine.tail, 0
-            return out + _redaction._REDACTED_CREDENTIAL_TAG
+            return out + engine.tag
         if engine is not None:
-            # Snapped back like the natural cut, so a commit still never ends
-            # inside a credential-class run the passes read whole.
-            engine_cut = engine.cut
-            while engine_cut > 0 and self._buf[engine_cut - 1] in _CRED_CLASS:
-                engine_cut -= 1
+            # Snapped back like the natural cut, and out of any span the plan replaces,
+            # so a commit never ends inside a value the plan reads whole. The detectors'
+            # own cut already sits outside every hit, so only a snap that moved it is read.
+            snapped = _word_start(self._buf, engine.cut)
+            engine_cut = (
+                snapped if snapped == engine.cut else _outside_batch_spans(self._buf, snapped)
+            )
             safety_cuts.append(engine_cut)
 
         # The PEM hold refuses any commit at this boundary.
@@ -633,9 +689,9 @@ class StreamRedactor:
             # split (a PEM hold can keep one buffered after its value ended):
             # its tail would stream with no label left to redact it.
             if aws_label_seen:
-                for match in _redaction._credential_matches(self._buf):
-                    if match.start() < i < match.end():
-                        i = match.end()
+                for start, end in _batch_spans(self._buf):
+                    if start < i < end:
+                        i = end
 
             # Repair the complete-match cut first, then preserve a trailing WEAK
             # prefix if that repair crossed it. An encoded separator is at most
@@ -647,22 +703,52 @@ class StreamRedactor:
             # A structured unit is bounded by its own maximum length, so its
             # hold needs no floor: the floor never commits into it. Only a unit
             # the detectors are still deciding lowers the floor, and only to the
-            # detectors' own cut; a run they hold nothing in keeps the floor.
+            # detectors' own cut, kept out of any span the plan replaces; a run
+            # they hold nothing in keeps the floor.
             if engine is not None and engine.undecided:
-                i = min(i, engine.cut)
+                i = min(i, _outside_batch_spans(self._buf, engine.cut))
 
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
         return self._redact_window(commit)
 
+    def _feed_bypassed(self, chunk: str) -> str:
+        """:meth:`feed` with redaction off for this stream: nothing is held, altered or dropped."""
+        out = self._buf + chunk
+        self.reset()
+        return out
+
+    def release_at_boundary(self) -> str:
+        """At a display boundary, emit what only the detectors' fixed tail held back.
+
+        A tool call, a prompt or the turn's end is where a reader would otherwise
+        wait for the reply's last words. This commits the buffer as :meth:`feed`
+        would with the detectors' fixed tail hold skipped: every undecided unit, a
+        hit the cut would split and the passes' own holds (a credential-class run
+        at the end) stay held, and what is released goes through the same
+        redaction as any committed window. Returns ``""`` while a value is being
+        dropped or nothing is buffered.
+        """
+        if self.discarding or not self._buf:
+            return ""
+        self._boundary = True
+        try:
+            return self.feed("")
+        finally:
+            self._boundary = False
+
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
         if self._discarding or self._engine_tail:
-            self.reset()
+            self._buf = ""
+            self._discarding = False
+            self._discard_kind = None
+            self._end_engine_segment()
             return ""
         out = self._redact_window(self._buf) if self._buf else ""
-        self.reset()
+        self._buf = ""
+        self._end_engine_segment()
         return out
 
     def release_sentence_end(self) -> str:
@@ -685,6 +771,12 @@ class StreamRedactor:
         run, self._buf = self._buf, ""
         return self._redact_window(run)
 
+    def _end_engine_segment(self) -> None:
+        """Forget the detectors' look-behind and any unit being dropped (a new segment)."""
+        self._ctx = ""
+        self._engine_tail = ""
+        self._engine_pad = 0
+
     @property
     def held(self) -> str:
         """The raw run withheld so far (``""`` while a value is being dropped)."""
@@ -701,9 +793,7 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind = None
         self._discarded = 0
-        self._ctx = ""
-        self._engine_tail = ""
-        self._engine_pad = 0
+        self._end_engine_segment()
 
 
 def redact_and_truncate(text: str, max_chars: int = 4000) -> str:

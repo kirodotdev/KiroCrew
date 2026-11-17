@@ -685,7 +685,7 @@ def test_a_link_inside_the_history_directory_is_never_followed(builder, tmp_path
     assert inputs is not None, "a dangling link must not make the metadata unreadable"
     history = store_admission._admitted_file_stats(memory)[2]
     assert history is not None
-    assert history[2] < 1_000_000, "the outside file's size was counted"
+    assert all(row[3] < 1_000_000 for row in history[3]), "the outside file's size was counted"
 
 
 def test_the_join_ends_at_the_build_embed_deadline(builder, monkeypatch) -> None:

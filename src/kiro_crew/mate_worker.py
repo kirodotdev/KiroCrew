@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ from kiro_crew.agent_files import (
     MATE_WORKER_AGENT_FILENAME,
     is_mate_service_agent,
 )
+from kiro_crew.context_assembly.output_contract import ASK_CORE, WORKER_ASK_TAIL
 from kiro_crew.user_json import copy_json_document
 
 if TYPE_CHECKING:
@@ -52,15 +54,42 @@ MATE_CONDUCTOR_AGENT = Path(MATE_CONDUCTOR_AGENT_FILENAME).stem
 #: (``mate_thread_wakes.report_prompt``).
 MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
-#: The worker's own principles, appended to its source-defined prompt
-#: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
-#: after them are the same text ``kirocrew-worker`` carries.
-MATE_WORKER_PROMPT = (
-    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
-    + "\n\n"
-    + crewmate_prompts.text("worker.coding_rules")
-)
+
+@lru_cache(maxsize=1)
+def mate_worker_prompt() -> str:
+    """The worker's own principles, appended to its source-defined prompt
+    (``service_agents._install_mate_worker_agent``), then the coding rules.
+
+    Its crewmate is the one that can ask the user for a tool, so a gap goes back to
+    it, named. Every other placeholder is a work-protocol rule ``kirocrew-worker`` is
+    assembled from too (``agent._LEDGER_WORKER_RULES``), so the two workers cannot
+    drift; a placeholder naming no rule raises ``KeyError`` at the first read. The
+    coding rules are the same text ``kirocrew-worker`` carries, and so is the shared
+    ask core and worker tail at the end (``context_assembly.output_contract``). A
+    function, not a module constant: the rules live behind the ``agent`` facade,
+    which this module does not import at load.
+    """
+    # Not a top-level import: only the facade may import ``agent_parts``
+    # (``test_agent_parts.py``), and loading the facade here would pull it into
+    # every importer of this module.
+    from kiro_crew import agent as agent_mod
+
+    rules = agent_mod._LEDGER_WORKER_RULES
+    names = crewmate_prompts.placeholders("worker.principles") - {"missing_prefix"}
+    principles = crewmate_prompts.fill(
+        "worker.principles",
+        missing_prefix=MISSING_CAPABILITY_PREFIX,
+        **{name: rules[name].strip() for name in names},
+    )
+    return (
+        principles
+        + "\n\n"
+        + crewmate_prompts.text("worker.coding_rules")
+        + "\n\n"
+        + ASK_CORE
+        + WORKER_ASK_TAIL
+    )
+
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
 #: worker session (``session_create`` / ``session_send`` /
@@ -700,10 +729,17 @@ def resolve_worker_spec(
         if carried:
             raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
     additions = worker_additions(base, mate_spec)
-    # An approval the owner took away in Approvals stays away, base-granted or not.
-    return revocations.strip(
-        merge_worker_spec(base, _with_global_tool_offs(base, additions)),
-        _revoked_or_refuse(member_id, name),
+    from kiro_crew.mate_held_rules import strip_held_approvals
+
+    # An approval the owner took away in Approvals stays away, base-granted or not,
+    # and a capability a held limit covers keeps no pre-approval, so its calls ask.
+    return strip_held_approvals(
+        revocations.strip(
+            merge_worker_spec(base, _with_global_tool_offs(base, additions)),
+            _revoked_or_refuse(member_id, name),
+        ),
+        member_id,
+        name,
     )
 
 
@@ -998,6 +1034,30 @@ def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None)
         crewmate,
         resolve_selected_backend(getattr(config.agent, "member_acp_backend", "")),
     )
+
+
+def subagent_start_backend(config: KiroCrewConfig, execution: Any, backend: str | None) -> str:
+    """The backend a sub-agent run admitted under *execution* starts on.
+
+    *backend* is the run's own (named or inherited at admission), ``None`` for
+    none. The allocation gate's answer, read ahead of allocation: a run's own
+    backend wins (``backend_override``); a crewmate's worker runs on its
+    crewmate's (:func:`crewmate_worker_backend`); every other run starts on
+    ``agent.acp_backend``. *execution* is taken as the run will hold it, so a
+    conductor selection becomes its worker first (:func:`spawn_worker_execution`).
+    Raises :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` for a
+    crewmate pin that cannot start. Blocking config read.
+    """
+    from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.crewmate_harness import crew_for_member_id
+
+    if backend is not None:
+        return resolve_selected_backend(backend)
+    execution = spawn_worker_execution(execution) or execution
+    if is_own_worker_execution(execution):
+        crew = crew_for_member_id(config, str(execution.member_id or ""))
+        return crewmate_worker_backend(config, crew)
+    return str(config.agent.acp_backend)
 
 
 def worker_kit_backend_refusal(

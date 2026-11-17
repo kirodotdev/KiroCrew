@@ -31,6 +31,13 @@ SLOW_OP_TIMEOUT_S = 75.0
 DECISION_PRE_OP_S = 6.0
 DECISION_POST_OP_S = 6.0
 DECISION_HEADROOM_S = DECISION_PRE_OP_S + DECISION_POST_OP_S
+#: ``browser.report_changes`` (``browser_harness.ops``): the most the page reads
+#: before a ``click``, ``type`` or ``select_option`` and after it may take. The route
+#: adds their sum to those ops' budget while the setting is on, so a slow read
+#: costs the report, never the action's own answer.
+CHANGE_BEFORE_S = 4.0
+CHANGE_AFTER_S = 8.0
+CHANGE_REPORT_S = CHANGE_BEFORE_S + CHANGE_AFTER_S
 #: How long an op waits for the browser to come up (Kiro's Chromium launch, or
 #: the owner's Allow click) before answering ``browser_error``.
 ENSURE_TIMEOUT_S = 60.0
@@ -101,6 +108,7 @@ GATEWAY_FAST_WORST_S = (
     + OP_TIMEOUT_S
     + OP_TIMEOUT_S
     + DECISION_HEADROOM_S
+    + CHANGE_REPORT_S
 )
 GATEWAY_SLOW_WORST_S = (
     ENSURE_TIMEOUT_S
@@ -121,6 +129,9 @@ __all__ = [
     "ASK_CALL_TIMEOUT_S",
     "ASK_TIMEOUT_S",
     "ASK_WAIT_S",
+    "CHANGE_AFTER_S",
+    "CHANGE_BEFORE_S",
+    "CHANGE_REPORT_S",
     "HUMAN_CHECK_TIMEOUT_S",
     "DECISION_HEADROOM_S",
     "DECISION_POST_OP_S",

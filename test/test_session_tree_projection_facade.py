@@ -156,7 +156,8 @@ BASE_BOUND_SIGNATURES = {
         "(self, loaded: 'dict[str, OpenedRecord]', loaded_edges: 'dict[tuple[str, str], "
         "EdgeRecord]', loaded_spawned: \"'dict[tuple[str, str], EdgeRecord] | None'\" = None, "
         "loaded_marks: \"'dict[str, ScanIdentity] | None'\" = None, *, faults: "
-        "\"'_ScanFaults | None'\" = None) -> \"'_ReplayResult'\""
+        "\"'_ScanFaults | None'\" = None, live_sids: \"'tuple[str, ...]'\" = ()) "
+        "-> \"'_ReplayResult'\""
     ),
     "_arm_seed_retry": "(self, root: \"'str | None'\", epoch: 'int') -> 'None'",
     "_start_seed_retry_timer": "(self, delay: 'float', fire: \"'Any'\") -> 'None'",

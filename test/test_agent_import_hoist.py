@@ -120,7 +120,7 @@ def test_no_function_local_agent_imports_remain() -> None:
             offenders[rel] = len(hits)
     assert not offenders, (
         f"function-local kiro_crew.agent imports reintroduced: {offenders}; "
-        f"import at module scope instead (no cycle exists — see issue #1050)"
+        f"import at module scope instead (no cycle exists)"
     )
 
 

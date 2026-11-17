@@ -134,6 +134,7 @@ def _provider_background_launch(provider: LLMProvider) -> tuple[float, str] | No
             try:
                 close()
             except Exception:
+                # Closing only silences the warning; the probe answers below either way.
                 pass
         return None
     if not (isinstance(res, tuple) and len(res) == 2):
@@ -199,6 +200,7 @@ def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
             try:
                 close()
             except Exception:
+                # Closing only silences the warning; the probe answers below either way.
                 pass
         return False
     return res is True
@@ -225,6 +227,7 @@ def _provider_turn_is_known_terminal(provider: LLMProvider) -> bool:
             try:
                 close()
             except Exception:
+                # Closing only silences the warning; the probe answers below either way.
                 pass
         return False
     return res is False

@@ -23,8 +23,9 @@ from kiro_crew.dashboard import token_auth_app_scope
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.dashboard.source_providers import cache, hosts, issue_search
 from kiro_crew.dashboard.source_providers.contract import SourceProviderError
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-_SECRET = "ghp_" + "b" * 36
+_SECRET = github_classic(seed=11)
 # The PEM markers are assembled from their dashes, so no line of this file holds a
 # whole marker (the internal-content scan reads source lines).
 _DASHES = "-----"
@@ -607,7 +608,7 @@ async def test_an_unexpected_value_error_from_a_read_is_not_echoed(
     [
         # The 280-character cut lands inside a token whose run began far earlier.
         "word " * 30 + "y" * 120 + _SECRET + " tail",
-        # The local GPT review's case: 250 non-space characters, a colon, a token.
+        # The edge case: 250 non-space characters, a colon, a token.
         "x" * 250 + ":" + _SECRET + " tail",
         "lead " + "x" * 245 + ":" + _SECRET + " tail",
     ],
@@ -664,14 +665,14 @@ async def test_github_pem_key_in_a_body_is_redacted_before_the_excerpt_joins_lin
 @pytest.mark.asyncio
 async def test_a_token_joined_by_the_markdown_strip_is_redacted(monkeypatch) -> None:
     """Neither half matches in the raw body; stripping ``**`` joins them into one."""
-    joined = "ghp_" + "b" * 16 + "**" + "b" * 20
+    joined = _SECRET[:20] + "**" + _SECRET[20:]
     monkeypatch.setattr(source, "_run_json", _GitHub([_gh_item(6, body=f"see {joined} now")]))
     status, payload = await _post({"provider": "github", "scope": "acme/repo"})
     assert status == 200
     assert _SECRET not in str(payload) and payload["issues"][0]["excerpt"].startswith("see ")
 
 
-_SPLIT_HEAD = "ghp_" + "b" * 16
+_SPLIT_HEAD, _SPLIT_TAIL = _SECRET[:20], _SECRET[20:]
 
 
 @pytest.mark.parametrize(
@@ -679,8 +680,9 @@ _SPLIT_HEAD = "ghp_" + "b" * 16
     [
         "**",
         "``",
-        # A link whose url holds a space (the diff-only audit's earlier case).
-        "[x](a b)",
+        # A link whose url holds a space (the diff-only audit's earlier case). The
+        # strip keeps a label, so the label is empty and the joined token whole.
+        "[](a b)",
         # A comment spanning lines inside a link url (the latest audit's case):
         # comment, then link removal, joins text from different source lines.
         "[](<!--\n" + "filler line\n" * 400 + "-->)",
@@ -694,7 +696,7 @@ async def test_a_token_the_strip_joins_is_redacted_wherever_it_sits(
     """A token the raw pass cannot see (split by markup) forms only when the strip
     joins it. The strip runs on the whole body and the only cut is at a word, so the
     final pass sees the joined token whole, however far into the body it starts."""
-    body = "<!--" + "c" * lead + "--> see " + _SPLIT_HEAD + joiner + "b" * 20 + " now\nmore"
+    body = "<!--" + "c" * lead + "--> see " + _SPLIT_HEAD + joiner + _SPLIT_TAIL + " now\nmore"
     monkeypatch.setattr(source, "_run_json", _GitHub([_gh_item(8, body=body)]))
     status, payload = await _post({"provider": "github", "scope": "acme/repo"})
     assert status == 200
@@ -710,7 +712,7 @@ def test_an_excerpt_with_no_word_boundary_is_empty() -> None:
 async def test_a_token_the_strip_would_shorten_is_redacted_on_the_raw_row(monkeypatch) -> None:
     """``__`` is valid inside a GitLab token, and the strip deletes it, leaving a
     run too short for the token rule: only the raw-row pass sees the whole token."""
-    token = "glpat-" + "a" * 10 + "__" + "b" * 5
+    token = "glpat-" + "a" * 10 + "__" + "b" * 8
     monkeypatch.setattr(source, "_run_json", _GitHub([_gh_item(7, body=f"use {token} now")]))
     status, payload = await _post({"provider": "github", "scope": "acme/repo"})
     assert status == 200

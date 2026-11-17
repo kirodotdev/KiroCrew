@@ -162,7 +162,7 @@ class TestEventIsSpawnRun:
         assert event_is_spawn_run(event) is False
 
     def test_non_shell_event_with_forged_title_fails_closed(self):
-        # CI GPT-lane finding: a no-_meta.kiro NON-shell tool (e.g. send_file
+        # A no-_meta.kiro NON-shell tool (e.g. send_file
         # re-titled "spawn_run") must not ride the rung either — there is no
         # title fallback. The rung not firing is a downgrade to the channel's
         # normal ladder, never a hard block.

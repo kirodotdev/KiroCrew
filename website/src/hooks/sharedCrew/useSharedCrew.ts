@@ -50,6 +50,19 @@ export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { f
   return useQuery({ queryKey: sharedCrewKeys.people, queryFn: () => timedPoll(PEOPLE_POLL_ID, () => api.sharedCrewPeople()), enabled, retry: false, refetchOnMount: fetchOnMount, retryOnMount: fetchOnMount })
 }
 
+/** Whether this tab is NOT the Crew owner, from `/api/auth/me`'s `owner_ok`, read
+ *  whatever the Shared Crew preview is (a relay teammate is admitted with it off
+ *  too). `notOwner` is `false` until the gateway says so, so the owner's view
+ *  never waits on it; a failed read is returned as `error`, not discarded.
+ *  `owner` is the fail-closed reading for a surface that writes owner-only
+ *  state: true only once the gateway said this tab clears the owner gate.
+ *  `failed` is a read that failed with no answer yet: a refetch that fails after
+ *  one answered keeps that answer (react-query holds `data`), so it is not. */
+export function useViewerIsNotOwner() {
+  const query = useQuery({ queryKey: [...sharedCrewKeys.viewer, 'owner-ok'], queryFn: () => api.viewerOwnerOk(), staleTime: 60_000, retry: false })
+  return { notOwner: query.data === false, owner: query.data === true, failed: query.data === undefined && !!query.error, error: query.error, retry: query.refetch }
+}
+
 /** Whether this Crew shows who did what (bylines, decision attribution,
  *  presence), decided the way the session list decides it: only with the
  *  Shared Crew preview on and someone besides the owner joined

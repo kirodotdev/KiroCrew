@@ -7,8 +7,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from './client'
-import { READ_GATE_WIDTH, __resetReadGateForTests, gatedRead } from './readGate'
+import { READ_GATE_WIDTH, __resetReadGateForTests, asFrontRead, gatedRead } from './readGate'
 import { readCrewWorkers, resetCrewWorkersPoll } from '../lib/crewWorkersPoll'
+import { fetchSlots } from '../store/dashboardSlice'
+import { switchSlot } from '../store/chatSlice'
+import { createTestStore } from '../test/helpers'
 
 interface Call { url: string; method: string; answer: (r: Response) => void; fail: (e: unknown) => void }
 let calls: Call[] = []
@@ -125,5 +128,82 @@ describe('gatedRead', () => {
     await expect(broken).rejects.toBeInstanceOf(TypeError)
     await settle()
     expect(started).toHaveBeenCalledTimes(1)
+  })
+
+  it('a front read takes the next free place, ahead of reads that queued before it', async () => {
+    const finish: Array<(r: Response) => void> = []
+    for (let i = 0; i < READ_GATE_WIDTH; i++) void gatedRead('/api/x', null, () => new Promise<Response>(resolve => { finish.push(resolve) }))
+    const order: string[] = []
+    const queue = (name: string) => () => { order.push(name); return never() }
+    void gatedRead('/api/x', null, queue('ordinary-1'))
+    void gatedRead('/api/x', null, queue('ordinary-2'))
+    void asFrontRead(() => gatedRead('/api/x', null, queue('front-1')))
+    void asFrontRead(() => gatedRead('/api/x', null, queue('front-2')))
+    // A front read waits for a place like any other: nothing goes out past the width.
+    expect(order).toEqual([])
+
+    for (const answer of finish) answer(new Response(null))
+    await settle()
+    expect(order).toEqual(['front-1', 'front-2', 'ordinary-1', 'ordinary-2'])
+  })
+
+  it('a read started after asFrontRead has returned waits in the ordinary line', async () => {
+    let finish!: (r: Response) => void
+    for (let i = 0; i < READ_GATE_WIDTH - 1; i++) void gatedRead('/api/x', null, never)
+    void gatedRead('/api/x', null, () => new Promise<Response>(resolve => { finish = resolve }))
+    const order: string[] = []
+    void gatedRead('/api/x', null, () => { order.push('ordinary'); return never() })
+    const late = asFrontRead(() => Promise.resolve()).then(() => gatedRead('/api/x', null, () => { order.push('late'); return never() }))
+    void late
+    await settle()
+    finish(new Response(null))
+    await settle()
+    expect(order).toEqual(['ordinary'])
+  })
+
+  it('a front read aborted while it waits is never sent, and the next one in line still goes', async () => {
+    let finish!: (r: Response) => void
+    for (let i = 0; i < READ_GATE_WIDTH - 1; i++) void gatedRead('/api/x', null, never)
+    void gatedRead('/api/x', null, () => new Promise<Response>(resolve => { finish = resolve }))
+    const controller = new AbortController()
+    const dropped = vi.fn(never)
+    const waiting = asFrontRead(() => gatedRead('/api/x', controller.signal, dropped))
+    const next = vi.fn(never)
+    void gatedRead('/api/x', null, next)
+    controller.abort()
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    finish(new Response(null))
+    await settle()
+    expect(dropped).not.toHaveBeenCalled()
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a read a person is waiting on', () => {
+  /** Fill the gate and queue three ordinary reads behind it. */
+  const fillAndQueue = () => {
+    for (let i = 0; i < READ_GATE_WIDTH + 3; i++) void api.crewWorkers(`root-${i}`).catch(() => undefined)
+    expect(reads()).toBe(READ_GATE_WIDTH)
+  }
+
+  it('opening a chat reads its page at the next free place, ahead of the reads queued before it', async () => {
+    fillAndQueue()
+    void createTestStore().dispatch(switchSlot('chat-1-100'))
+    expect(reads()).toBe(READ_GATE_WIDTH)
+
+    calls[0].answer(json({ workers: [] }))
+    await settle()
+    expect(reads()).toBe(READ_GATE_WIDTH + 1)
+    expect(calls.at(-1)?.url).toContain('/api/chat/slots/chat-1-100?')
+  })
+
+  it('the session list keeps its place in the ordinary line, so the folders asked for before it still answer first', async () => {
+    fillAndQueue()
+    void createTestStore().dispatch(fetchSlots())
+
+    calls[0].answer(json({ workers: [] }))
+    await settle()
+    expect(reads()).toBe(READ_GATE_WIDTH + 1)
+    expect(calls.at(-1)?.url).toContain('root-4')
   })
 })

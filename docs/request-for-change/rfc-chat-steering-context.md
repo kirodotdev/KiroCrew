@@ -26,9 +26,9 @@ steering load only (folder steering deferred,
 ([#33955](https://github.com/kirodotdev/KiroCrew/issues/33955)). P3 is
 open. Tracks
 [#33112](https://github.com/kirodotdev/KiroCrew/issues/33112). Every main-side
-reference was read at `231c0b28e7`. KAS steering behaviour is quoted from the
-open [#32179](https://github.com/kirodotdev/KiroCrew/pull/32179), which is not
-on main.
+reference was read at `231c0b28e7`. KAS steering behaviour is quoted from
+[#32179](https://github.com/kirodotdev/KiroCrew/pull/32179), open when this was
+written and merged to main on 2026-11-10.
 
 Credit: the asks are derreckFromSlalom's
 [#29940](https://github.com/kirodotdev/KiroCrew/issues/29940) (see and choose

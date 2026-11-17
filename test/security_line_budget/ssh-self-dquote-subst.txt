@@ -1,0 +1,9 @@
++69
+The ssh-to-self floor keeps every double-quoted character masked as data in the
+command's own argv, but bash runs a `$(` inside double quotes. The floor now finds
+each such body on the unmasked text (`_double_quoted_substitution_bodies`) and judges
+it as a command line of its own, so `echo "$(ssh -p 22 <this host> id)"` is refused
+like the unquoted and backtick spellings. Inside a body, the text that a bare `cat`
+prints from a quoted-tag heredoc is cut out (read with the shared `read_commands`), so
+a `gh pr create --body "$(cat <<'EOF' ... EOF)"` that mentions such a command stays
+allowed.

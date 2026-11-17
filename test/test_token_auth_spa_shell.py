@@ -67,8 +67,7 @@ async def test_signin_recovery_preserves_destination_path() -> None:
     # was tapped (a session deep link, /chat?sid=...&token=<stale>, served 403
     # inline). It must round-trip that destination -- keep the path + query and
     # swap ONLY the pasted token -- instead of redirecting to the dashboard root
-    # and discarding /chat?sid=..., which is the "tap and get nowhere" dead end
-    # this PR exists to remove (UX stale-tap finding).
+    # and discarding /chat?sid=..., which is the "tap and get nowhere" dead end.
     mw = token_auth_middleware()
     req = _make_request(path="/dashboard", method="POST", remote="10.0.0.1")  # No token
     resp = await mw(req, _ok_handler)

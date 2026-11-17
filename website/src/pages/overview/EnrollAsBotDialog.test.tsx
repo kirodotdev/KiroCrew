@@ -150,7 +150,9 @@ describe('EnrollAsBotDialog', () => {
     fireEvent.click(screen.getByTestId('enroll-create'))
     await previewShown()
     fireEvent.click(screen.getByTestId('worker-kit-apply'))
-    expect(await screen.findByTestId('enroll-done')).toBeEnabled()
+    // Done appears as soon as the add resolves, but stays disabled until the
+    // pane's refetch after it finishes; wait for it to enable before going on.
+    await waitFor(() => expect(screen.getByTestId('enroll-done')).toBeEnabled(), namedCeiling('ENROLL_DONE_READY', 5000))
     // The first add landed. The agent is picked again and its add is sent,
     // and this time the write does not come back yet.
     let failAdd: (e: Error) => void = () => {}

@@ -28,6 +28,7 @@ from dashboard_approval_helpers import (
     _set_stream,
 )
 from real_session_manager import open_session, real_sessions
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
@@ -41,11 +42,25 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.name_grant import SHADOWED, Refusal
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+from kiro_crew.sel import SecurityEventLog
 from kiro_crew.testing.wait import await_until, finished
 
 
 def _tool_messages(slot: _ChatSlot) -> list[dict]:
     return [m for m in slot.messages if m.get("role") in ("tool", "permission")]
+
+
+def _real_sel(tmp_path):
+    """A real, synchronous security event log under *tmp_path*, read back by a test.
+
+    The log is a process singleton: cleared around the construction, so the test
+    owns this log and no other caller is handed it.
+    """
+    with (
+        patch.object(SecurityEventLog, "_instance", None),
+        patch.object(SecurityEventLog, "_initialized", False),
+    ):
+        return SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
 
 
 # ── Tests ──
@@ -92,7 +107,8 @@ class TestApprovalModes:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "purpose", ["Inspect the isolated workspace", "", "Inspect token ghp_" + "a" * 36]
+        "purpose",
+        ["Inspect the isolated workspace", "", "Inspect token " + github_classic(seed=67)],
     )
     async def test_pending_permission_persists_its_own_redacted_purpose(self, tmp_path, purpose):
         state, client = _make_state(tmp_path, context_builder=_context_builder())
@@ -501,11 +517,15 @@ class TestApprovalModes:
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
 
-        with _patch_stats():
+        audit = _real_sel(tmp_path)
+        with _patch_stats(), patch.object(chat_runner, "sel", return_value=audit):
             await _run_chat(state, slot, "hello")
 
         client.approve_tool.assert_called_once()
         client.reject_tool.assert_not_called()
+        # The audit records the grant, and no refusal.
+        outcomes = [r["outcome"] for r in audit.recent() if r["event_type"] == "tool_invocation"]
+        assert outcomes == ["auto_approved"], (label, outcomes)
 
     @pytest.mark.asyncio
     async def test_a_refused_spec_hook_blocks_with_the_refusal(self, tmp_path):

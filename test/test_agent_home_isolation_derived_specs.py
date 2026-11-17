@@ -8,6 +8,7 @@ is never reported as done. The KIRO_HOME seam and the worktree decline guard are
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -131,6 +132,37 @@ class TestForeignHomeDerivedSpecWrites:
         assert not (
             shared / GUEST_AGENT_FILENAME
         ).exists(), "a real derived-spec writer bypassed the shared-home ownership guard"
+
+    @pytest.mark.parametrize("existing", [False, True], ids=["no_copy_yet", "older_owned_copy"])
+    def test_a_launch_copy_is_refused_in_a_foreign_shared_dir(
+        self, monkeypatch, tmp_path, existing
+    ):
+        """The guard refuses the app agent launch copy, so the palette turn is refused."""
+        from kiro_crew import agent
+        from kiro_crew.apps import agent_launch, bridges
+
+        shared = self._foreign_shared_dir(monkeypatch, agent, tmp_path)
+        monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", shared)
+        (shared / "my-app--deploy.json").write_text(
+            json.dumps({"name": "deploy", "prompt": "the app's prompt"}), encoding="utf-8"
+        )
+        name = agent_launch.app_agent_launch_name("my-app", "deploy")
+        target = shared / f"{name}.json"
+        before = None
+        if existing:
+            older = {"name": name, "description": f"{agent_launch.OWNER_MARKER} of my-app/deploy"}
+            target.write_text(json.dumps({**older, "prompt": "older"}), encoding="utf-8")
+            before = target.read_bytes()
+
+        with pytest.raises(agent_launch.AppAgentLaunchError) as refused:
+            agent_launch.publish_app_agent_launch("my-app", "deploy")
+
+        assert refused.value.code == "write_failed"
+        assert isinstance(refused.value.__cause__, agent.SharedAgentHomeRefused)
+        if existing:
+            assert target.read_bytes() == before, "a foreign home rewrote the launch copy"
+        else:
+            assert not target.exists(), "a foreign home created the launch copy"
 
     def test_every_denial_is_audited(self, monkeypatch, tmp_path):
         """Every refusal records its own SEL event; only the WARNING is deduped.

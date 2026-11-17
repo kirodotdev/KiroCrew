@@ -39,6 +39,24 @@ MEMORY_CHANGE_KIND = "memory_change"
 #: (``dashboard.task_run_notices``).
 TASKRUNNER_NOTICE_KIND = "taskrunner_notice"
 
+#: ``meta.kind`` of the notice row an agent harness's advisory is shown as
+#: (``dashboard.harness_notice_rows``): text the harness sends in place of reply
+#: text, such as a hook's block reason, so it answers the turn as reply text does.
+#: ``HARNESS_ADVISORY_KIND`` in ``website/src/store/chat/selectors.ts`` is the twin;
+#: ``state_parts.transcript_rows.is_turn_interrupted`` reads it.
+HARNESS_ADVISORY_KIND = "harness_advisory"
+
+
+def is_harness_advisory_row(m: dict) -> bool:
+    """True when *m* is the notice row of a harness's advisory."""
+    meta = m.get("meta")
+    return (
+        m.get("role") == "notice"
+        and isinstance(meta, dict)
+        and meta.get("kind") == HARNESS_ADVISORY_KIND
+    )
+
+
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
     {
         "compaction",

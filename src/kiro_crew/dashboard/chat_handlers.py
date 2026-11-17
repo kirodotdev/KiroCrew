@@ -117,6 +117,7 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _app_claim_refused,
     _app_may_send_to_slot,
     _app_resume_refusal,
+    _app_send_refused,
     _app_slot_acquisition_denial,
     _app_slot_acquisition_recheck,
     _deny_app_session_settings,
@@ -262,6 +263,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _is_deny_override_card,
     _pending_elicitation_ids,
     _shared_crew_teammate,
+    _state_approval_pending,
     _still_owning,
     _strict_native_owner,
     _sweep_pending_approvals,
@@ -273,6 +275,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     deny_session_approval_caller,
 )
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
+    _app_hides_own_mode,
     _birth_default_project,
     _check_new_slot_assignment,
     _created_slot_row,
@@ -308,9 +311,12 @@ from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # n
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
     _own_models_field,
+    _write_session_switch,
+    api_chat_slot_fast_mode,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
     api_chat_slot_ultracode,
+    configured_backend_for_session,
 )
 from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,
@@ -556,6 +562,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_creator_admission,
     cron_mode_refusal,
     cron_slot_creator,
+    message_required_error,
     read_bounded_json,
     string_field_error,
 )
@@ -567,6 +574,9 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.dashboard.interaction_coordinator import native_resolution_target  # noqa: F401
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
 from kiro_crew.dashboard.request_priority import owner_start_priority  # noqa: F401
+from kiro_crew.dashboard.session_approval_refusal import (  # noqa: F401 -- read by chat_api.slot_approval
+    session_approval_refusal,
+)
 from kiro_crew.dashboard.session_folders import (  # noqa: F401
     SessionFolderError,
     create_session_folder,
@@ -588,8 +598,10 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
 )
 from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
 from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
+    BOT_IDENTITY_DENIED,
     SESSION_CONTROL_DENIED,
     app_may_control_session,
+    app_names_bot,
     app_new_key_refusal,
     app_owns_slot_session,
     app_owns_transcript_meta,
@@ -601,6 +613,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     member_thread_grant,
     own_session_key,
     read_session_control_grant,
+    selects_bot_identity,
     session_grant,
     slot_not_found,
     transcript_acquisition_reason,
@@ -975,7 +988,13 @@ async def _reset_slot_session(
         # put a second in flight over the same key.
         await _test_interleave("reset:pre_pop")
     try:
-        reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
+        # ``forget_unused_start``: a session no turn ever prompted (an eager
+        # prewarm the person switched away from before typing) holds no
+        # conversation, so its resume pointer would only make the replacement
+        # refuse its eager start and try an empty ``session/load``.
+        reloaded = await state.sessions.reset(
+            session_key, skip_if_busy=skip_if_busy, forget_unused_start=True
+        )
     except BaseException:
         # Raised or cancelled mid-teardown: the session is in a state this slot
         # cannot vouch for, so neither is its verdict. Unknown fails open.
@@ -1211,7 +1230,7 @@ _SLOW_CLOSE_STAGE_SECS = 5.0
 _slot_switch_session_lock = slot_switch_session_lock
 
 
-#: The chat picker's "Auto (Jev)" entry, as the id a client sends for it. NOT a
+#: The chat picker's "Auto (decision model)" entry, as the id a client sends for it. NOT a
 #: provider model id and never stored in ``slot.model``: it asks the
 #: ``model.route`` decision point to pick a difficulty tier for each turn, and
 #: until it answers the session runs on the backend default. The prefix is

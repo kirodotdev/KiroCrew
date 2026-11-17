@@ -1,28 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../../utils/previewFlags'
 import { createTestStore } from '../../test/helpers'
 import { openCrewSession } from './command-center/CrewWorkerList'
 import { __resetPanelTabs, panelStripOf } from '../../hooks/usePanelTabs'
+import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 
 describe('CrewDispatchNoticeCard', () => {
-  // Crew Mode ships behind a default-off preview; the card renders only when
-  // the viewer's browser has that preview ON (see the gate cases below). The
-  // reveal/accessibility cases therefore enable it first.
-  beforeEach(() => setPreviewFlag(PREVIEW_CREW_MODE, true))
   afterEach(() => {
     __resetPanelTabs()
     vi.clearAllMocks()
-    localStorage.removeItem(PREVIEW_CREW_MODE)
   })
 
-  it('renders nothing while the Crew Mode preview is OFF', () => {
-    // RED without the useCrewMode() gate: the card would render regardless of
-    // the flag, exposing a Crew Mode surface in a browser that has the preview
-    // disabled (the decision this change honours).
-    setPreviewFlag(PREVIEW_CREW_MODE, false)
+  it('renders nothing in a build without conductor mode (LTS)', () => {
+    // RED without the useCrewMode() gate: the card would render regardless,
+    // exposing a conductor mode surface in a build that offers none.
+    turnOffCrewModeAsLts()
     const { container } = render(
       <CrewDispatchNoticeCard slot="conductor-1" onOpenCrewTab={vi.fn()} />,
     )
@@ -30,7 +24,7 @@ describe('CrewDispatchNoticeCard', () => {
     expect(screen.queryByTestId('crew-dispatch-notice-card')).toBeNull()
   })
 
-  it('renders the card while the Crew Mode preview is ON', () => {
+  it('renders the card with no preview turned on', () => {
     render(<CrewDispatchNoticeCard slot="conductor-1" onOpenCrewTab={vi.fn()} />)
     expect(screen.getByTestId('crew-dispatch-notice-card')).toBeInTheDocument()
     expect(screen.getByTestId('crew-dispatch-notice-open')).toBeInTheDocument()

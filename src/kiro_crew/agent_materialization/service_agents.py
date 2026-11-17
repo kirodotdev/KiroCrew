@@ -30,7 +30,12 @@ from kiro_crew.agent_files import MATE_CONDUCTOR_AGENT_FILENAME as _MATE_CONDUCT
 from kiro_crew.agent_files import MATE_WORKER_AGENT_FILENAME as _MATE_WORKER_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
-from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
+from kiro_crew.agent_materialization import (
+    auto_approve,
+    conductor_agents,
+    managed_mcp,
+    skill_resources,
+)
 from kiro_crew.user_json import strict_json_equal
 
 
@@ -285,17 +290,12 @@ def _install_mate_conductor_agent() -> None:
     # goal-conductor skill's ``accept_eval`` tool, and is rendered only where this
     # spec mounts the work ledger (``member_mate_tools.binding_has_ledger_tools``).
     # The mapping follows the text: a spec without the ledger names no skill, and a
-    # mapping there would only narrow the skills an unmapped spec inherits.
-    # Judged as the prompt check judges the written spec: after the governance
-    # ceiling has filtered ``allowedTools`` (on a copy, so the write's own pass
-    # still runs and audits once).
+    # mapping there would only narrow the skills an unmapped spec inherits. A
+    # governance ceiling that withholds a ledger verb does not change it: the verb
+    # stays mounted and asks for approval (owner decision in docs/decisions, case N1).
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
-    governed = {**config, "allowedTools": list(config.get("allowedTools") or [])}
-    auto_approve._apply_allowed_tools_ceiling(
-        governed, source="_install_mate_conductor_agent", audit=False
-    )
-    if spec_has_ledger_tools(governed):
+    if spec_has_ledger_tools(config):
         # ``dashboard`` rides along because the crewmate prompt names that skill
         # (``conductor.crew_log_section``), and ``WIDGET_POINTER_SKILLS``; a mapping
         # of goal-conductor alone would scope the chat's skills to it and leave
@@ -323,14 +323,14 @@ def _install_mate_worker_agent() -> None:
     from kiro_crew.mate_worker import (
         MATE_WORKER_AGENT,
         MATE_WORKER_EXCLUDED_TOOLS,
-        MATE_WORKER_PROMPT,
+        mate_worker_prompt,
     )
 
     config = agent_mod.build_agent_config()
     config["name"] = MATE_WORKER_AGENT
     config["description"] = "The agent a Bot's worker sessions run on."
     # The worker's own principles ride after the shared base prompt.
-    principles = MATE_WORKER_PROMPT
+    principles = mate_worker_prompt()
     base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
     config["prompt"] = f"{base_prompt.rstrip()}\n\n{principles}" if base_prompt else principles
     _register_edition_refs(config)
@@ -758,36 +758,34 @@ def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
     pin), and the installer's shared tail (``auto_approve.write_governed_spec``)
     puts *grants* through the governance ceiling, so a withheld verb stays
     mounted and prompts.
-    """
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 
+    The ledger is a core component, on by default for a Bot as for conductor mode
+    (owner decision in docs/decisions, case N2): a switch-off of ``kirocrew-work``
+    on the default template (its entry's ``disabled`` or ``disabledTools``, an
+    ``excludedTools`` entry naming it) is not carried over, as
+    :func:`_mount_team_lead_dispatch` and the Ultra Mode worker do not carry it.
+    """
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
-    entry = managed_mcp._managed_opt_in_entry("mcp-work")
-    inherited = servers.get("kirocrew-work")
-    off: list[str] = []
-    # The operator's restrictions on an inherited entry are kept on the managed
-    # transport: a whole-server switch-off, and per-tool limits, whose grants
-    # are not added.
-    if isinstance(inherited, dict):
-        if mcp_entry_is_muted(inherited):
-            entry["disabled"] = True
-        limits = inherited.get("disabledTools")
-        if isinstance(limits, list):
-            off = [t for t in limits if isinstance(t, str) and t.strip()]
-            if off:
-                entry["disabledTools"] = off
-    servers["kirocrew-work"] = entry
+    servers["kirocrew-work"] = managed_mcp._managed_opt_in_entry("mcp-work")
     config["mcpServers"] = servers
     tools = [t for t in config.get("tools") or [] if isinstance(t, str)]
     if "*" not in tools and "@kirocrew-work" not in tools:
         tools.append("@kirocrew-work")
     config["tools"] = tools
+    excluded = config.get("excludedTools")
+    if isinstance(excluded, list):
+        config["excludedTools"] = [
+            t for t in excluded if not (isinstance(t, str) and _names_work_server(t))
+        ]
     allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
-    withheld = {f"@kirocrew-work/{t}" for t in off}
-    kept = (g for g in grants if g not in withheld)
-    config["allowedTools"] = list(dict.fromkeys((*allowed, *kept)))
+    config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
+
+
+def _names_work_server(ref: str) -> bool:
+    """Whether the tool reference *ref* names ``kirocrew-work`` or one of its tools."""
+    return ref == "@kirocrew-work" or ref.startswith("@kirocrew-work/")
 
 
 def _install_team_lead_agent() -> None:
@@ -815,7 +813,12 @@ def _install_team_lead_agent() -> None:
         "items, does the small focused ones itself, dispatches a session for every "
         "other one, and patrols that fleet."
     )
-    config["prompt"] = agent_mod._TEAM_LEAD_SYSTEM_PROMPT
+    # The shared conductor rules ride in the prompt, because the goal-conductor
+    # skill points at "your prompt's" rules instead of restating them.
+    config["prompt"] = conductor_agents.with_conductor_ask(
+        f"{agent_mod._TEAM_LEAD_SYSTEM_PROMPT.rstrip()}\n\n"
+        f"{agent_mod._SHARED_CONDUCTOR_RULES_BLOCK}"
+    )
     # The skills this agent is told to read: ``team-lead`` ("read it before acting on
     # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
     # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate

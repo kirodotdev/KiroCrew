@@ -14,8 +14,7 @@ still-streaming label must not read as complete (see the comment there, and
 ``test_closer_inside_an_unfinished_label_is_still_unfinished`` below).
 ``OPTIONS_RE_TRAILER`` then reclassifies a complete lookalike-closed tail, so the
 two agree on the final split WITHOUT sharing the closer set. Do not "fix" that
-asymmetry by widening the check: revision 7115a04a did exactly that and the GPT
-gate blocked it.
+asymmetry by widening the check: it breaks the streaming case that test pins.
 
 These tests lock that agreement in, and lock in that widening the closer did NOT
 widen anything else.
@@ -85,19 +84,13 @@ class TestClosersNotOverlyBroad:
 
 class TestStreamingAgreesWithTheRegexes:
     def test_complete_lookalike_marker_detached_before_an_unfinished_fragment(self):
-        """The case that actually regresses without the fix.
+        """A complete lookalike-closed block before ``[STEERING`` is detached too.
 
-        ``split_trailing_protocol_suffix`` exists so that a COMPLETE options block
-        sitting in front of a still-streaming ``[STEERING`` fragment is detached
-        with it, rather than left in the visible text. Before the fix the trailer
-        regex could not close on a lookalike, so the complete block stayed in the
-        visible half and leaked into the message as literal text:
+        If the trailer regex cannot close on a lookalike, the complete block stays
+        in the visible half and leaks as literal text:
 
-            pre-fix : ('body [OPTIONS: A | B\u3011 ', '[STEERING')
-            post-fix: ('body ', '[OPTIONS: A | B\u3011 [STEERING')
-
-        Verified against the pre-fix module: this assertion fails there, which is
-        what makes it a real regression guard rather than a restatement.
+            wrong: ('body [OPTIONS: A | B\u3011 ', '[STEERING')
+            right: ('body ', '[OPTIONS: A | B\u3011 [STEERING')
         """
         for close in MARKER_CLOSERS:
             visible, suffix = split_trailing_protocol_suffix(
@@ -109,11 +102,10 @@ class TestStreamingAgreesWithTheRegexes:
             ), f"U+{ord(close):04X} -> {suffix!r}"
 
     def test_lookalike_closed_marker_reads_as_finished(self):
-        """Contract guard, NOT a fix-discriminator.
+        """Pins the split point for a complete lookalike-closed tail.
 
-        The pre-fix code reaches the same answer here by a different route, so
-        this passes on unfixed code and proves nothing on its own. Kept because
-        it pins the intended split point for a complete lookalike-closed tail.
+        Contract guard only: a trailer regex that cannot close on a lookalike
+        still reaches this answer by another route, so it does not catch that bug.
         """
         for close in MARKER_CLOSERS:
             visible, suffix = split_trailing_protocol_suffix(
@@ -123,14 +115,12 @@ class TestStreamingAgreesWithTheRegexes:
             assert suffix == f"[OPTIONS: A | B{close}", f"U+{ord(close):04X} -> {suffix!r}"
 
     def test_closer_inside_an_unfinished_label_is_still_unfinished(self):
-        """Regression: presence of a closer is NOT completeness.
+        """A closer inside a still-streaming label does not finish the marker.
 
-        Caught by the server GPT gate on 7115a04a. An earlier revision widened
-        the unfinished-marker check in ``split_trailing_protocol_suffix`` to the
-        whole ``MARKER_CLOSERS`` set, so a closer appearing INSIDE a
-        still-streaming label made the fragment read as finished. It was then
-        never detached, and a length rotation could split the marker -- raw
-        fragments render and the pills are lost. The check must stay ASCII-only;
+        If the unfinished-marker check in ``split_trailing_protocol_suffix``
+        accepted every ``MARKER_CLOSERS`` char, this fragment would read as
+        finished, never detach, and a length rotation could split it: raw
+        fragments render and the pills are lost. The check stays ASCII-only;
         completeness is the trailer regex's job.
         """
         for close in "\u3011\uff3d\u3015":

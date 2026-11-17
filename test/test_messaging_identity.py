@@ -294,7 +294,7 @@ def test_inbound_reraises_platform_composition_error(monkeypatch) -> None:
 
 
 def test_inbound_governed_deny_is_sel_audited(monkeypatch, tmp_path) -> None:
-    # HIGH (GPT pass 1 #3): a GOVERNED inbound decision must leave a durable SEL
+    # A GOVERNED inbound decision must leave a durable SEL
     # audit record (the blocking governance-audit rule). A host profile that
     # allows only slack → discord denied → one governance_decision SEL written.
     import json

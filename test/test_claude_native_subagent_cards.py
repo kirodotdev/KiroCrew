@@ -132,7 +132,7 @@ def test_claude_declares_subagents_on_top_of_the_shared_capabilities() -> None:
     assert CLAUDE_CLIENT_CAPABILITIES == {
         **ACP_CLIENT_CAPABILITIES,
         "subagents": {},
-        "session": {"compaction": {}},
+        "session": {"compaction": {}, "notices": {}},
     }
     assert "_meta" not in CLAUDE_CLIENT_CAPABILITIES
     params = _client()._initialize_params()

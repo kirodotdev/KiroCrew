@@ -45,6 +45,7 @@ from kiro_crew.slack.code_channels import surface as cc_surface
 from kiro_crew.slack.code_channels.client import parse_channel_info
 from kiro_crew.slack.code_channels.models import ChannelInfo
 from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
 
 OWNER = "U0OWNER0001"
@@ -354,7 +355,7 @@ def test_the_channels_conductor_runs_its_ledger_and_reads_published_fields_only(
     assert status == 200, body
     assert "decision" not in body.get("item", {})
 
-    long_line = "ghp_" + "A" * 36 + " pushed the fix <@U0SOMEONE> @channel " + "x" * 200
+    long_line = github_classic(seed=31) + " pushed the fix <@U0SOMEONE> @channel " + "x" * 200
     status, _ = _report(
         state,
         slot_history_key(worker),
@@ -708,7 +709,7 @@ def test_published_summary_is_one_redacted_unpinging_line():
     "smuggled", ["<<@U0FAKE>!here>", "<<!here>@U0OWNER>", "<<@U0X>!subteam^S0FAKE>", "@@herehere"]
 )
 def test_mention_markup_cannot_be_reassembled_by_the_defusing(smuggled):
-    """Removing a nested mention must not leave a new one behind (review finding)."""
+    """Removing a nested mention must not leave a new one behind."""
     for text in (cce.published_summary(f"done {smuggled}"), cce._defuse(smuggled)):
         assert "<" not in text and ">" not in text
         assert "@here" not in text.lower()

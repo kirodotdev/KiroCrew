@@ -299,6 +299,28 @@ usable is named in the result and never installed, in either mode.
 Memory, crons, workspace files and skills follow the never-overwrite rules
 above in both tools.
 
+The dashboard export also carries your chat folders (`folders.json`). The
+import adds every folder this install does not have, matched by its id, and
+leaves the ones it has as they are, in Merge and Replace alike, so imported
+chats sit in their folders again. A folder's project is not carried: it names
+a folder on the old computer, so the folder's chats open in the default
+workspace until you set its project again. An imported folder keeps what you
+can set when you create one (name, parent, colour, icon, default agent, crew
+and prompt). Its tags, steering folders, and any app, crew member or channel
+it belonged to stay behind. A folder is not added where its parent already
+holds one of the same name, and one that would land inside a crew member's
+home goes to the top level. At most 500 folders are kept, and the import warns
+with how many folders it did not add. Installed apps and their data are not
+carried yet.
+
+The dashboard export leaves out folders that tools rebuild inside your
+workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as
+`.pytest_cache`), and the import skips them in an older archive. A backup that
+unpacks to more than 2 GiB is accepted when no single file is over 2 GiB, the
+total stays under 64 GiB and at most 100 times the archive's own size, and the
+disk has room for it twice plus 1 GiB. When one is refused, the message names
+its biggest folders.
+
 #### Known limitation: the knowledge database is not row-merged
 
 `workspace/knowledge/knowledge.db` follows the file rule above rather than the

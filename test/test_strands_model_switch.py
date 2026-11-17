@@ -56,6 +56,7 @@ def _client(*, resumes: bool = True, fails: BaseException | None = None) -> Simp
         model_pin_refused="stale",
         last_prompt_stats=_Stats(),
         _turn_done=asyncio.Event(),
+        _maybe_start_idle_reader=lambda: None,
         launches=[],
     )
     client._turn_done.set()

@@ -66,7 +66,7 @@ class TestF1ApiGwTagCondition:
             tags = api["Properties"].get("Tags") or {}
             assert tags.get("kirocrew:managed") == "true", (
                 f"{name}: HttpApi must carry kirocrew:managed=true or the "
-                f"R35 mutation condition locks the deploy profile out"
+                f"managed-tag mutation condition locks the deploy profile out"
             )
 
 

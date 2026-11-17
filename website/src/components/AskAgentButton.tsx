@@ -165,9 +165,10 @@ export default function AskAgentButton({
    * `warn` for a WARNING surface (the pre-approval findings box) — a
    * danger-red link inside an amber box dresses a not-yet-failed state in
    * error color; `accent` for a request on a surface that is not an alert at
-   * all. Only affects the `link` variant.
+   * all; `inherit` for a host that sets the link colour itself (ErrorNotice,
+   * whose ink follows its `impact`). Only affects the `link` variant.
    */
-  tone?: 'danger' | 'warn' | 'accent'
+  tone?: 'danger' | 'warn' | 'accent' | 'inherit'
 }) {
   // Subscribed, not read once: the button must come BACK when the gateway
   // reconnects, and disappear when it drops, without the caller re-rendering.
@@ -213,6 +214,8 @@ export default function AskAgentButton({
     // alert there is no tint to follow, so `accent` marks it as the action.
     : tone === 'accent'
       ? 'text-[12px] font-medium text-accent bg-transparent border-none p-0 hover:underline underline-offset-2'
+    : tone === 'inherit'
+      ? 'text-[12px] font-medium text-inherit bg-transparent border-none p-0 underline decoration-current/30 hover:decoration-current underline-offset-2'
     : tone === 'warn'
       ? 'text-[12px] font-medium text-warn/80 hover:text-warn bg-transparent border-none p-0 underline decoration-warn/30 hover:decoration-warn underline-offset-2'
       // `--danger-text`, not a faded `--danger`: the link sits on the error

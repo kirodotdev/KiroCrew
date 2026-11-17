@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import agent_scratch as sc
+from kiro_crew import agent_scratch_trees as trees
 
 #: A pid no live process can own on any supported platform (above every pid_max),
 #: so a cleanup path that signals a fake reaches nothing on the runner.
@@ -38,8 +39,17 @@ _UNALLOCATABLE_PID = 99_999_999_999
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
-@pytest.fixture
-def scratch_root(monkeypatch, tmp_path: Path) -> Path:
+@pytest.fixture(autouse=True)
+def isolated_tree_bindings(_floor_monkeypatch) -> None:
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_LIVE", {})
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_TICKETS", {})
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_UNPERSISTED", set(), raising=False)
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_RETIRED_TICKET", -1, raising=False)
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_DISK_SNAPSHOT", None, raising=False)
+
+
+@pytest.fixture(name="scratch_root")
+def scratch_root_fixture(monkeypatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(sc, "config_dir", lambda: home)

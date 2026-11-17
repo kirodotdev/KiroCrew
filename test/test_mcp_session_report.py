@@ -703,7 +703,7 @@ class TestKasReadinessExposure:
         ready.record(_tags("@kirocrew-dashboard/ping"))
         assert not ready.pending
         # A later full tag snapshot without the dashboard tag retracts the TAG
-        # evidence, as before this change; the core's catalog evidence stays.
+        # evidence; the core's catalog evidence stays.
         ready.record(self._builtin_tags())
         assert ready.pending == "kirocrew-dashboard: tools not advertised"
         assert "kirocrew-core" in ready.advertised

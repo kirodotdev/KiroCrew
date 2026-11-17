@@ -527,12 +527,10 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
                 # Keep api_spawn's "already counted" marker, or spawn_run
                 # double-reconciles in-process rejections and closes waves early.
                 counted = bool(parsed.get("counted"))
-                # Preserve the backend's machine-readable error code (e.g.
-                # ``unknown_session`` from DELETE /api/lessons) so callers can
-                # dispatch on the stable code instead of matching the
-                # human-readable wording. The body is untrusted external
-                # content, so only a short identifier-shaped value survives —
-                # anything else is dropped rather than echoed onward.
+                # Keep the backend's error code (e.g. ``unknown_session``
+                # from DELETE /api/lessons) so callers branch on it, not on
+                # wording. The body is untrusted: only a short identifier
+                # survives; anything else is dropped.
                 raw_code = parsed.get("code")
                 if isinstance(raw_code, str) and _re.fullmatch(r"[a-z0-9_.-]{1,64}", raw_code):
                     code = raw_code
@@ -548,14 +546,12 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     message, _ = redact_exfiltration_urls(message)
     message, _ = redact_credentials(message)
     if code == "internal_auth_mismatch":
-        # Every internal tool receives the auth layer's bare "Forbidden", which
-        # reads as a permission decision about the tool's own subject and sends
-        # the reader after the wrong bug. It is an instance mix-up: the credential
-        # this client read does not belong to the gateway generation that owns the
-        # port it dialled. Rewritten HERE because all tool call sites already flow
-        # through this decoder, so one mapping covers them instead of one branch
-        # per tool -- and it is keyed on the CODE, since a genuine permission
-        # denial produces the same body and must not be given this explanation.
+        # The auth layer's bare "Forbidden" looks like a permission denial on
+        # the tool's subject, but this is an instance mix-up: the credential
+        # this client read belongs to a different gateway generation than the
+        # one on the port it dialled. Rewritten here so every tool gets it from
+        # one place, and keyed on the CODE because a real permission denial has
+        # the same body.
         message = (
             "this client authenticated against the wrong Kiro Crew instance. "
             "The credential it read does not match the gateway now serving that "
@@ -704,10 +700,8 @@ def _send(
                 # Spend the next step rather than the whole schedule: a gateway
                 # part-way through rebinding is unprovable but about to be back.
                 continue
-            # The target was re-proven; the CREDENTIAL has to be re-read for it
-            # too. A gateway that restarted on this port is a new generation with
-            # a new per-listener secret, so replaying the header this request was
-            # built with would earn a 403 instead of the retry this exists for.
+            # Re-read the CREDENTIAL too: a gateway restarted on this port has a
+            # new per-listener secret, so the old header would get a 403.
             try:
                 return _once(proven, _refreshed_headers(proven[0]))
             except urllib.error.HTTPError as exc:
@@ -728,25 +722,21 @@ def _send(
     try:
         return _once(target)
     except urllib.error.HTTPError as e:
-        # urlopen raises HTTPError on 4xx/5xx; str(e) is only "HTTP Error 400:
-        # Bad Request" — the structured {"error": ...} body lives in e.read().
-        # Surface it so callers can act on the backend's actual error (e.g.
-        # the learn_add "unknown session" mapping) instead of an opaque code.
+        # On 4xx/5xx str(e) is only "HTTP Error 400: Bad Request"; the
+        # {"error": ...} body is in e.read(). Return it so callers can act on
+        # the real error (e.g. learn_add's "unknown session" mapping).
         return _http_error_body(e)
     except urllib.error.URLError as e:
         if not isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
             return _transport_failure(str(e), mark_transport_error)
-        # THE replay rule lives in _replay_target, shared with
-        # mcp_computer._invoke: None means "do not replay" (no evidence, or the
-        # re-resolution named the same dead base). Nothing was handed to a live
-        # gateway in either case, so no refusal below carries transport
-        # ambiguity — the outcome is a definite rejection once the retry window
-        # for the refused target is spent.
+        # The replay rule is _replay_target, shared with mcp_computer._invoke.
+        # None means "do not replay" (no evidence, or the same dead base came
+        # back). Nothing reached a live gateway, so a refusal below is a
+        # definite rejection once the retry window is spent.
         retry_target = _replay_target(base)
         if retry_target is None:
-            # No moved gateway to chase, so the base that refused is the only
-            # candidate — the same-port restart case. Give it the short retry
-            # window rather than surfacing a bare errno.
+            # No moved gateway to chase: retry the refused base (a same-port
+            # restart) briefly instead of returning a bare errno.
             return _retry_refused(target, e)
         try:
             return _once(retry_target)
@@ -754,17 +744,14 @@ def _send(
             return _http_error_body(retry_exc)
         except urllib.error.URLError as retry_exc:
             if isinstance(retry_exc.reason, (ConnectionRefusedError, socket.gaierror)):
-                # Both bases refused. The re-resolved one is the fresher
-                # evidence of where the gateway lives, so the retry window
-                # applies to it.
+                # Both refused; retry the re-resolved base, the fresher
+                # evidence of where the gateway lives.
                 return _retry_refused(retry_target, retry_exc)
             return _transport_failure(str(retry_exc), mark_transport_error)
         except Exception as retry_exc:
-            # The replay reached the gateway and failed afterwards (a read timeout
-            # after a spawn was accepted, say). Acceptance is undetermined, so this
-            # must carry the same ambiguity flag as a first-attempt post-connect
-            # failure — otherwise spawn_run reconciles a still-running member down
-            # and orphans it.
+            # The replay reached the gateway, then failed (e.g. a read timeout
+            # after spawn acceptance). Acceptance is unknown, so flag it like a
+            # first-attempt failure, or spawn_run orphans a running member.
             return _transport_failure(str(retry_exc), mark_transport_error)
     except Exception as e:
         # The request may have reached the gateway before the response failed
@@ -804,10 +791,9 @@ def _post(
         return {"error": _sk_err}
     if sk:
         headers["X-Session-Key"] = sk
-    # ``transport_error`` means acceptance is unknown. A caller that reads it
+    # ``transport_error`` means acceptance is unknown. Callers that read it
     # (spawn_run's batch reconcile, the cron tool proxy, learn_add) must not
-    # report a definite failure; other _post callers treat the payload as a
-    # normal error.
+    # report a definite failure; other callers see a normal error.
     return _send(
         path,
         data=data,

@@ -429,7 +429,7 @@ class TestInteractions:
 
     @pytest.mark.asyncio
     async def test_channels_deny_drops_approval_interaction(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT pass 1 #1 + #4): a channels-governance DENY must stop a button
+        # A channels-governance DENY must stop a button
         # press from resolving a pending tool approval — otherwise a policy denial
         # applied after connect could still execute a governed tool via a stale
         # approval button. This regression-locks the on_interaction chokepoint
@@ -517,7 +517,7 @@ class TestInteractions:
 
     @pytest.mark.asyncio
     async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT pass 1 #4): a channels DENY must stop handle_message from
+        # A channels DENY must stop handle_message from
         # driving a turn. Regression-locks the dispatcher's inbound chokepoint.
         import json
 

@@ -29,6 +29,7 @@ from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.config_all_settings import generic_value_error
 from kiro_crew.dashboard.handlers.core_config_models import (
     _active_provider_and_pin_backend,
     _active_provider_name,
@@ -42,7 +43,7 @@ from kiro_crew.dashboard.handlers.core_config_view import (
     _kas_in_use,
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
-from kiro_crew.metrics import provider as _metrics_provider
+from kiro_crew.metrics import kiro_export as _kiro_export
 from kiro_crew.update_deferral import SkipListFull, merge_update_nudge_record
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
@@ -295,9 +296,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             resources=resources,
         )
 
-    def _deny(msg: str, resources: str = "", status: int = 400) -> web.Response:
+    def _deny(
+        msg: str, resources: str = "", status: int = 400, *, code: str | None = None
+    ) -> web.Response:
         _log_sel("denied", resources or msg)
-        return web.json_response({"error": msg}, status=status)
+        payload = {"error": msg} if code is None else {"error": msg, "code": code}
+        return web.json_response(payload, status=status)
 
     denied = await require_owner_dashboard_request(request, "config.patch")
     if denied is not None:
@@ -306,9 +310,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return _deny("invalid JSON", "invalid JSON body")
+        return _deny("invalid JSON", "invalid JSON body", code="invalid_json")
     if not isinstance(body, dict):
-        return _deny("invalid JSON", "invalid JSON body")
+        return _deny("invalid JSON", "invalid JSON body", code="body_not_object")
 
     path_key: str = body.get("path", "")
     value: Any = body.get("value")
@@ -341,8 +345,28 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
         )
 
+    # ``unset`` removes the stored value so the field reads its default again,
+    # including a later release's default. Only a schema-derived rule allows it: a
+    # curated key may carry guards (an enable refused under policy) that a removal
+    # would step around.
+    unset = body.get("unset", False)
+    if not isinstance(unset, bool):
+        return _deny("unset must be a boolean")
+    if unset and (if_unset or not spec.get("generic")):
+        return _deny(f"unset is not allowed for {path_key}", path_key)
+    if spec.get("generic") and not unset:
+        reason = await asyncio.to_thread(generic_value_error, path_key, value)
+        if reason:
+            return _deny(reason, f"{path_key}={value}")
+
     # Validate value
-    if spec["type"] == "enum":
+    if unset:
+        pass
+    elif value is None and spec.get("generic"):
+        # The generic check above passes a null only for a nullable key, which
+        # stores it as written: a config saved from the defaults holds one there.
+        pass
+    elif spec["type"] == "enum":
         # ``values_fn`` (the same hook the ``str`` branch already carries) is for an
         # enum whose membership is not knowable at import: it can widen after boot
         # when an edition registers a backend. A static ``values`` list would be
@@ -353,6 +377,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # Store the member that matched, not the value sent: ``15.0`` equals the
         # choice ``15``, but the loader reads only the int and would run the default.
         value = allowed[allowed.index(value)]
+    elif spec["type"] == "int" and spec.get("allow_auto") and value == "auto":
+        pass  # the one word an ``int | str`` field takes besides a number
     elif spec["type"] == "int":
         raw = value
         try:
@@ -591,7 +617,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # established, which the handler below turns into a refusal: reading a
             # transient provider error as "no egress" would permit an enable that
             # the recovered provider then turns into egress.
-            egress = await asyncio.to_thread(_metrics_provider.otlp_egress_active, cfg.telemetry)
+            # The built-in Kiro destination does not count: the privacy notice
+            # names it, and it exports only once that notice was shown.
+            egress = await asyncio.to_thread(
+                _kiro_export.egress_needs_written_opt_in, cfg.telemetry
+            )
         except Exception:
             # Unreadable config, or egress posture that could not be resolved:
             # fail closed rather than enabling collection whose egress posture
@@ -698,6 +728,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # ("agent.model"), and 3-level ("agent.role_models.background") —
             # instead of special-cases that would clobber a whole section for a
             # 3-level key.
+            if unset:
+                # Remove the leaf only; a missing or non-object parent has nothing
+                # stored to remove. The emptied parent stays: it reads as defaults.
+                parent = data
+                for part in parts[:-1]:
+                    child = parent.get(part)
+                    if not isinstance(child, dict):
+                        return data
+                    parent = child
+                parent.pop(parts[-1], None)
+                _resolution.drop_retired_section_keys(data)
+                return data
             section = data
             for part in parts[:-1]:
                 nxt = section.setdefault(part, {})
@@ -792,7 +834,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return web.json_response({"error": "failed to write config file"}, status=500)
 
     # A structured value is audited by path only; a whole record would bloat each line.
-    _log_sel("success", path_key if spec["type"] == "normalized" else f"{path_key}={value}")
+    if unset:
+        _log_sel("success", f"{path_key} unset")
+    else:
+        _log_sel("success", path_key if spec["type"] == "normalized" else f"{path_key}={value}")
 
     # Everything a running gateway does in response to this write lives behind
     # ``config.live.subscribe`` (the provider switch and role-model rebuild are

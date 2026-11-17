@@ -90,7 +90,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, MutableSet
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -252,12 +252,14 @@ class _Founding:
     one the allocator's priorities exist to avoid.
 
     ``done`` resolves when the founding ends, published or not, and only tells a
-    waiter to look again -- never what it found.
+    waiter to look again -- never what it found. ``entry`` is what it published,
+    when it did, so a woken waiter takes that entry rather than re-picking.
     """
 
     key: Hashable
     done: asyncio.Future[None]
     sessions: list[str] = field(default_factory=list)
+    entry: _Entry | None = None
 
 
 class RuntimeOwnership:
@@ -351,15 +353,39 @@ class RuntimeOwnership:
             finally:
                 if not founding.done.done():
                     founding.sessions.remove(session_key)
-
+            # What the founding published, even under another key than this one.
+            published = founding.entry
+            if (
+                published is not None
+                and any(e is published for e in self._entries)
+                and published.admits(session_key, cap=cap)
+                and self._alive(published)
+            ):
+                return self._mint(published, session_key, cap=cap, joined=True)
         founding = _Founding(
             key=key, done=asyncio.get_running_loop().create_future(), sessions=[session_key]
         )
         self._foundings.append(founding)
         try:
             runtime = await spawn()
-            entry = _Entry(runtime=runtime, key=key)
+            # A runtime whose engine cannot host several chats (a KAS start that
+            # fell back to a queueing engine under the sharing preview) is published
+            # closed to joins: its founder keeps it, every waiter and later arrival
+            # founds its own. It stays closed whatever the cap: the cap is read live
+            # at each placement and is not part of the key, so an entry published
+            # open at cap 1 would take a joiner once the cap is raised. Only a
+            # sharing placement (cap > 1) logs it; the cap-1 registration of every
+            # chat with the preview off stays silent.
+            closed = getattr(runtime, "chat_joinable", True) is False
+            entry = _Entry(runtime=runtime, key=key, closed=closed)
+            if entry.closed and cap > 1:
+                logger.warning(
+                    "chat-runtime-sharing: runtime pid=%s runs an engine that queues chats; "
+                    "published closed to joins",
+                    _pid_of(runtime),
+                )
             self._entries.append(entry)
+            founding.entry = entry
             return self._mint(entry, session_key, cap=cap, joined=False)
         finally:
             # Every way out -- published, raised, cancelled -- clears the marker
@@ -413,6 +439,13 @@ class RuntimeOwnership:
             return None
         entry.leases.pop(lease, None)
         if entry.leases:
+            # A runtime whose departed sessions leave processes behind (codex: its
+            # per-session MCP fleet outlives ``session/close``) takes no new lease
+            # once any holder leaves, so it drains and dies with its last holder
+            # instead of collecting one leftover fleet per departure. Bounded by the
+            # cap: at most cap-1 departed fleets ever wait on one process.
+            if getattr(entry.runtime, "chat_closes_on_departure", False) is True:
+                entry.closed = True
             logger.info(
                 "runtime_ownership outcome=released pid=%s remaining_leases=%d",
                 _pid_of(entry.runtime),
@@ -512,6 +545,60 @@ class RuntimeOwnership:
                 return 0
             return len(entry.leases)
         return 0
+
+    def keyed_lease_counts(self) -> list[int]:
+        """The lease count of each LIVE runtime placed under a compatibility key.
+
+        For telemetry: counts only, never a key, pid or session. A runtime placed
+        by chat runtime sharing is keyed by its ``ChatRuntimeKey``; a registration
+        lease (``acquire_session_lease``) is keyed by the runtime object itself,
+        so ``entry.key is entry.runtime`` tells the two apart without this module
+        knowing either key type. Same liveness rule as :meth:`leases_on_pid`.
+        """
+        return [
+            len(entry.leases)
+            for entry in list(self._entries)
+            if entry.key is not entry.runtime and entry.leases and self._alive(entry)
+        ]
+
+    def placed_by_sharing(self, runtime: object) -> bool:
+        """Whether this runtime OBJECT is live and placed under a compatibility key.
+
+        The same selection as :meth:`keyed_lease_counts` for one runtime, by
+        identity: ``True`` for a process chat runtime sharing placed (founder or
+        joiner), ``False`` for one only a registration lease names. For telemetry.
+        """
+        return any(
+            entry.runtime is runtime
+            and entry.key is not entry.runtime
+            and entry.leases
+            and self._alive(entry)
+            for entry in list(self._entries)
+        )
+
+    def live_keys(self, exclude: object = None) -> list[Hashable]:
+        """The key of each LIVE runtime placed under a compatibility key, for diagnostics.
+
+        Same selection as :meth:`keyed_lease_counts`, less the runtime *exclude*.
+        A caller logs only which fields differ from its own key, never a value.
+        """
+        return [
+            entry.key
+            for entry in list(self._entries)
+            if entry.key is not entry.runtime
+            and entry.runtime is not exclude
+            and self._alive(entry)
+        ]
+
+    def held_leases_on_runtime(self, runtime: object) -> int:
+        """Leases still recorded on this runtime OBJECT, alive or not, for telemetry.
+
+        Unlike :meth:`leases_on_runtime` this does not drop a dead runtime: a
+        process reaped by its exit watcher is already not alive when its death is
+        announced, and its leases are what says how many chats it took down. Never
+        a kill-gate answer, which must stay live-only.
+        """
+        return sum(len(e.leases) for e in list(self._entries) if e.runtime is runtime)
 
     # -- internals --
 
@@ -1312,8 +1399,7 @@ def is_shared_chat_runtime(provider: object) -> bool:
     False, so those branches run byte-identically to base for it.
 
     Reads ``_shared_runtime`` (set from ``chat_share_key is not None`` when the
-    provider is built), which is the same flag ``AcpSessionProvider._chat_turn_gate``
-    uses to decide whether to serialize the turn. A runtime LEASE does NOT tell
+    provider is built). A runtime LEASE does NOT tell
     the two apart: the unshared path also takes a lease at registration
     (``acquire_session_lease``), so every registered chat holds a lease string
     whether or not it shares -- ``holds_runtime_lease`` therefore cannot gate
@@ -1332,39 +1418,27 @@ def is_shared_chat_runtime(provider: object) -> bool:
     return False
 
 
-def chat_turn_gate_hold(provider: object) -> Any:
-    """An async context that holds *provider*'s shared chat turn gate, or a null one.
-
-    For the compaction paths, which run ``/compact`` and then may wait for the
-    deferred receipt: on a SHARED chat runtime the gate is held across both
-    (``AcpSessionProvider.hold_chat_turn_gate``). Every other provider -- the
-    preview off, a subagent, a non-ACP provider, a test double -- gets
-    ``contextlib.nullcontext()``, so those paths run exactly as before.
-    """
-    import contextlib
-
-    if not is_shared_chat_runtime(provider):
-        return contextlib.nullcontext()
-    hold = getattr(provider, "hold_chat_turn_gate", None)
-    if hold is None:
-        return contextlib.nullcontext()
-    held = hold()
-    if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
-        return held
-    return contextlib.nullcontext()
-
-
 async def acquire_session_lease(provider: object) -> None:
     """Record a registered session's claim on its runtime. No-op for other shapes.
 
     Called where the session joins the registry, so the lease and registry
     membership mean the same thing. A provider with no runtime to lease -- a
     non-ACP backend, a placeholder client before startup swapped in the real one
-    -- simply has no holder and is skipped.
+    -- simply has no holder and is skipped. A client that owns its process alone
+    (``AcpClient``) is marked registered instead, which telemetry reads.
     """
     holder = _lease_holder(provider)
     if holder is not None:
         await holder.acquire_runtime_lease()  # type: ignore[attr-defined]
+        return
+    # A client that owns its process alone (``AcpClient``) has no lease to take.
+    # It is marked registered instead, so its turn-start telemetry reads one
+    # tenant exactly where a leased session would. Recognised by its bool SLOT,
+    # for the reason ``_lease_holder`` gives about test stand-ins.
+    for candidate in (provider, getattr(provider, "_client", None)):
+        if candidate is not None and getattr(candidate, "_registered_session", None) is False:
+            setattr(candidate, "_registered_session", True)  # noqa: B010 -- duck-typed slot
+            return
 
 
 async def release_session_lease(provider: object) -> None:
@@ -1402,7 +1476,6 @@ __all__ = [
     "claim_runtime_tenancy",
     "commit_runtime_teardown",
     "holds_runtime_lease",
-    "chat_turn_gate_hold",
     "is_shared_chat_runtime",
     "note_runtime_kill",
     "outstanding_leases",

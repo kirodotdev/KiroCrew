@@ -23,12 +23,13 @@ from kiro_crew.apps import backend_sdk as sdk
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 from kiro_crew.apps.backend_sdk import spawn as sdk_spawn
 from kiro_crew.apps.scrub_sdk import ScrubSDK
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, wait_until
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
-# A fake AWS access key id: the documented example shape, never a live credential.
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+# A synthetic GitHub token: a credential under either redaction engine, never a live one.
+_FAKE_KEY = github_classic()
 
 
 # ── the package and its level ───────────────────────────────────────────────

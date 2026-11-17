@@ -394,7 +394,7 @@ def test_a_cold_session_fold_equals_the_copy_per_step_fold_and_copies_nothing_pe
     assert calls["copied"] == 0
     monkeypatch.delattr(_SessionFold, "apply_owned")
     before = _session_values(UNIT)
-    assert calls["copied"] > 0  # the old path really was taken
+    assert calls["copied"] > 0  # the copy path really was taken
     assert after == before
 
 

@@ -14,6 +14,7 @@ import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
+import { __resetErrorJournalForTests, consumeChatHandoff } from '../utils/errorReport'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -96,6 +97,21 @@ describe('AboutPanel update refused on a dirty checkout', () => {
     expect(command.querySelector('code')?.textContent).toBe('git stash push -u -m "before kirocrew update"')
     // The shared copy block, so it copies like every other command in the app.
     expect(within(command).getByRole('button', { name: /copy command/i })).toBeTruthy()
+  })
+
+  it('dirty_worktree hands the agent the refusal\'s own report', async () => {
+    // The guided copy comes from the catalog, while the transport filed the
+    // report under the gateway's message, so the notice passes it itself.
+    __resetErrorJournalForTests()
+    stubFetch({ error: 'Working tree has uncommitted changes', code: 'dirty_worktree', changed: 2 })
+    mountWeb()
+    await pressUpdateNow()
+
+    const error = await screen.findByTestId('update-apply-error')
+    fireEvent.click(within(error).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 409')
+    expect(prompt).toContain('dirty_worktree')
   })
 
   it('any other 409 shows the server text and no stash command', async () => {

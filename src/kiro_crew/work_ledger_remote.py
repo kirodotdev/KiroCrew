@@ -23,6 +23,7 @@ fetches and calls these.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -579,12 +580,14 @@ def apply_remote_report(
     pr: Any = None,
     reason: Any = None,
     reported_at: Any,
+    peer_event_id: Any = None,
 ) -> dict[str, Any]:
     """Write one ingested peer report: the worker's fields, stamped *reported_at*.
 
     The same checks as a local report, and the item must be remote. *reported_at*
     is the peer's stamp, kept as ``last_report_at`` so the next ingest compares
-    against it.
+    against it. *peer_event_id*, the peer's own id for the report, is the hub
+    event's id verbatim, so filing the same peer event again adds no line.
     """
     checked_status = _require_choice(status, WORKER_STATUSES, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary", required=False)
@@ -604,9 +607,15 @@ def apply_remote_report(
             code=CODE_INVALID_VALUE,
             field="last_report_at",
         )
+    if peer_event_id is not None and not is_peer_event_id(peer_event_id):
+        raise WorkLedgerError(
+            "peer_event_id is not a work event id", code=CODE_INVALID_VALUE, field="peer_event_id"
+        )
     checked_id = _require_item_id(item_id)
     with item_lock(slot_key, checked_id, create=False):
-        item = read_work_item(slot_key, checked_id)
+        # Strict: a read that fails raises, so ingest retries the report later
+        # instead of reading "no such item" and passing it over.
+        item = read_work_item(slot_key, checked_id, strict=True)
         if item is None:
             raise WorkLedgerError(
                 f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
@@ -619,6 +628,9 @@ def apply_remote_report(
             )
         item.status = checked_status
         item.reason = checked_reason
+        # A peer report carries no discussion, and a report replaces it, as the fold
+        # replaces it on every report entry.
+        item.discussion = None
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:
@@ -633,5 +645,16 @@ def apply_remote_report(
             checked_summary,
             status=checked_status,
             id_salt="\0" + stamp,
+            fixed_id=peer_event_id,
         )
     return {"item": item, "event": event}
+
+
+#: A work event id as ``work_vocab.work_event_id`` spells one: 16 lowercase hex.
+_EVENT_ID_SHAPE = re.compile(r"[0-9a-f]{16}")
+
+
+def is_peer_event_id(value: Any) -> bool:
+    """Whether *value* is shaped as a work event id, the only peer event id the hub
+    stores."""
+    return isinstance(value, str) and _EVENT_ID_SHAPE.fullmatch(value) is not None

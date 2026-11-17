@@ -99,25 +99,46 @@ def is_absolute(path: str, *, windows: bool = ON_WINDOWS) -> bool:
 
 def parse(raw: object, *, windows: bool = ON_WINDOWS) -> str | None:
     """*raw* as Crew reads it (in glob form), or ``None`` when outside the subset."""
+    read = _read(raw, windows=windows)
+    return read[0] if read[1] is None else None
+
+
+def refusal_reason(raw: object, *, windows: bool = ON_WINDOWS) -> str | None:
+    """Why :func:`parse` refuses *raw*, in a few words, or ``None`` when it reads it."""
+    return _read(raw, windows=windows)[1]
+
+
+def _read(raw: object, *, windows: bool) -> tuple[str, str | None]:
+    """``(raw in glob form, None)``, or ``("", reason)`` when outside the subset."""
     if not isinstance(raw, str):
-        return None
-    if not raw or len(raw) > MAX_PATTERN_LENGTH:
-        return None
+        return "", "not a string"
+    if not raw:
+        return "", "empty"
+    if len(raw) > MAX_PATTERN_LENGTH:
+        return "", f"longer than {MAX_PATTERN_LENGTH} characters"
     if windows:
         if "%" in raw:
-            return None
+            return "", "a % variable"
         raw = to_glob_path(raw, windows=True)
         if raw.startswith("//"):
             # A UNC share: not a path this reader anchors.
-            return None
-    if any(c in _UNREAD_GLOB_CHARS or not c.isprintable() for c in raw):
-        return None
+            return "", "a network share"
+    unread = next((c for c in raw if c in _UNREAD_GLOB_CHARS), None)
+    if unread is not None:
+        return "", f"the {unread} character"
+    if not raw.isprintable():
+        return "", "a character that is not printable"
     if raw.startswith("~") and raw != "~" and not raw.startswith("~/"):
         # ``~user``: another account's home, which this reader does not resolve.
-        return None
+        return "", "another account's home"
     if raw.count("/**/") > _MAX_DOUBLE_STAR_DIRS:
-        return None
-    return raw
+        return "", f"more than {_MAX_DOUBLE_STAR_DIRS} /**/ segments"
+    return raw, None
+
+
+#: Joins a ``toolsSettings.<key>.allowedPaths`` path to one entry it names in a
+#: session-start notice item: ``toolsSettings.write.allowedPaths: /a/[b] (the [ character)``.
+UNREADABLE_ENTRY_MARK = ".allowedPaths: "
 
 
 def anchor(pattern: str, cwd: str, home: str, *, windows: bool = ON_WINDOWS) -> str | None:

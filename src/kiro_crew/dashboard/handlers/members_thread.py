@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _deny_app_caller,
     _member_names_for_slug,
     _sel,
+    _teammate_admitted,
 )
 from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
@@ -168,9 +169,12 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # identity but a non-owner subject (the `!dashboard` Slack case), which
     # would otherwise bind a session slot to a crew member. Kept below the app
     # denial so app callers keep the 404 they get on every other member route.
-    owner_denied = await require_owner_dashboard_request(request, "members.thread")
-    if owner_denied is not None:
-        return owner_denied
+    # A team Crew teammate opens a person-created Bot's chat as they open a session.
+    admitted = await _teammate_admitted(request, "members.thread", slug=request.match_info["slug"])
+    if not admitted:
+        owner_denied = await require_owner_dashboard_request(request, "members.thread")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(

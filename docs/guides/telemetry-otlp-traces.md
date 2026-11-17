@@ -171,13 +171,39 @@ not been run against a live account by the Kiro Crew maintainers yet.
 ## Conductors in conductor mode and Bots
 
 By default each round of a conductor's work is one trace, so a round reads as one
-waterfall: an `ultra round N` root, the conductor's turns under it, and one
+waterfall: a `conductor_mode round N` root, the conductor's turns under it, and one
 `work_item <id>` span per item with its crew member's turns and reports under that.
 Each ledger write is a `kirocrew.work.<action>` span. Rounds of one goal share
 `kirocrew.work.goal_id`, and each round links to the one before it. To get one
-trace per turn instead, set `"traces_ultra_mode": "turn"` in `telemetry`; the turns
+trace per turn instead, set `"traces_conductor_mode": "turn"` in `telemetry`; the turns
 of one run then share `kirocrew.crew.root`, and one item's `kirocrew.work.item_id`.
 No goal, title or report text is ever on a span.
+
+## Reading one turn locally
+
+`kirocrew trace show <key>` prints the most recent trace holding the key as a
+waterfall, from the local span files alone (no collector, no gateway). The key is a
+turn id, a session key or id, an ACP session id or a trace id. Each row is one span
+with its start, its duration and a time bar; a `gap` row marks a stretch where
+nothing under a parent was running, such as time spent before the first model call.
+A span that failed shows its `error.type`. It prints names and timings only. When
+several traces match, it says how many others do; pass a trace id to pick one.
+A long trace stops after 500 rows and ends with the number of spans not shown.
+
+## Joining a caller's trace
+
+A service that calls Kiro Crew over HTTP can pass its W3C `traceparent` header on
+`POST /v1/chat/completions` or `POST /api/hooks/agent`. With `accept_traceparent` set
+to `true` in `telemetry` (default `false`) and Traces Enabled on, a valid version `00`
+header makes the turn span a child of the caller's span, so the turn's spans appear
+inside the caller's trace. The response carries a `traceparent` header whose span id is
+the turn span's; the response body is unchanged. The header is read only after the
+request has authenticated, a value that is not valid is ignored, and the caller's
+sampled flag never switches recording on. With tracing off nothing is recorded and no
+header is returned. The header names the turn's first attempt; an attempt retried
+within the same turn is recorded as another child of the caller's span, with the same
+`kirocrew.turn_id`. A turn that ends and queues a recovery turn is different: the
+recovery runs as a new turn with its own `kirocrew.turn_id`, outside the caller's trace.
 
 ## Checking it works
 

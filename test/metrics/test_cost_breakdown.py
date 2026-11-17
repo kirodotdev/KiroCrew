@@ -440,6 +440,32 @@ class TestSpendUnit:
         assert out.get("unit") == "credits"
         assert out.get("credits") == 12.5
 
+    def test_a_mixed_window_carries_the_dollar_view_beside_the_credits(self, store):
+        """A crew running both harnesses spends in both units in one window."""
+        store([
+            _row(slot="chat-1-1700000000", model="kiro-m", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        usd = out.get("usd") or {}
+        assert usd.get("unit") == "usd"
+        assert usd.get("credits") == pytest.approx(0.75)
+        assert usd.get("turns") == 2
+        assert usd.get("per_turn") == pytest.approx(0.375)
+        assert [r.get("name") for r in usd.get("by_model", [])] == ["claude-x"]
+        assert [c.get("slot") for c in usd.get("conversations", [])] == ["chat-2-1700000000"]
+        assert "usd" not in usd
+        # Each turn is counted on one card only.
+        assert out.get("turns") == 1
+        assert [r.get("name") for r in out.get("by_model", [])] == ["kiro-m"]
+
+    def test_a_single_unit_window_carries_no_second_view(self, store):
+        store([_row(slot="chat-1-1700000000", credits=3.0)])
+        assert "usd" not in usage_mod.cost_breakdown(7)
+        store([_dollar_row(slot="chat-2-1700000000", cost=0.5)])
+        assert "usd" not in usage_mod.cost_breakdown(7)
+
     def test_a_window_with_no_spend_at_all_stays_in_credits(self, store):
         store([_row(slot="chat-1-1700000000", credits=0.0)])
         out = usage_mod.cost_breakdown(7)
@@ -466,3 +492,23 @@ class TestSpendUnit:
         out = usage_mod.cost_breakdown(7)
         assert out.get("unit") == "usd"
         assert out.get("credits") == pytest.approx(0.25)
+
+
+def test_one_claude_code_model_is_one_row_across_its_id_migration(store):
+    """Rows written before and after a model-id migration name one model.
+
+    The Daily History and the stacked chart canonicalise the stored id per
+    provider; the Spend tab split the same model into two rows of half the cost.
+    """
+    from kiro_crew import model_registry
+
+    canon = model_registry.canonicalize_for_provider("opus", "claude_code")
+    assert canon != "opus"
+    rows = []
+    for mdl in ("opus", canon):
+        row = _dollar_row(slot="chat-1-1700000000", cost=1.0, model=mdl)
+        row["provider"] = "claude_code"
+        rows.append(row)
+    store(rows)
+    out = usage_mod.cost_breakdown(7)
+    assert [(r.get("name"), r.get("credits")) for r in out.get("by_model", [])] == [(canon, 2.0)]

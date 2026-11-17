@@ -15,7 +15,7 @@ import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew import session_directive
-from kiro_crew.acp import client_turn
+from kiro_crew.acp import client_timeouts, client_turn
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.client_timeouts import _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT
 from kiro_crew.acp.harness import mimocode as mimocode_mod
@@ -205,7 +205,7 @@ async def test_mimocode_permission_waits_for_matching_command_refinement(
     mimocode_calls = _spy_mimocode_deferral(client)
     # Separate copies: MiMo must reach its own.
     opencode_deferral = AsyncMock(return_value=False)
-    client._defer_opencode_shell_permission = opencode_deferral
+    client._defer_shell_permission = opencode_deferral
 
     events = await _drain_turn(client, frames)
 
@@ -483,7 +483,7 @@ async def test_the_wait_is_bounded_by_mimos_own_constant(tmp_path, monkeypatch):
     assert _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT == 2.0
     # Unlike opencode's 2.0, so it shows which constant the MiMo copy reads.
     monkeypatch.setattr(client_turn, "_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT", 7.5)
-    assert client_turn._OPENCODE_PERMISSION_REFINEMENT_TIMEOUT != 7.5
+    assert client_timeouts._OPENCODE_PERMISSION_REFINEMENT_TIMEOUT != 7.5
     client = _mimocode_shell_client(tmp_path)
 
     _deferred, timeouts = await _defer_once(client, _permission(), None)

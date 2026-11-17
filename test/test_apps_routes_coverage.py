@@ -85,9 +85,7 @@ class TestBuiltinServiceHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         home = _setup_env(tmp_path, monkeypatch)
-        monkeypatch.setitem(
-            routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc")
-        )
+        monkeypatch.setitem(routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc"))
         _sync_builtin_config(APP, enabled=True)
         data = json.loads((home / "config.json").read_text(encoding="utf-8"))
         assert data["covsvc"]["enabled"] is True
@@ -103,9 +101,7 @@ class TestBuiltinServiceHelpers:
     ) -> None:
         home = _setup_env(tmp_path, monkeypatch)
         (home / "config.json").write_text("{not json", encoding="utf-8")
-        monkeypatch.setitem(
-            routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc")
-        )
+        monkeypatch.setitem(routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc"))
         with pytest.raises(OSError, match="Could not read config.json"):
             _sync_builtin_config(APP, enabled=True)
 
@@ -122,9 +118,7 @@ class TestBuiltinServiceHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        monkeypatch.setitem(
-            routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc")
-        )
+        monkeypatch.setitem(routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc"))
         request = make_mocked_request("POST", "/x", app=web.Application())
         warn = await _notify_builtin_service(request, APP)
         assert warn is not None and "no gateway state" in warn
@@ -134,9 +128,7 @@ class TestBuiltinServiceHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        monkeypatch.setitem(
-            routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc")
-        )
+        monkeypatch.setitem(routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc"))
         app = web.Application()
         app["state"] = SimpleNamespace()
         request = make_mocked_request("POST", "/x", app=app)
@@ -160,9 +152,7 @@ class TestBuiltinServiceHelpers:
         expected: str | None,
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        monkeypatch.setitem(
-            routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc")
-        )
+        monkeypatch.setitem(routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc"))
 
         async def _restart() -> str:
             return result
@@ -177,9 +167,7 @@ class TestBuiltinServiceHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        monkeypatch.setitem(
-            routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc")
-        )
+        monkeypatch.setitem(routes_mod._BUILTIN_SERVICE_APPS, APP, ("covsvc", "restart_covsvc"))
 
         async def _restart() -> str:
             raise RuntimeError("service exploded")
@@ -200,9 +188,7 @@ class TestUnregisterNotificationChannels:
         )
         app = web.Application()
         app["state"] = SimpleNamespace()
-        _unregister_notification_channels(
-            make_mocked_request("POST", "/x", app=app), APP
-        )
+        _unregister_notification_channels(make_mocked_request("POST", "/x", app=app), APP)
         assert [r for r in caplog.records if r.name == "kiro_crew.apps.routes"] == []
 
     def test_unregisters_via_bus(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -211,9 +197,7 @@ class TestUnregisterNotificationChannels:
         bus.unregister_app_channels.return_value = 2
         app = web.Application()
         app["state"] = SimpleNamespace(notification_bus=bus)
-        _unregister_notification_channels(
-            make_mocked_request("POST", "/x", app=app), APP
-        )
+        _unregister_notification_channels(make_mocked_request("POST", "/x", app=app), APP)
         bus.unregister_app_channels.assert_called_once_with(APP)
         messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.apps.routes"]
         assert messages == [f"Unregistered 2 notification channel(s) for app {APP}"]
@@ -234,10 +218,8 @@ async def test_list_apps_enriches_running_backend(
         lambda: [
             # Mirrors AppProcess.to_dict(): `running` is a real observation of the
             # tracked process, not something the handler asserts from the row existing.
-            {"app_name": APP, "port": 7999, "healthy": True, "pid": 4242,
-             "running": True},
-            {"app_name": "other-app", "port": 7998, "healthy": False, "pid": 1,
-             "running": True},
+            {"app_name": APP, "port": 7999, "healthy": True, "pid": 4242, "running": True},
+            {"app_name": "other-app", "port": 7998, "healthy": False, "pid": 1, "running": True},
         ],
     )
     async with TestClient(TestServer(_make_app())) as client:
@@ -443,9 +425,7 @@ async def test_list_apps_legacy_query_source_never_exposes_a_trust_proof(
 ) -> None:
     _setup_env(tmp_path, monkeypatch)
     secret = "legacy-query-secret"
-    raw_source = (
-        f"https://clone.example.test/Owner/App.git?repo=A&access_token={secret}"
-    )
+    raw_source = f"https://clone.example.test/Owner/App.git?repo=A&access_token={secret}"
     monkeypatch.setattr(
         routes_mod,
         "list_apps",
@@ -572,8 +552,7 @@ async def test_list_apps_reports_a_tracked_but_exited_backend_as_not_running(
         routes_mod,
         "list_app_processes",
         lambda: [
-            {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242,
-             "running": False},
+            {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242, "running": False},
         ],
     )
     async with TestClient(TestServer(_make_app())) as client:
@@ -612,9 +591,7 @@ async def test_deploy_web_redirects_to_canonical_endpoint(
 
 class TestInstallValidation:
     @pytest.mark.asyncio
-    async def test_invalid_json_body(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_invalid_json_body(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup_env(tmp_path, monkeypatch)
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
@@ -634,7 +611,10 @@ class TestInstallValidation:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/install", json={"source": str(src)})
             assert resp.status == 400
-            assert "999.0.0" in (await resp.json())["error"]
+            body = await resp.json()
+            assert "999.0.0" in body["error"]
+            assert body["code"] == "kirocrew_version_too_old"
+            assert "restart its gateway" in body["error"]
         assert not (home / "apps" / APP).exists()
 
     @pytest.mark.asyncio
@@ -861,9 +841,7 @@ class TestInstallValidation:
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
-            resp = await client.post(
-                "/api/apps/install", json={"source": str(tmp_path / "nope")}
-            )
+            resp = await client.post("/api/apps/install", json={"source": str(tmp_path / "nope")})
             assert resp.status == 400
             assert (await resp.json())["code"] == "source_not_directory"
 
@@ -879,9 +857,7 @@ class TestInstallValidation:
             calls.append((app_name, bounded))
             return False
 
-        monkeypatch.setattr(
-            routes_mod, "stop_retained_startup_hooks", _stop_retained
-        )
+        monkeypatch.setattr(routes_mod, "stop_retained_startup_hooks", _stop_retained)
 
         def _must_not_install(*args: Any, **kwargs: Any) -> AppResult:
             raise AssertionError("install must not replace files while old code runs")
@@ -889,9 +865,7 @@ class TestInstallValidation:
         monkeypatch.setattr(routes_mod, "install_app", _must_not_install)
 
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
-            resp = await client.post(
-                "/api/apps/install", json={"source": str(source)}
-            )
+            resp = await client.post("/api/apps/install", json={"source": str(source)})
             assert resp.status == 409
             body = await resp.json()
         assert body["code"] == "startup_hook_still_running"
@@ -904,9 +878,7 @@ class TestInstallValidation:
 
 class TestRegisterExternal:
     @pytest.mark.asyncio
-    async def test_invalid_json(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_invalid_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup_env(tmp_path, monkeypatch)
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
@@ -1029,9 +1001,7 @@ class TestRegisterExternal:
 
         _setup_env(tmp_path, monkeypatch)
         credential = "register-source-secret"
-        source = (
-            f"https://register-user:{credential}@clone.example.test/owner/ext-app.git"
-        )
+        source = f"https://register-user:{credential}@clone.example.test/owner/ext-app.git"
         safe_source = "https://clone.example.test/owner/ext-app.git"
 
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
@@ -1049,9 +1019,7 @@ class TestRegisterExternal:
             assert registered.status == 201
             assert credential not in await registered.text()
 
-            persisted = (
-                app_dir("ext-app") / INSTALLED_META_FILENAME
-            ).read_text(encoding="utf-8")
+            persisted = (app_dir("ext-app") / INSTALLED_META_FILENAME).read_text(encoding="utf-8")
             assert credential not in persisted
             assert json.loads(persisted)["source"] == safe_source
 
@@ -1129,9 +1097,7 @@ class TestRegisterExternal:
             detail_text = await detail.text()
             listing_text = await listing.text()
 
-        persisted = (app_dir("ext-app") / INSTALLED_META_FILENAME).read_text(
-            encoding="utf-8"
-        )
+        persisted = (app_dir("ext-app") / INSTALLED_META_FILENAME).read_text(encoding="utf-8")
         visible = "\n".join([registered_text, persisted, detail_text, listing_text])
         if secret:
             assert secret not in visible
@@ -1410,9 +1376,7 @@ class TestLifecycleRoutesAreOwnerOnly:
         assert after == before
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("app_identity", "user"), [(None, "channel-user"), (APP, APP)]
-    )
+    @pytest.mark.parametrize(("app_identity", "user"), [(None, "channel-user"), (APP, APP)])
     async def test_uninstall_is_refused(
         self,
         tmp_path: Path,
@@ -1436,9 +1400,7 @@ class TestLifecycleRoutesAreOwnerOnly:
         assert calls == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("app_identity", "user"), [(None, "channel-user"), (APP, APP)]
-    )
+    @pytest.mark.parametrize(("app_identity", "user"), [(None, "channel-user"), (APP, APP)])
     async def test_disable_is_refused(
         self,
         tmp_path: Path,

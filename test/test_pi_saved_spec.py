@@ -206,11 +206,18 @@ def test_every_session_composition_reads_pi_s_array_before_its_pooled_stubs() ->
     ``session/load`` splice must evaluate the pi array -- which warms the cache
     through ``_mirrorless_member_mounts`` -- before the pooled stubs.
     """
-    source = (Path(client_start.__file__)).read_text(encoding="utf-8")
-    pooled = [m.start() for m in re.finditer(r"self\._pooled_mcp_servers\b", source)]
-    assert len(pooled) == 3
-    for at in pooled:
-        assert "self._adapter_session_mcp_servers()" in source[max(0, at - 400) : at], at
+    # session/new and session/load are composed in the session start, the
+    # substitution retry in the claude client's own session module.
+    from kiro_crew.acp import client_claude_session
+
+    total = 0
+    for module in (client_start, client_claude_session):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        pooled = [m.start() for m in re.finditer(r"self\._pooled_mcp_servers\b", source)]
+        total += len(pooled)
+        for at in pooled:
+            assert "self._adapter_session_mcp_servers()" in source[max(0, at - 400) : at], at
+    assert total == 3
     # The adapter for pi answers with pi's own array.
     from kiro_crew.acp.harness.pi import PiLaunch
 

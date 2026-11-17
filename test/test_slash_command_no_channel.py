@@ -24,6 +24,7 @@ from chat_test_helpers import _make_state
 from test_workflows_library_remove import _Sel, _service_on_claimed_slug
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -199,6 +200,7 @@ _NO_NATIVE_CLEAR = (
     ACP_BACKEND_PI,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT,
+    ACP_BACKEND_ANTIGRAVITY,
 )
 
 # claude-agent-acp reports nothing back for a ``/clear`` handed to it as prompt
@@ -236,21 +238,25 @@ class TestOtherHarnessesClear:
         assert slot.todo_payload() is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "backend", [b for b in _CLEAR_ANSWERED_LOCALLY if b != ACP_BACKEND_CODEX]
-    )
-    async def test_other_commands_keep_the_prompt_path(self, tmp_path, backend) -> None:
-        """Only ``/clear`` is answered here: these harnesses serve commands of
-        their own (``/review``, ``/session``) out of the same prompt text. Codex's
-        own commands are checked, so its other commands get the notice
-        (``TestCodexCommands``)."""
+    @pytest.mark.parametrize("backend", _CLEAR_ANSWERED_LOCALLY)
+    async def test_a_kiro_cli_command_gets_the_notice_not_the_model(
+        self, tmp_path, backend
+    ) -> None:
+        """RED on main for opencode, mimocode, pi, copilot and deepseek: ``/help``
+        went to the session as prompt text (pi's model read it; opencode ended the
+        turn empty). claude runs its own commands, so it keeps the prompt path."""
         state, slot, dispatched = _live(tmp_path, backend)
 
         await _run_chat(state, slot, "/help")
 
-        assert dispatched.called
         state.sessions.discard_conversation.assert_not_awaited()
-        assert not any("doesn't work with" in t for t in _texts(slot)), _texts(slot)
+        if backend == ACP_BACKEND_CLAUDE:
+            assert dispatched.called
+            assert not any("doesn't work with" in t for t in _texts(slot)), _texts(slot)
+            return
+        dispatched.assert_not_called()
+        notice = f"`/help` doesn't work with {label_for(backend)}. It was not sent to the agent."
+        assert any(notice in t for t in _texts(slot)), _texts(slot)
 
     @pytest.mark.asyncio
     async def test_goose_runs_its_own_clear(self, tmp_path) -> None:
@@ -482,7 +488,14 @@ class TestCodexCommands:
         from kiro_crew.acp_backends import ACP_BACKEND_PROMPT_HANDLER_COMMANDS
 
         assert dict(ACP_BACKEND_PROMPT_HANDLER_COMMANDS) == {
-            ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"})
+            ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"}),
+            ACP_BACKEND_OPENCODE: frozenset({"/compact"}),
+            ACP_BACKEND_MIMOCODE: frozenset({"/compact"}),
+            ACP_BACKEND_PI: frozenset({"/changelog", "/compact"}),
+            ACP_BACKEND_DEEPSEEK: frozenset({"/compact"}),
+            ACP_BACKEND_GOOSE: frozenset({"/clear", "/compact"}),
+            ACP_BACKEND_COPILOT: frozenset({"/compact", "/context", "/usage"}),
+            ACP_BACKEND_ANTIGRAVITY: frozenset({"/usage"}),
         }
 
     @pytest.mark.asyncio
@@ -558,6 +571,75 @@ class TestCodexCommands:
 
         dispatched.assert_not_called()
         assert any("`/hooks`" in t for t in _texts(slot)), _texts(slot)
+
+
+# Harness -> the row commands its own prompt handler runs that reach it as typed.
+# ``/compact`` is left out: it has a gate of its own. ``/clear`` is left out where
+# the dashboard answers it (``ACP_BACKENDS_LOCAL_CLEAR``).
+_ROW_COMMANDS_SENT_ON = {
+    ACP_BACKEND_OPENCODE: (),
+    ACP_BACKEND_MIMOCODE: (),
+    ACP_BACKEND_PI: ("/changelog",),
+    ACP_BACKEND_DEEPSEEK: (),
+    ACP_BACKEND_GOOSE: ("/clear",),
+    ACP_BACKEND_COPILOT: ("/context", "/usage"),
+}
+
+# What the ``/`` menu lists on every harness with a row: the commands the dashboard
+# serves without the harness, plus ``/compact``.
+_DASHBOARD_MENU = {"/agent", "/clear", "/compact", "/goal", "/prompts", "/side", "/workflow"}
+
+
+class TestPromptHandlerRows:
+    """The ``/`` menu on opencode, mimocode, pi, deepseek, goose and copilot lists
+    only what the harness or the dashboard runs. RED on main: each listed every
+    kiro-cli command, and a picked one reached the model as text (pi) or ended the
+    turn empty (opencode)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", sorted(_ROW_COMMANDS_SENT_ON))
+    async def test_the_menu_lists_only_the_row_and_the_dashboard(self, backend) -> None:
+        listed = await _menu_names(backend)
+        assert listed == _DASHBOARD_MENU | set(_ROW_COMMANDS_SENT_ON[backend])
+        assert not {"/tools", "/help", "/hooks", "/logdump", "/experiment"} & listed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", sorted(_ROW_COMMANDS_SENT_ON))
+    async def test_every_command_left_out_of_the_menu_gets_the_notice(
+        self, tmp_path, backend
+    ) -> None:
+        left_out = _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS - await _menu_names(backend)
+        assert left_out
+        for command in sorted(left_out):
+            state, slot, dispatched = _live(tmp_path, backend)
+            await _run_chat(state, slot, command)
+            dispatched.assert_not_called()
+            notice = (
+                f"`{command}` doesn't work with {label_for(backend)}. "
+                "It was not sent to the agent."
+            )
+            assert any(notice in t for t in _texts(slot)), (command, _texts(slot))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("backend", "command"),
+        [(b, c) for b, commands in sorted(_ROW_COMMANDS_SENT_ON.items()) for c in commands],
+    )
+    async def test_a_row_command_reaches_the_harness_as_typed(
+        self, tmp_path, backend, command
+    ) -> None:
+        state, slot, dispatched = _live(tmp_path, backend)
+
+        await _run_chat(state, slot, command)
+
+        dispatched.assert_called_once_with(command)
+        assert not any("doesn't work with" in t for t in _texts(slot)), _texts(slot)
+
+    @pytest.mark.asyncio
+    async def test_the_kas_menu_is_unchanged(self) -> None:
+        from kiro_crew.dashboard.kas_local_commands import local_harness_menu
+
+        assert await _menu_names(ACP_BACKEND_KAS) == local_harness_menu(ACP_BACKEND_KAS)
 
 
 def test_only_kas_is_served_its_own_inspect_commands() -> None:

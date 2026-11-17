@@ -2,9 +2,9 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   # The merge queue tests each PR against the main it will actually land on.
   merge_group:
     types: [checks_requested]
@@ -319,6 +319,7 @@ jobs:
             website/electron/runtime-evidence/gateway-stdout.log
             website/electron/runtime-evidence/gateway-stderr.log
             website/electron/runtime-evidence/native-install-mode.png
+            website/electron/runtime-evidence/update-refused-path-too-long.png
           if-no-files-found: warn
 
   # Resolve which desktop platforms a PR builds. Linux (both arches) ALWAYS

@@ -43,6 +43,7 @@ from kiro_crew.llm_helpers import (
     CREDENTIAL_RELOAD_RETRY_NOTICE,
     acp_error_is_connection_failure,
     acp_error_is_pipe_death,
+    acp_error_is_server_error,
     acp_error_is_throttle,
     acp_error_needs_fresh_credentials,
     connection_retry_delay,
@@ -302,7 +303,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     # -- against this slot when the runtime was its own, against the
     # shared-death streak when it was not, under the SAME ladder limit. A
     # single-tenant runtime, which is every runtime at cap 1 with no
-    # sub-agent on it, takes the first branch and behaves exactly as before.
+    # sub-agent on it, takes the first branch.
     _own_fault = runtime_death.caused_by_this_session(client)
     if _own_fault:
         slot._acp_pipe_death_retries += 1
@@ -1049,6 +1050,7 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
         # is judged by that model (a Resume returns to it) and not by the last
         # candidate's error (see `_on_acp_error_card`).
         slot._fallback_walk_refused = getattr(exc, "model_unavailable", False) is True
+        slot._fallback_walk_server_error = acp_error_is_server_error(exc)
     _fb_primary_safe, _ = redact_exfiltration_urls(
         slot._fallback_primary_model or "the selected model"
     )
@@ -1057,22 +1059,32 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
     # Persisted notice card (withheld-pin pattern): the explanation has
     # to survive a reload because the state it explains does (the
     # session stays on the fallback until the restore probe succeeds).
-    slot.append(
-        "notice",
-        f"⚠️ {_fb_primary_safe} is throttled — running on {_fb_cand_safe} "
-        f"until {_fb_primary_safe} recovers.",
-        "msg msg-info",
+
+    # Name the selected model's own failure (recorded at the walk's first swap): a
+    # provider 5xx throttled nothing, so its row says so. Every other transient keeps
+    # the "throttled" row it had.
+    def _fb_meta(token: str) -> dict | None:
         # No primary name to show: the row keeps its English wording.
-        meta=(
-            gn.gateway_notice_meta(
-                gn.GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK,
-                primary=_fb_primary_safe,
-                fallback=_fb_cand_safe,
-            )
-            if slot._fallback_primary_model
-            else None
-        ),
-    )
+        if not slot._fallback_primary_model:
+            return None
+        return gn.gateway_notice_meta(token, primary=_fb_primary_safe, fallback=_fb_cand_safe)
+
+    if slot._fallback_walk_server_error:
+        slot.append(
+            "notice",
+            f"⚠️ {_fb_primary_safe} keeps returning server errors — running on "
+            f"{_fb_cand_safe} until {_fb_primary_safe} recovers.",
+            "msg msg-info",
+            meta=_fb_meta(gn.GATEWAY_NOTICE_MODEL_SERVER_ERROR_FALLBACK),
+        )
+    else:
+        slot.append(
+            "notice",
+            f"⚠️ {_fb_primary_safe} is throttled — running on {_fb_cand_safe} "
+            f"until {_fb_primary_safe} recovers.",
+            "msg msg-info",
+            meta=_fb_meta(gn.GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK),
+        )
     logger.info(
         "Re-queuing slot %s on fallback model %s (candidate %d of chain)",
         slot.key,

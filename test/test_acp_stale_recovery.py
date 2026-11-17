@@ -1684,3 +1684,64 @@ async def test_tracked_child_still_carries_across_ticks_after_retirement(monkeyp
     host_backend.descendants.assert_not_called()
     host_backend.row.assert_not_called()
     host_backend.cpu_nanos.assert_not_called()
+
+
+# ── A cycle the agent started on its own ends on the stale gate when it goes quiet ─
+
+
+def _thought_frame(sid: str = "sA") -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "jsonrpc": "2.0",
+            "method": METHOD_SESSION_UPDATE,
+            "params": {
+                "sessionId": sid,
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "thinking"},
+                },
+            },
+        }
+    )
+
+
+async def _silent_after_a_thought(req_id: int, sid: str = "sA") -> AcpSessionHandle:
+    """A turn that reads one thought frame and then nothing, past the stale window."""
+    handle = _make_handle(last_activity=time.monotonic() - 10.0)
+    handle._runtime.acp_backend = "claude"
+    handle._stale_eligible = False  # nothing has armed the gate yet
+    handle._queue.put_nowait(_thought_frame(sid))
+    await _drain(handle, req_id=req_id, timeout=0.3)  # flake-ok: turn budget, not a wait
+    return handle
+
+
+@pytest.mark.asyncio
+async def test_an_agent_started_turn_silent_after_a_thought_is_probed_by_the_stale_gate():
+    """claude-agent-acp sends no closing usage_update for a cycle no assistant
+    message set usage for, so only the stale gate can end that cycle."""
+    from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+
+    handle = await _silent_after_a_thought(AGENT_STARTED_REQUEST_ID)
+
+    assert handle._stale_probe is True
+    assert handle._runtime.send_notification.await_args.args[0] == "session/cancel"
+
+
+@pytest.mark.asyncio
+async def test_a_user_turn_silent_after_a_thought_is_not_probed_by_the_stale_gate():
+    """A prompt still ends on its response; a thought alone does not arm its gate."""
+    handle = await _silent_after_a_thought(1)
+
+    assert handle._stale_probe is False
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_childs_thought_does_not_arm_the_agent_started_turns_stale_gate():
+    """A native child's frames are its own work, judged by the tool watchdog."""
+    from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+
+    handle = await _silent_after_a_thought(AGENT_STARTED_REQUEST_ID, sid="child-1")
+
+    assert handle._stale_probe is False
+    handle._runtime.send_notification.assert_not_awaited()

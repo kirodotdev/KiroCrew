@@ -915,8 +915,8 @@ class TestConsolidationPromptJsonShape:
         # boundaries).
         assert '"description": "<=150 chars, starts with verb>",' in src, (
             "The description value in the new_skill prompt must end with "
-            "a closing quote before the comma.  review-bot round 2 finding #6 "
-            "caught this when it was missing; do not reintroduce."
+            "a closing quote before the comma; without it the model is shown an "
+            "unterminated value."
         )
         # Same check for procedure_md
         assert '"procedure_md": "<concise markdown body with' in src, (

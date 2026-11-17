@@ -53,9 +53,9 @@ describe('DevFleetPage live-state-unknown notice layout', () => {
     expect(textColumn).not.toBeNull()
     expect(textColumn!.contains(handoff)).toBe(true)
 
-    // Its own row: the hand-off's wrapper is a block element (a div, not an
+    // Its own row: the notice's action row is a block element (a div, not an
     // inline run), and it follows every text node of the copy in document order.
-    const wrapper = handoff.parentElement
+    const wrapper = handoff.closest('[data-notice-actions]')
     expect(wrapper).not.toBeNull()
     expect(wrapper!.tagName).toBe('DIV')
     expect(wrapper!.parentElement).toBe(textColumn)
@@ -71,7 +71,7 @@ describe('DevFleetPage live-state-unknown notice layout', () => {
     const notice = await waitFor(() => screen.getByTestId('fleet-live-state-unknown'))
     const handoff = screen.getByRole('button', { name: /ask the agent/i })
     expect(notice.contains(handoff)).toBe(true)
-    const wrapper = handoff.parentElement!
+    const wrapper = handoff.closest('[data-notice-actions]')!
     // The copy is every node of the text column EXCEPT the hand-off's wrapper.
     // (Not a string replace of the button's label: the copy itself says "Ask
     // the agent", and a first-occurrence replace would eat that sentence.)

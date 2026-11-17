@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.cron import CronJob
 from kiro_crew.dashboard.cron_inject import (
@@ -255,6 +256,24 @@ class TestInjectCronResultToDashboard:
         _inject(state, job, "same result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert len(slot.messages) == 2
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
+
+    def test_a_long_instruction_injected_twice_still_renders_one_pair(self):
+        """The same, for an instruction long enough to be written as a reference.
+
+        Past the length where a repeat instruction is replaced by a reference to the
+        previous run, the second call must still skip this run's OWN earlier row as a
+        precedent; reading it would write a reference where the first call wrote the
+        instruction, and the two rows would dedup to neither.
+        """
+        from kiro_crew.dashboard import cron_inject
+
+        message = "do the thing " * (cron_inject._MIN_PROMPT_CHARS_TO_REFERENCE // 10)
+        state = _make_state()
+        job = _make_job(message=message, last_result_ts=1_756_000_000.0)
+        _inject(state, job, "same result")
+        _inject(state, job, "same result")
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert [m["role"] for m in slot.messages] == ["user", "assistant"]
 
     def test_two_runs_with_identical_text_stay_two_rows(self):
@@ -808,8 +827,8 @@ class TestInjectCronResultToDashboard:
         Both sides of the compare are post-redaction, so the reference resolves
         to exactly the bytes a verbatim copy would have stored.
         """
-        secret_a = "ghp_" + "A" * 36
-        secret_b = "ghp_" + "B" * 36
+        secret_a = github_classic(seed=68)
+        secret_b = github_classic(seed=69)
         first = f"{_LONG_INSTRUCTION}Authenticate with {secret_a}\n"
         second = f"{_LONG_INSTRUCTION}Authenticate with {secret_b}\n"
         assert first != second, "the raw instructions must genuinely differ"

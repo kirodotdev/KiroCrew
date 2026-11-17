@@ -607,39 +607,27 @@ class ArtifactFolderStore:
             for _gone in affected_ids:
                 self._icon_epochs.pop(_gone, None)
 
-        # Phase 2: artifacts. ``affected_ids`` is the subtree for cascade, or
-        # just the single folder for the safe path.
+        # Phase 2: artifacts. ``affected_ids`` is the subtree for a cascade, or
+        # just this folder on the re-parent path.
         #
-        # Race window: Phase 2 runs OUTSIDE the folder lock (the artifact store
-        # has its own independent lock, and holding both would invite ordering
-        # deadlocks). Between Phase 1 removing the folder and this scan, a
-        # concurrent ``ArtifactStore.set_folder()`` can file an artifact into
-        # the just-deleted folder id.
+        # This runs OUTSIDE the folder lock: the artifact store has its own lock,
+        # and holding both invites lock-order deadlocks. So a concurrent
+        # ``ArtifactStore.set_folder()`` can file an artifact into the deleted
+        # folder id before this scan.
         #
-        # On the RE-PARENT path that stays harmless: such an artifact ends up
-        # with a dangling ``folder_id``, which every reader already tolerates by
-        # degrading it to Unfiled (see ``list(folder=)`` and the tree view's
-        # dangling-id handling).
+        # Re-parent path: harmless. The artifact keeps a dangling ``folder_id``,
+        # which every reader shows as Unfiled (``list(folder=)``, the tree view).
         #
-        # On the CASCADE path it is NOT harmless, because the consequence is
-        # destruction rather than a stale field. The caller withdraws every
-        # published copy in the subtree before calling here and clears each
-        # record it withdrew, so an artifact still holding a publication at this
-        # point is exactly one that arrived after that preflight -- its copy was
-        # never withdrawn, and destroying it would erase the only handle able to
-        # take that copy down.
-        #
-        # The refusal is asked of `delete` itself rather than checked here: a
-        # check in this loop is a check-then-act over a snapshot, so a publish
-        # landing between it and the delete would still be destroyed. Inside
-        # `delete` the check shares the lock with the removal, which is what
-        # makes it hold. Phase 1 has already committed the folder-tree change and
-        # cannot be rolled back here, so a kept artifact survives with a dangling
-        # ``folder_id`` and degrades to Unfiled -- the outcome this path already
-        # tolerates, and a recoverable one: the owner restores access to the
-        # destination, withdraws the copy, and deletes it deliberately. Note that
-        # unpublishing is NOT a second route out of this state -- it refuses on an
-        # unreachable destination for the same reason this delete did.
+        # Cascade path: not harmless, because it destroys. The caller withdrew
+        # and cleared every published copy in the subtree first, so an artifact
+        # still published here arrived after that preflight, and deleting it
+        # would erase the only handle that can take its copy down. ``delete``
+        # refuses it under the same lock as the removal; a check in this loop
+        # would be check-then-act over a snapshot. Phase 1 cannot be rolled back,
+        # so a kept artifact survives as Unfiled. To clean it up, the owner
+        # restores access to the destination, withdraws the copy, then deletes
+        # it. Unpublishing alone does not help: it refuses on an unreachable
+        # destination for the same reason.
         deleted_slugs: _List[str] = []
         reparented_slugs: _List[str] = []
         kept_published_slugs: _List[str] = []
@@ -652,13 +640,11 @@ class ArtifactFolderStore:
             if delete_contents:
                 expect = destroyable_generations.get(art.slug)
                 if expect is None:
-                    # Filed into this subtree after the caller drew up its guarded set, so
-                    # its publication state is the one thing this store cannot settle: the
-                    # only evidence here is a record, and a first publish in flight has
-                    # uploaded its object and written none. It survives either way, which
-                    # degrades it to Unfiled exactly as a kept artifact does; the record
-                    # decides only which list reports it, so one that IS published keeps
-                    # the report it already had and only the unknown case is separate.
+                    # Joined the subtree after the caller built its guarded set, so
+                    # its publication state cannot be settled here: a first publish
+                    # in flight has uploaded its object but written no record yet.
+                    # It is kept either way (shown as Unfiled); the record only
+                    # picks the report list, published or unguarded.
                     if art.publication is not None:
                         kept_published_slugs.append(art.slug)
                     else:

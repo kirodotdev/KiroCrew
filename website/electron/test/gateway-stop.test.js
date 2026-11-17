@@ -715,6 +715,63 @@ test("forceStopPort: a failed Windows verification never claims recovery", async
   });
 });
 
+// A probe that cannot run names no owner, the same unproven answer as an empty
+// list, so a caller that passes a bind check lets that bind decide.
+test("forceStopPort: a failed probe on a bindable port is free, with no kill", async () => {
+  const checks = [];
+  let kills = 0;
+  const r = await forceStopPort(7788, {
+    getListenPids: async () => { throw new Error("netstat timed out"); },
+    getCommand: async () => "",
+    kill: async () => { kills += 1; },
+    sleep: async () => {},
+    failClosedOnProbeError: true,
+    confirmFree: async (port) => { checks.push(port); return true; },
+  });
+  assert.deepStrictEqual(checks, [7788]);
+  assert.strictEqual(kills, 0);
+  assert.deepStrictEqual(r, {
+    killed: 0, freed: true, survivors: [], foreignHolder: false, serviceHolder: false,
+  });
+});
+
+test("forceStopPort: a failed probe on a port that stays refused still fails closed", async () => {
+  const sleeps = [];
+  const r = await forceStopPort(7788, {
+    getListenPids: async () => { throw new Error("netstat timed out"); },
+    getCommand: async () => "",
+    kill: async () => {},
+    sleep: async (ms) => { sleeps.push(ms); },
+    failClosedOnProbeError: true,
+    confirmFree: async () => false,
+    confirmFreeWaitMs: 3000,
+  });
+  assert.strictEqual(sleeps.reduce((a, b) => a + b, 0), 3000, "the refusal is waited out first");
+  assert.deepStrictEqual(r, {
+    killed: 0, freed: false, survivors: [], foreignHolder: false,
+    serviceHolder: false, probeFailed: true,
+  });
+});
+
+test("forceStopPort: a failed verification after a kill lets a bindable port read as free", async () => {
+  let probes = 0;
+  const r = await forceStopPort(7788, {
+    getListenPids: async () => {
+      if (probes++ === 0) return [4242];
+      throw new Error("netstat verify timed out");
+    },
+    getCommand: async () => "C:\\bundle\\kirocrew.exe gateway",
+    kill: async () => {},
+    sleep: async () => {},
+    isKirocrew: (command) => command.includes("kirocrew.exe"),
+    failClosedOnProbeError: true,
+    confirmFree: async () => true,
+  });
+  assert.deepStrictEqual(r, {
+    killed: 1, freed: true, survivors: [], foreignHolder: false, serviceHolder: false,
+  });
+});
+
 // ── classifyPortOwner ───────────────────────────────────────────────────────
 // Ground truth for "is the thing on our port local, or a tunnel?". Every
 // outcome except a positively identified local KiroCrew process must be
@@ -899,9 +956,14 @@ test("classifyPortOwner: a foreign verdict reports each holder's pid and command
 
 test("classifyPortOwner: an unreadable command is reported unread, not as someone else's program", async () => {
   // The command readers answer "" when ps (or the Windows query) fails or runs
-  // past its budget. The verdict stays foreign, because adopting a holder no
-  // one identified would post this machine's local secret to it, but the
-  // holder is reported as unread instead of as a positively identified program.
+  // past its budget. The verdict is `unidentified` rather than `foreign`: the
+  // adopt path still refuses it (holder-decision.js treats it exactly as it
+  // treats `foreign`), so adopting a holder no one identified still cannot post
+  // this machine's local secret to it — but the app-menu gate reads it as
+  // inconclusive rather than as a proven foreign holder, which is what keeps a
+  // transient probe failure from revoking the local user's menu rows. The
+  // holder is still reported as unread instead of as a positively identified
+  // program.
   const holders = [];
   const logs = [];
   const owner = await classifyPortOwner(5476, {
@@ -910,11 +972,11 @@ test("classifyPortOwner: an unreadable command is reported unread, not as someon
     holders,
     log: (line) => logs.push(line),
   });
-  assert.strictEqual(owner, "foreign");
+  assert.strictEqual(owner, "unidentified");
   assert.deepStrictEqual(holders, [{ pid: 909, command: null }]);
   assert.ok(!logs.some((line) => line.includes("NON-KiroCrew")), "an unread holder is not called non-Kiro-Crew");
   assert.ok(
-    logs.some((line) => line.includes("held by pid=909, whose command could not be read")),
+    logs.some((line) => line.includes("whose command line could not be read")),
     "the log says the command could not be read",
   );
 });
@@ -947,6 +1009,71 @@ test("classifyPortOwner: an unrunnable probe is 'unknown', never 'none'", async 
     getCommand: async () => "",
   });
   assert.strictEqual(owner, "unknown");
+});
+
+test("classifyPortOwner: a holder whose command line cannot be read is 'unidentified'", async () => {
+  // The netstat step SUCCEEDS and names a pid, then both command-line lookups
+  // fail -- a PowerShell policy timeout with WMIC absent returns an empty
+  // string (windowsProcessCommand). That is "could not look", not "someone
+  // else holds the port": reporting `foreign` here revokes the local user's
+  // menu over a probe hiccup, with no grace.
+  //
+  // It must NOT share `unknown` with the unrunnable-probe case above. That one
+  // means nothing was found holding the port, and `holder-decision.js` fails
+  // open on it and adopts; here a holder demonstrably EXISTS and only its name
+  // is missing, so adopting would post this machine's `.local_secret` to a
+  // process we could not identify. Pinned end to end by "win32 never prompts
+  // for an unidentified listener" in gateway-supervisor.port-holders.test.js.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "",
+  });
+  assert.strictEqual(owner, "unidentified");
+});
+
+test("classifyPortOwner: a PROVEN foreign holder outranks an unreadable one", async () => {
+  // Precedence matters: one holder we positively identified as not ours is
+  // evidence of a foreign holder, and must not be softened to `unidentified`
+  // just because a second pid's command line could not be read.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909, 4242],
+    getCommand: async (pid) => (pid === 909 ? "" : "ssh -NL 5476:localhost:5476 host"),
+  });
+  assert.strictEqual(owner, "foreign");
+});
+
+test("classifyPortOwner: ours outranks an unreadable holder", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909, 4242],
+    getCommand: async (pid) => (pid === 909 ? "" : "kirocrew gateway"),
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("classifyPortOwner: a from-source venv gateway on Windows is 'foreign' — accepted break", async () => {
+  // ACCEPTED BREAK for this change, pinned here so the behaviour is on the
+  // record rather than discovered. Windows identity is PATH-BOUND: the trusted
+  // set holds the bundled launcher's own resolved interpreters plus whatever
+  // this app spawned, and nothing else. A gateway run out of a source
+  // checkout's virtualenv is in neither, so it classifies as `foreign` and the
+  // app-menu gate greys every LOCAL_ONLY row in the main window on that build.
+  // Teaching the trust predicate to resolve a venv's base prefix through
+  // `pyvenv.cfg` is tracked as a follow-up, not done here.
+  const bundledPython = "C:\\Program Files\\KiroCrew\\python.exe";
+  const venvGatewayCommand =
+    '"C:\\dev\\KiroCrew\\.venv\\Scripts\\python.exe" -m kiro_crew gateway --port 5476';
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => venvGatewayCommand,
+    isKirocrew: (cmd) => isKirocrewCommand(cmd, { trustedExecutablePaths: [bundledPython] }),
+  });
+  assert.strictEqual(owner, "foreign");
+  // It is specifically the PATH that fails, not the command shape: the very
+  // same argv from the bundled interpreter is recognised as ours. That is what
+  // makes this a trust-set gap rather than a parsing one.
+  assert.ok(isKirocrewCommand(`"${bundledPython}" -m kiro_crew gateway --port 5476`, {
+    trustedExecutablePaths: [bundledPython],
+  }));
 });
 
 test("classifyPortOwner: ours wins when a mixed set holds the port", async () => {

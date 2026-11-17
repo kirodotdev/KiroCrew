@@ -93,6 +93,70 @@ class TestAddSourceFolder:
         assert uris == [trailing]
 
     @pytest.mark.asyncio
+    async def test_a_forward_slash_folder_spelling_is_added_once(self, store, tmp_path):
+        """On Windows "/" is a separator too, so ``C:/x/`` and ``C:\\x`` are one folder."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        watcher = MagicMock()
+        watcher._folder_watcher = MagicMock()
+        watcher._folder_watcher._walk = MagicMock(return_value=[])
+        forward = f"{vault.as_posix()}/"
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            first = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": forward
+            })
+            assert first.status == 201
+            first_id = (await first.json())["id"]
+            for spelling in (str(vault), f"{vault}{os.sep}", vault.as_posix()):
+                if spelling == forward:  # POSIX: the same spelling, the exact-uri 409 path
+                    continue
+                resp = await client.post("/api/knowledge/sources", json={
+                    "source_type": "local_folder", "uri": spelling
+                })
+                data = await resp.json()
+                assert resp.status == 200, data
+                assert data["status"] == "exists" and data["id"] == first_id
+
+        uris = [r["uri"] for r in store.db.execute("SELECT uri FROM sources").fetchall()]
+        assert uris == [forward]
+
+    @pytest.mark.asyncio
+    async def test_a_folder_stored_with_the_alternate_separator_is_matched(
+        self, store, tmp_path, monkeypatch
+    ):
+        """A row spelled with ``os.altsep`` is the same folder (Windows: ``C:/x/`` vs ``C:\\x``).
+
+        POSIX has no altsep, so the platform pair is mirrored: "\\" plays the
+        alternate separator and the stored row uses it.
+        """
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        watcher = MagicMock()
+        watcher._folder_watcher = MagicMock()
+        watcher._folder_watcher._walk = MagicMock(return_value=[])
+        alt = "/" if os.sep == "\\" else "\\"
+        if os.altsep is None:
+            monkeypatch.setattr(os, "altsep", alt)
+        stored = str(vault).replace(os.sep, alt) + alt
+        sid = store.add_source("vault", "local_folder", stored)
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": str(vault)
+            })
+            data = await resp.json()
+        assert resp.status == 200, data
+        assert data["status"] == "exists" and data["id"] == sid
+
+    def test_a_bare_windows_drive_is_not_spelled_as_its_root(self):
+        """``C:`` is drive-relative (the drive's current directory), not ``C:\\``."""
+        from kiro_crew.dashboard.handlers.knowledge_sources import _folder_spellings
+
+        assert _folder_spellings("C:", "\\", "/") == ["C:"]
+        assert _folder_spellings("C:\\x", "\\", "/") == [
+            "C:\\x", "C:\\x\\", "C:\\x\\.", "C:/x", "C:/x/", "C:/x/.",
+        ]
+
+    @pytest.mark.asyncio
     async def test_folder_returns_pending_confirmation(self, store, tmp_path):
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -455,6 +519,41 @@ class TestEditIgnorePatterns:
         row = store.db.execute("SELECT name, properties FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["name"] == "Old"
         assert "ignore_patterns" not in json.loads(row["properties"] or "{}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("patterns,limit", [
+        (["p"] * 1001, "1000 patterns"),
+        (["x" * 1025], "1024 characters"),
+    ])
+    async def test_too_many_or_too_long_patterns_are_refused_naming_the_limit(
+            self, store, tmp_path, patterns, limit):
+        sid = store.add_source("Notes", "local_folder", str(tmp_path))
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": patterns})
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["code"] == "ignore_patterns_too_large"
+            assert limit in body["error"]
+            create = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": str(tmp_path / "other"),
+                "properties": {"ignore_patterns": patterns}})
+            assert create.status == 400
+            assert limit in (await create.json())["error"]
+        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert "ignore_patterns" not in json.loads(row["properties"] or "{}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("patterns", ["sub/*", [{"p": "x" * 2000}], ["ok", 3]])
+    async def test_create_refuses_ignore_patterns_that_are_not_a_list_of_strings(
+            self, store, tmp_path, patterns):
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": str(tmp_path),
+                "properties": {"ignore_patterns": patterns}})
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "ignore_patterns must be a list of strings"
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
 
     @pytest.mark.asyncio
     async def test_a_source_deleted_before_the_write_is_a_404_not_a_success(

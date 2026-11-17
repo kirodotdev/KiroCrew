@@ -158,7 +158,7 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
 
 
 #: Wire frame pushed onto ``slot._pending`` at a turn's end, before the queue
-#: drain or the cycle's end writes anything (``chat_runner._mark_turn_end``); a
+#: drain or the cycle's end writes anything (``chat_turn.queue_drain._mark_turn_end``); a
 #: recovery the ending turn queued for itself is the same turn and gets none.
 #: ``done`` marks the end of the whole queue cycle; this marks the end of one
 #: turn, which is where an app's stream on a user's session stops
@@ -628,6 +628,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew import redaction_seams  # noqa: F401
     from kiro_crew.dashboard.chat_utils_awaits import (  # noqa: F401
         drained_to_thread,
         run_config_write,
@@ -662,17 +663,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DISPLAY_REDACTION_CACHE_MAX_ENTRIES,
         _DISPLAY_REDACTION_SALT,
         _DISPLAY_REDACTION_STRINGS_PER_ROW,
+        _LEGACY_PLACEHOLDER,
         _NO_BASE,
-        BLOCKED_LINKS_ORDERED_KEY,
+        BLOCKED_LINKS_KEY,
         REDACTION_RECORD_FIELDS,
+        RETIRED_RECORD_KEYS,
         SLOT_DETAIL_MAX_LIMIT,
         UNKNOWN_ROW_FIELDS_KEY,
         _broadcast_expired_oauth_banners,
+        _cache_mark_is,
         _clean_verdict_key,
         _clear_display_redaction_cache,
         _collapse_wire_rows,
         _cut_preview,
         _display_cache_epoch,
+        _display_cache_mark,
         _display_clean_add,
         _display_clean_old,
         _display_clean_seen,
@@ -706,14 +711,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _remember_preview,
         _remember_preview_by_object,
         _remember_redacted,
+        _renders_links,
         _same_preview_context,
+        _sync_cache_mark,
         _variant_for_emit,
         adopt_variant_text,
+        blocked_links_for_workspace,
         display_redaction_stamp,
         drop_records_without_placeholders,
         serialize_wire_content,
         variant_from_row,
-        with_allowed_links_restored,
+        with_blocked_links,
         with_bounded_redaction_records,
         without_unknown_row_fields,
     )
@@ -957,18 +965,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security import (  # noqa: F401
         CREDENTIAL_REDACTION_TAGS,
-        EXFILTRATION_REDACTION_TAG_PREFIX,
-        _exempt_exact_hosts,
-        bounded_blocked_links,
         oauth_url_contains_credential,
+    )
+    from kiro_crew.security.blocked_links import (  # noqa: F401
+        allowed_link_hosts,
+        scoped_blocked_links,
     )
     from kiro_crew.security.credential_sources import (  # noqa: F401
         bounded_credential_records,
-    )
-    from kiro_crew.security.exfil import (  # noqa: F401
-        current_scoped_exempt_hosts,
-        restore_allowed_links,
-        scoped_exempt_hosts,
     )
     from kiro_crew.security.redaction import (  # noqa: F401
         _token_param_exempt_prefixes,

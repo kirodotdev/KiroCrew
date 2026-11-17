@@ -807,6 +807,7 @@ async def run_gatewayd(
                 writer.close()
                 await writer.wait_closed()
             except Exception:
+                # The connection is over; a close error changes nothing.
                 pass
 
     def _on_client_connected(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -827,6 +828,7 @@ async def run_gatewayd(
             try:
                 writer.close()
             except Exception:
+                # The connection is over; a close error changes nothing.
                 pass
 
     # --- Resource-guarded startup block ---

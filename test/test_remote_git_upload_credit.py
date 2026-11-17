@@ -91,7 +91,10 @@ def test_an_answer_while_waiting_for_credit_reaches_git_and_ends_the_body(
     proxy, monkeypatch, answer, expected  # noqa: F811
 ):
     calls = _count_credit_waits(proxy, monkeypatch)
-    body = b"p" * (git_proxy.CHUNK * (WINDOW + 5))
+    # Bigger than the socket buffers on any host, so the client is still sending
+    # when the answer goes out. The proxy must read out the rest before it closes,
+    # or the reset it leaves discards the answer (seen on macOS, whose buffers are small).
+    body = b"p" * (32 * 1024 * 1024)
     done = _call(proxy.port, "POST", "/github.com/o/r/git-receive-pack", body=body)
     req, *_ = _frames_until(proxy, 1 + WINDOW)
     wait_until(lambda: _parked_after_window(calls), describe=lambda: f"credit waits: {calls}")

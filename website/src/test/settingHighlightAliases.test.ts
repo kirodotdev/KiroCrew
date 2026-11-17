@@ -35,6 +35,10 @@ describe('resolveLegacyHighlightId', () => {
     expect(resolveLegacyHighlightId('voice.aws-region-polly')).toBe('voice.aws-region-amazon-polly')
   })
 
+  it('maps the Decisions card id that carried the provider name to the neutral one', () => {
+    expect(resolveLegacyHighlightId('developer.decisions-jev')).toBe('developer.decisions')
+  })
+
   it('passes current ids through unchanged', () => {
     expect(resolveLegacyHighlightId('chat.quick-send')).toBe('chat.quick-send')
     expect(resolveLegacyHighlightId('display.zoom-level')).toBe('display.zoom-level')

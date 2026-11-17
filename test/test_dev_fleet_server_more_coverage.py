@@ -1079,7 +1079,7 @@ async def test_worktree_remove_handler_rejects_unparseable_body(monkeypatch):
     resp = await http_api.api_dev_fleet_worktree_remove(_body_request(b"[1, 2]"))
 
     assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "body must be an object"}
+    assert json.loads(resp.text) == {"error": "body must be an object", "code": "body_not_object"}
 
 
 @pytest.mark.asyncio
@@ -1088,7 +1088,7 @@ async def test_pod_name_action_rejects_unparseable_body(monkeypatch):
     resp = await http_api._pod_name_action(_body_request(b"nope"), action)
 
     assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "invalid JSON body"}
+    assert json.loads(resp.text) == {"error": "invalid JSON body", "code": "invalid_json"}
     action.assert_not_awaited()
 
 

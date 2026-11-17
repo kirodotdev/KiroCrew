@@ -21,7 +21,7 @@ from kiro_crew.artifacts import (
 )
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import _is_restricted_session, string_field_error
 from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
     _redact_text,
     _serialize,
@@ -238,6 +238,8 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name") or "").strip()
     if not name:
         return _err("name required")

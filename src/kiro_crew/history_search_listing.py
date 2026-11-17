@@ -136,6 +136,8 @@ def _apply_metadata(meta: dict, line: dict, key: str) -> None:
     if line.get("agent"):
         meta["agent"] = line["agent"]
     meta["memory_mode"] = line.get("memory_mode", "persistent")
+    if isinstance(line.get("mode"), str) and line["mode"]:
+        meta["mode"] = line["mode"]
     if line.get("folder_id"):
         meta["folder_id"] = line["folder_id"]
     if isinstance(line.get("cron_run"), str) and line["cron_run"]:

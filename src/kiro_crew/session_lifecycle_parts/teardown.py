@@ -131,6 +131,7 @@ async def reset(
     clear_conversation: bool = False,
     ends_conversation: bool = False,
     stop_shared_children: bool = False,
+    forget_unused_start: bool = False,
     scope: _TeardownScope | None = None,
 ) -> bool:
     """Kill a live session while preserving the exact reset semantics.
@@ -181,6 +182,15 @@ async def reset(
     run ends through its own teardown. Runs on a dedicated process keep running.
     Ignored with ``ends_conversation``, which stops every run of the parent.
 
+    ``forget_unused_start=True`` drops the resume sid too, but only when the session
+    popped here still holds its fresh first-turn observation (``FirstTurnState.FRESH``):
+    a fresh start, an eager prewarm above all, that no turn ever prompted. Its native
+    session holds no turn, so the pointer can only cost the successor a refused
+    ``session/load`` and make a speculative start refuse the key as resumable. Decided
+    from the popped session in the pop's lock hold, so a turn that claimed it first
+    keeps the pointer. Unlike ``clear_conversation`` it arms no replay suppression:
+    nothing is being thrown away.
+
     ``refuse_only_on_active_turn`` narrows ``skip_if_busy`` to a DECLARED turn, which a
     caller acting on an explicit user request needs: a channel member holds its lease for
     its whole listening life, so refusing on the lease alone refuses that caller forever
@@ -189,6 +199,9 @@ async def reset(
     owner = self._owner
     logger = self._deps.logger
     key = owner._fold_key(key)
+    # Set when a cancel reached the end record's hop and was absorbed there so
+    # the cleanup below still runs; re-raised once it has.
+    end_cancelled = False
     async with owner._lock:
         current = owner._sessions.get(key)
         if expect_session is not None and current is not expect_session:
@@ -233,6 +246,13 @@ async def reset(
         if scope is not None and current is not None:
             scope.note_pop(key, current)
         session = owner._sessions.pop(key, None)
+        drop_sid = session is not None and (
+            clear_conversation
+            or (
+                forget_unused_start
+                and session.first_turn is self._deps.constants().first_turn_fresh
+            )
+        )
         # Snapshotted in the SAME lock hold as the pop, and only when the caller says
         # the conversation is ending: every await below is a window a cold start can
         # register a successor under this key in, and a selection made after one would
@@ -310,8 +330,8 @@ async def reset(
                 crew_log_emit.session_id_of(session.provider),
                 END_REASON_RESET,
             )
-            await record_session_ended(key, end_reason=END_REASON_RESET)
-    if clear_conversation and session is not None:
+            end_cancelled = await record_session_ended(key, end_reason=END_REASON_RESET)
+    if drop_sid:
         # The registry lock, not an absence of suspension points, is what makes
         # this safe: the end record above awaits, but it awaits while this
         # coroutine still holds ``owner._lock`` -- the lock a racing cold start
@@ -458,6 +478,11 @@ async def reset(
         # The caller still sees what went wrong; it just sees it after this parent's
         # children have been dealt with rather than instead of that.
         raise shutdown_error
+    if end_cancelled:
+        # The cleanup the end record absorbed the cancel for has run. Raising it
+        # now lets a timeout around this reset end its caller, which otherwise
+        # runs on unbounded after the timeout already fired.
+        raise asyncio.CancelledError
     return session is not None
 
 
@@ -1020,7 +1045,12 @@ async def swap_conversation(self: SessionLifecycleService, key: str) -> str:
         # Re-pointed only where a sid was mapped, as the cold start would map it.
         if still_live and owner._session_map.clear_sid(key) and new_sid:
             # ``provider=""`` keeps the entry's recorded provider: the process is the same.
-            owner._session_map.set(key, new_sid, provider="")
+            owner._session_map.set(
+                key,
+                new_sid,
+                provider="",
+                kas_memory=getattr(session.provider, "kas_memory_mode", ""),
+            )
     finally:
         session.semaphore.release()
     self._deps.logger.info("Swapped native conversation on the live process: %s", key)

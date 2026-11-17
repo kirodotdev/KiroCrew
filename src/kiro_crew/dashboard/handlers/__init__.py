@@ -286,6 +286,7 @@ from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_rules_get,
     api_member_rules_put,
     api_member_thread,
+    api_member_wake,
     api_members,
 )
 from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
@@ -338,6 +339,36 @@ from kiro_crew.dashboard.handlers.memory_edit import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.memory_member import (  # noqa: E402, F401
     api_memory_recall,
     api_memory_seed,
+)
+
+# ── Memory providers (handlers/memory_provider.py) ──
+from kiro_crew.dashboard.handlers.memory_provider import (  # noqa: E402, F401
+    api_memory_provider_conformance,
+    api_memory_provider_get,
+    api_memory_provider_item,
+    api_memory_provider_item_revisions,
+    api_memory_provider_items,
+    api_memory_provider_items_create,
+    api_memory_provider_put,
+)
+from kiro_crew.dashboard.handlers.memory_provider_bench import (  # noqa: E402, F401
+    api_bench_compare,
+    api_bench_evalset,
+    api_bench_evalsets,
+    api_bench_run,
+    api_bench_run_report,
+    api_bench_run_resume,
+    api_bench_runs,
+    api_bench_suite_fetch,
+    api_bench_suites,
+)
+from kiro_crew.dashboard.handlers.memory_provider_migrations import (  # noqa: E402, F401
+    api_memory_provider_export,
+    api_memory_provider_import,
+    api_memory_provider_migration,
+    api_memory_provider_migration_resume,
+    api_memory_provider_migration_rollback,
+    api_memory_provider_migrations,
 )
 
 # ── Messaging (extracted to handlers/messaging.py) ──
@@ -677,6 +708,7 @@ from kiro_crew.dashboard.handlers.wakatime import (  # noqa: E402, F401
     api_wakatime_oauth_authorize,
     api_wakatime_oauth_callback,
     api_wakatime_oauth_disconnect,
+    api_wakatime_oauth_status,
     api_wakatime_stats,
 )
 
@@ -1120,6 +1152,14 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
     api_decisions_provider_sagemaker_test,
 )
+
+# MCP message-body fields — owner-gated, and the ONLY writer of
+# ``mcp_body_fields.json`` (see ``security.mcp_body_fields``).
+from kiro_crew.dashboard.handlers.mcp_body_fields import (  # noqa: E402, F401
+    api_mcp_body_fields_add,
+    api_mcp_body_fields_get,
+    api_mcp_body_fields_remove,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_own_notification_ack,
     api_own_notifications,
@@ -1155,6 +1195,13 @@ from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, 
 from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
     api_owner_value_reveal,
 )
+
+# MCP safety switches — owner-gated, the one dashboard writer of
+# ``mcp.protect_kiro_permission_rules`` and ``mcp.honour_auto_approve``.
+from kiro_crew.dashboard.handlers.safety_switches import (  # noqa: E402, F401
+    api_safety_switches_get,
+    api_safety_switches_put,
+)
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,
     api_denied_command_user_add,
@@ -1170,4 +1217,9 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_trusted_registries_list,
     api_trusted_registry_grant,
     api_trusted_registry_revoke,
+)
+from kiro_crew.dashboard.handlers.tool_grants import (  # noqa: E402, F401
+    api_tool_grant_add,
+    api_tool_grant_remove,
+    api_tool_grants_list,
 )

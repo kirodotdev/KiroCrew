@@ -24,13 +24,19 @@ from kiro_crew.acp.chat_runtime_sharing import (
     eligible_for_chat_sharing,
 )
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_CHAT_RUNTIME_SHARING,
     ACP_BACKENDS_SESSION_SHARING,
 )
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
+
+#: The arguments that make a start shareable on the backend axis: KAS with its own
+#: switch on, on an engine ``kas_chat_sharing_ready`` accepts.
+_SHAREABLE = {"backend": ACP_BACKEND_KAS, "kas_engine_ready": True, "harness_enabled": True}
 
 
 class FakeRuntime:
@@ -70,7 +76,6 @@ def a_key(**overrides) -> ChatRuntimeKey:
         acp_backend="kiro",
         tool_search=None,
         memory_mode="persistent",
-        shared_scratch=None,
         mcp_gateway_overlay=None,
         mcp_gateway_socket=None,
     )
@@ -89,7 +94,7 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -98,7 +103,7 @@ class TestChatSharingEligibility:
             session_key="chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -108,7 +113,7 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode=mode,
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -122,14 +127,14 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=True,
         )
         assert eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -138,16 +143,17 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=False,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
-    def test_kas_shares_only_on_an_engine_that_admits_one_turn_per_session(self):
+    def test_kas_shares_only_on_an_engine_that_runs_chats_in_parallel(self):
         """KAS is a member, but a KAS start shares only when its engine is ready.
 
-        ``kas_engine_ready`` is ``kas_chat_sharing_ready()``: the kiro-cli relay
-        at or above 3.1.0, whose engine admits one turn per session itself. An
-        older engine, or Crew's own pinned bundle, keeps one process per chat.
+        ``kas_engine_ready`` is ``kas_chat_sharing_ready()``: the engine the
+        route will run is at or above ``KAS_CHAT_SHARING_MIN_ENGINE``, which runs
+        turns of different sessions in parallel. An older engine keeps one
+        process per chat.
         """
         assert ACP_BACKEND_KAS in ACP_BACKENDS_CHAT_RUNTIME_SHARING
         common = dict(
@@ -156,35 +162,150 @@ class TestChatSharingEligibility:
             sharing_enabled=True,
             backend=ACP_BACKEND_KAS,
             member_context=False,
+            harness_enabled=True,
         )
         assert chat_sharing_ineligible_reason(**common) == "kas_engine_not_shareable"
         assert eligible_for_chat_sharing(**common, kas_engine_ready=True)
-        # kiro-cli does not ask the KAS readiness at all.
-        assert eligible_for_chat_sharing(**{**common, "backend": ACP_BACKEND_KIRO})
 
-    @pytest.mark.parametrize(
-        "version,bundle,ready",
-        [
-            ((3, 1, 0), False, True),
-            ((3, 2, 4), False, True),
-            ((3, 0, 0), False, False),
-            ((2, 37, 1), False, False),
-            (None, False, False),
-            ((3, 1, 0), True, False),
-        ],
-    )
-    def test_kas_readiness_reads_the_relay_version_and_route(
-        self, monkeypatch, version, bundle, ready
-    ):
-        import kiro_crew.acp.kas_route as kas_route
-        import kiro_crew.kiro_cli as kiro_cli
-        from kiro_crew.acp.chat_runtime_sharing import kas_chat_sharing_ready
-
-        monkeypatch.setattr(kiro_cli, "installed_kiro_cli_version", lambda: version)
-        monkeypatch.setattr(
-            kas_route, "resolve_kas_route", lambda: kas_route.KasRoute(bundle=bundle, reason="")
+    def test_a_harness_switched_off_keeps_its_own_process(self):
+        """The harness's own switch under the preview: off refuses with its own
+        reason, before the engine is asked, and on lets the other rules decide."""
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_KAS,
+            member_context=False,
+            kas_engine_ready=True,
         )
-        assert kas_chat_sharing_ready() is ready
+        assert chat_sharing_ineligible_reason(**args) == "harness_switched_off"
+        assert chat_sharing_ineligible_reason(**args, harness_enabled=False) == (
+            "harness_switched_off"
+        )
+        assert not eligible_for_chat_sharing(**args, harness_enabled=False)
+        assert eligible_for_chat_sharing(**args, harness_enabled=True)
+        # The engine is not what refused: a not-ready engine still reads as the switch.
+        args["kas_engine_ready"] = False
+        assert chat_sharing_ineligible_reason(**args) == "harness_switched_off"
+
+    def test_a_switch_cannot_let_in_a_harness_outside_the_table(self):
+        assert (
+            chat_sharing_ineligible_reason(
+                session_key="dashboard:chat-12-1790000000",
+                memory_mode="persistent",
+                sharing_enabled=True,
+                backend=ACP_BACKEND_OPENCODE,
+                member_context=False,
+                kas_engine_ready=True,
+                harness_enabled=True,
+            )
+            == "backend_not_chat_shareable"
+        )
+
+    def test_a_goose_chat_shares_only_from_the_dashboard_with_its_switch_on(self):
+        """goose shares only for a dashboard chat whose switch is on, and is served by
+        the shared runtime only for such a chat; a Side Chat (``side:`` origin), a
+        channel or a switched-off chat keeps its own process."""
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_GOOSE,
+            ACP_BACKENDS_ACP_RUNTIME,
+            ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
+        )
+
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_GOOSE,
+            member_context=False,
+            harness_enabled=True,
+        )
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS
+        assert ACP_BACKEND_GOOSE not in ACP_BACKENDS_ACP_RUNTIME
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "harness_enabled": False})
+            == "harness_switched_off"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "session_key": "side:dashboard:chat-12:1"})
+            == "origin_not_dashboard"
+        )
+
+    def test_a_deepseek_chat_shares_only_from_the_dashboard_with_its_switch_on(self):
+        """deepseek shares only for a dashboard chat whose switch is on, and is served by
+        the shared runtime only for such a chat; a Side Chat (``side:`` origin), a
+        channel or a switched-off chat keeps its own process."""
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_DEEPSEEK,
+            ACP_BACKENDS_ACP_RUNTIME,
+            ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
+        )
+
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_DEEPSEEK,
+            member_context=False,
+            harness_enabled=True,
+        )
+        assert ACP_BACKEND_DEEPSEEK in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert ACP_BACKEND_DEEPSEEK in ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS
+        assert ACP_BACKEND_DEEPSEEK not in ACP_BACKENDS_ACP_RUNTIME
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "harness_enabled": False})
+            == "harness_switched_off"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "session_key": "side:dashboard:chat-12:1"})
+            == "origin_not_dashboard"
+        )
+
+    def test_a_claude_chat_shares_only_from_the_dashboard_with_its_switch_on(self):
+        """claude shares only for a dashboard chat whose switch is on; a channel,
+        a member or a switched-off chat keeps its own process."""
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_CLAUDE,
+            member_context=False,
+            harness_enabled=True,
+        )
+        assert ACP_BACKEND_CLAUDE in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "harness_enabled": False})
+            == "harness_switched_off"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "session_key": "slack:C1:1790000000.1"})
+            == "origin_not_dashboard"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "member_context": True}) == "member_session"
+        )
+
+    def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self):
+        """kiro-cli is not a chat-sharing backend: chats sharing its process would
+        have to take turns, and a shared chat must never wait for another chat."""
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_KIRO,
+            member_context=False,
+        )
+        # An engine readiness answer cannot let it in either.
+        assert chat_sharing_ineligible_reason(**args) == "backend_not_chat_shareable"
+        assert (
+            chat_sharing_ineligible_reason(**args, kas_engine_ready=True)
+            == "backend_not_chat_shareable"
+        )
 
     def test_a_session_environment_keeps_its_own_process(self):
         """A remote workspace or cloud sandbox is attached to the PROCESS."""
@@ -193,7 +314,7 @@ class TestChatSharingEligibility:
                 session_key="dashboard:chat-12-1790000000",
                 memory_mode="persistent",
                 sharing_enabled=True,
-                backend=ACP_BACKEND_KIRO,
+                **_SHAREABLE,
                 member_context=False,
                 remote_workspace=True,
             )
@@ -205,15 +326,12 @@ class TestChatSharingEligibility:
         chat slot the right to share one -- the two teardowns differ, and it is
         the chat teardown the chat set asserts is safe.
 
-        codex is in the subagent ``ACP_BACKENDS_SESSION_SHARING`` but NOT in
-        ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``: its chat teardown's
-        resume-preservation is unmeasured, so a shared chat session on it could
-        lose its resume record on an ordinary close. It must therefore keep a
-        dedicated process, and the eligibility gate must refuse it even with every
-        other condition satisfied.
+        kiro-cli is in the subagent ``ACP_BACKENDS_SESSION_SHARING`` but NOT in
+        ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``, so the eligibility gate must refuse
+        it even with every other condition satisfied.
         """
-        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert ACP_BACKEND_KIRO in ACP_BACKENDS_SESSION_SHARING
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_CHAT_RUNTIME_SHARING
         # Neither set is derived from the other: KAS shares chats (its chat
         # teardown evicts with ``session/close``) and not subagents.
         assert ACP_BACKENDS_CHAT_RUNTIME_SHARING != ACP_BACKENDS_SESSION_SHARING
@@ -221,8 +339,39 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
+            backend=ACP_BACKEND_KIRO,
+            member_context=False,
+        )
+
+    def test_a_codex_chat_shares_with_no_engine_gate(self):
+        """codex is a member on its own measurement, not through subagent sharing.
+
+        Its chat teardown is ``session/close``, which keeps the rollout ``session/load``
+        replays, and its turns run in parallel: both are measured on the real adapter
+        in ``test_codex_chat_runtime_sharing_real.py``. The KAS engine gate is KAS's
+        own and is not asked of a codex start.
+        """
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
             backend=ACP_BACKEND_CODEX,
             member_context=False,
+            harness_enabled=True,
+        )
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert eligible_for_chat_sharing(**args)
+        # Its own switch off (the default) refuses it.
+        assert chat_sharing_ineligible_reason(**{**args, "harness_enabled": False}) == (
+            "harness_switched_off"
+        )
+        # Every other rule still applies to it.
+        assert chat_sharing_ineligible_reason(**{**args, "memory_mode": "incognito"}) == (
+            "memory_mode_not_shareable"
+        )
+        assert chat_sharing_ineligible_reason(**{**args, "session_key": "cron:nightly"}) == (
+            "origin_not_dashboard"
         )
 
     @pytest.mark.parametrize(
@@ -242,9 +391,102 @@ class TestChatSharingEligibility:
             session_key=key,
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
+
+
+class TestPerHarnessSwitches:
+    """One row per harness in ``CHAT_RUNTIME_SHARING_HARNESSES``: its switch and its default."""
+
+    def _cfg(self, stored):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(agent=SimpleNamespace(chat_runtime_sharing_harnesses=stored))
+
+    def test_the_table_is_the_chat_sharing_set_and_kas_defaults_on(self):
+        from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+
+        assert set(CHAT_RUNTIME_SHARING_HARNESSES) == set(ACP_BACKENDS_CHAT_RUNTIME_SHARING)
+        assert CHAT_RUNTIME_SHARING_HARNESSES[ACP_BACKEND_KAS] is True
+        # codex is new to chat sharing, so its switch starts off.
+        assert CHAT_RUNTIME_SHARING_HARNESSES[ACP_BACKEND_CODEX] is False
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            ({"kas": False}, False),
+            ({"kas": True}, True),
+            ({}, True),
+            ({"kas": "no"}, True),
+            (None, True),
+        ],
+    )
+    def test_the_reader_takes_the_stored_bool_else_the_default(self, stored, expected):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg(stored), ACP_BACKEND_KAS) is expected
+
+    def test_a_stored_true_cannot_switch_on_a_harness_outside_the_table(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        cfg = self._cfg({ACP_BACKEND_OPENCODE: True, ACP_BACKEND_KIRO: True})
+        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_OPENCODE) is False
+        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_KIRO) is False
+
+    def test_claude_is_off_until_its_switch_is_stored_true(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg({}), ACP_BACKEND_CLAUDE) is False
+        assert chat_runtime_sharing_harness_enabled(self._cfg(None), ACP_BACKEND_CLAUDE) is False
+        on = self._cfg({ACP_BACKEND_CLAUDE: True})
+        assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_CLAUDE) is True
+
+    def test_goose_is_off_until_its_switch_is_stored_true(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg({}), ACP_BACKEND_GOOSE) is False
+        assert chat_runtime_sharing_harness_enabled(self._cfg(None), ACP_BACKEND_GOOSE) is False
+        on = self._cfg({ACP_BACKEND_GOOSE: True})
+        assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_GOOSE) is True
+
+    def test_codex_is_off_until_its_switch_is_stored_true(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg({}), ACP_BACKEND_CODEX) is False
+        assert chat_runtime_sharing_harness_enabled(self._cfg(None), ACP_BACKEND_CODEX) is False
+        on = self._cfg({ACP_BACKEND_CODEX: True})
+        assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_CODEX) is True
+
+    def test_the_loader_fills_defaults_and_drops_unknown_names(self):
+        from kiro_crew.config.loader_builders import _chat_runtime_sharing_harnesses
+        from kiro_crew.config.sections import AgentConfig
+
+        defaults = {
+            "kas": True,
+            "codex": False,
+            "claude": False,
+            "goose": False,
+            "deepseek": False,
+        }
+        assert AgentConfig().chat_runtime_sharing_harnesses == defaults
+        assert _chat_runtime_sharing_harnesses({"kas": False, "codex": True, "kiro": True}) == {
+            "kas": False,
+            "codex": True,
+            "claude": False,
+            "goose": False,
+            "deepseek": False,
+        }
+        assert _chat_runtime_sharing_harnesses({"kas": 0}) == defaults
+        assert _chat_runtime_sharing_harnesses("x") == defaults
+
+    def test_only_table_harnesses_are_writable_from_the_dashboard(self):
+        from kiro_crew.dashboard.handlers.core_config_schema import _EDITABLE_CONFIG
+
+        prefix = "agent.chat_runtime_sharing_harnesses."
+        writable = {k[len(prefix) :] for k in _EDITABLE_CONFIG if k.startswith(prefix)}
+        assert writable == set(ACP_BACKENDS_CHAT_RUNTIME_SHARING)
 
 
 class TestIsSharedChatRuntimeTellsTheSharedPathApart:
@@ -258,7 +500,7 @@ class TestIsSharedChatRuntimeTellsTheSharedPathApart:
     unshared path also takes a lease at registration (`acquire_session_lease`),
     so every registered chat holds a lease string whether or not it shares.
     `_shared_runtime` (set from `chat_share_key is not None`) is the flag that
-    does separate them, and the one `_chat_turn_gate` already uses. These pin
+    does separate them. These pin
     that the guard answers True only for an actual shared-runtime provider, so
     the default path stays byte-identical to base.
     """
@@ -304,7 +546,7 @@ class TestTheRefusalNamesItsBranch:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
         )
         base.update(overrides)
         return chat_sharing_ineligible_reason(
@@ -319,7 +561,8 @@ class TestTheRefusalNamesItsBranch:
         "overrides,reason",
         [
             ({"sharing_enabled": False}, "sharing_disabled"),
-            ({"backend": ACP_BACKEND_CODEX}, "backend_not_chat_shareable"),
+            ({"backend": ACP_BACKEND_KIRO}, "backend_not_chat_shareable"),
+            ({"harness_enabled": False}, "harness_switched_off"),
             ({"memory_mode": "incognito"}, "memory_mode_not_shareable"),
             ({"session_key": "cron:nightly-digest"}, "origin_not_dashboard"),
         ],
@@ -341,7 +584,7 @@ class TestTheRefusalNamesItsBranch:
                 session_key="dashboard:chat-12-1790000000",
                 memory_mode="persistent",
                 sharing_enabled=True,
-                backend=ACP_BACKEND_KIRO,
+                **_SHAREABLE,
                 member_context=True,
             )
             == "member_session"
@@ -349,7 +592,7 @@ class TestTheRefusalNamesItsBranch:
 
     @pytest.mark.parametrize("enabled", [True, False])
     @pytest.mark.parametrize("mode", ["persistent", "incognito"])
-    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
     def test_the_boolean_and_the_reason_never_disagree(self, enabled, mode, backend):
         """One decision, two spellings: a reason means refused, and no reason means
         eligible. A branch added to one and not the other would split them."""
@@ -456,7 +699,6 @@ class TestChatRuntimeKey:
             ("extra_env", {"A": "9"}),
             ("acp_backend", "kas"),
             ("memory_mode", "incognito"),
-            ("shared_scratch", Path("/scratch/tree-a")),
             ("mcp_gateway_overlay", "/overlay/a.json"),
             ("mcp_gateway_socket", "/run/gw.sock"),
             ("model", "some-model-id"),
@@ -510,7 +752,7 @@ class TestChatRuntimeKey:
                     session_key=session,
                     memory_mode="persistent",
                     sharing_enabled=True,
-                    backend=ACP_BACKEND_KIRO,
+                    **_SHAREABLE,
                     member_context=True,
                 ), "a member session must be refused chat sharing"
                 # Refused -> each founds its own runtime at cap 1.
@@ -968,10 +1210,14 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
 
             share_mod.RUNTIME_OWNERSHIP = RuntimeOwnership()
             try:
-                # Two CHATS, so the second one joins: two starts of ONE chat go
-                # on separate processes (``_Entry.admits``).
+                # Two CHATS of one tree, so the second one joins: two starts of ONE
+                # chat go on separate processes (``_Entry.admits``), and two trees
+                # never share.
                 for n in (1, 2):
-                    p = make_placement(session_key=f"dashboard:chat-{n}-1790000000")
+                    p = make_placement(
+                        session_key=f"dashboard:chat-{n}-1790000000",
+                        tree_root="dashboard:chat-1-1790000000",
+                    )
                     p._read_confirmation = confirming(("gen-1", "acct-A", "auto", False, True))
                     await p.place(spawn)
             finally:
@@ -1024,13 +1270,15 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         start_src = Path(start_mod.__file__).read_text(encoding="utf-8")
         # BOTH placements go through the one confirming body: the cold start and
         # the rebuild after the runtime died during resume.
-        assert "await share.place(_found_shared_runtime)" in start_src
-        assert "await share.replace_dead(_found_shared_runtime)" in start_src
+        assert "await share.place(_found_shared_runtime, self._shared_scratch)" in start_src
+        assert "await share.replace_dead(_found_shared_runtime, self._shared_scratch)" in start_src
         source = Path(share_mod.__file__).read_text(encoding="utf-8")
         replace = source[
             source.index("async def replace_dead(") : source.index("async def abandon(")
         ]
-        assert "await self.place(spawn)" in replace, "the rebuild skips the confirmation"
+        assert (
+            "await self.place(spawn, recorded_scratch)" in replace
+        ), "the rebuild skips the confirmation"
         read = source[
             source.index("async def _read_confirmation(") : source.index("async def _admit_joiner(")
         ]
@@ -1047,7 +1295,7 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         assert "bool(era) and era == self._raw_era" in place
         region = place
         # Every release in the placement settles through the shielded helper.
-        assert region.count("_settle_release(placed.lease)") == 2
+        assert region.count("_settle_release(placed.lease)") == 3
         assert "self.key = self._build_key()" in region, "the retry does not rebuild the key"
 
         # Text cannot tell live code from dead, so no confirmation in the
@@ -1055,8 +1303,9 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         import ast
 
         tree = ast.parse(source)
+        # The confirming loop is ``_place``, which ``place`` wraps.
         placement = next(
-            n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "place"
+            n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_place"
         )
         for node in ast.walk(placement):
             if not isinstance(node, ast.If):
@@ -1626,6 +1875,39 @@ class TestTwoSessionsShareOneProcess:
         assert len(spawn.calls) == 3, "one process per session, as before the cap existed"
         for acq, rt in zip(acquisitions, runtimes):
             assert asyncio.run(reg.release(acq.lease)) is rt
+
+
+# ── What codex adds to the child's env at spawn ──
+
+
+class TestTheCodexSpawnEnvIsCoveredByTheKey:
+    """codex adds env at spawn that ``extra_env`` does not carry; none of it varies
+    between two chats that share a key.
+
+    ``DISABLE_MCP_CONFIG_FILTERING`` and ``CODEX_ACP_EXTERNAL_SANDBOX`` are constants.
+    ``CODEX_CONFIG`` (every configured MCP server disabled) is set only for the
+    background agent, and ``agent`` is a key field, so a background spawn and a chat
+    spawn can never be one process. ``CODEX_HOME`` reaches the child from the
+    gateway's environment or ``agent.env``, which the key already holds.
+    """
+
+    def test_a_foreground_spawn_adds_the_same_constants_every_time(self):
+        from kiro_crew.acp.harness.codex import CodexHarness
+
+        first: dict[str, str] = {"CODEX_PATH": ""}
+        second: dict[str, str] = {"CODEX_PATH": ""}
+        CodexHarness().apply_spawn_env(first)
+        CodexHarness().apply_spawn_env(second)
+        assert first == second
+        assert first["DISABLE_MCP_CONFIG_FILTERING"] == "true"
+        assert "CODEX_CONFIG" not in first
+
+    def test_the_background_override_cannot_reach_a_chat_key(self):
+        from kiro_crew.session_parts.policy import BACKGROUND_AGENT
+
+        chat = a_key(acp_backend="codex", agent="kirocrew")
+        background = a_key(acp_backend="codex", agent=BACKGROUND_AGENT)
+        assert chat != background
 
 
 # ── The teardown of a session that shares its process ──

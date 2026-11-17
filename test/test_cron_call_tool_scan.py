@@ -14,23 +14,23 @@ import base64
 import copy
 import datetime
 import json
+import string
 from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew.cron_script import ScriptContext
-from kiro_crew.security import redact
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# A Microsoft Graph message id: base64 of an Exchange id. The bare-secret pass reads the
-# 99-character run before its first "-" as a key.
+# A Microsoft Graph message id: base64 of an Exchange id.
 GRAPH_MESSAGE_ID = (
     "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEUR"
     "BwAiIsqMbYjsT5e-T7KzowPTAAAAAAEMAAAiIsqMbYjsT5e-T7KzowPTAAAYbvZDAAA="
 )
-# A drive id: "b!" and base64url. The bare-secret pass reads the 64 characters after "b!".
+# A drive id: "b!" and base64url.
 DRIVE_ID = "b!kYWqRNAvL0OB7ByWOcmhn6cXgFRBPD9Kp0Ec0xRoqx3rH3oYKNrDTJVjFMwxR9zZ"
 ITEM_ID = "01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K"
-# The Telegram rule reads "<digits>:<30 or more characters>" as a bot token.
+# An account id and a resource name: the fixed Telegram branch's shape, and no bot token.
 ACCOUNT_RESOURCE = "123456789012:MyCompanyOrderProcessingServiceLambda:prod"
 # A CodeDeploy target written as "<region>:<account>:<app>:<group>:CD". CloudFormation
 # names the application and the group "<stack>-<logical id>-<suffix>".
@@ -39,11 +39,13 @@ CODEDEPLOY_TARGET = (
     f"eu-west-1:123456789012:{CFN_APP}:"
     "ExampleAnonymizedMessagingService-DeploymentGroup1-2KLMNOP3QRSTU:CD"
 )
-# Built from parts so secret scanners do not flag a literal token in the source.
-GITHUB_TOKEN = "gh" + "p_" + "Zx9Qw" * 7 + "A"
+# Built at runtime so secret scanners do not flag a literal token in the source.
+GITHUB_TOKEN = github_classic(seed=44)
 BOT_SECRET = "AA" + "Hq7Tcv1vGWJxfSeofSAs0K5PALDs" + "aw3Xy"
-# 40 characters of mixed case and digits, which the bare-secret pass reads as a key.
-KEY_RUN = BOT_SECRET[2:] + "Q9mZt2B"
+# A URL whose 278-character query carries data out: 320 characters, which the
+# exfiltration scan flags and the credential redactor leaves as written.
+_COLLECTOR = "https://collector.example.net/ingest?data="
+DATA_QUERY_URL = _COLLECTOR + (string.ascii_lowercase * 11)[: 320 - len(_COLLECTOR)]
 
 
 @pytest.fixture
@@ -73,13 +75,6 @@ def _ctx() -> ScriptContext:
     return ScriptContext(job=SimpleNamespace(id="j1", message=""))
 
 
-def test_the_fixtures_are_what_the_scan_rewrites() -> None:
-    """Non-vacuity: redaction rewrites each identifier, so the scan must not judge by it."""
-    for value in (GRAPH_MESSAGE_ID, DRIVE_ID, ACCOUNT_RESOURCE, CODEDEPLOY_TARGET):
-        assert redact(value) != value, value
-    assert redact(ITEM_ID) == ITEM_ID
-
-
 @pytest.mark.parametrize(
     "args",
     [
@@ -105,36 +100,12 @@ def test_identifiers_reach_the_server_byte_identical(sent: list[dict], args: dic
         ({"cursor": GITHUB_TOKEN}, "args.cursor"),
         ({"page": {"items": ["ok", f"see {GITHUB_TOKEN}"]}}, r"args.page.items\[1\]"),
         ({"authorization": "Bearer " + "Zx9Qw" * 8}, "args.authorization"),
-        # An opaque id is an identifier only under a key that names one.
-        ({"body": GRAPH_MESSAGE_ID}, "args.body"),
-        ({"text": f"see {GRAPH_MESSAGE_ID} here"}, "args.text"),
-        # Under an id-named key only the bare-secret pass stands down.
-        ({"message_id": "AAMk" + GITHUB_TOKEN}, "args.message_id"),
+        # Under an id-named key a credential is still one.
+        ({"message_id": "AAMk-" + GITHUB_TOKEN}, "args.message_id"),
         ({"driveId": "b!" + GITHUB_TOKEN}, "args.driveId"),
-        # A bot id is 6 to 10 digits, so these stay bot tokens whatever follows the ":".
+        # A bot id in the published form, 8 to 10 digits, makes a bot token.
         ({"text": f"bot 1234567890:{BOT_SECRET}"}, "args.text"),
         ({"text": f"bot 110201543:{BOT_SECRET}"}, "args.text"),
-        ({"text": "bot 1234567890:MyCompanyOrderProcessingServiceLambda"}, "args.text"),
-        # An account id is 12 digits that are not a bot id padded with zeros, and only a
-        # resource name after one is an identifier: a token behind a padded, glued or real
-        # account id, in an ARN or not, stays a token.
-        ({"text": f"bot 000110201543:{BOT_SECRET}"}, "args.text"),
-        ({"text": f"bot 999110201543:{BOT_SECRET}"}, "args.text"),
-        ({"text": f"token 123456789012:{BOT_SECRET}"}, "args.text"),
-        ({"topicArn": f"arn:aws:sns:us-west-2:000110201543:{BOT_SECRET}"}, "args.topicArn"),
-        ({"topicArn": f"arn:aws:sns:us-west-2:123456789012:{BOT_SECRET}"}, "args.topicArn"),
-        ({"name": "000110201543:MyCompanyOrderProcessingServiceLambda:prod"}, "args.name"),
-        ({"name": "1234567890123:MyCompanyOrderProcessingServiceLambda:prod"}, "args.name"),
-        # A CloudFormation name is a resource name only where a CodeDeploy target puts one:
-        # after a region segment and an account id, with another ":" after it.
-        ({"targetNames": [f"eu-west-1:999110201543:{BOT_SECRET}:CD"]}, r"args.targetNames\[0\]"),
-        ({"target": f"eu-west-1:000110201543:{CFN_APP}:CD"}, "args.target"),
-        ({"target": f"eu-west-1:1234567890123:{CFN_APP}:CD"}, "args.target"),
-        ({"target": f"123456789012:{CFN_APP}:CD"}, "args.target"),
-        ({"target": f"xeu-west-1:123456789012:{CFN_APP}:CD"}, "args.target"),
-        ({"target": f"eu-west-1:123456789012:{CFN_APP}"}, "args.target"),
-        ({"target": "eu-west-1:123456789012:ExampleMessagingApp-1ABCDEF2GHIJK:CD"}, "args.target"),
-        ({"target": f"eu-west-1:123456789012:Ex-{KEY_RUN}-App-1ABCDEF2GHIJK:CD"}, "args.target"),
         # A credential behind an account id is judged as if the account id were not there.
         ({"name": "123456789012:" + GITHUB_TOKEN}, "args.name"),
         ({"name": "123456789012:" + base64.b64encode(GITHUB_TOKEN.encode()).decode()}, "args.name"),
@@ -149,10 +120,44 @@ def test_a_call_the_scan_would_change_is_refused_by_path_and_never_sent(
     with pytest.raises(ValueError, match=rf"not sent: {path} reads as a credential") as refused:
         ctx.call_tool("srv", "post", args)
     message = str(refused.value)
-    for secret in (GITHUB_TOKEN, BOT_SECRET, GRAPH_MESSAGE_ID, KEY_RUN):
+    for secret in (GITHUB_TOKEN, BOT_SECRET):
         assert secret not in message
     assert audited == [("srv", "post", "error", message)]
     assert sent == []
+
+
+@pytest.mark.parametrize(
+    ("args", "path"),
+    [
+        ({"url": DATA_QUERY_URL}, "args.url"),
+        ({"text": f"fetch {DATA_QUERY_URL} now"}, "args.text"),
+        ({"links": ["https://example.com/docs?page=2", DATA_QUERY_URL]}, r"args.links\[1\]"),
+    ],
+)
+def test_a_url_the_exfiltration_scan_flags_is_refused_and_never_sent(
+    sent: list[dict], args: dict, path: str
+) -> None:
+    """The redactor leaves such a URL as written, so only the scan can refuse it."""
+    from kiro_crew.security import redact, scan_exfiltration_urls
+
+    assert len(DATA_QUERY_URL) == 320
+    assert scan_exfiltration_urls(DATA_QUERY_URL)
+    assert redact(DATA_QUERY_URL) == DATA_QUERY_URL
+    with pytest.raises(ValueError, match=rf"not sent: {path} reads as a credential"):
+        _ctx().call_tool("srv", "post", args)
+    assert sent == []
+
+
+def test_a_flagged_url_as_a_key_is_refused(sent: list[dict]) -> None:
+    with pytest.raises(ValueError, match="reads as a credential"):
+        _ctx().call_tool("srv", "post", {DATA_QUERY_URL: "value"})
+    assert sent == []
+
+
+def test_a_short_url_reaches_the_server_byte_identical(sent: list[dict]) -> None:
+    args = {"url": "https://example.com/docs?page=2&lang=en"}
+    assert _ctx().call_tool("srv", "get", copy.deepcopy(args)) == "ok"
+    assert sent == [args]
 
 
 def test_a_credential_shaped_key_is_refused_without_echoing_it(sent: list[dict]) -> None:

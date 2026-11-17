@@ -72,6 +72,7 @@ from kiro_crew.validation_parts.core_agent_schemas import (
     TASK_RUN_SCHEMA,
 )
 from kiro_crew.validation_parts.core_turn_schemas import (
+    CHAT_RENAME_SCHEMA,
     CHAT_TAG_SCHEMA,
     DELETE_MESSAGE_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
@@ -91,6 +92,7 @@ from kiro_crew.validation_parts.core_turn_schemas import (
 )
 from kiro_crew.validation_parts.field_engine import ToolSchema
 from kiro_crew.validation_parts.messaging_session_schemas import (
+    CREW_LIST_SCHEMA,
     DISMISS_NOTIFICATION_SCHEMA,
     GET_CHAT_SESSION_SCHEMA,
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
@@ -182,6 +184,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
     "chat_tag": CHAT_TAG_SCHEMA,
+    "chat_rename": CHAT_RENAME_SCHEMA,
     "request_server": REQUEST_SERVER_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
@@ -253,6 +256,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_summary": SESSION_SUMMARY_SCHEMA,
     "work_dispatch": WORK_DISPATCH_SCHEMA,
     "session_queue": SESSION_QUEUE_SCHEMA,
+    "crew_list": CREW_LIST_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,

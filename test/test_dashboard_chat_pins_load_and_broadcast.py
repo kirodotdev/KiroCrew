@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 from dashboard_chat_pins_helpers import _client, _make_state, _raise_os_error
 
-# ── Finding 2 (GPT 5.6): Transient I/O error must NOT replace valid in-memory state ──
+# ── Transient I/O error must NOT replace valid in-memory state ──
 
 
 @pytest.mark.asyncio

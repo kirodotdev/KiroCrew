@@ -1553,16 +1553,13 @@ describe('registry install trust gate — permanent desktop refusal', () => {
     const dismiss = dismissButtons[0]
     expect(dismiss.textContent).toContain('pages.appDetailPage.dismiss_to_install_again')
     expect(dismiss.getAttribute('aria-label')).toBe('pages.appDetailPage.dismiss_to_install_again')
-    // At 320px the control's own line is the notice's content width and the
-    // German label is wider than it, so below `md` the button must be free to
-    // shrink and its label to wrap; the one-line shape holds from `md` up. A
-    // bare `shrink-0` or `whitespace-nowrap` here pins the label at its full
-    // width at every viewport and it runs past the banner -- the only control
-    // that re-enables Install, cut off at the edge.
+    // At 320px the German label is wider than the notice's action row, so the
+    // button must be free to shrink and its label to wrap. A bare `shrink-0`
+    // or `whitespace-nowrap` here pins the label at its full width and it runs
+    // past the banner -- the only control that re-enables Install, cut off at
+    // the edge.
     expect(dismiss.classList).not.toContain('shrink-0')
     expect(dismiss.classList).not.toContain('whitespace-nowrap')
-    expect(dismiss.classList).toContain('md:shrink-0')
-    expect(dismiss.classList).toContain('md:whitespace-nowrap')
     expect(dismiss.classList).toContain('min-w-0')
     fireEvent.click(dismiss)
     await waitFor(() => expect(box()).toBeUndefined())

@@ -396,3 +396,33 @@ describe('App in a relay Crew window — a calm reconnecting view while it retri
     await shellSettled(queryClient)
   })
 })
+
+describe('App in a relay Crew pane — the desktop app draws the only top bar', () => {
+  const PANE_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow kiroCrewRelayPane'
+  const WINDOW_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow'
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('drops its own header and the header row, and still speaks the connection state', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(PANE_UA)
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    expect(document.querySelector('header.topbar')).toBeNull()
+    expect(screen.getByTestId('dashboard-shell').style.gridTemplateRows).toBe('0px minmax(0,1fr)')
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.getByTestId('relay-pane-gateway-status')).toHaveTextContent(en.app.gateway_connected)
+    await shellSettled(queryClient)
+  })
+
+  it.each([['a relay Crew window', WINDOW_UA], ['a plain dashboard', 'Mozilla/5.0 (Macintosh)']])(
+    'keeps its header without the pane marker (%s)', async (_label, ua) => {
+      vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua)
+      const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+      expect(document.querySelector('header.topbar')).not.toBeNull()
+      expect(screen.getByTestId('dashboard-shell').style.gridTemplateRows).toBe('')
+      expect(screen.queryByTestId('relay-pane-gateway-status')).toBeNull()
+      await shellSettled(queryClient)
+    })
+})

@@ -452,7 +452,7 @@ class TestTranscribeOversizedInSegments:
 
     @pytest.mark.asyncio
     async def test_a_falsy_segment_transcript_refuses_the_whole_import(self, tmp_path, monkeypatch):
-        # GPT + Opus review (both BLOCKING): transcribe_audio returns None for a
+        # transcribe_audio returns None for a
         # genuine recogniser failure (decode error, timeout, singleton swapped
         # mid-import) as well as for a silent segment, indistinguishable here. A
         # clean _extract_segment only proves ffmpeg carved the WAV, not that the
@@ -484,7 +484,7 @@ class TestTranscribeOversizedInSegments:
     async def test_an_implausible_duration_is_refused_before_building_cuts(
         self, tmp_path, monkeypatch
     ):
-        # GPT security-class review: a crafted container can report a far-future
+        # A crafted container can report a far-future
         # terminal PTS. The cut loop appends one float per cap-sized window, so an
         # unbounded duration would allocate billions of cuts and freeze/OOM. The
         # duration is refused against _MAX_SEGMENTS * cap BEFORE any cut is built,
@@ -766,7 +766,7 @@ class TestDetectSilenceEnds:
 
     @pytest.mark.asyncio
     async def test_a_pathological_flood_of_silence_events_is_refused(self, tmp_path, monkeypatch):
-        # GPT security-class review: a pause-dense recording could emit millions of
+        # A pause-dense recording could emit millions of
         # silence_end lines. The scan keeps only parsed floats, capped at
         # _MAX_SILENCE_POINTS, and refuses (None) past the cap rather than buffering
         # unbounded memory and OOM-crashing the gateway.
@@ -784,7 +784,7 @@ class TestDetectSilenceEnds:
     async def test_an_over_64kib_stderr_line_with_no_newline_does_not_raise(
         self, tmp_path, monkeypatch
     ):
-        # GPT security-class review: StreamReader.readline() raises ValueError on a
+        # StreamReader.readline() raises ValueError on a
         # line past its 64 KiB limit, which a crafted container's metadata tag can
         # produce -> unhandled 500. The reader now uses read(n) (no line limit) and
         # a bounded rolling buffer, so a >64 KiB stderr line with NO newline is

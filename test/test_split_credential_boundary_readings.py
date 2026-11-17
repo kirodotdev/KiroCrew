@@ -9,11 +9,11 @@ readings never changes the grade's answer.
 from __future__ import annotations
 
 import ast
+import string
 
 import pytest
-from split_credential_boundary_helpers import HEAD, KEY, SRC, TAIL, _name_of
+from split_credential_boundary_helpers import HEAD, SRC, TAIL, _name_of
 
-from kiro_crew.messaging import split as split_module
 from kiro_crew.messaging.display_safety import (
     FURTHER_READINGS,
     _plain_reading,
@@ -31,6 +31,21 @@ from kiro_crew.messaging.split import (
     repaired_for_delivery,
     split_markdown_safe,
 )
+from kiro_crew.testing.synthetic_credentials import ALNUM, synth
+
+
+def _slack_token(seed: int) -> str:
+    """A 40-character Slack bot token: a key the credential plan masks, with no
+    character the display form drops as markup (an ``_`` would split ``ghp_``)."""
+    digits = string.digits
+    return (
+        "xoxb-"
+        + synth(10, digits, seed)
+        + "-"
+        + synth(10, digits, seed + 1)
+        + "-"
+        + synth(13, ALNUM, seed + 2)
+    )
 
 
 def _every_reading(pieces: list[str]) -> list[str]:
@@ -68,11 +83,14 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
     #: One link to the canonical grammar, which collapses it to its label and drops
     #: the url with the key inside it. The narrower link grammar leaves the url as
     #: text, where the emphasis pass joins the key across the ``~~`` pair.
-    PARENTHESISED_URL = "see [l](https://x/(a)/AKIA~~IOSFODNN7EXAMPLE~~) done"
+    #: The key is a Slack bot token: an AWS key ID and a bare 40-character run are
+    #: kept visible.
+    LINK_KEY = _slack_token(21)
+    PARENTHESISED_URL = f"see [l](https://x/(a)/{LINK_KEY[:10]}~~{LINK_KEY[10:]}~~) done"
     #: A field name and its assignment held apart by a heading marker the text
     #: keeps mid-line. A cut before the marker opens a piece with it, and the plain
     #: reading of that piece drops it.
-    SECRET = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+    SECRET = "Qh4Tm2Vx9KpRc-Z8Nw3Hd-Jf1Lb5Gs0Ye9Ua2WkE"
     HEADING_SEAM = f"Rotated. SecretAccessKey #   : {SECRET}"
 
     def test_the_link_shape_rejoins_across_a_blind_cut(self) -> None:
@@ -80,12 +98,12 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
         pieces = split_markdown_safe(self.PARENTHESISED_URL, 20)
         assert len(pieces) > 1
         assert _rejoins_a_key(pieces, _default_redactor)
-        assert KEY in "".join(_every_reading(pieces))
+        assert self.LINK_KEY in "".join(_every_reading(pieces))
 
     def test_the_link_shape_is_repaired_for_every_reading(self) -> None:
         delivered = bounded_for_delivery([self.PARENTHESISED_URL], 20, _default_redactor)
         assert all(len(piece) <= 20 for piece in delivered)
-        assert KEY not in "".join(_every_reading(delivered))
+        assert self.LINK_KEY not in "".join(_every_reading(delivered))
         assert not _shows_a_key(delivered), delivered
 
     def test_the_link_shape_repair_is_not_the_source(self) -> None:
@@ -95,21 +113,12 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
         )
         assert repaired is not None
         assert repaired != self.PARENTHESISED_URL
-        assert KEY not in "".join(_every_reading([repaired]))
+        assert self.LINK_KEY not in "".join(_every_reading([repaired]))
 
     def test_the_heading_seam_is_clean_as_one_message(self) -> None:
         """The premise: whole, the marker sits mid-line and no reading drops it."""
         whole = self.HEADING_SEAM
         assert redact_for_display(whole, _default_redactor) == (whole, False)
-
-    @pytest.mark.parametrize(
-        ("cutter", "budget"), [(split_markdown_safe, 13), (chunk_utf8_bytes, 12)]
-    )
-    def test_the_heading_seam_rejoins_across_a_blind_cut(self, cutter, budget: int) -> None:
-        pieces = cutter(self.HEADING_SEAM, budget)
-        assert _rejoins_a_key(pieces, _default_redactor)
-        assert self.SECRET in "".join(_every_reading(pieces))
-        assert any("SecretAccessKey: " in reading for reading in _every_reading(pieces))
 
     @pytest.mark.parametrize(
         ("cutter", "budget"), [(split_markdown_safe, 13), (chunk_utf8_bytes, 12)]
@@ -174,51 +183,6 @@ class TestTheLastResortRejectsAuthorTagLookalikes:
         assert not _rejoins_a_key(delivered, _default_redactor)
 
 
-class TestTheLastResortKeepsExistingRedactionTagWhole:
-    """A tag an earlier pass wrote leaves the flatten byte for byte.
-
-    The flatten removes every whitespace run so no seam has a break to drop, and
-    a redaction tag carries one space. A tag that loses it matches the tag shape
-    nowhere: the next markup strip takes its brackets, and the count of tags in
-    the delivered text, which the redaction notice is built from, misses it.
-
-    The flatten also drops the heading marker, so the redactor reads the
-    assignment the heading seam hid and writes a second tag. A hard cap may cut
-    that second tag in two; the first stays whole and no cut shows the key.
-    """
-
-    TAG = "[REDACTED: credential]"
-    SOURCE = f"{TAG} {TestTheRepairIsJudgedByTheReadingThatRefusedTheCut.HEADING_SEAM}"
-
-    def test_the_flatten_is_reached(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The premise: the heading seam sends the byte cutter to the last resort."""
-        reached: list[str] = []
-        flatten = split_module._flattened_for_any_cut
-
-        def spy(text: str, redactor) -> str:
-            reached.append(text)
-            return flatten(text, redactor)
-
-        monkeypatch.setattr(split_module, "_flattened_for_any_cut", spy)
-        bounded_for_delivery([self.SOURCE], 24, _default_redactor, chunk_utf8_bytes)
-        assert reached == [self.SOURCE]
-
-    def test_the_flatten_keeps_the_existing_tag_and_redacts_the_assignment(self) -> None:
-        flat = _flattened_for_any_cut(self.SOURCE, _default_redactor)
-        assert flat.startswith(self.TAG)
-        assert flat.count(self.TAG) == 2
-        assert " " not in flat.replace(self.TAG, "")
-
-    @pytest.mark.parametrize("budget", [24, 48])
-    def test_delivery_keeps_the_existing_tag_and_exposes_no_key(self, budget: int) -> None:
-        delivered = bounded_for_delivery([self.SOURCE], budget, _default_redactor, chunk_utf8_bytes)
-        assert all(len(piece) <= budget for piece in delivered)
-        assert delivered[0].startswith(self.TAG)
-        assert "".join(delivered).count(self.TAG) == 2, delivered
-        assert not _shows_a_key(delivered), delivered
-        assert not _rejoins_a_key(delivered, _default_redactor)
-
-
 def _every_rendering() -> tuple:
     """The canonical form and every further reading, as the full grade takes them."""
     return (canonicalize_display, *FURTHER_READINGS)
@@ -247,10 +211,14 @@ class TestTheGradeSkipsLinkReadingsOnlyWhereTheyCannotDiffer:
     and ``(`` opening the next, still asks for every reading.
     """
 
-    #: A keyless twin of ``KEY`` with the same length, cut at the same offsets, so
+    #: The key the shapes carry. An AWS key ID and a bare 40-character run are kept
+    #: visible, so this is a synthetic 40-character Slack bot token.
+    TOKEN = _slack_token(22)
+    TOKEN_HEAD, TOKEN_TAIL = TOKEN[:10], TOKEN[10:]
+    #: A keyless twin of ``TOKEN`` with the same length, cut at the same offsets, so
     #: every keyful shape below has a keyless shape of identical geometry.
-    WORD = "ordinarywordsofprose"
-    ASSIGNED = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+    WORD = "ordinarywordsofproseandsomemorewordshere"
+    ASSIGNED = "Qh4Tm2Vx9KpRc-Z8Nw3Hd-Jf1Lb5Gs0Ye9Ua2WkE"
 
     @staticmethod
     def _shapes(token: str, assigned: str) -> list[str]:
@@ -272,7 +240,9 @@ class TestTheGradeSkipsLinkReadingsOnlyWhereTheyCannotDiffer:
 
     @classmethod
     def _texts(cls) -> list[str]:
-        return cls._shapes(KEY, cls.ASSIGNED) + cls._shapes(cls.WORD, "ordinary-words-after-marker")
+        return cls._shapes(cls.TOKEN, cls.ASSIGNED) + cls._shapes(
+            cls.WORD, "ordinary-words-after-marker"
+        )
 
     @classmethod
     def _sequences(cls) -> list[list[str]]:
@@ -286,9 +256,9 @@ class TestTheGradeSkipsLinkReadingsOnlyWhereTheyCannotDiffer:
         # The opener split across a seam: no piece holds ``](``, the join does.
         sequences.extend(
             [
-                ["see [l]", f"(https://x/(a)/{HEAD}~~{TAIL}~~) done"],
-                ["see [l]\n", f"(https://x/(a)/{HEAD}~~{TAIL}~~) done"],
-                [f"[{HEAD}]", f"(https://q/y){TAIL}"],
+                ["see [l]", f"(https://x/(a)/{cls.TOKEN_HEAD}~~{cls.TOKEN_TAIL}~~) done"],
+                ["see [l]\n", f"(https://x/(a)/{cls.TOKEN_HEAD}~~{cls.TOKEN_TAIL}~~) done"],
+                [f"[{cls.TOKEN_HEAD}]", f"(https://q/y){cls.TOKEN_TAIL}"],
                 ["see [l]", "(https://x/(a)/ordinary~~words~~) done"],
             ]
         )

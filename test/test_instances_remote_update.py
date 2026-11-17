@@ -669,7 +669,7 @@ class TestUpdateJob:
         await mgr.shutdown()
 
     async def test_a_credential_that_fits_the_version_shape_is_dropped(self, tmp_path, monkeypatch):
-        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        token = github_classic(seed=74)
         reg, mgr = _manager(tmp_path, versions=("0.9.0", token))
         reg.add(name="Box", ssh_host="box-alias", instance_id="box")
         _patch_runner(monkeypatch, _Runner((0, ""), (0, "")))

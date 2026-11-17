@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.always_allow_tool import ACTION as _ALWAYS_ALLOW_TOOL
 from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ACTIONS, is_deny_override_card
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         row_mid,
         safety_override,
         sel,
+        session_approval_refusal,
         session_grant,
         session_mode_permitted,
         slot_not_found,
@@ -130,13 +132,7 @@ async def deny_session_approval_caller(request: web.Request, operation: str) -> 
         )
     except Exception:  # pragma: no cover - audit is best-effort
         logger.debug("SEL audit failed for %s denial", operation, exc_info=True)
-    return web.json_response(
-        {
-            "error": "app cannot manage session approvals",
-            "code": "session_approval_not_granted",
-        },
-        status=403,
-    )
+    return await session_approval_refusal(request_app)
 
 
 #: What a Shared Crew teammate may answer on a session's own approval card. Every
@@ -1150,7 +1146,14 @@ def _elicitation_not_an_approval() -> web.Response:
 # off the strict path.
 _STRICT_NATIVE_ACTIONS = frozenset(
     {"approved", "rejected", "rejected_once", "trust", "trust_reads", "trust_command", "trust_base"}
+    | {_ALWAYS_ALLOW_TOOL}
 )
+
+
+def _state_approval_pending(state: DashboardState, request_id: Any) -> bool:
+    """Whether *request_id* names a background approval that is still open."""
+    state_fut = state._approval_futures.get(request_id) if request_id else None
+    return state_fut is not None and not state_fut.done()
 
 
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
@@ -1491,6 +1494,44 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 base_trust_patterns(base),
                 _grant_deadline(grant_ttl),
             )
+        action = "approved"
+    # YOLO on a card whose request is pending nowhere (settled, expired, or never
+    # this id): the reply below is unchanged, but a stale card must not switch on
+    # global auto-approval.
+    elif (
+        action == "yolo"
+        and (not fut or fut.done())
+        and not _state_approval_pending(state, request_id)
+    ):
+        if not yolo_policy_permits():
+            # A policy that denies yolo still answers, and audits, the denial: the
+            # same two entries main writes (the override's own refusal, then this
+            # route's), without the activation attempt itself.
+            await asyncio.to_thread(safety_override()._log_policy_refusal, "dashboard", scope="")
+            return _deny_approval_mode(
+                caller=audit_caller(),
+                operation="tool_approval:yolo",
+                mode="yolo",
+                resource=request_id,
+            )
+        action = "approved"
+    # Always allow this tool: the verified ``@server/tool`` the pending card
+    # carries, written before this call is approved (``always_allow_tool``).
+    elif action == "always_allow_tool":
+        # Imported here: this body runs on the chat handlers facade's globals.
+        from kiro_crew.dashboard import always_allow_tool as _always_allow
+
+        refused = await _always_allow.grant_from_card(
+            request,
+            fut=fut,
+            card=lambda field: _get_pattern_from_pending(owner, request_id, field),
+            body=body,
+            from_app=bool(request_app),
+            delegated=bool(delegated),
+            strict_native=strict_native,
+        )
+        if refused is not None:
+            return refused
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":

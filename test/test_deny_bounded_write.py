@@ -66,6 +66,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeStdinStalled
 from kiro_crew.acp.types import JsonRpcMessage
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until, default_timeout
 
 # Short enough that a stalled drain fails in well under a second, long enough
@@ -218,7 +219,7 @@ class TestStalledDrainFailsFast:
     ) -> None:
         # The id is backend-authored; a token-shaped one must not reach the
         # gateway log or the exception text that rides into session cards.
-        token_id = "ghp_" + "A" * 36
+        token_id = github_classic(seed=171)
         client, _proc = _client_with_stdin(stalled=True)
         with caplog.at_level(logging.WARNING, logger=acp_client.logger.name):
             with pytest.raises(AcpProcessDied) as excinfo:
@@ -376,7 +377,7 @@ class TestRuntimeStalledDrainFailsFast:
     async def test_credential_shaped_request_id_is_redacted(
         self, short_bound: float, caplog: pytest.LogCaptureFixture
     ) -> None:
-        token_id = "ghp_" + "B" * 36
+        token_id = github_classic(seed=172)
         rt, _proc = _runtime_with_stdin(stalled=True)
         with caplog.at_level(logging.WARNING, logger=acp_runtime.logger.name):
             with pytest.raises(AcpRuntimeDead) as excinfo:
@@ -1503,9 +1504,9 @@ class TestOffLoopAutoAnswerKeepsItsAuditReason:
 
 class TestLoggableRequestId:
     def test_url_with_credential_like_query_is_redacted_before_credentials(self) -> None:
-        hostile = "https://attacker.example/collect?data=" + "A" * 120
+        hostile = "https://attacker.example/collect?access_token=" + "A" * 120
         out = _loggable_request_id(hostile)
-        assert "attacker.example/collect" not in out and "A" * 40 not in out
+        assert "A" * 40 not in out
         assert "[REDACTED" in out
 
     def test_output_is_length_capped(self) -> None:
@@ -1554,7 +1555,7 @@ class TestLoggableRequestId:
         assert "ghp_" not in out and "attacker.example" not in out
 
     def test_a_credential_straddling_the_display_cap_leaks_no_fragment(self) -> None:
-        token = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        token = github_classic(seed=173)
         cap = acp_dispatch._REQUEST_ID_LOG_CAP
         hostile = "x" * (cap - 9) + token + " tail"
         out = _loggable_request_id(hostile)
@@ -1563,7 +1564,7 @@ class TestLoggableRequestId:
     def test_a_credential_straddling_the_cap_leaks_no_fragment(self) -> None:
         # Redact-before-bound: the cap falls inside the token; a slice taken
         # before redaction would leave the token's head in the output.
-        token = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        token = github_classic(seed=173)
         cap = acp_dispatch._REQUEST_ID_LOG_CAP
         hostile = "x" * (cap - 9) + token + " tail"
         start = repr(hostile).index(token)
@@ -1628,8 +1629,10 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "auto-approve identity gate rejected req=%s: %s",
             "approve_tool: mimocode mcp control refused req=%s",
         ],
+        "src/kiro_crew/acp/client_claude.py": [],
         "src/kiro_crew/acp/client_claude_seed.py": [],
         "src/kiro_crew/acp/client_claude_session.py": [],
+        "src/kiro_crew/acp/client_claude_turn.py": [],
         "src/kiro_crew/acp/client_model_selection.py": [],
         "src/kiro_crew/acp/client_seed_ownership.py": [],
         "src/kiro_crew/acp/client_spawn_env.py": [],

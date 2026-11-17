@@ -415,10 +415,9 @@ def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
 
     _bind(env)
     key = github_classic(seed=121)
-    url = (
-        "https://attacker.example/collect?data="
-        + "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
-    )
+    # A credential parameter in the link: its value goes, the link stays.
+    value = "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
+    url = "https://attacker.example/collect?access_token=" + value
     # Split by markup: only the display sink's display-form scan finds it.
     split = f"{slack_token[:5]}**{slack_token[5:]}**"
     body = slack_token[5:19]
@@ -427,7 +426,7 @@ def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     [(_, _, text)] = env.slack.ephemerals
-    for secret in (key, body, "attacker.example/collect"):
+    for secret in (key, body, value[:16]):
         assert secret not in text
     assert "[REDACTED" in text
     # The audit row carries the same redacted reason.
@@ -552,6 +551,16 @@ def test_the_kickoff_options_say_what_each_agent_does(env: Env) -> None:
     assert select["initial_option"] in options  # Slack requires an exact match
 
 
+def test_conductor_modes_default_agent_is_offered_under_its_own_role() -> None:
+    from kiro_crew import crew_mode
+
+    name = crew_mode.DEFAULT_CREW_MODE_AGENT
+    assert name == "kirocrew-conductor"
+    option = agent_picker._option(name, "")
+    assert option["text"]["text"] == "Goal conductor (kirocrew-conductor)"
+    assert option["description"]["text"] == agent_picker._SHIPPED[name][1]
+
+
 def test_every_shipped_agent_has_a_distinct_best_for_line_that_fits_uncut() -> None:
     """The table the picker reads: each role label and best-for line fits Slack's
     75-character plain_text cap whole, and no two agents share either."""
@@ -665,7 +674,7 @@ def test_settings_and_channel_pickers_list_the_same_choosable_roster(
     assert not hidden & set(channel_list)
 
 
-# ── Review regressions ────────────────────────────────────────────────────
+# ── /kirocrew agent edge cases ────────────────────────────────────────────
 
 
 def test_kirocrew_agent_outside_a_code_channel_is_the_apps_own_command(env: Env) -> None:

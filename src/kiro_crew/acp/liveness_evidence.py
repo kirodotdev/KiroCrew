@@ -68,8 +68,8 @@ EVIDENCE_SHARED_TREE = "shared_tree"
 # compare it against yet. Structurally non-informative: it says "ask me again",
 # never "this process is idle". A caller whose non-WORKING branch destroys work
 # must therefore defer on it rather than treat it as a negative verdict — see
-# ``client._prompt_loop``'s stale-turn gate, which reaped a live turn on its
-# first silent read because the priming answer landed past the cutoff.
+# ``client._prompt_loop``'s stale-turn gate, which would otherwise reap a live
+# turn on its first silent read whenever the priming answer lands past the cutoff.
 EVIDENCE_SAMPLING = "sampling"
 
 # Evidence prefix for a verdict the oracle could NOT sharpen because the

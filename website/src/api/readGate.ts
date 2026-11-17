@@ -12,23 +12,53 @@
  * out. Writes never wait here. A read holds its place until its answer's body has
  * arrived, because the connection is busy until then.
  *
- * shortcut: every read shares one line, so a read a person asked for (opening a
- * chat) can wait behind re-reads; let a caller mark such a read once one is seen
- * waiting. Counts this document only: a second browser tab on the same gateway
- * has its own count.
+ * A read a person is waiting on goes to the front of the line. One caller uses
+ * it: opening a chat reads that chat's page inside `asFrontRead`. Opening the
+ * dashboard queues about thirty reads at once, and the chat named in the URL is
+ * read only once the session list has answered, so in line order its page would
+ * go out behind the fifteen or so reads still waiting by then. A front read
+ * still waits for a place, so the reads that are out never exceed
+ * `READ_GATE_WIDTH` and a send keeps its free connection.
+ *
+ * The session list itself stays in the ordinary line on purpose. The sidebar
+ * asks for its folders a moment before the list; sent first, the list answers
+ * before the folders and the sidebar paints a flat list, then regroups it.
+ *
+ * Counts this document only: a second browser tab on the same gateway has its
+ * own count.
  */
 export const READ_GATE_WIDTH = 4
 
 interface Gate {
   out: number
+  /** Reads a person is waiting on, in the order they arrived. Served first. */
+  front: Array<() => void>
   waiting: Array<() => void>
 }
 
 const gates = new Map<string, Gate>()
+/** How many `asFrontRead` calls are on the stack right now. */
+let frontDepth = 0
 
 /** Test seam: forget every read that is out or waiting. */
 export function __resetReadGateForTests(): void {
   gates.clear()
+  frontDepth = 0
+}
+
+/**
+ * Run *read*, and put every gated read it starts before it returns at the front
+ * of the line. For a read a person is waiting on. Only the reads started inside
+ * the call count: one that *read* starts later, after an `await`, waits in the
+ * ordinary line.
+ */
+export function asFrontRead<T>(read: () => T): T {
+  frontDepth += 1
+  try {
+    return read()
+  } finally {
+    frontDepth -= 1
+  }
 }
 
 function gateFor(input: string): Gate {
@@ -40,14 +70,14 @@ function gateFor(input: string): Gate {
   }
   let gate = gates.get(origin)
   if (!gate) {
-    gate = { out: 0, waiting: [] }
+    gate = { out: 0, front: [], waiting: [] }
     gates.set(origin, gate)
   }
   return gate
 }
 
 function release(gate: Gate): void {
-  const next = gate.waiting.shift()
+  const next = gate.front.shift() ?? gate.waiting.shift()
   // The place passes straight to the next read in line, so `out` does not move.
   if (next) next()
   else gate.out -= 1
@@ -68,10 +98,13 @@ async function bodyArrived(response: Response): Promise<void> {
 /**
  * Run *start* (the read) now when fewer than `READ_GATE_WIDTH` reads to its origin
  * are out, otherwise when one of them finishes. A read whose *signal* aborts while
- * it waits rejects with the signal's reason and is never started.
+ * it waits rejects with the signal's reason and is never started. A read started
+ * inside `asFrontRead` waits ahead of the ordinary ones, behind the front reads
+ * already waiting.
  */
 export function gatedRead(input: string, signal: AbortSignal | null | undefined, start: () => Promise<Response>): Promise<Response> {
   const gate = gateFor(input)
+  const line = frontDepth > 0 ? gate.front : gate.waiting
   const run = (): Promise<Response> => {
     let request: Promise<Response>
     try {
@@ -97,11 +130,11 @@ export function gatedRead(input: string, signal: AbortSignal | null | undefined,
       run().then(resolve, reject)
     }
     const leave = () => {
-      const at = gate.waiting.indexOf(turn)
-      if (at >= 0) gate.waiting.splice(at, 1)
+      const at = line.indexOf(turn)
+      if (at >= 0) line.splice(at, 1)
       reject(aborted())
     }
     signal?.addEventListener('abort', leave, { once: true })
-    gate.waiting.push(turn)
+    line.push(turn)
   })
 }

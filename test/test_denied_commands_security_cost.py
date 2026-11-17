@@ -10,7 +10,6 @@ trigger token.
 
 from __future__ import annotations
 
-import time
 from collections import Counter
 
 import pytest
@@ -22,6 +21,8 @@ from denied_commands_security_helpers import (
     _RULE_MINT,
     _TOK,
     _denied_by,
+    _interpreter_work,
+    _linear_work,
     _rule_pattern,
 )
 
@@ -43,12 +44,22 @@ class TestUserRegexReDoSGate:
     boundary, and ``_DenyMatcher`` refuses to run an already-stored unsafe
     pattern (defense-in-depth).  Built-ins are ReDoS-safe by construction and
     are unaffected by this gate.
+
+    Nothing here reads a clock. Backtracking happens inside one regex call, where no
+    count can see it, and under a regression it does not finish: the worker is killed
+    at the suite timeout instead of failing a budget. So each guard asserts what the
+    regex engine is HANDED -- nothing at all for a stored catastrophic pattern, never
+    the exponential flag run for a built-in -- before any hostile input is evaluated.
     """
 
-    # Load-tolerant ceiling (see TestIsDeniedReDoSResistance): only has to
-    # separate linear from catastrophic (seconds-to-minutes), not assert a
-    # sub-100ms wall clock on a shared, parallel CI runner.
-    _BUDGET_SECONDS = 5.0
+    @staticmethod
+    def _assert_never_reaches_the_engine(pattern: str) -> None:
+        """The matcher ``is_denied`` uses for ``pattern`` is disabled and compiled nothing."""
+        from kiro_crew.security import _deny_matcher
+
+        matcher = _deny_matcher(pattern)
+        assert matcher._disabled is True, pattern
+        assert matcher._whole_re is None and matcher._frag_res == [], pattern
 
     _CATASTROPHIC = (
         "(a+)+$",
@@ -130,37 +141,54 @@ class TestUserRegexReDoSGate:
             assert is_safe_user_regex(rule.pattern), rule.id
 
     def test_all_builtins_matchable_without_hanging(self):
-        # End-to-end: building + running every built-in matcher on a hostile
-        # 20k input must stay fast (the git-publish patterns are filtered by
-        # is_denied, the rest are linear).
-        hostile = "aws " + ("-x " * 5000) + "delete-"
-        start = time.perf_counter()
-        is_denied(hostile)
-        # flake-ok: pre-existing load-tolerant 5 s ceiling that only separates linear from catastrophic matching, moved verbatim; tracked for a de-flake pass
-        assert time.perf_counter() - start < self._BUDGET_SECONDS
+        # End-to-end: every built-in matcher runs on hostile flag spam without
+        # stalling the gate (the git-publish patterns are filtered by is_denied,
+        # the rest are linear). Two halves, since the walk is Python and the
+        # matching is the regex engine.
+        from kiro_crew.security import _DANGEROUS_AWS_FLAG_RUN, _deny_matcher
+
+        # The engine: the one construct in the catalog that backtracks exponentially
+        # on this input is rewritten before anything is compiled. Asserted first, so
+        # a regression fails here instead of never returning from the spam below.
+        carriers = 0
+        for rule in BUILTIN_DENIED_RULES:
+            if rule.pattern in _GIT_PUBLISH_RULE_PATTERNS:
+                continue
+            carriers += _DANGEROUS_AWS_FLAG_RUN in rule.pattern
+            matcher = _deny_matcher(rule.pattern)
+            assert matcher._disabled is False, rule.id
+            for regex in (*matcher._frag_res, matcher._whole_re):
+                assert regex is None or _DANGEROUS_AWS_FLAG_RUN not in regex.pattern, rule.id
+        assert carriers, "no built-in carries the flag run -- this checks nothing"
+
+        # The walk: the instructions it executes grow linearly with the spam.
+        def work_of(flags: int) -> int:
+            hostile = "aws " + ("-x " * flags) + "delete-"
+            verdicts: "list[str | None]" = []
+            work = _interpreter_work(lambda: verdicts.append(is_denied(hostile)))
+            # Allowed, so the whole catalog was walked rather than cut short by a deny.
+            assert verdicts == [None]
+            return work
+
+        sizes = (250, 500, 750)
+        is_denied("aws -x delete-")
+        work = [work_of(flags) for flags in sizes]
+        assert _linear_work(work), f"{work} instructions at {sizes} flags"
 
     def test_catastrophic_user_regex_does_not_freeze_is_denied(self):
-        # REQUIREMENT: a stored catastrophic pattern must be skipped, not run —
-        # is_denied on a long adversarial input stays far under the budget.
+        # REQUIREMENT: a stored catastrophic pattern must be skipped, not run.
         hostile = "a" * 2000 + "!"
         for pat in self._CATASTROPHIC:
-            start = time.perf_counter()
-            result = is_denied(hostile, denied_regexes=[pat])
-            elapsed = time.perf_counter() - start
-            # flake-ok: pre-existing load-tolerant 5 s ceiling that only separates linear from catastrophic matching, moved verbatim; tracked for a de-flake pass
-            assert elapsed < self._BUDGET_SECONDS, f"{pat}: {elapsed:.3f}s"
+            self._assert_never_reaches_the_engine(pat)
             # Disabled (skipped) — it must not match.
-            assert result is None, pat
+            assert is_denied(hostile, denied_regexes=[pat]) is None, pat
 
     def test_catastrophic_pattern_among_builtins_stays_fast_and_covers(self):
         # Defense-in-depth: a catastrophic user pattern stored ALONGSIDE the
         # built-ins is skipped (no freeze) while the built-ins still enforce.
         regexes = ["(a+)+$", *[r.pattern for r in BUILTIN_DENIED_RULES]]
-        start = time.perf_counter()
-        benign = is_denied("a" * 3000 + "!", denied_regexes=regexes)
-        # flake-ok: pre-existing load-tolerant 5 s ceiling that only separates linear from catastrophic matching, moved verbatim; tracked for a de-flake pass
-        assert time.perf_counter() - start < self._BUDGET_SECONDS
-        assert benign is None
+        self._assert_never_reaches_the_engine(regexes[0])
+        assert is_denied("a" * 3000 + "!", denied_regexes=regexes) is None
         # A real destructive command is still denied despite the stored junk.
         assert (
             is_denied("aws ec2 terminate-instances --instance-ids i-1", denied_regexes=regexes)
@@ -540,23 +568,28 @@ class TestSelfModuleIndexIsLinear:
             assert not security._is_self_module_flag(token), token
 
     def test_the_scan_is_linear_not_quadratic(self, monkeypatch):
-        """What makes the scan linear is asserted DETERMINISTICALLY, not by timing.
+        """What makes the scan linear is asserted DETERMINISTICALLY, never on a clock.
 
-        A timed doubling ratio cannot separate this property from the runner: on a
-        starved shared CI host, scheduler noise, GC pauses, and frequency scaling
-        inflate the ratio past any bound tight enough to catch the quadratic (a run
-        was observed failing the 3x ratio while the absolute budget below passed
-        with 2.1x headroom -- the red measured the runner, not the code), so the
-        ratio form false-reds PRs whose diff never touches this scan. The linearity
-        is structural, so it is asserted structurally, the same two-layer strategy
-        as ``test_mid_dotstar_chain_spam_stays_linear``. A regression has to break
-        one of these to reintroduce the quadratic:
+        A clock cannot separate this property from the runner: coverage tracing
+        multiplies what each executed line costs and a shared host adds its own load,
+        so a ratio between two timings and an absolute CPU budget both read the host.
+        The linearity is structural, so it is asserted structurally, the same strategy
+        as ``test_mid_dotstar_chain_spam_stays_linear``. A regression has to break one
+        of these to reintroduce the quadratic:
 
-          1. PRECOMPUTE ONCE PER FRAME -- ``_self_module_flag_scan`` (the single
+          1. WORK FOR THE WHOLE CALL IS LINEAR -- the interpreter instructions the call
+             executes (``_interpreter_work``) grow by the same amount for each equal
+             step in the token count, and that amount stays under a fixed ceiling, so
+             a slowdown that is the same for every token fails too. This is the one
+             measure that sees cost added OUTSIDE the two counted functions below: a
+             per-token walk that inlines its comparisons calls neither of them, and
+             still executes instructions. What it cannot see is work inside one C
+             call (``"-m" in tokens[i:]``);
+          2. PRECOMPUTE ONCE PER FRAME -- ``_self_module_flag_scan`` (the single
              pair of linear passes that replaced the per-interpreter-token re-walk)
              runs exactly once for the frame, however many interpreter tokens the
              frame holds;
-          2. WORK PER TOKEN IS CONSTANT -- the ``_normalize_operand`` AND
+          3. WORK PER TOKEN IS CONSTANT -- the ``_normalize_operand`` AND
              ``_is_self_module_flag`` call counts each grow as an exact arithmetic
              progression in the token count (equal size steps produce equal call
              increments). The quadratic this test pins against re-normalized the
@@ -568,32 +601,41 @@ class TestSelfModuleIndexIsLinear:
              keeps the normalize count linear, but it must consult the stop
              predicate once per walked token, so that count goes quadratic and
              breaks its progression.
-
-        The absolute budget stays as the machine-independent catastrophic-blowup
-        backstop: the pre-fix quadratic spent 1.94s where the bound is 0.5s, and it
-        also catches cost added outside the instrumented calls, where the counts
-        cannot see it.
         """
-        import time
-
         from kiro_crew import security
 
         def build(n: int) -> str:
             return " ".join(["python"] * n + ["kirocrew", "restart"])
 
-        # Backstop budget, measured BEFORE instrumenting (the counting wrappers
-        # below would bill their own overhead against it). The input is built
-        # OUTSIDE the timed window, and one untimed small-size call warms the
-        # path first, so first-call cost is not billed against the budget when
-        # this test runs alone.
-        security._is_self_restart(build(250))
-        text = build(2000)
-        start = time.perf_counter()
-        assert security._is_self_restart(text) is True
-        large = time.perf_counter() - start
-        # Base spent 1.94 s here; a quadratic scan cannot come near this ceiling.
-        # flake-ok: pre-existing 0.5 s backstop on a scan the base spent 1.94 s on; the linearity is pinned by call counts below; moved verbatim, tracked for a de-flake pass
-        assert large < 0.5, f"2k tokens took {large:.3f}s"
+        sizes = (500, 1000, 1500)
+
+        # (1) Measured BEFORE the counting wrappers below are installed, so their own
+        # instructions are not in it. Each input is built outside the measured call,
+        # and one unmeasured call on a size not measured warms the path first, so
+        # first-call work (imports, compiled patterns) is not read as the scan's. Half
+        # the sizes the call counts use: every instruction costs a callback, and the
+        # count is exact at any size.
+        def work_of(n: int) -> int:
+            text = build(n)
+            verdicts: "list[bool]" = []
+            work = _interpreter_work(lambda: verdicts.append(security._is_self_restart(text)))
+            # Reached through the measured call, or the work is counting nothing.
+            assert verdicts == [True]
+            return work
+
+        security._is_self_restart(build(100))
+        work_sizes = tuple(n // 2 for n in sizes)
+        work = [work_of(n) for n in work_sizes]
+        assert _linear_work(work), (
+            f"the call executed {work} instructions at {work_sizes} tokens -- each "
+            "token costs more as the command grows, which is a per-token walk over the "
+            "rest of the command, wherever in the call it was added"
+        )
+        # Equal steps cannot see a slowdown that is the same for every token, so what
+        # one more token costs is held too, with room for another interpreter version:
+        # about 4,300 instructions as measured.
+        per_token = (work[2] - work[0]) // (work_sizes[2] - work_sizes[0])
+        assert per_token < 20_000, f"each token costs {per_token} instructions"
 
         real_scan = security._self_module_flag_scan
         real_norm = security._normalize_operand
@@ -623,16 +665,16 @@ class TestSelfModuleIndexIsLinear:
             assert security._is_self_restart(build(n)) is True
             return counts["scan"], counts["norm"], counts["flag"]
 
-        results = [measured(n) for n in (500, 1000, 1500)]
+        results = [measured(n) for n in sizes]
 
-        # (1) The precompute runs once per frame, independent of the token count.
+        # (2) The precompute runs once per frame, independent of the token count.
         for scans, _, _ in results:
             assert scans == 1, (
                 f"_self_module_flag_scan ran {scans} times for one frame -- a "
                 "per-token caller is the quadratic re-walk the precompute removed"
             )
 
-        # (2) Per-token work is constant: equal size steps, equal call increments,
+        # (3) Per-token work is constant: equal size steps, equal call increments,
         # for BOTH instrumented costs (see the docstring for why each has teeth).
         for name, series in (
             ("normalize", [norm for _, norm, _ in results]),
@@ -1013,17 +1055,31 @@ class TestPolynomialBacktrackingStaysBounded:
         matcher = security._DenyMatcher("a+a+$")
         assert matcher._bounded is True, "must not take the unbounded full-input path"
 
-    def test_the_flagged_pattern_evaluates_fast_on_a_long_input(self):
-        # The actual property under test is wall-clock: on the bounded engine a
-        # 20k-character command must not stall the gate. Unbounded, this input
-        # would take minutes.
+    def test_the_flagged_pattern_is_handed_only_the_capped_window(self):
+        # The actual property under test is cost, and what bounds it is how much of
+        # the command the backtracking engine is handed: on the bounded engine, the
+        # first ``_DENY_FALLBACK_SCAN_MAX_CHARS`` characters of a 20k-character
+        # command and nothing more. Unbounded, this input would take minutes, so the
+        # stand-in refuses a longer subject instead of running it and a regression
+        # fails here rather than stalling the worker.
+        cap = security._DENY_FALLBACK_SCAN_MAX_CHARS
+        handed: "list[int]" = []
+
+        class _CappedEngine:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def search(self, text, *args):
+                handed.append(len(text))
+                assert len(text) <= cap, f"the engine was handed {len(text)} characters"
+                return self._inner.search(text, *args)
+
         matcher = security._DenyMatcher("a+a+$")
-        subject = "a" * 20000 + "!"
-        start = time.perf_counter()
-        matcher.match(subject)
-        elapsed = time.perf_counter() - start
-        # flake-ok: pre-existing 1 s wall-clock ceiling on a 20k-character input that takes minutes unbounded, moved verbatim; tracked for a de-flake pass
-        assert elapsed < 1.0, f"deny evaluation took {elapsed:.1f}s — gate would stall"
+        matcher._frag_res = [_CappedEngine(regex) for regex in matcher._frag_res]
+        if matcher._whole_re is not None:
+            matcher._whole_re = _CappedEngine(matcher._whole_re)
+        matcher.match("a" * 20000 + "!")
+        assert handed == [cap], "one search, over the capped window"
 
 
 class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
@@ -1525,3 +1581,130 @@ class TestOneDecisionWalksEachTextOnce:
         modes.clear()
         assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
         assert modes == [False, True]
+
+
+class TestS3DirectionSubstitutionCost:
+    """The s3 direction reader resolves ``$NAME`` in one pass, one lookup per reference.
+
+    A pattern compiled per assignment, run on every statement, cost the product of
+    the two: 1000 assignments and 1000 statements took ~53 s in the gate. The
+    cost is asserted structurally, not by timing: ``_substitute`` runs once per
+    non-assignment statement, never walks the assignment map, and looks up at most
+    one name per ``$`` in the text it reads.
+    """
+
+    def test_many_assignments_and_statements_cost_one_lookup_per_reference(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        n = 1000
+        text = "\n".join(
+            [f"V{i}=b{i}" for i in range(n)] + ["true"] * n + ["aws s3 cp s3://$V0/k ./d"]
+        )
+        calls: list[str] = []
+        lookups = [0]
+
+        class _CountingMap(dict):
+            def get(self, key, default=None):
+                lookups[0] += 1
+                return super().get(key, default)
+
+            def __getitem__(self, key):
+                lookups[0] += 1
+                return super().__getitem__(key)
+
+            def __contains__(self, key):
+                lookups[0] += 1
+                return super().__contains__(key)
+
+            def _walk(self, *_a):
+                raise AssertionError("_substitute walked the assignment map")
+
+            __iter__ = keys = items = values = _walk
+
+        real = s3_direction._substitute
+
+        def _spy(raw: str, assigns: "dict[str, str]", budget: int) -> "str | None":
+            calls.append(raw)
+            return real(raw, _CountingMap(assigns), budget)
+
+        monkeypatch.setattr(s3_direction, "_substitute", _spy)
+        assert s3_direction._reads_all_downloads(text) is True
+        assert len(calls) == n + 1
+        assert sum(len(raw) for raw in calls) <= len(text)
+        assert lookups[0] <= sum(raw.count("$") for raw in calls) == 1
+
+
+class TestS3DirectionUsesTheLinearMatcher:
+    """The s3 direction reader matches the s3 rows with the gate's linear matcher.
+
+    A raw ``re.search`` of those rows backtracks exponentially on a run of flags
+    before ``s3`` (about 8x per two more flags), so 20 ``--quiet`` words in a
+    statement held the gate for minutes. The cost is asserted structurally, as the
+    rest of this file does: every row match goes through
+    ``denied_rules._deny_pattern_matches``, and the 20-flag line is read by it.
+    """
+
+    LINE = "aws " + "--quiet " * 20 + "not-s3; aws s3 cp --recursive s3://b/key ./out"
+
+    def test_every_row_match_goes_through_the_linear_matcher(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        real = s3_direction._deny_pattern_matches
+        seen: list[str] = []
+
+        def _spy(pattern: str, text: str, is_regex: bool) -> bool:
+            seen.append(text)
+            return real(pattern, text, is_regex)
+
+        monkeypatch.setattr(s3_direction, "_deny_pattern_matches", _spy)
+        assert s3_direction._reads_all_downloads(self.LINE) is False
+        assert any(text.startswith("aws --quiet") for text in seen)
+
+
+class TestS3DirectionSubstitutionIsCapped:
+    """The s3 direction reader caps how much text resolving ``$NAME`` may add.
+
+    A 2000-character value read 2000 times turned a ~6 KB line into ~4 MB before
+    the tokenizer ran, and one ``is_denied`` took over 30 s. The cap is the line's
+    own length plus a small margin, and never more than the gate's command
+    ceiling; past it the reader stops and the deny stands. The cost is asserted on
+    the text ``_substitute`` returns, so an uncapped reader fails at once instead
+    of hanging in the tokenizer.
+    """
+
+    def _spy(self, monkeypatch, cap: int) -> "list[int]":
+        from kiro_crew.security import s3_direction
+
+        real = s3_direction._substitute
+        produced = [0]
+
+        def _counting(*args):
+            out = real(*args)
+            produced[0] += len(out or "")
+            assert produced[0] <= cap, f"_substitute produced {produced[0]} chars, cap {cap}"
+            return out
+
+        monkeypatch.setattr(s3_direction, "_substitute", _counting)
+        return produced
+
+    def _cap(self, line: str) -> int:
+        from kiro_crew.security import s3_direction
+        from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
+
+        return min(len(line) + s3_direction._SUBSTITUTION_MARGIN, MAX_SCANNABLE_COMMAND_CHARS)
+
+    def test_repeated_long_value_stops_at_the_cap_and_keeps_the_deny(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        line = "A=" + "a" * 2000 + "; echo " + "$A" * 2000 + "; aws s3 cp s3://b/k ./d"
+        produced = self._spy(monkeypatch, self._cap(line))
+        assert s3_direction._reads_all_downloads(line) is False
+        assert produced[0] <= self._cap(line)
+
+    def test_download_with_a_variable_across_statements_is_still_read(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        line = "B=my-bucket; mkdir -p ./d; aws s3 cp s3://$B/key ./d/key && echo done"
+        produced = self._spy(monkeypatch, self._cap(line))
+        assert s3_direction._reads_all_downloads(line) is True
+        assert produced[0] > 0

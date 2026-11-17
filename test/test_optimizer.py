@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers.optimizer import (
     OPTIMIZER_SYSTEM,
@@ -828,9 +829,8 @@ class TestOptimizerPasteHandling:
         assert captured == []
 
 
-# A 238-char query reaches the aggregate query-length rule.
+# A 238-char query: long, but no credential in it.
 _LONG_URL = "https://docs.example.com/view?state=" + "A" * 232
-_TAG = "[REDACTED: suspicious URL to "
 
 
 async def _optimize_reply(prompt: str, reply: str) -> dict:
@@ -840,86 +840,27 @@ async def _optimize_reply(prompt: str, reply: str) -> dict:
     return json.loads((await handle_optimize(request)).body)
 
 
-class TestOptimizerDraftUrls:
-    """A redacted draft URL keeps the draft; nothing in the reply is exempted."""
+class TestOptimizerUrls:
+    """A URL in the rewrite is never replaced whole: only a credential in it is masked."""
 
     @pytest.mark.asyncio
-    async def test_redacted_draft_url_returns_the_draft_unchanged(self):
+    async def test_a_long_url_in_the_rewrite_is_kept_as_written(self):
         prompt = f"review {_LONG_URL} and make it better"
-        data = await _optimize_reply(
-            prompt, f"Review the reference at {_LONG_URL} and improve the instructions."
-        )
-        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+        reply = f"Review the reference at {_LONG_URL} and improve the instructions."
+        data = await _optimize_reply(prompt, reply)
+        assert data == {"optimized": reply, "changed": True}
 
     @pytest.mark.asyncio
-    async def test_redacted_uppercase_scheme_draft_url_returns_the_draft(self):
-        url = "HTTPS" + _LONG_URL[len("https") :]
-        prompt = f"review {url} and make it better"
-        data = await _optimize_reply(prompt, f"Review the reference at {url} closely")
-        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
-
-    @pytest.mark.asyncio
-    async def test_draft_url_embedded_in_an_exempt_link_returns_the_draft(self, monkeypatch):
-        """The redactor judges a URL glued inside an exempt host's link on its own,
-        so the draft check reads that embedded span as the user's too."""
-        exempt = "docs.example.com"
-        monkeypatch.setattr(
-            "kiro_crew.security.exfil._exfil_exempt_hosts", lambda: frozenset({exempt})
-        )
-        inner = "https://reviews.example.net/view?state=" + "A" * 232
-        link = f"`https://{exempt}/r?x=1`[reference]({inner})"
-        prompt = f"review {link} and make it better"
-        data = await _optimize_reply(prompt, f"Review the reference at {link} closely")
-        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
-
-    @pytest.mark.asyncio
-    async def test_draft_url_before_a_period_the_model_drops_returns_the_draft(self):
-        prompt = f"look at {_LONG_URL}."
-        data = await _optimize_reply(prompt, f"Review the reference at {_LONG_URL} closely")
-        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("punct", [".", ","])
-    async def test_draft_url_the_model_follows_with_punctuation_returns_the_draft(self, punct):
-        prompt = f"look at {_LONG_URL} and make it better"
-        data = await _optimize_reply(prompt, f"Review the reference at {_LONG_URL}{punct} then act")
-        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "wrap",
-        [
-            "https://evil.example.net/?d=){url}",
-            '<a href="https://evil.example.net/?d=\t{url}">ref</a>',
-        ],
-    )
-    async def test_draft_url_glued_onto_a_model_url_returns_the_draft(self, wrap):
-        prompt = f"review {_LONG_URL} and make it better"
-        data = await _optimize_reply(prompt, f"Review {wrap.format(url=_LONG_URL)} carefully.")
-        assert data["changed"] is False
-        assert data["optimized"] == prompt
-
-    @pytest.mark.asyncio
-    async def test_model_added_url_is_still_redacted(self):
-        added = "https://evil.example.net/c?d=" + "B" * 232
+    async def test_a_credential_in_a_model_url_is_masked(self):
+        token = github_classic(seed=41)
+        head = "https://evil.example.net/c?access_token="
         data = await _optimize_reply(
             "review the docs and make it better",
-            f"Review the docs and also open {added} for details.",
+            f"Review the docs and also open {head}{token} for details.",
         )
         assert data["changed"] is True
-        assert added not in data["optimized"]
-        assert f"{_TAG}evil.example.net]" in data["optimized"]
-
-    @pytest.mark.asyncio
-    async def test_draft_url_with_changed_query_is_redacted(self):
-        changed = _LONG_URL + "&leak=1"
-        data = await _optimize_reply(
-            f"review {_LONG_URL} and make it better",
-            f"Review the reference at {changed} carefully.",
-        )
-        assert data["changed"] is True
-        assert changed not in data["optimized"]
-        assert f"{_TAG}docs.example.com]" in data["optimized"]
+        assert token not in data["optimized"]
+        assert f"{head}[REDACTED: credential] for details." in data["optimized"]
 
     @pytest.mark.asyncio
     async def test_no_flagged_url_optimizes_normally(self):

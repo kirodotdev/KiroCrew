@@ -348,7 +348,7 @@ def test_fail_closed_permanent_message_includes_optout_and_detail(monkeypatch):
     assert "sandbox_allow_unsandboxed_exec=true" in msg
 
 
-# ── Finding 2: signal-killed probe child classified transient ──
+# ── Signal-killed probe child classified transient ──
 
 
 class _FakePoll:
@@ -705,7 +705,7 @@ def test_off_loop_does_not_kick_background_warm(monkeypatch):
     assert sb._warm_thread is None
 
 
-# ── Fast-path regression: warm cache short-circuits on-loop ──
+# ── Fast path: warm cache short-circuits on-loop ──
 
 
 def test_probe_unshare_fast_path_on_loop_when_backend_set(monkeypatch):

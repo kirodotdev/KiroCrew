@@ -481,7 +481,7 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         assert published == [expected], (
             "the nudge turn published an identity other than the crew slot's own "
             f"-- got {published!r}, expected [{expected!r}]; an auto-nudge crew "
-            "would then be refused by the strict gate exactly as #5905 reported"
+            "would then be refused by the strict gate"
         )
 
     def test_a_direct_turn_on_the_slot_would_publish_the_identical_key(self):

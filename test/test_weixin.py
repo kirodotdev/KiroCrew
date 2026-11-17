@@ -175,7 +175,7 @@ def test_split_markdown_blocks_keeps_a_fence_as_one_block():
 
 
 def test_render_chunks_keeps_short_multiline_replies_as_one_message():
-    # Regression: multi-paragraph replies must NOT fan out into many bubbles.
+    # Multi-paragraph replies must NOT fan out into many bubbles.
     out = render_chunks("line one\n\nline two\n\nline three")
     assert len(out) == 1
 

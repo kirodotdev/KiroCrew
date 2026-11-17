@@ -54,14 +54,22 @@ logger = logging.getLogger(__name__)
 #: them, which is the half doing the actual work of overwriting the model's wrong
 #: conclusion.
 
+#: What to do after a safety-policy block, shared with the dashboard's refusal
+#: recovery prompt (``dashboard.state_parts.injected_turns``): reroute to a path
+#: that does not reach the same effect, else hand over the exact step and go on.
+POLICY_REROUTE_TEXT = (
+    "use an allowed alternative that does not reach the same effect (for a shell "
+    "command, a read-only variant; for a publish, a branch and a pull request), or "
+    "— if none is left — say what you tried, give the exact step a person would "
+    "run, and continue with what you can do without it."
+)
+
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
     DENY_CAUSE_POLICY: (
         "was blocked by a Kiro Crew safety policy before any of it ran: if it "
         "chained several shell commands, none of them ran, the earlier ones included",
-        "use an allowed alternative (for a shell command, a read-only variant), use "
-        "a different tool, or — if the block is correct and you genuinely cannot "
-        "proceed — say so and stop with the reason.",
+        POLICY_REROUTE_TEXT,
     ),
     DENY_CAUSE_SURFACE_POLICY: (
         "was refused by the tool policy of the surface this turn runs on, not by a "

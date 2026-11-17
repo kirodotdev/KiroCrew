@@ -141,10 +141,9 @@ async def test_blanket_off_reports_apps_it_could_not_stop(home: Path, tmp_path: 
 def test_uninstall_reports_a_trust_grant_it_could_not_drop(home: Path, tmp_path: Path):
     # REGRESSION: uninstall drops the app's grant because a grant is keyed on NAME
     # alone — a leftover would admit a DIFFERENT app installed under that name with
-    # no consent prompt. When the drop FAILED the old code logged and returned
-    # ok=True, so the app vanished while its code-execution trust stayed on file and
-    # reusable. The uninstall still succeeds (the files are gone either way) but it
-    # must say so.
+    # no consent prompt. Logging a FAILED drop and returning ok=True would make the
+    # app vanish while its code-execution trust stays on file and reusable. The
+    # uninstall still succeeds (the files are gone either way) but it must say so.
     from kiro_crew.apps import manager as appmanager
 
     _install(tmp_path, _APP, enabled=False)
@@ -325,7 +324,7 @@ def test_uninstall_drops_the_base_grant_even_when_an_overlay_replaces_the_list(
 
 
 def test_uninstall_withdraws_a_grant_that_landed_during_the_delete(home: Path, tmp_path: Path):
-    # The cross-process race GPT named: `kirocrew app uninstall` drops the (absent)
+    # The cross-process race: `kirocrew app uninstall` drops the (absent)
     # grant, and only THEN deletes the files. In that gap the dashboard's grant
     # handler sees the app on disk, writes the grant, and its own post-write
     # existence re-check ALSO still sees the app — so every guard on both sides

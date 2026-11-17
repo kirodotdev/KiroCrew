@@ -49,12 +49,15 @@ Instance fields read: ``_cfg``, ``_compaction``, ``_session_map``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.loader import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
 from kiro_crew.session_map import SUPPRESS_REPLAY_FLAG
 from kiro_crew.session_parts.policy import _resolve_compact_wait_secs
+
+logger = logging.getLogger("kiro_crew.session")
 
 if TYPE_CHECKING:
     from kiro_crew.session import LLMProvider, SessionManager
@@ -296,6 +299,36 @@ def unlanded_marker_pending(self: SessionManager, key: str) -> bool:
     ever has one, so a turn on any other backend has nothing to await.
     """
     return self._session_map.sid_unlanded_pending(self._fold_key(key))
+
+
+def note_session_head(
+    self: SessionManager, key: str, provider: LLMProvider, *, is_new: bool, resumed: bool
+) -> None:
+    """Carry *key*'s session-head record between its fresh start and its resumes.
+
+    Run on every claim (:func:`~kiro_crew.session_parts.claims.get_or_create`), so
+    every surface that starts or resumes the session takes the same path. A fresh
+    session whose agent prompt carries a head (``kiro_crew.session_head``) records
+    its sid (``SessionMap.mark_sid_head``); a resumed one is told whether it started
+    with one (``provider.session_head_started``), which ``build_message`` reads to
+    re-send the agent prompt when the resumed session holds no head. Synchronous and
+    without file access: it runs after the claim holds its permit, where an await
+    could be cancelled before the caller receives the lease it must release. A
+    failure is logged and swallowed for the same reason: the record is
+    bookkeeping, and the claim it rides on has already succeeded.
+    """
+    try:
+        folded = self._fold_key(key)
+        if resumed:
+            provider.session_head_started = self._session_map.sid_head_pending(folded)
+            return
+        if not is_new or provider.session_head_held is not True:
+            return
+        sid = getattr(getattr(provider, "client", None), "_session_id", None)
+        if isinstance(sid, str) and sid:
+            self._session_map.mark_sid_head(folded, sid)
+    except Exception:
+        logger.warning("session head record not kept for %s", key, exc_info=True)
 
 
 def consume_first_turn_history_owed(self: SessionManager, key: str) -> bool:

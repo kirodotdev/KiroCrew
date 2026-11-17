@@ -104,7 +104,7 @@ _GLOB_CHARS: frozenset[str] = frozenset("*?[")
 _DNS_CANDIDATE_RE = re.compile(r"(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+)*\Z")
 
 
-_HOST_VERDICT_CACHE: "dict[str, bool]" = {}
+_HOST_VERDICT_CACHE: "dict[str, bool | str]" = {}  # "route" is an allow from ssh config only.
 
 
 _HOST_VERDICT_PENDING: "set[str]" = set()
@@ -129,17 +129,25 @@ _HOST_VERDICT_ALLOW_TTL = 300.0
 _HOST_VERDICT_STAMP: "dict[str, float]" = {}
 
 
+# The resolver's "no such name" answers.  Unlike a temporary failure they are a
+# definite result: the name has no DNS address here.  ssh can still route such a
+# name through ~/.ssh/config, so it counts as not-self only once
+# ``route_is_not_self`` has cleared ssh's effective config as well.
+_NO_SUCH_NAME_ERRNOS = frozenset(
+    code
+    for code in (getattr(socket, "EAI_NONAME", None), getattr(socket, "EAI_NODATA", None))
+    if code is not None
+)
+
+
 def _resolve_host_verdict_into_cache(host: str) -> None:
     """Worker: resolve *host* off-loop and record whether it is local.
 
-    Any resolved address that is loopback/unspecified, or a member of the
-    own-address set, marks the host self.  A name that RESOLVES to no local
-    address is not self.  A resolution FAILURE caches nothing (round-25): a
-    transient DNS error latched as an allow would serve a recovered loopback
-    alias for the whole allow-TTL, so the failure only clears the pending
-    latch and the next decision retries.
+    DNS answers store a boolean; a proven route after NXDOMAIN stores "route".
+    Both expire after the allow-TTL. Failed revalidation removes a route-only
+    allow; other DNS failures cache nothing and leave existing DNS verdicts alone.
     """
-    verdict = False
+    verdict: bool | str = False
     resolved_ok = True
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
@@ -156,6 +164,13 @@ def _resolve_host_verdict_into_cache(host: str) -> None:
             if ip.is_loopback or ip.is_unspecified or str(ip).lower() in own:
                 verdict = True
                 break
+    except socket.gaierror as exc:
+        # "No such name" alone is not proof: ~/.ssh/config can still route the
+        # name here, so ssh's own effective config must clear every hop too.
+        from . import ssh_config_route
+
+        resolved_ok = exc.errno in _NO_SUCH_NAME_ERRNOS and ssh_config_route.route_is_not_self(host)
+        verdict = "route"
     except Exception:
         resolved_ok = False
     with _HOST_VERDICT_LOCK:
@@ -166,6 +181,10 @@ def _resolve_host_verdict_into_cache(host: str) -> None:
                 _HOST_VERDICT_STAMP.pop(evicted, None)
             _HOST_VERDICT_CACHE[host] = verdict
             _HOST_VERDICT_STAMP[host] = time.monotonic()
+        elif _HOST_VERDICT_CACHE.get(host) == "route":
+            # A failed route proof cannot keep an earlier route-only allow alive.
+            _HOST_VERDICT_CACHE.pop(host, None)
+            _HOST_VERDICT_STAMP.pop(host, None)
         _HOST_VERDICT_PENDING.discard(host)
 
 
@@ -553,7 +572,7 @@ def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:
                     ).start()
                 except Exception:
                     _HOST_VERDICT_PENDING.discard(host)
-            return verdict
+            return False if verdict == "route" else bool(verdict)
         if host not in _HOST_VERDICT_PENDING:
             _HOST_VERDICT_PENDING.add(host)
             try:

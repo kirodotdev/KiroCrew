@@ -539,8 +539,10 @@ class TestRedactionRunsBeforeClamping:
     SECRET = github_classic(seed=1)
 
     def straddling_task(self, cap: int) -> str:
-        """A task whose credential starts before the cap and ends after it."""
-        return "a" * (cap - 12) + self.SECRET + "b" * 50
+        """A task whose credential starts before the cap and ends after it.
+
+        Blanks around it: a token glued to a letter is no token by its format."""
+        return "a" * (cap - 13) + " " + self.SECRET + " " + "b" * 49
 
     def test_a_credential_straddling_the_task_cap_is_redacted(self, agent_root):
         write_record(agent_root, "sec111", task=self.straddling_task(_PANEL_TASK_CAP))

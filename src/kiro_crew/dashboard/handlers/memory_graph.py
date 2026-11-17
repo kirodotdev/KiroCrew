@@ -60,6 +60,8 @@ def _build_memory_graph(
             node_ids[f"{prefix}:{label}"] = nid
         return nid
 
+    # Each section below is optional: a store that fails to read stops adding its nodes, and the
+    # rest of the graph still draws.
     # --- Preferences ---
     try:
         pref_text = mem.read_preferences() or ""
@@ -109,6 +111,7 @@ def _build_memory_graph(
                     try:
                         val = json.loads(val)
                     except Exception:
+                        # A value that is not JSON is shown as its raw text.
                         pass
                 val_str = str(val) if not isinstance(val, str) else val
                 _add("sem", key, "semantic", f"{key} = {val_str[:120]}")
@@ -121,6 +124,7 @@ def _build_memory_graph(
         try:
             lessons_data = vs.get_lessons(limit=GRAPH_LESSON_LIMIT + 1) if vs else None
         except Exception:
+            # A failed read leaves no rows, so the lessons list passed in is used below.
             pass
         if lessons_data:
             # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
@@ -135,6 +139,7 @@ def _build_memory_graph(
                     try:
                         rule = json.loads(rule)
                     except Exception:
+                        # A rule that is not JSON is shown as its raw text.
                         pass
                 # Rendered text for either storage shape; fall back to str() so a
                 # malformed row still surfaces in search rather than vanishing.

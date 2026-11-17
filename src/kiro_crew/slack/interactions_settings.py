@@ -399,6 +399,7 @@ async def _handle_track_channel(
         try:
             await _orch.slack.update_message(channel, msg_ts, text=label)
         except Exception:
+            # Replacing the buttons is cosmetic.
             pass
 
 
@@ -453,12 +454,14 @@ async def _handle_agent_select(
                 if 200 <= resp.status < 300:
                     return
         except Exception:
+            # Falls back to updating the message below.
             pass
 
     if _orch and _orch.slack and channel and msg_ts:
         try:
             await _orch.slack.update_message(channel, msg_ts, text=label, blocks=blks)
         except Exception:
+            # The update is cosmetic.
             pass
 
 
@@ -658,6 +661,7 @@ async def _handle_channel_remove(
                 if 200 <= resp.status < 300:
                     return
         except Exception:
+            # Falls back to updating the message below.
             pass
     if _orch.slack and channel and msg_ts:
         try:
@@ -665,4 +669,5 @@ async def _handle_channel_remove(
                 channel, msg_ts, text="Tracked channels updated", blocks=blks
             )
         except Exception:
+            # The update is cosmetic.
             pass

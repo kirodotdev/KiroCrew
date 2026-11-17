@@ -790,7 +790,7 @@ class TestStopDuringSessionPrep:
 
         assert stream_calls == [], (
             "the turn was dispatched despite a Stop during session prep — "
-            "the full response would stream behind a [Stopped] card (#5464)"
+            "the full response would stream behind a [Stopped] card"
         )
 
     @pytest.mark.asyncio

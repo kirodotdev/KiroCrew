@@ -669,8 +669,7 @@ class Driver:
                 # Without this the noise-band comparison is hardcoded to minimize, so a
                 # ``maximize`` metric (throughput, hit rate) is judged with an INVERTED
                 # test: a real win reads as noise and a regression reads as a win. The
-                # keeper defaults to "minimize", so a profile that omits a direction
-                # behaves exactly as before.
+                # keeper defaults to "minimize" for a profile that omits a direction.
                 direction=self._metric_direction(),
             )
 

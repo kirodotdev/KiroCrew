@@ -296,6 +296,13 @@ export interface UpdateCheckResult {
   commits_behind?: number
   error_code?: string | null
   unavailable_reason?: string | null
+  /**
+   * Container installs only: the newer release whose image the gateway
+   * confirmed on GHCR (a 200 manifest), and its release-notes page. Absent
+   * whenever that confirmation did not happen.
+   */
+  image_available_version?: string
+  image_release_notes_url?: string
   remediation?: { kind?: string; message?: string; command?: string } | null
   current_version?: string
   auto_update?: boolean

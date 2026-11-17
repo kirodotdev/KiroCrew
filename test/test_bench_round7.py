@@ -47,7 +47,7 @@ def _instance() -> BenchInstance:
     )
 
 
-# ── Finding 1: the store's width comes from the vector, not from a constant ──
+# ── the store's width comes from the vector, not from a constant ─────────────
 
 
 @pytest.mark.parametrize("width", [8, 768, 1024, 1536])
@@ -141,7 +141,7 @@ def test_a_failed_width_probe_refuses(tmp_path: Path) -> None:
     assert "width" in str(excinfo.value)
 
 
-# ── Finding 2: equal counts are not the same population ──────────────────────
+# ── equal counts are not the same population ─────────────────────────────────
 
 
 def _result(qid: str, ranked: tuple[str, ...]) -> QueryRetrieval:

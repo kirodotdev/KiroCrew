@@ -154,7 +154,7 @@ class FargateConfig:
     #:
     #: Deliberately NOT part of :meth:`is_complete`. A lane that does not claim it is
     #: a complete, usable lane -- it simply cannot run on a host with no user
-    #: namespace, which is the behaviour every lane had before this key existed.
+    #: namespace.
     internal_only: bool = False
     #: How long one of this lane's tasks may run before the launcher stops it, in
     #: seconds, or ``None`` when the operator did not say.
@@ -229,8 +229,8 @@ class FargateConfig:
         takes ``TaskBounds``'s own default rather than a copy kept here. That is why
         neither default's VALUE appears anywhere in this module: the engine stays the
         single answer to "how long, and how many", and
-        ``test_the_spec_and_this_module_track_the_engine_numbers`` pins that as a check
-        rather than leaving it a promise.
+        ``test_the_spec_and_this_module_track_the_engine_numbers`` checks that for the
+        TTL value.
 
         Only the LIFETIME is operator-reachable. ``TaskBounds.max_running`` keeps the
         engine's fixed cap and has no ``cloud.json`` key, because ``fargate_engine``

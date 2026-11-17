@@ -945,6 +945,7 @@ async def gateway_visit(orchestrator: Any) -> int:
     before reading anything else.
     """
     from kiro_crew.executors import memory_background_executor
+    from kiro_crew.memory_provider.resolver import builtin_background_allowed
 
     loop = asyncio.get_running_loop()
 
@@ -966,6 +967,9 @@ async def gateway_visit(orchestrator: Any) -> int:
                 finished = False
                 break
             try:
+                if not await offload(builtin_background_allowed, name):
+                    # A provider replaces this store's memory; leave it as it is.
+                    continue
                 if not manual and not await offload(_due_now, store):
                     continue
                 member = await offload(_is_member_store, name)

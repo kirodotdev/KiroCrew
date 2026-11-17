@@ -9,7 +9,7 @@ describe('InfoTip in a settings row', () => {
 
   it('keeps tooltip clicks separate from row activation', () => {
     const onChange = vi.fn()
-    const { container } = render(
+    render(
       <SettingsToggle label="Example setting" hint="Help text" checked={false} onChange={onChange} />
     )
 
@@ -26,7 +26,8 @@ describe('InfoTip in a settings row', () => {
     expect(onChange).not.toHaveBeenCalled()
     expect(screen.getByRole('tooltip')).toBe(tip)
 
-    fireEvent.click(container.firstElementChild!)
+    // The row's own press path: its label, which passes the press to the switch.
+    fireEvent.click(screen.getByText('Example setting'))
     expect(onChange).toHaveBeenCalledTimes(1)
     expect(onChange).toHaveBeenCalledWith(true)
   })

@@ -367,7 +367,7 @@ def _apparmor_userns_restricted() -> bool:
         return False
 
 
-def _no_backend_guidance() -> str:
+def _no_backend_guidance(include_optout: bool = True) -> str:
     """Remedy text for a genuine no-backend host, specific to WHY it has none.
 
     The generic "install a sandbox backend, or opt out" advice is actively
@@ -390,12 +390,18 @@ def _no_backend_guidance() -> str:
     kernel-wide protection for one app's need, and the per-application profile
     exists so they do not have to.
 
-    The ``sandbox_allow_unsandboxed_exec`` opt-out is still named in every case,
-    because it is the documented escape hatch and withholding it would leave a
-    stuck user with no way out. What changes is the ORDER: on a host where the
-    sandbox is one profile away from working, the profile is the remedy and the
-    opt-out is the last resort, where the previous text offered the opt-out as
-    the only concrete suggestion.
+    The ``sandbox_allow_unsandboxed_exec`` opt-out is normally named in every
+    case, because it is the documented escape hatch and withholding it would
+    leave a stuck user with no way out. What changes is the ORDER: on a host
+    where the sandbox is one profile away from working, the profile is the remedy
+    and the opt-out is the last resort, where the previous text offered the
+    opt-out as the only concrete suggestion.
+
+    ``include_optout=False`` leaves the opt-out out entirely, keeping only the
+    host-specific remedy that produces a WORKING sandbox. A governance
+    ``sandbox.min_level`` floor passes this: the floor forbids unsandboxed
+    execution, so the opt-out cannot help there, but the profile install (or the
+    generic "install a backend" step) still can.
     """
     optout = (
         "As a last resort, agent.sandbox_allow_unsandboxed_exec=true in "
@@ -441,7 +447,7 @@ def _no_backend_guidance() -> str:
                     "set the sysctl to 0: that disables a kernel-wide protection for "
                     "every application on the machine. "
                 )
-                + optout
+                + (optout if include_optout else "")
             )
         return (
             base
@@ -452,7 +458,16 @@ def _no_backend_guidance() -> str:
                 "that disables a kernel-wide protection for every application on the "
                 "machine. "
             )
-            + optout
+            + (optout if include_optout else "")
+        )
+    # No AppArmor restriction detected: the generic case. The opt-out and the
+    # "install a backend" step are two independent halves; under a floor only the
+    # opt-out half is powerless, so include_optout=False keeps just the install
+    # step.
+    if not include_optout:
+        return (
+            "If this host genuinely lacks a sandbox backend, install a supported "
+            "sandbox backend (Linux user namespaces, or macOS sandbox-exec). "
         )
     return (
         "If this host genuinely lacks a sandbox backend, set "

@@ -10,6 +10,7 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import TYPE_CHECKING
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
         _AnswerStream,
         _dashboard_state,
         _review_drafts,
+        _ts_before,
         auto_title,
         logger,
     )
@@ -137,6 +139,70 @@ def _append_footer_actions(
     return footer_blocks
 
 
+async def seal_stream(
+    slack: SlackClientOps,
+    channel: str,
+    ts: str,
+    final_text: str | None,
+    footer_blocks: list[dict] | None,
+    thread_ts: str | None = None,
+) -> bool:
+    """Stop a Slack stream, with *footer_blocks* at the bottom of the answer message.
+
+    True only when the footer is on the answer message, so the caller posts none of
+    its own. On False (no footer asked for, or the footer seal refused, e.g.
+    ``message_not_in_streaming_state`` once the stream's 10 minutes are up) the
+    stream is sealed bare and the caller posts the footer as its own message: one
+    footer per turn, never zero or two. Never raises: the seal is decoration.
+
+    A failed footer seal may still have landed (Slack applied it and the reply was
+    lost, or the SDK's retry of an applied seal was refused), and the error cannot
+    say which. So the message is read back from *thread_ts*: a footer found there
+    counts as delivered; a footer not found, or a read that fails, means post it.
+    """
+    if footer_blocks:
+        try:
+            if await slack.stop_stream(channel, ts, final_text, blocks=footer_blocks):
+                return True
+        except Exception:
+            logger.warning("Slack stop_stream with the footer failed", exc_info=True)
+    try:
+        await slack.stop_stream(channel, ts, final_text)
+    except Exception:
+        logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+    if footer_blocks and thread_ts:
+        return await _footer_landed(slack, channel, thread_ts, ts, footer_blocks)
+    return False
+
+
+def _block_texts(blocks: object) -> set[str]:
+    """The mrkdwn/plain text of every context element in *blocks*."""
+    texts: set[str] = set()
+    for block in blocks if isinstance(blocks, list) else []:
+        for el in (block.get("elements") or []) if isinstance(block, dict) else []:
+            if isinstance(el, dict) and isinstance(el.get("text"), str):
+                texts.add(el["text"])
+    return texts
+
+
+async def _footer_landed(
+    slack: SlackClientOps, channel: str, thread_ts: str, ts: str, footer_blocks: list[dict]
+) -> bool:
+    """Whether the message at *ts* already shows *footer_blocks*; False on any doubt."""
+    want = _block_texts(footer_blocks)
+    oldest = _ts_before(ts)
+    if not want or oldest is None:
+        return False
+    try:
+        replies = await slack.fetch_thread_replies(
+            channel, thread_ts, limit=2, warn_on_pagination=False, oldest=oldest
+        )
+    except Exception:
+        logger.warning("Slack read-back of the footer seal failed", exc_info=True)
+        return False
+    return any(m.get("ts") == ts and want <= _block_texts(m.get("blocks")) for m in replies)
+
+
 async def _maybe_auto_title_slack(
     slack: SlackClientOps,
     sessions: SessionManager,
@@ -195,6 +261,7 @@ async def _post_review_draft(
             try:
                 await slack.stop_stream(channel, answer.stream_ts)
             except Exception:
+                # The placeholder is deleted next either way.
                 pass
         try:
             await slack.delete_message(channel, answer.stream_ts)
@@ -228,13 +295,19 @@ async def _post_review_draft(
     return True
 
 
-def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -> None:
+async def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -> None:
     """Append this Slack turn to the dashboard slot its thread is linked to."""
     try:
         ds = _dashboard_state
         slot_name = linked_session_key.removeprefix("dashboard:")
         slot = getattr(ds, "_slots", {}).get(slot_name)
         if slot:
+            # Own hop: the credential detector is quadratic on uniform runs, and
+            # this runs from the delivery coroutine.
+            from kiro_crew.history import _redact_at_write_boundary
+
+            mirrored = await asyncio.to_thread(_redact_at_write_boundary, "user", text)
+            reply = await asyncio.to_thread(_redact_at_write_boundary, "assistant", accumulated)
             # The person typed this in Slack; mirroring it into the
             # linked slot keeps it a human turn (see
             # history.HUMAN_TURN_META_KEY).
@@ -244,16 +317,18 @@ def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -
 
             slot.append(
                 "user",
-                text,
+                mirrored,
                 "msg msg-u",
                 meta=stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown()),
             )
-            slot.append("assistant", accumulated, "msg msg-a")
+            slot.append("assistant", reply, "msg msg-a")
             if slot._on_message:
-                slot._on_message(slot.key, {"role": "user", "content": text, "cls": "msg msg-u"})
+                slot._on_message(
+                    slot.key, {"role": "user", "content": mirrored, "cls": "msg msg-u"}
+                )
                 slot._on_message(
                     slot.key,
-                    {"role": "assistant", "content": accumulated, "cls": "msg msg-a"},
+                    {"role": "assistant", "content": reply, "cls": "msg msg-a"},
                 )
             # ``ds`` is set: the caller mirrors only while ``_dashboard_state`` is.
             ds.push_slots_update()  # type: ignore[attr-defined,union-attr]

@@ -265,7 +265,7 @@ def test_strict_get_fork_info_surfaces_corruption_while_lenient_degrades(monkeyp
 
 
 # --------------------------------------------------------------------------- #
-# managed_digest -- the installer-recorded ownership record (GPT 6.1 F1).
+# managed_digest -- the installer-recorded ownership record.
 # --------------------------------------------------------------------------- #
 
 
@@ -320,7 +320,7 @@ def test_strict_get_managed_digest_surfaces_corruption_while_lenient_degrades(
 
 
 # --------------------------------------------------------------------------- #
-# Two-phase managed-write digest (GPT 6.1): the file reproduces one of the two
+# Two-phase managed-write digest: the file reproduces one of the two
 # recorded digests at every instant, so a crash never freezes a managed spec.
 # --------------------------------------------------------------------------- #
 

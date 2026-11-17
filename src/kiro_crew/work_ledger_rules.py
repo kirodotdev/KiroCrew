@@ -48,6 +48,8 @@ from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_MAX,
     WORK_MAX_DEPTH_MIN,
     WORK_MAX_DEPTH_SETTING,
+    coerce_discussion,
+    discussion_problem,
 )
 
 # Validation. Every bound is checked BEFORE the first write, so a refusal leaves
@@ -204,6 +206,23 @@ def _require_wake_at(value: Any, status: str) -> str | None:
             field="wake_at",
         )
     return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _require_discussion(value: Any) -> dict[str, Any] | None:
+    """A report's ``discussion``, complete, or ``None`` when the report names none.
+
+    Refused whole when any part is over its cap or malformed, with ``field`` naming
+    that part (``discussion.agreed[3]``): a cut discussion would show the Board a
+    consensus nobody wrote.
+    """
+    if value is None:
+        return None
+    problem = discussion_problem(value)
+    if problem is not None:
+        kind, where, message = problem
+        code = CODE_FIELD_TOO_LONG if kind == "too_long" else CODE_INVALID_VALUE
+        raise WorkLedgerError(message, code=code, field=where)
+    return coerce_discussion(value)
 
 
 def _require_count(value: Any, name: str) -> int:

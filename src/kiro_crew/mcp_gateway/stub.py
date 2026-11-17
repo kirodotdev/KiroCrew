@@ -644,11 +644,10 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
                 # Audited BEFORE returning, and this is the whole point of the
                 # record. A terminal exit writes no fallback record by
                 # definition, and this ``logger.error`` goes to the stub's own
-                # stderr, which kiro-cli swallows — so the pre-fix failure mode
-                # was a server whose entire tool surface vanished from a session
-                # while every durable log showed only a healthy ``registered``
-                # line. On the daemon side a terminal and a served stub were
-                # indistinguishable after the fact. The ``terminal:`` prefix
+                # stderr, which kiro-cli swallows. Without the record a server's
+                # whole tool surface could vanish from a session while every
+                # durable log showed only a healthy ``registered`` line, and the
+                # daemon could not tell a terminal stub from a served one. The ``terminal:`` prefix
                 # keeps these separable from real fallbacks in
                 # ``stub_fallback_counts()``, which the gateway folds into its
                 # ``stats`` reply.
@@ -766,10 +765,8 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             # Recovering the transport for a subscribed session would hand it
             # back a connection that answers calls but never delivers another
             # resource update: the daemon's subscription table died with the old
-            # process. That is a NEW silent degradation, and trading a visible
-            # outage for a quiet one is precisely what this fix exists to stop.
-            # Refuse, and leave replaying subscriptions to the change that can
-            # do it properly.
+            # process: a silent degradation in place of a visible outage.
+            # Refuse; replaying subscriptions is not done here.
             logger.warning(
                 "stub bridge ended (%s) with live resource subscriptions; "
                 "refusing to reconnect because they cannot be re-established "

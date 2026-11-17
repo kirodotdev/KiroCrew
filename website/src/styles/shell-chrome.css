@@ -204,20 +204,22 @@
   @container (max-width:738px){ .tb-has-update .tb-drop-metrics{display:none} }
   @container (max-width:600px){ .tb-has-update .tb-drop-usage{display:none} }
   @container (max-width:548px){ .tb-has-update .tb-drop-feedback{display:none} }
-  @container (max-width:408px){ .tb-has-update .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
+  @container (max-width:408px){ .tb-has-update .tb-capsule > .tb-capsule-keep ~ *{display:none} }
 }
-/* Terminal rung: the capsule keeps only its first child, the connection dot.
+/* Terminal rung: the capsule keeps only the connection dot (`.tb-capsule-keep`,
+   its first segment) and hides every child after it.
    The rungs above name the built-in readouts one by one, but the capsule is also
    an extension slot (`getCapsuleSegments`) whose registered segments cannot be
    enumerated here, so the floorless track needs one rung that bounds the group
-   whatever it holds. Structural rather than by class for exactly that reason:
-   every non-layer child that has a non-layer sibling before it. The capsule is
+   whatever it holds: everything after the dot, whatever it is. The capsule is
    a Liquid Glass host (components/Glass.tsx) whose effect layers are its FIRST
-   children (`data-liquid-glass-layer`), so a plain `:first-child` would keep a
-   layer and hide the dot; skipping the layers on both sides of `~` keeps the
-   first segment whatever the layer count. Budget documented in
-   docs/extension-seams.md. */
-@container (max-width:200px){ .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
+   children (`data-liquid-glass-layer`), before the dot, so the rung leaves them
+   alone. The dot carries a class because the left side of `~` must name one:
+   between two compounds with no class (`:not(…) ~ :not(…)`) the browser has
+   nothing to key the rule on, and a node inserted anywhere restyles the whole
+   subtree of every element after it (frontend-conventions.md, Styling). Budget
+   documented in docs/extension-seams.md. */
+@container (max-width:200px){ .tb-capsule > .tb-capsule-keep ~ *{display:none} }
 /* The counterpart: a form that exists ONLY on the narrow rungs (e.g. the metric
    readout's icon stand-in). Both forms ship in the DOM because the rung is a
    container query — no JS branch here can observe the group's own width. With
@@ -352,7 +354,7 @@
   .tb-measured.tbr-2 .tb-right .tb-drop-feedback-label{display:none}
   .tb-measured.tbr-3 .tb-right .tb-drop-usage{display:none}
   .tb-measured.tbr-4 .tb-right .tb-drop-feedback{display:none}
-  .tb-measured.tbr-5 .tb-right .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none}
+  .tb-measured.tbr-5 .tb-right .tb-capsule > .tb-capsule-keep ~ *{display:none}
   .tb-measured.tbr-5 .tb-right .tb-metrics-notice button{font-size:0;gap:0}
   .tb-measured.tbr-5 .tb-right .tb-metrics-notice-msg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
   .tb-measured.tbr-6 .tb-right .tb-drop-update-label{display:none}

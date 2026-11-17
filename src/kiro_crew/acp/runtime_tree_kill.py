@@ -596,6 +596,26 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
         self._discard_sandbox_cleanup()
         await self._discard_bound_workspace()
         await self._close_remote_workspace()
+        await _end_remaining_session_states(self)
+
+
+async def _end_remaining_session_states(runtime: AcpRuntime) -> None:
+    """Release what each session still registered had prepared (its settings seed).
+
+    The process is gone, so its sessions are too; a session no teardown reached
+    would otherwise leave its prepared state behind. ``end_session`` runs once per
+    state and sends nothing. Never raises.
+    """
+    states = getattr(runtime, "_session_harness_states", None)
+    if not states:
+        return
+    held = list(states.values())
+    states.clear()
+    for state in held:
+        try:
+            await asyncio.shield(runtime._harness.end_session(state))
+        except BaseException:  # noqa: BLE001 - a kill's cleanup must finish
+            logger.debug("releasing a session's harness state at kill failed", exc_info=True)
 
 
 async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str = "") -> None:

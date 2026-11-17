@@ -563,8 +563,17 @@ def test_the_harness_spawn_seam_is_reached_only_through_the_gated_owner():
             invocations.append(f"{path.name}:{lineno}")
     assert sorted(name.split(":")[0] for name in invocations) == [
         "client_start.py",
+        "deepseek.py",
         "runtime_spawn_launch.py",
     ], f"the spawn seam is invoked from an unexpected place: {invocations}"
+    # The deepseek call is the harness handing its spawn to the per-process launch
+    # it wraps, so it sits inside ``DeepseekHarness.resolve_spawn`` and is reached
+    # only through the runtime's gated call above.
+    import inspect
+
+    from kiro_crew.acp.harness.deepseek import DeepseekHarness
+
+    assert "launch.resolve_spawn(" in inspect.getsource(DeepseekHarness.resolve_spawn)
     assert not any(issubclass(cls, HarnessAdapter) for cls in _PROCESS_ADAPTERS.values())
     for backend in ACP_BACKENDS_ACP_RUNTIME:
         assert process_adapter_for(backend) is None
@@ -605,6 +614,7 @@ def test_a_re_derive_during_the_hosts_own_pre_spawn_work_does_not_kill_the_sessi
     rt._model = None
     rt._sandbox_mode = "auto"
     rt._member_context = False
+    rt._extra_env = {}
     # ``_harness`` is a cached property over the backend, so the stub is installed
     # through the cache slot the runtime itself fills.
     rt._harness_resolved = _EditingHarness()

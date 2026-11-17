@@ -15,7 +15,7 @@ import { TokenStackedAreaChart } from './TokenStackedAreaChart'
 import { formatCost } from '../../utils/formatCost'
 import { parseLocalDay } from '../telemetryRange'
 
-import { fmtCompact, fmtDate, fmtElapsed, fmtNumber, fmtPercent } from '../../i18n/format'
+import { fmtCompact, fmtDate, fmtElapsed, fmtNumber, fmtPercent, fmtPercentFloor } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 const EM_DASH = '\u2014'
 
@@ -111,7 +111,9 @@ export default function UsageTab() {
                 ? `${fmtBillingAmount(b.unit, b.used ?? 0)} / ${fmtBillingAmount(b.unit, b.limit)}`
                 : fmtBillingAmount(b.unit, b.used ?? 0)}
               badge={pct != null ? (pct >= 90 ? 'err' : pct >= 70 ? 'warn' : 'ok') : undefined}
-              badgeText={pct != null ? fmtPercent(pct / 100, { maximumFractionDigits: 1 }) : undefined} />
+              // Floored, not rounded: the colour compares the exact share, so
+              // the text never shows a line (90%, 100%) the share has not reached.
+              badgeText={pct != null ? fmtPercentFloor(pct / 100) : undefined} />
             {b.resets && <Row label={i18nT('pages.overview.usageTab.resets')} value={b.resets} />}
           </div>
         </Card>
@@ -141,6 +143,7 @@ export default function UsageTab() {
             providers={data.tokenProviders}
             models={data.tokenModels}
             providerModels={data.tokenProviderModels}
+            endDate={data.localDay}
           />
         </Card>
       )}
@@ -285,7 +288,10 @@ function PeriodCard({ label, p }: { label: string; p: { sessions: number; messag
       <div className="text-muted text-[13px] mb-1">{label}</div>
       <div className="text-2xl font-bold text-text">{fmtNumber(p.sessions)}</div>
       <div className="text-muted text-[12px] mt-1">
-        {fmtNumber(p.messages)} {i18nT('pages.overview.usageTab.msgs')} {fmtNumber(p.toolCalls)} {i18nT('pages.overview.usageTab.tools')}
+        {i18nT('pages.overview.usageTab.period_activity', {
+          messages: i18nT('pages.overview.usageTab.period_messages', { count: p.messages, n: fmtNumber(p.messages) }),
+          tools: i18nT('pages.overview.usageTab.period_tool_calls', { count: p.toolCalls, n: fmtNumber(p.toolCalls) }),
+        })}
       </div>
     </div>
   )

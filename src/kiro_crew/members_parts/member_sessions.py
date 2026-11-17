@@ -312,13 +312,11 @@ def member_dispatch_session_server(
 
 
 #: MCP server mounted per session into member DM threads so a crew can publish
-#: its own webview (``panel_publish``) and discover what renders it
-#: (``panel_templates``). A SECOND session-level mount beside
-#: :data:`MEMBER_DISPATCH_SERVER` rather than a widening of it, because
-#: assignment in Kiro Crew is per server: the dashboard set is folder
-#: organization plus session control, publishing a document is neither, and the
-#: two are withdrawn independently (``agent.member_dispatch``,
-#: ``agent.crew_panel``).
+#: its own webview (``panel_publish``) and list what renders it
+#: (``panel_templates``). A separate mount, not part of
+#: :data:`MEMBER_DISPATCH_SERVER`: tools are assigned per server, publishing is
+#: neither folder organization nor session control, and each is switched off on
+#: its own (``agent.member_dispatch``, ``agent.crew_panel``).
 MEMBER_PANEL_SERVER = "kirocrew-panel"
 
 
@@ -595,13 +593,11 @@ def member_turn_context(member: str, lifecycle: MemberLifecycle) -> MemberTurnCo
     An empty *member* means the turn has no member layer at all: nothing is
     delivered and nothing is gated, whatever the lifecycle.
     """
-    # Deny by default. Both verdict predicates are identity/membership tests
-    # that answer False for anything that is not a genuine enum member — and
-    # the str mixin makes a bare "warm" compare EQUAL to the member while
-    # failing both — so an unrecognized lifecycle would otherwise yield the
-    # one combination the invariant forbids (no delivery, no gate) silently,
-    # at the single decision point the invariant rests on. Refuse loudly
-    # instead.
+    # Deny by default. Both verdict checks are identity/membership tests that
+    # are False for anything but a real enum member, and the str mixin makes a
+    # bare "warm" compare EQUAL while failing both. So an unknown lifecycle
+    # would silently get the forbidden combination (no delivery, no gate).
+    # Raise instead.
     if not isinstance(lifecycle, MemberLifecycle):
         raise TypeError(f"lifecycle must be MemberLifecycle, got {lifecycle!r}")
     if not member:

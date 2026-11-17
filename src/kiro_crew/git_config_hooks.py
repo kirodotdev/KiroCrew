@@ -60,6 +60,8 @@ import os
 import subprocess
 from collections.abc import Callable, Mapping
 
+from kiro_crew import platform_compat
+
 __all__ = [
     "ConfigHookScanError",
     "config_hook_disable_args",
@@ -95,8 +97,10 @@ _SCAN_STDERR_LIMIT = 8192
 _SUBMODULE_RECURSION_PINS = ["-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false"]
 
 #: Bound once, so a stand-in a caller's tests install for ``subprocess.run`` (to fake that
-#: caller's own git) does not also answer this scan.
-_run = subprocess.run
+#: caller's own git) does not also answer this scan. It is the tree-killing form: on Windows
+#: the stdlib's timeout kills only Git for Windows' ``cmd\git.exe`` launcher and then waits,
+#: with no bound, for the real git that still holds the pipes.
+_run = platform_compat.stdlib_run_killing_tree_on_timeout
 
 #: Runs one scan git argv and returns ``(returncode, stdout, stderr)``. May raise
 #: ``FileNotFoundError`` (git absent), ``RuntimeError`` (sandbox could not confine the spawn),

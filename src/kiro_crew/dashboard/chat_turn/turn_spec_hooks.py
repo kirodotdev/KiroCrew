@@ -89,7 +89,9 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
     )
+    from kiro_crew.dashboard.chat_turn.builtin_tools_notice import _notice_unapplied_builtin_tools
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
+    from kiro_crew.dashboard.chat_turn.mcp_oauth_notice import _notice_dropped_mcp_oauth
     from kiro_crew.dashboard.chat_turn.recipient import (
         _cross_surface_images,
         _cross_surface_reply_text,
@@ -115,6 +117,7 @@ if TYPE_CHECKING:
         _turn_full_reply_text,
         _turn_reply_segments,
     )
+    from kiro_crew.security.redaction_switch import always_scan
 
 
 async def _surface_agent_welcome(
@@ -215,10 +218,15 @@ async def _prepare_spec_hooks(
     ``file://`` steering (``spec_steering_read_nowhere``) gets one naming those
     entries, and one where nothing applies the spec's ``toolsSettings``
     (``spec_tools_settings_applied_nowhere``) gets one naming what of it goes
-    unapplied. None of them runs silently.
+    unapplied, and one that drops a remote MCP server's ``oauth`` block gets one
+    naming those servers, and a claude one that leaves the spec's `tools` or `model`
+    unapplied gets one naming them. None of them runs silently.
     """
     if is_new and spec_steering_read_nowhere(client):
         await _notice_unread_steering(state, slot, client, agent)
+    if is_new:
+        await _notice_dropped_mcp_oauth(state, slot, client, agent)
+        await _notice_unapplied_builtin_tools(state, slot, client, agent)
     if not capabilities_of(client).crew_fires_spec_hooks:
         if is_new and spec_hooks_run_nowhere(client):
             await _notice_spec_hooks_run_nowhere(state, slot, client, agent)
@@ -335,6 +343,11 @@ async def _prepare_spec_hooks(
         if is_kas:
             await _surface_withheld_project_hook_files(state, slot, client)
             await _surface_kas_project_hooks(state, slot, client, agent)
+            # The user's own agent file that lists no tools runs with none on KAS;
+            # the chat says so once, with a link to where its tools are chosen.
+            from kiro_crew.dashboard.agent_no_tools_notice import surface_agent_no_tools
+
+            await surface_agent_no_tools(state, slot, by_session.get("session_key", ""), agent)
     return hooks, False, work_dir
 
 
@@ -1203,7 +1216,10 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # env var (ARG_MAX safety). The full segment is passed (not sliced to
     # [:500]) so the tail — e.g. the harness [OPTIONS:] line — reaches both
     # the matcher and the hook body.
-    _final = redact_credentials(redact_exfiltration_urls(turn.assistant_text)[0])[0]
+    # A hook is a sink no output seam lists: it reads the text redacted in full,
+    # inside the turn's chat seam with the owner's redaction off too.
+    with always_scan():
+        _final = redact_credentials(redact_exfiltration_urls(turn.assistant_text)[0])[0]
     # Report how deep this hook-continuation run is so a gate hook can
     # diagnose or apply a stricter limit than the configurable backstop.
     _stop_hook_out = await _fire(

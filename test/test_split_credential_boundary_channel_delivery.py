@@ -176,8 +176,10 @@ class TestAStreamedReplyNeverRevisesADeliveredChunk:
     detect and no later frame can take back.
     """
 
-    #: The body that reproduced the revision, and the budget it happened at.
-    PAD, LIMIT, CUT = 108, 120, 129
+    #: The body that reproduces the revision with the shared checksummed key, and the
+    #: budget it happens at: the key reads as one only on its last character, so that
+    #: is the append that moves the boundary.
+    PAD, LIMIT, CUT = 98, 120, 139
 
     def _body(self) -> str:
         return f"{'w' * self.PAD} {HEAD} {TAIL} trailing words after the key here"

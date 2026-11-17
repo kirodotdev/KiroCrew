@@ -11,7 +11,6 @@ import UserMessage from '../pages/chat/UserMessage'
 import { createTestStore } from './helpers'
 import { parseSessionSeed, senderInitials, withoutSessionSeed } from '../lib/crewSeed'
 import { derivePinnedPromptText } from '../utils/pinnedPrompt'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../utils/shareUrl', () => ({ copySessionLink: vi.fn().mockResolvedValue(undefined) }))
@@ -211,6 +210,3 @@ describe('a delivered message carrying the gateway-set sender (meta.relay)', () 
   })
 })
 
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

@@ -431,9 +431,7 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "when the next step arrives. On 'blocked' "
                 "or 'question', set reason when only a person can move it: 'approval' "
                 "when a tool approval timed out or is waiting, 'needs_human' only for "
-                "credentials or a permission only a person can grant, spend, an "
-                "irreversible step or deleting someone else's work, a costly preference "
-                "nobody can infer, or a choice the person said they want to make; leave "
+                "an ask case (a)-(e) in your CRITICAL RULES; leave "
                 "it unset for a build or service. A choice you can recommend is "
                 "'question' without needs_human, naming your recommendation and why. A "
                 "ledger whose open items all wait on a person holds the conductor's "
@@ -447,13 +445,11 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "a step after the calls that prove what it reports have returned. "
                 "Which item this lands on "
                 "is resolved from your own session — there is no item parameter."
-                " The whole report is one 64 KB crew-log line as JSON (a non-ASCII "
-                "character can count up to twelve bytes), so a report at every field cap with "
-                "non-ASCII text can be refused work_entry_too_large before anything is "
-                "written; keep summary and artifacts to what a reader needs. An item "
-                "from before the record whose committed acceptance is itself wider "
-                "than a line is refused work_item_too_large, which no shorter report "
-                "cures: the refusal names the conductor's accept as the remedy."
+                " The whole report must fit one 64 KB crew-log line as JSON (a non-ASCII "
+                "character can cost twelve bytes) or it is refused work_entry_too_large; "
+                "keep it to what a reader needs. An item whose committed acceptance is "
+                "itself wider than a line is refused work_item_too_large: no shorter "
+                "report cures it, only the conductor's accept."
             ),
             "inputSchema": {
                 "type": "object",
@@ -501,6 +497,13 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                             "On 'progress': when you will resume, an ISO-8601 time with a "
                             "zone, ahead of now by at most 24 hours. Refused with any other "
                             "status. Each report replaces it."
+                        ),
+                    },
+                    "discussion": {
+                        "type": "object",
+                        "description": (
+                            "Only when hosting a discussion: its whole state for the "
+                            "Board; fields and caps in docs/work-ledger.md."
                         ),
                     },
                 },
@@ -756,10 +759,10 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                         "minimum": 1,
                         "maximum": 32,
                         "description": (
-                            "goal: how many items this goal may hold open at once; "
-                            "default 6. A create past it is refused "
-                            "goal_concurrency_cap_reached: wait for an item to land, or "
-                            "ask the user and raise it here."
+                            "goal: a bound the user set on how many items this goal "
+                            "may hold open at once; default 32, the store's own bound. "
+                            "A create past it is refused goal_concurrency_cap_reached: "
+                            "wait for an item to land, never ask to raise it."
                         ),
                     },
                     "new_goal": {
@@ -1096,7 +1099,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         payload = {
             k: v
             for k, v in args.items()
-            if k in ("status", "summary", "artifacts", "pr", "reason", "wake_at")
+            if k in ("status", "summary", "artifacts", "pr", "reason", "wake_at", "discussion")
         }
         resp = _post(_REPORT_PATH, payload, session_key=caller_key)
         if resp.get("error"):

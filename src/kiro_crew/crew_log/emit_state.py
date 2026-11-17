@@ -164,7 +164,8 @@ def session_id_of(client: Any) -> str:
 #: worker's report carries the conductor's ``slot``, so that is the fold it belongs to.
 #: Spelled here rather than imported from ``entry_types``: this module is the boot-path
 #: import gate (see ``_crew_log``), and one string is cheaper than pulling the vocabulary
-#: in. ``test_the_real_append_path_wakes_the_eager_fold`` drives this path end to end.
+#: in. ``test_the_real_append_path_wakes_the_eager_fold`` drives this path end to end, and
+#: ``test_the_real_emitter_sends_a_worker_report_to_the_conductors_board`` pins the slot.
 _WORK_TYPE: Final[str] = "work/recorded"
 
 

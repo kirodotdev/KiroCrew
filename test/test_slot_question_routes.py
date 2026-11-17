@@ -45,6 +45,8 @@ from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.testing.wait import await_until
 
 _QUESTIONS = [{"question": "Which branch?", "options": [{"label": "main"}, {"label": "dev"}]}]
+#: Why the refusal says the grant is not held; read only to word the 403.
+_CAUSE = "kiro_crew.apps.permissions.session_approval_denial_cause"
 
 
 def _client(state, caller: str | None) -> TestClient:
@@ -240,11 +242,14 @@ async def test_an_app_cannot_answer_a_foreign_ask_under_its_own_slot(state, sel_
 async def test_without_the_grant_the_owner_app_is_refused(state, sel_spy) -> None:
     _seed(state)
     task = await _ask(state, "mine", _ask_id(5))
-    with patch(_GRANT, return_value=False):
+    with patch(_GRANT, return_value=False), patch(_CAUSE, return_value="consent_pending"):
         async with _client(state, APP) as client:
             resp = await client.get("/api/chat/slots/mine/question")
             assert resp.status == 403
-            assert (await resp.json())["code"] == "session_approval_not_granted"
+            body = await resp.json()
+            assert body["code"] == "session_approval_not_granted"
+            assert body["cause"] == "consent_pending"
+            assert '"Enable and allow chat control"' in body["error"]
             resp = await client.post(
                 "/api/chat/slots/mine/question/answer",
                 json={"ask_id": _ask_id(5), "answers": {"Which branch?": "dev"}},
@@ -260,13 +265,19 @@ async def test_a_grant_removed_during_the_body_read_refuses_the_write(state, sel
     _seed(state)
     task = await _ask(state, "mine", _ask_id(6))
     reads = iter([True, False])
-    with patch(_GRANT, side_effect=lambda _app, **_kw: next(reads)):
+    with (
+        patch(_GRANT, side_effect=lambda _app, **_kw: next(reads)),
+        patch(_CAUSE, return_value="disabled"),
+    ):
         async with _client(state, APP) as client:
             resp = await client.post(
                 "/api/chat/slots/mine/question/answer",
                 json={"ask_id": _ask_id(6), "answers": {"Which branch?": "dev"}},
             )
             assert resp.status == 403
+            body = await resp.json()
+            assert (body["code"], body["cause"]) == ("session_approval_not_granted", "disabled")
+            assert f"/apps/detail/{APP}" in body["error"]
     assert not task.done()
     state.resolve_question(_ask_id(6), None)
     await await_until(task, what="the ask")

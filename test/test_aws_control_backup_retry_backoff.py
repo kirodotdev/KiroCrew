@@ -18,10 +18,11 @@ from aws_control_backup_helpers import (
 )
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# A synthetic 40-char AWS secret (not the documentation example key).
-_SECRET = SAMPLE_AWS_SECRET
+# A synthetic GitHub token with a valid checksum. A bare 40-character AWS-shaped run
+# with no label or key ID beside it is no credential by itself.
+_SECRET = github_classic(seed=91)
 
 # due_for_nightly — the malformed-timestamp branch
 
@@ -505,9 +506,9 @@ class TestNightlyRetryBackoff:
         # A run record reaches the document by TWO paths and the clear has to sit on
         # both. `_record_run_locked` clears beside its own write, but a run whose state
         # write raised is held in memory and arrives through `_merge_pending` instead --
-        # carrying the run and, before the fix, not the clear. The stale count then
-        # outlived the success that should have ended it, and after a restart withheld one
-        # nightly for up to the ceiling on an account that had already backed up.
+        # carrying the run. Without the clear there too, the stale count outlives the
+        # success that should end it, and after a restart withholds one nightly for up
+        # to the ceiling on an account that has already backed up.
         backup.set_nightly(ACCOUNT, True)
         for _ in range(4):
             _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
@@ -701,7 +702,9 @@ class TestNightlyRetryBackoff:
         # INSIDE the key, which is the only arrangement that can tell the two orders apart.
         backup.set_nightly(ACCOUNT, True)
         key = _SECRET
-        prefix = "x" * (200 - 10)  # bound lands 10 chars into the key
+        # bound lands 10 chars into the key; a blank before it, since a token glued
+        # to a letter is no token by its format
+        prefix = "x" * (200 - 11) + " "
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, prefix + key)
         assert key[:10] not in record["error"], "a truncated credential fragment survived"
         assert len(record["error"]) <= 200, "the length bound must still hold"

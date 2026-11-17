@@ -1,12 +1,12 @@
 /**
- * A Bot's chat draws a blocked link the way the chat page does (#36862).
+ * A Bot's chat draws a blocked link the way the chat page does.
  *
  * The Bot's chat is a `ChatPane`, whose rows go through the SHARED bubble
  * (`renderAssistantBubble`). That bubble must hand the reply's
- * `meta.blocked_links` to the markdown renderer, or each removed link stays as
- * its raw placeholder text with no chip, no card and no "Allow for this host".
- * A host drawing another gateway's rows names no local slot and keeps the
- * plain text, as it does for the lock tags.
+ * `meta.link_blocks` to the markdown renderer, or each blocked link renders
+ * live with no chip, no card and no "Allow for this host". A host drawing
+ * another gateway's rows names no local slot: its links still draw as chips,
+ * and their card offers no Allow, since nothing local can hold it.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react'
@@ -25,22 +25,20 @@ afterEach(() => {
 })
 
 const HOST = 'reviews.corp.example'
-const PH = `[REDACTED: suspicious URL to ${HOST}]`
 const RECORD = {
+  url: `https://${HOST}/reviews?filter=abc`,
   domain: HOST,
   rule: 'exfil_query_length',
-  path: '/reviews',
   query_chars: 290,
-  url: `https://${HOST}/reviews?filter=abc`,
-  url_withheld: null,
+  withheld: null,
 }
 
 const REPLY: ChatMessage = {
   role: 'assistant',
-  content: `The page: ${PH}`,
+  content: `The page: ${RECORD.url}`,
   cls: '',
   ts: '2026-11-13T09:00:00Z',
-  meta: { blocked_links: [RECORD] },
+  meta: { link_blocks: [RECORD] },
 } as ChatMessage
 
 const ctx = (messages: ChatMessage[]): MessageRenderContext => ({
@@ -64,7 +62,7 @@ describe("a blocked link in a Bot's chat", () => {
     })))
     expect(entry?.id).toBe('assistant')
     const { getByTestId, container, rerender } = render(<>{entry!.render(REPLY, ctx([REPLY]))}</>)
-    expect(container.textContent).not.toContain(PH)
+    expect(container.querySelector(`a[href="${RECORD.url}"]`)).toBeNull()
     expect(getByTestId('blocked-link-target').textContent).toBe(HOST)
     fireEvent.click(getByTestId('blocked-link-inspect'))
     expect(getByTestId('blocked-link-card').textContent).toContain(`Destination: ${HOST}`)
@@ -75,9 +73,9 @@ describe("a blocked link in a Bot's chat", () => {
     })))
     expect(allow).toHaveBeenCalledWith('member-radar', HOST)
     await waitFor(() => expect(getByTestId('blocked-link-feedback')).toHaveTextContent(`Allowed ${HOST} for this workspace`))
-    // The server restores the URL and removes its record. Both pane renderers
+    // The server serves the same text without its record. Both pane renderers
     // pass redactionSlot without slotKey, but must keep the same reply's Undo.
-    const restored = { ...REPLY, content: `The page: ${RECORD.url}`, meta: {} }
+    const restored = { ...REPLY, meta: {} }
     rerender(<>{entry!.render(restored, ctx([restored]))}</>)
     expect(getByTestId('blocked-link-feedback')).toHaveTextContent(`Allowed ${HOST} for this workspace`)
     expect(container.querySelector(`a[href="${RECORD.url}"]`)).not.toBeNull()
@@ -86,9 +84,12 @@ describe("a blocked link in a Bot's chat", () => {
     expect(revoke).toHaveBeenCalledWith('default', HOST)
   })
 
-  it('stays plain text on a host that names no local slot (another gateway)', () => {
-    const { queryByTestId, container } = render(<>{renderAssistantBubble(REPLY, ctx([REPLY]))}</>)
-    expect(queryByTestId('blocked-link-chip')).toBeNull()
-    expect(container.textContent).toContain(PH)
+  it('draws the chip with no Allow on a host that names no local slot (another gateway)', () => {
+    const { getByTestId, queryByTestId, container } = render(<>{renderAssistantBubble(REPLY, ctx([REPLY]))}</>)
+    expect(getByTestId('blocked-link-chip')).toBeTruthy()
+    expect(container.querySelector(`a[href="${RECORD.url}"]`)).toBeNull()
+    fireEvent.click(getByTestId('blocked-link-inspect'))
+    expect(getByTestId('blocked-link-card')).toBeTruthy()
+    expect(queryByTestId('blocked-link-allow')).toBeNull()
   })
 })

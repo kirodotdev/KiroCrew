@@ -50,6 +50,12 @@ from kiro_crew.acp.oversized_request_errors import (
     _RE_OVERSIZED_REQUEST,
     _is_request_size_exceeded,
 )
+from kiro_crew.acp.proxy_refusal import (  # noqa: F401 - re-exported
+    PROXY_REFUSAL_TEXT,
+    _is_proxy_refusal,
+    _proxy_refusal_line,
+    drop_proxy_refusal_lines,
+)
 from kiro_crew.acp.runtime_models import (
     DEFAULT_MODEL,
     advertised_model_ids,
@@ -72,8 +78,10 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
 )
+from kiro_crew.acp.user_rate_limit_errors import USER_RATE_LIMIT_TEXT, is_user_rate_limit
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.credential_errors import is_credential_propagation_delay
+from kiro_crew.limit_reset import parse_limit_reset
 from kiro_crew.sandbox import (
     LAUNCHER_EXIT_PREFIXES,
     SANDBOX_LAYER_CREW,
@@ -146,6 +154,10 @@ class AcpError(Exception):
         # retry that reproduces the rejection. Terminal like ``auth_required``
         # and, like it, decided from the raw frame rather than the prose.
         self.usage_limit: bool = False
+        # When that limit opens again (epoch seconds), read from the provider's own
+        # "resets ..." clause at raise time. ``None`` when the frame names no clause
+        # :func:`kiro_crew.limit_reset.parse_limit_reset` reads.
+        self.usage_limit_reset_at: float | None = None
         # Structural-rejection tag, set by :func:`_raise_acp_error` when the raw
         # frame says the request shape is deterministic: malformed request, or
         # an unsupported image already embedded in the conversation. Unlike a
@@ -191,13 +203,13 @@ class AcpError(Exception):
         # layer never parses the user-facing card wording.
         # ``None`` means unclassified: readers fall back to the message text.
         self.connection_failure: bool | None = None
-        # Whether a TRANSIENT failure is the provider throttling (429, "Too many
-        # requests", ThrottlingException), decided from the raw frame like
-        # ``connection_failure``. The interactive ladder waits longer for it and
-        # rewinds the failed prompt before re-sending. ``None`` means unclassified.
+        # Whether a TRANSIENT failure is the provider throttling (429, "Too many requests",
+        # ThrottlingException), from the raw frame like ``connection_failure``. The ladder
+        # waits longer for it and rewinds the failed prompt. ``None`` means unclassified.
         self.throttle: bool | None = None
-        # A TRANSIENT capacity/rollout refusal (raw frame); its card offers the picker.
-        self.model_unavailable: bool = False
+        self.server_error: bool | None = None  # a TRANSIENT provider 5xx, same rules
+        self.user_rate_limit: bool = False  # a throttle on Kiro's per-user limit (every model)
+        self.model_unavailable: bool = False  # TRANSIENT capacity/rollout refusal: offer the picker
         # Set by :func:`_raise_acp_error` when the frame's ``data`` names
         # ``errorKind: cloud_credential_error``: the process cached credentials
         # it cannot reload, so the remedy is a fresh process, not a retry.
@@ -576,16 +588,16 @@ del _raised
 # Auth failure on stderr is detected during spawn/prompt so we can raise
 # AcpAuthRequired (non-retryable) instead of churning through the retry ladder.
 # The detector is `is_auth_failure_output` below; there is deliberately no
-# separate "not logged in" pattern here, because having one was the defect —
-# `_RE_SESSION_EXPIRED` already carries that wording alongside the rest of the
-# auth vocabulary, and a second narrower copy is what let the spawn path miss
-# every expiry that does not use the banner's exact words.
+# separate "not logged in" pattern here: `_RE_SESSION_EXPIRED` already carries
+# that wording alongside the rest of the auth vocabulary, and a second, narrower
+# copy would let the spawn path miss every expiry that does not use the banner's
+# exact words.
 #
 # The DETECTION lives here; the MESSAGE does not. What an operator must do to sign
 # a harness back in is a property of that harness, so every raise site reads
-# `host_auth.signed_out_message(backend)` instead of a literal in this module. A
-# literal here spelled `kiro-cli login` for whichever harness happened to fail,
-# which is wrong the moment a harness signs in through its own credential file.
+# `host_auth.signed_out_message(backend)` instead of a literal in this module: a
+# literal `kiro-cli login` is wrong for a harness that signs in through its own
+# credential file.
 
 
 # ── Transient-error classification (shared by _format_acp_error and
@@ -714,7 +726,12 @@ def _is_session_expired(haystack: str) -> bool:
     All three signals are terminal: retrying can neither refresh a login nor
     revive a credential the upstream has rejected. Checked before the 5xx family
     so an aborted request's transport error does not shadow the real cause.
+
+    A line that :func:`_is_proxy_refusal` claims is left out first: a proxy's 403
+    or 407 is the network refusing the request, not Kiro refusing the credential.
     """
+    if _is_proxy_refusal(haystack):
+        haystack = drop_proxy_refusal_lines(haystack)
     return bool(
         _RE_AUTH_STATUS.search(haystack)
         or _RE_SESSION_EXPIRED.search(haystack)
@@ -1164,8 +1181,9 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     branch at all (the provider's own sentence is shown verbatim), while this
     classifier deliberately hoists all three above the 5xx family so a
     co-occurring connector token or retry hint cannot rescue a payload the
-    backend rejected for its shape or size (see
-    ``test_terminal_branches_outrank_a_co_occurring_dispatch_failure``). A frame
+    backend rejected for its shape or size
+    (``test_terminal_branches_outrank_a_co_occurring_dispatch_failure`` checks the
+    malformed-request branch this way; the oversized-request branch is untested). A frame
     carrying both wordings therefore reads as 5xx prose with a terminal verdict;
     only the verdict drives retries.
 
@@ -1255,7 +1273,7 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     if _is_session_expired(haystack):
         # Session expiry is terminal — retrying can't refresh an expired login.
         return False
-    if _RE_CONNECTION.search(haystack):
+    if _RE_CONNECTION.search(haystack) or _is_proxy_refusal(haystack):
         # A temporary endpoint failure is safe for the bounded retry ladder.
         return True
     return bool(
@@ -1339,6 +1357,8 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     match = _RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
+    if _is_proxy_refusal(text):
+        return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, "proxy refusal")
     match = (
         _RE_5XX_NAMED.search(text)
         or _RE_5XX_STATUS.search(text)
@@ -1570,14 +1590,13 @@ def _format_acp_error_worded(
                 f"wait a minute and retry."
                 f"{req_id_suffix}"
             )
+        elif is_user_rate_limit(haystack):  # per user, not per model: no switch advice
+            formatted = USER_RATE_LIMIT_TEXT + req_id_suffix
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
-            # Throttle / rate limit (the spent usage limit above was checked
-            # first). Worded by backend: only kiro-cli reaches the model through
-            # Bedrock, so only it names Bedrock (POSITIVE identity per AGENTS.md
-            # "Harness parity"; a "not claude" test would answer Bedrock for
-            # untested harnesses). The verb stays "throttling" so
-            # llm_helpers._TRANSIENT_MARKERS ("throttl") keeps classifying it
-            # transient: a throttle IS retryable, unlike the usage-limit branch.
+            # Throttle / rate limit (usage and user-rate limits checked above).
+            # Worded by backend: only kiro-cli reaches the model through Bedrock,
+            # so only it names Bedrock (POSITIVE identity, AGENTS.md "Harness
+            # parity"). "throttling" keeps the llm_helpers "throttl" marker.
             subject = "Bedrock" if backend == ACP_BACKEND_KIRO else "The model provider"
             formatted = (
                 f"{subject} is throttling requests. Try: (1) wait a few seconds "
@@ -1640,6 +1659,10 @@ def _format_acp_error_worded(
             )
         elif is_model_registry_unavailable(error.get("data")):
             formatted = MODEL_REGISTRY_UNAVAILABLE_TEXT + req_id_suffix
+        elif _is_proxy_refusal(haystack):
+            # A proxy between this computer and the backend refused the request.
+            # Signing in again cannot help, so this does not take the sign-in arm.
+            formatted = PROXY_REFUSAL_TEXT + req_id_suffix
         elif _RE_CONNECTION.search(haystack) or _RE_CONNECTOR_FAILURE.search(haystack):
             formatted = (
                 "Could not reach the model backend (connection refused, reset, "
@@ -1879,25 +1902,25 @@ def _raise_acp_error(
     _frame_kind = classify_provider_error(raw_data).kind
     err.connection_failure = bool(err.transient) and _frame_kind == PROVIDER_ERROR_CONNECTION
     err.throttle = bool(err.transient) and _frame_kind == PROVIDER_ERROR_THROTTLE
+    err.server_error = bool(err.transient) and _frame_kind == PROVIDER_ERROR_HTTP_5XX
     verdict = classify_provider_error(raw_data)
     err.auth_error_code = verdict.matched if verdict.kind == PROVIDER_ERROR_AUTH else ""
-    # Tag deterministic STRUCTURAL rejections so self-driving callers can
-    # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except
-    # for the two anchored overflow sentences named below. The tag covers
+    # Tag deterministic STRUCTURAL rejections so self-driving callers stop resending
+    # identical context. Data-scoped: a phrase echoed only in JSON-RPC ``message``
+    # cannot stamp an unrelated error, except the anchored overflow sentences below. Covers
     # context overflow (kiro-cli's window, the claude adapter's input-too-long,
     # the model service's request size cap), malformed request, image validation
-    # failure, the many-image pixel-dimension cap, and kiro-cli's own refusal of a
-    # request it could not shrink to fit -- each reproduced exactly by re-sending
-    # the same context.
+    # failure, the many-image pixel-dimension cap, and kiro-cli's own refusal of a request
+    # it could not shrink to fit -- each reproduced exactly by re-sending the same context.
     raw_data_field = provider_data_text(error)  # the same field the verdict above read
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
     _data_kind = classify_provider_error(raw_data, data=raw_data_field).kind
     err.model_unavailable = bool(err.transient) and _data_kind == PROVIDER_ERROR_MODEL_UNAVAILABLE
-    # The claude adapter's overflow rides in ``message`` (anchored match, see
-    # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
-    # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag
-    # below stays data-scoped.
+    err.user_rate_limit = bool(err.throttle) and is_user_rate_limit(
+        f"{raw_data_field} {raw_message_field}"
+    )
+    # The claude adapter's overflow rides in ``message`` (anchored, _RE_ADAPTER_INPUT_TOO_LONG)
+    # and the size cap in either field (_RE_REQUEST_SIZE_EXCEEDED); other tags are data-scoped.
     _context_overflow = bool(
         _RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field)
         or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)
@@ -1965,6 +1988,7 @@ def _raise_acp_error(
         raw_data_field, available_models
     ):
         err.usage_limit = True
+        err.usage_limit_reset_at = parse_limit_reset(raw_data)
     # A stale-credential answer, read from the structured field (not the prose),
     # recycles the process instead of retrying it. Pinned non-transient: the
     # prose ends in "try again", and a retry would re-ask the one process that

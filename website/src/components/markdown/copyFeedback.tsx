@@ -250,8 +250,12 @@ export function useBubbleCuedCopy(text: string, hint: React.ReactNode, failureMe
     <>
       <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] break-words">{cue}</InstantTip>
       {/* Always mounted: a live region that appears already filled is not
-          reliably read. */}
-      <span role="status" aria-live="polite" className="sr-only">
+          reliably read. `select-none`: the span sits in the sentence right
+          after the chip, and `sr-only` hides it from sight but not from a
+          native selection, so a copy across the chip during the flash would
+          paste "Copied!" glued to the value. Same treatment as the path
+          chips' hidden full path. */}
+      <span role="status" aria-live="polite" className="sr-only select-none">
         {copied ? i18nT('components.markdownRenderer.copied') : ''}
       </span>
     </>

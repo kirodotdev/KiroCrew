@@ -6,7 +6,9 @@ inherits (``resolve_parent_policy``), the session it runs on, shared or dedicate
 the child's memory, crew activity and folder steering (``prepare_child_context``), the
 records and the spawn event a restart and the panel read (``persist_spawn_records``), and
 the ``AgentSpawn`` and ``UserPromptSubmit`` hooks with their clock bookkeeping
-(``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``.
+(``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``, except
+``spec_builtin_tools_notice``, the line naming what of a named agent's ``tools`` and
+``model`` a claude session does not apply, which needs only the session.
 
 The turn body runs on ``kiro_crew.subagent``'s globals (``bind_component_globals``), and
 tests patch names there (``sel``, ``time``, ``_redact``, the session re-projection
@@ -697,3 +699,47 @@ async def fire_prompt_hooks(
         info._last_activity_mono = _sa.time.monotonic()
         info._prompt_hooks_running = False
     return _hook_prefix
+
+
+#: How long a sub-agent's first prompt waits for the spec read behind its notice.
+_SPEC_NOTICE_TIMEOUT_SECS = 10.0
+
+
+async def spec_builtin_tools_notice(
+    client: Any, info: SubagentInfo, session_key: str, *, fresh: bool
+) -> str:
+    """The block a spawn's new session's first prompt carries when its claude session
+    leaves the named agent's ``tools`` limit or ``model`` pin unapplied
+    (``agent_sdk.spec_builtin_tools``).
+
+    Only on a *fresh* session, so a continuation or a respawn does not repeat it.
+    Logged for the operator too. ``""`` for any other run, so the caller prepends it
+    as it is; a spec that cannot be read in time adds nothing.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.agent_sdk.spec_builtin_tools import spec_builtin_tools_notice as _notice
+    from kiro_crew.agent_sdk.spec_hooks import spec_project_dir
+
+    if not fresh or not info.agent:
+        return ""
+    try:
+        text = await asyncio.wait_for(
+            asyncio.to_thread(
+                _notice,
+                info.agent,
+                spec_project_dir(client),
+                backend=capabilities_of(client).backend,
+                namespace=capabilities_of(client).model_id_namespace,
+                session_key=session_key,
+            ),
+            _SPEC_NOTICE_TIMEOUT_SECS,
+        )
+    except Exception:  # noqa: BLE001 - an informational line must never fail a run
+        _facade().logger.debug(
+            "agent spec tools for %r could not be read", info.agent, exc_info=True
+        )
+        return ""
+    if not text:
+        return ""
+    _facade().logger.warning("Subagent %s (agent %s): %s", info.id, info.agent, text)
+    return f"[Session notice] {text}\n\n"

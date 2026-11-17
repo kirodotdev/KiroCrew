@@ -1,12 +1,12 @@
 ---
 title: The work ledger drops the advisory goal item cap and its one-time notice
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-09
-last-audited: 2026-11-09
-audited-at: 1e3b894d87
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [33601]
 tracking-issues: []
 supersedes: [rfc-conductor-item-total-notice.md]
 superseded-by: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: The work ledger drops the advisory goal item cap and its one-time notice
 
-Status: accepted. The repository owner made this decision on 2026-11-09 in the
+Status: implemented in [#33601](https://github.com/kirodotdev/KiroCrew/pull/33601)
+(`1c23741fc8`); verified at `1d08e941b3`. The repository owner made this decision on 2026-11-09 in the
 conductor chat. It takes effect when this document merges; the code change
 rebases onto the base that carries it. Every code reference below was read at
 `1e3b894d87`.

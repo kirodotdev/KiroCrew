@@ -1718,9 +1718,8 @@ export default function SettingsPanel() {
 
       <Card>
         <CardTitle>{i18nT('apps.opsMissionControl.settingsPanel.instance')}</CardTitle>
-        {/* Not a <label>: Toggle renders a role="switch" div, not a form
-            control, so a label has nothing to associate with. The switch
-            carries its own accessible name via `label`. */}
+        {/* Not a <label>: the switch carries its own accessible name via
+            `label`, and the text beside it repeats that name. */}
         <div className="flex items-center gap-2 text-[13px]">
           <Toggle
             checked={Boolean(rotationQuery.data?.primary)}

@@ -450,6 +450,12 @@ says why): run `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before 
   - Keep the count of flaky specs at zero. CI's `retries` let a flaky spec pass its
     retry, and the gate's `MAX_FLAKY_SPECS` ceiling then fails the run naming it: it
     gets fixed, never given more retries ([e2e-gate](../../docs/ci/e2e-gate.md)).
+  - Before fixing a spec that passed only on a retry, read its `Received` value and
+    name who wrote it. It is usually the page, after the action: a replace navigation
+    from a stale render, a read applied after the spec's API write, or a real layout
+    miss. A longer wait or a looser assertion hides those. Worked cases are in
+    `docs/system-specs/common/testing-conventions.md` § A Playwright spec that passed
+    only on a retry.
   - A spec cleans up only the ids it created. A global reset races every other spec
     sharing the gateway.
 

@@ -19,6 +19,40 @@ A typical flow:
 The dashboard provides a `/artifacts` library page for browse/search and a
 `/artifacts/<slug>` standalone view with a version dropdown.
 
+### Library layout: side list and Home
+
+On a desktop the `/artifacts` page has a side list (`ArtifactsPageSideNav`):
+**Home**, **All artifacts**, then the instance's artifact-folder tree. The
+selection rides the URL: `?folder=<id>`, `?scope=all`, or neither for Home. A
+folder breadcrumb's root, or leaving a deleted top-level folder, opens All
+artifacts, never Home. A guide that picks a named artifact also opens All
+artifacts, since Home draws only the latest few; an artifact already open stays
+open. A folder row holds two controls, the folder button and its menu: the
+button opens the folder and expands it, and collapses it when it is already
+open. A move refetches the lists, since the server re-derives `sweepable` from
+the folder. Every entry is a drop target in the page's one DndContext, and All artifacts
+drops unfile.
+
+**Home** (`ArtifactsPageHome`) shows two groups, stacked in the gallery and side
+by side in the table. **Recent** holds what was made or kept: every record whose
+`sweepable` flag is false. **Recent output** holds what the sweep could still
+delete (`sweepable` true), plus unsaved session documents, and names how many
+there are against `output_cap`. The split reads the server's flag, so the page
+never re-derives retention: a comment, a tag, a folder or an edit keeps a record
+exactly as it keeps it from the sweep. Starring an output keeps it: the card,
+an unsaved chat document included (keyed by its path, which the saved artifact
+keeps as `source_path`), moves to the top of Recent for the visit and slides
+there as one element
+(skipped under reduced motion). Home's "See all" opens All artifacts with the
+Starred filter off, since Home itself ignores that filter.
+
+**All artifacts** lists every record flat across folders, in the table too; a folder lists its own, and a search inside a folder leaves unsaved chat documents out.
+Both draw the same equal-height cards as Home (`ArtifactCardGrid`), not the
+masonry, in page flow; each card fetches its content only near the viewport. New
+doc, Import and New folder (the quick-create tiles and the side list's +) file
+into the selected folder in either view, whatever the search or Starred filter. A phone keeps the folder-card browse
+layout below, with no side list and no Home.
+
 ### Library scrolling
 
 Small galleries and single-column virtualized lists scroll with the page.
@@ -357,7 +391,7 @@ The class attribute IS the owner's function, so a patch of a member on the class
 an instance reaches every caller, and members still call each other through `self`. A
 bound function reports its owner as `__module__` and its bare name as `__qualname__`;
 nothing reads either. Three members stay in the class body whatever else moves:
-`clear_publication`, because `test_publish_delete_race` treats every line naming it
+`clear_publication`, because `test/test_publish_delete_race.py` treats every line naming it
 as a caller that must pin both generations; `list`, whose module-level `def list`
 would shadow the builtin `list` for its whole owner; and `__init__`, which reads the
 facade-only seams. New store code goes to the owner whose responsibility it shares.
@@ -537,7 +571,7 @@ with a message before any request, and a given N always reads that version.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […]}` |
+| `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […], output_cap}`. Each listed record carries `sweepable`, the auto-widget sweep's own `_is_sweepable_auto_widget` verdict, and `output_cap` is `MAX_AUTO_WIDGET_ARTIFACTS`, the count the sweep keeps |
 | `POST` | `/api/artifacts` | JSON body — creates, returns full artifact + content; optional `folder` key (id or human path, mkdir -p) |
 | `GET` | `/api/artifacts/{slug}` | Returns full artifact + content. A store read that is refused or fails (`ArtifactError`, `OSError`) answers 500 with a JSON `{error}`, as do `/versions/{n}` and `/events` |
 | `PATCH` | `/api/artifacts/{slug}` | Partial update; MCP-authenticated content updates snapshot by default, dashboard saves snapshot only with `snapshot: true`; optional `folder` key is metadata-only. A random `content_token` is stored with the artifact and replaced on every content write. An optional `expected_token` from a prior read makes a store-backed content write conditional: `409 {error, code: "artifact_conflict", current_token}` and nothing written when another content write landed since that read, `400` when malformed. A live file-backed artifact serves no token |
@@ -1313,8 +1347,8 @@ the property also holds letters and marks — the variation selectors, the
 combining grapheme joiner, the Hangul fillers — that the category test would
 admit although a reader cannot see them. Admitting one would give `ops` an
 invisible twin `ops<VS16>` that `list(tag="ops")` misses, and would let a
-credential planted in a tag (`AKIA<VS16>IOSFODNN7EXAMPLE`) pass the dashboard's
-redactor while reading as the bare key; the MCP gate's sanitizer keeps these
+credential planted in a tag (`ghp_<VS16>1a2b3c...`) pass the dashboard's
+redactor while reading as the bare token; the MCP gate's sanitizer keeps these
 marks (they are `Mn`, and emoji text needs them), so the tag rule is the check
 that stops them. The table is hand-derived from Unicode 15.0, the version Python
 3.12 ships; a test pins `unicodedata.unidata_version` to it, and on a runtime
@@ -1721,6 +1755,30 @@ to this kind would store content no reader can parse.
   match but raised with the producer's own "could not be verified" wording.
   The file-backed `source_path` pointers stay on the bounded
   `security.is_sensitive_path()` and fall back to the snapshot silently.
+- **Scratch tree index** — `agent_scratch_trees`'s `.trees.json` maps session keys to
+  their scratch work trees, so a read would expose every tree name and a write
+  would remap the next resume onto another conversation's directory. It is
+  refused on both sides of this store's boundary through the existing sensitive-path
+  mechanism: `security/paths_lists.py` declares `scratch/.trees.json` as a crew-home
+  sensitive leaf, including relocated homes, links, case aliases and publish temps.
+  Both the path and descriptor gates use this shared declaration through
+  `_fence_refuses` as well as `_fence_refusal`, which is what covers the
+  descriptor: `pinned_fs.open_fenced_for_read` asks that predicate about the
+  kernel's path for the inode it actually opened, so an ancestor swapped between
+  the judged name and the open is refused on the inode reached rather than on the
+  name judged. Snapshot writes pin the judged parent once (`pinned_fs.pin_parent`)
+  and stage into a fresh, unpredictable temp name created `O_CREAT|O_EXCL`
+  relative to that descriptor, then rename it, so neither the same swap nor a
+  link planted at a staging name can redirect a publish onto the index; an
+  exclusive create never opens an existing entry, so this holds on Windows too.
+  The Windows fallback holds `platform_compat.pinned_directory` through staging
+  and replacement, reporting a link or non-directory refusal as `ArtifactError`.
+  It rechecks the canonical destination against the fence only when the pinned
+  parent's real path differs from the judged one. Its non-share-delete handle
+  prevents parent swaps.
+  Live source reads and writes also refuse the index at the hooks
+  canonical-path gate and on the opened descriptor, so re-resolution cannot
+  bypass the fence.
 - **Relocate root confinement** — `PATCH /api/artifacts/{slug}/relocate`
   points a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable
@@ -1744,6 +1802,8 @@ to this kind would store content no reader can parse.
   loaded companion's extra credential/cookie regexes apply to the audit trail.
 - **Atomic writes** — `_write_text()` writes to a `.tmp` sibling and renames,
   so a crash mid-write cannot corrupt `current.html` or `meta.json`.
+  Cleanup of a leftover legacy staging file is best-effort: an `OSError` is logged
+  at debug level and does not fail a save whose replacement already published.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
   `decode_meta` in `kiro_crew.artifact_store.records`, which ignores unknown keys
   and supplies defaults for missing keys, so future schema additions don't break

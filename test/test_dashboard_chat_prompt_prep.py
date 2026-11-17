@@ -160,7 +160,7 @@ class TestInstalledPackConsentInjection:
         assert result == "hello"
 
     def test_malformed_sha_no_crash_no_injection(self):
-        # GPT HIGH: a non-ASCII (or otherwise malformed) theme_consent_sha
+        # A non-ASCII (or otherwise malformed) theme_consent_sha
         # must never reach hmac.compare_digest (which raises TypeError on
         # non-ASCII str, aborting the whole chat turn). The compare-site guard
         # treats anything that is not exactly 64 lowercase-hex as ABSENT:

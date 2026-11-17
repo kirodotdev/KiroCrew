@@ -11,6 +11,7 @@ a session, and none prints a server's env, headers, command or args.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,8 +23,9 @@ from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.chat_runner import _run_chat, effective_session_key
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-_SECRET = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_SECRET = github_classic(seed=407)
 
 
 @pytest.fixture(autouse=True)
@@ -743,6 +745,45 @@ class TestKasVerbs:
             r"C:\work\a.md",
             r"C:\my docs\b.md",
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_call_shows_a_fixed_line_and_logs_the_error(
+        self, tmp_path, caplog
+    ) -> None:
+        """RED on main: the raised exception's text was shown in the reply."""
+        state, slot, client, calls = _live(tmp_path)
+        client.cwd = str(tmp_path)
+        client.kas_command_call = AsyncMock(side_effect=RuntimeError("/home/u/secret detail"))
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.kas_local_commands"):
+            await _run_chat(state, slot, "/context clear")
+
+        _assert_local(state, calls)
+        text = _reply(slot)
+        assert "/home/u/secret detail" not in text, text
+        assert "The engine could not run the command." in text, text
+        logged = [r for r in caplog.records if r.exc_info]
+        assert logged and "secret detail" in str(logged[0].exc_info[1])
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_engine_shows_the_sign_in_remedy(self, tmp_path) -> None:
+        """RED before the fix: the host's sign-in remedy became the fixed line."""
+        from kiro_crew.acp.transport_errors import AcpAuthRequired
+        from kiro_crew.agent_sdk.host_auth import signed_out_message
+
+        state, slot, client, calls = _live(tmp_path)
+        client.cwd = str(tmp_path)
+        remedy = signed_out_message(ACP_BACKEND_KAS)
+        client.kas_command_call = AsyncMock(
+            side_effect=AcpAuthRequired(remedy, backend=ACP_BACKEND_KAS)
+        )
+
+        await _run_chat(state, slot, "/context clear")
+
+        _assert_local(state, calls)
+        text = _reply(slot)
+        assert remedy in text, text
+        assert "The engine could not run the command." not in text, text
 
     @pytest.mark.asyncio
     async def test_an_engine_without_the_verb_says_so(self, tmp_path) -> None:

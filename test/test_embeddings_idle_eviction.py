@@ -273,6 +273,7 @@ class TestIdleEviction:
             embeddings_mod, "_read_memory_config", lambda: {"embedding_idle_evict_secs": 0}
         )
         assert embeddings_mod.embedding_idle_evict_secs() == 0.0
+        monkeypatch.setattr(embeddings_mod, "small_memory_host", lambda: False)
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_idle_evict_secs": "soon"}
         )
@@ -285,7 +286,7 @@ class TestIdleEviction:
 
         built = _build_memory_config({"embedding_idle_evict_secs": configured})
         assert built.embedding_idle_evict_secs == configured
-        assert _build_memory_config({}).embedding_idle_evict_secs == 3600
+        assert _build_memory_config({}).embedding_idle_evict_secs == "auto"
 
     def test_close_stops_the_evictor(self, tmp_path: Path, monkeypatch):
         threads_before = _live_embed_threads()

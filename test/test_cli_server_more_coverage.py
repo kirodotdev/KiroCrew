@@ -880,6 +880,29 @@ class TestUpdateSubprocessHardening:
         assert "git status timed out" in capsys.readouterr().out
         assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
 
+    def test_status_failure_refuses_the_reset(self, monkeypatch, git_checkout, capsys) -> None:
+        """A non-zero status prints nothing, which must not read as a clean tree
+        and skip the discard prompt."""
+        stub = _GitStub()
+
+        def _run(argv, **kw):
+            if list(argv[:2]) == ["git", "status"]:
+                stub.calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 128, "", "fatal: not a git repository\n")
+            return stub(argv, **kw)
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        monkeypatch.setattr(
+            "builtins.input", lambda *_a: pytest.fail("prompted on an unreadable status")
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "git status exited 128" in out
+        assert "fatal: not a git repository" in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
     def test_kiro_cli_update_timeout_degrades_best_effort(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -1495,8 +1518,7 @@ class TestStatusCountLines:
         assert cli_server._format_count(data, "lessons") == "42"
 
     def test_null_count_prints_a_dash_not_none(self) -> None:
-        # Fails on the previous head, which printed ``Lessons: None`` for a
-        # payload whose count was still unknown.
+        # An unknown count prints a dash, never ``Lessons: None``.
         data = {"cron_jobs": None, "lessons": None}
         assert cli_server._format_count(data, "cron_jobs") == "—"
         assert cli_server._format_count(data, "lessons") == "—"
@@ -1505,8 +1527,8 @@ class TestStatusCountLines:
         assert cli_server._format_count({"uptime": "1h"}, "lessons") == "—"
 
     def test_status_reads_the_cron_jobs_key(self, monkeypatch, capsys) -> None:
-        # Fails on the previous head, which read a ``crons`` key the snapshot
-        # never emits and so always printed ``Cron jobs: 0``.
+        # The snapshot emits ``cron_jobs``, never ``crons``; reading the wrong key
+        # always prints ``Cron jobs: 0``.
         import io
         import json
         from contextlib import contextmanager

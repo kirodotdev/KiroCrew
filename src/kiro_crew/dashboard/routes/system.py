@@ -43,7 +43,7 @@ RELEASED_BUILTIN_PACKAGES = web.AppKey("released_builtin_packages", frozenset)
 
 def register(app: web.Application) -> None:
     """Register the system routes on *app*."""
-    # Redaction cards: allowed hosts (Settings -> Security).
+    # Blocked link cards: allowed hosts (Settings -> Security).
     app.router.add_get(
         "/api/redaction/allowed-hosts", redaction_handlers.api_redaction_allowed_hosts
     )
@@ -133,6 +133,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/wakatime/oauth/authorize", handlers.api_wakatime_oauth_authorize)
     app.router.add_get("/api/wakatime/oauth/callback", handlers.api_wakatime_oauth_callback)
     app.router.add_post("/api/wakatime/oauth/disconnect", handlers.api_wakatime_oauth_disconnect)
+    app.router.add_get("/api/wakatime/oauth/status", handlers.api_wakatime_oauth_status)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
@@ -200,6 +201,11 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/security/trusted-registries/revoke", handlers.api_trusted_registry_revoke
     )
+    # Per-tool "Always allow" grants: the MCP tool list's toggle and the
+    # approval card's "Always allow this tool" (dashboard.always_allow_tool).
+    app.router.add_get("/api/security/tool-grants", handlers.api_tool_grants_list)
+    app.router.add_post("/api/security/tool-grants", handlers.api_tool_grant_add)
+    app.router.add_post("/api/security/tool-grants/remove", handlers.api_tool_grant_remove)
     # Read-only governance policy viewer — effective Level-1 ∩ Level-2 ceiling
     # across every governed scope (no write path; the ceiling is file-authored).
     app.router.add_get("/api/governance/policy", handlers.api_governance_policy)
@@ -257,8 +263,16 @@ def register(app: web.Application) -> None:
     # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
+    # MCP safety switches, owner-gated in the handler like the redaction switch.
+    app.router.add_get("/api/security/safety-switches", handlers.api_safety_switches_get)
+    app.router.add_put("/api/security/safety-switches", handlers.api_safety_switches_put)
     app.router.add_get("/api/project-hooks/consent", handlers.api_project_hooks_consent_get)
     app.router.add_put("/api/project-hooks/consent", handlers.api_project_hooks_consent_put)
+    # MCP message-body fields. Owner-gated in the handler, and the only writer of
+    # ``mcp_body_fields.json``; no MCP tool reaches it.
+    app.router.add_get("/api/security/mcp-body-fields", handlers.api_mcp_body_fields_get)
+    app.router.add_post("/api/security/mcp-body-fields", handlers.api_mcp_body_fields_add)
+    app.router.add_delete("/api/security/mcp-body-fields", handlers.api_mcp_body_fields_remove)
     app.router.add_post("/api/security/redacted-value", handlers.api_owner_value_reveal)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)

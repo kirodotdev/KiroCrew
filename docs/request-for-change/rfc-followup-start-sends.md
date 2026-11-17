@@ -1,10 +1,10 @@
 ---
 title: The follow-up card's Start sends its prompt
-status: accepted
+status: implemented
 author: Pearcekieser, with kirocrew-contributor
 created: 2026-10-30
-last-audited: 2026-11-03
-audited-at: 95f78562f1
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 26380
 implementation-prs: [25926]
 tracking-issues: [25925]
@@ -14,9 +14,9 @@ superseded-by: []
 
 # RFC: The follow-up card's Start sends its prompt
 
-- Status: accepted 2026-10-31. Maintainer bolichen97 recorded the repository owner's agreement and signed off the design on [#26380](https://github.com/kirodotdev/KiroCrew/pull/26380#issuecomment-6543801082) and [#25926](https://github.com/kirodotdev/KiroCrew/pull/25926#issuecomment-6543806714). Nothing in this document is built on main. It lands before its implementation because it changes a consent rule, and the First Principles lane reads that decision off the base branch.
+- Status: implemented. Accepted 2026-10-31: maintainer bolichen97 recorded the repository owner's agreement and signed off the design on [#26380](https://github.com/kirodotdev/KiroCrew/pull/26380#issuecomment-6543801082) and [#25926](https://github.com/kirodotdev/KiroCrew/pull/25926#issuecomment-6543806714). Implemented, as amended 2026-11-05 (opt-in), by [#25926](https://github.com/kirodotdev/KiroCrew/pull/25926) (`11684ff344`); verified at `1d08e941b3`. It landed before its implementation because it changes a consent rule, and the First Principles lane reads that decision off the base branch.
 - Tracking issue: [#25925](https://github.com/kirodotdev/KiroCrew/issues/25925)
-- Implementation: [#25926](https://github.com/kirodotdev/KiroCrew/pull/25926), which lands after this document.
+- Implementation: [#25926](https://github.com/kirodotdev/KiroCrew/pull/25926), merged after this document.
 
 ## Problem
 

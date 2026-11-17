@@ -46,6 +46,7 @@ import kiro_crew.dashboard.handlers as handlers_pkg
 import kiro_crew.dashboard.handlers.agents as agents
 from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import agent_admin
+from kiro_crew.security.redaction_structured.checks import base62_crc32
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # One worker per file, so the shared checks run beside the tests that load this module.
@@ -325,7 +326,6 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Routes, the handlers package, sibling handlers and tests read private names
     off the facade as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) == 271
     assert sorted(name for name in _BASE_NAMES if not hasattr(agents, name)) == []
 
 
@@ -361,6 +361,84 @@ def _package_reexports() -> list[str]:
     ]
 
 
+#: The handlers the gateway's routes serve from this family, one per line, so two
+#: route changes edit two lines.
+_SERVED_HANDLERS = (
+    "api_agent_config",
+    "api_agent_detail",
+    "api_agent_fork",
+    "api_agent_publish",
+    "api_agent_reset",
+    "api_agents_installed",
+    "api_capability_agents_install",
+    "api_capability_agents_list",
+    "api_capability_agents_uninstall",
+    "api_capability_mcp_install",
+    "api_capability_mcp_list",
+    "api_capability_mcp_registry",
+    "api_capability_mcp_uninstall",
+    "api_capability_plugins_list",
+    "api_capability_plugins_sync",
+    "api_capability_skills_install",
+    "api_capability_skills_list",
+    "api_capability_skills_uninstall",
+    "api_config_schema",
+    "api_default_agent",
+    "api_effort_levels",
+    "api_kirocrew_agent_avatar_get",
+    "api_kirocrew_agent_avatar_upload",
+    "api_kirocrew_agent_delete",
+    "api_kirocrew_agent_resolved_model",
+    "api_kirocrew_agent_update",
+    "api_kirocrew_agents",
+    "api_kirocrew_agents_create",
+    "api_kirocrew_agents_sync",
+    "api_models",
+    "api_slash_commands",
+)
+
+
+#: The names ``dashboard/handlers/__init__.py`` re-exports from the facade, one per
+#: line, so two changes to the package edit two lines (see testing-conventions.md
+#: § Merge-safe ratchets and counts).
+_PACKAGE_REEXPORTS = (
+    "_find_agent_config",
+    "_get_config_lock",
+    "_installed_agent_config",
+    "api_agent_config",
+    "api_agent_detail",
+    "api_agent_fork",
+    "api_agent_publish",
+    "api_agent_reset",
+    "api_agents_installed",
+    "api_capability_agents_install",
+    "api_capability_agents_list",
+    "api_capability_agents_uninstall",
+    "api_capability_mcp_install",
+    "api_capability_mcp_list",
+    "api_capability_mcp_registry",
+    "api_capability_mcp_uninstall",
+    "api_capability_plugins_list",
+    "api_capability_plugins_sync",
+    "api_capability_skills_install",
+    "api_capability_skills_list",
+    "api_capability_skills_uninstall",
+    "api_config_schema",
+    "api_default_agent",
+    "api_effort_levels",
+    "api_kirocrew_agent_avatar_get",
+    "api_kirocrew_agent_avatar_upload",
+    "api_kirocrew_agent_delete",
+    "api_kirocrew_agent_resolved_model",
+    "api_kirocrew_agent_update",
+    "api_kirocrew_agents",
+    "api_kirocrew_agents_create",
+    "api_kirocrew_agents_sync",
+    "api_models",
+    "api_slash_commands",
+)
+
+
 def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     """Every route the gateway registers for an agents handler and every name the
     handlers package re-exports is the facade's object. The owner-gate test's route
@@ -377,10 +455,11 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(agents, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ in {_FACADE} | sibling_modules
     ]
-    assert len({id(h) for h in served}) == 31
+    assert len({id(h) for h in served}) == len({h.__name__ for h in served})
+    assert sorted({h.__name__ for h in served}) == list(_SERVED_HANDLERS)
     assert [h.__name__ for h in served if getattr(agents, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 34
+    assert sorted(reexports) == list(_PACKAGE_REEXPORTS)
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(agents, n)] == []
 
 
@@ -497,12 +576,11 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 93
+    assert names and len(names) == len(set(names))
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(f"{name} {_shape(getattr(agents, name))}" for name in _MOVED)
-    assert len(lines) == 93
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -550,7 +628,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     assert defined == set(_FACADE_DEFS)
     siblings = set(_SIBLING_DEFS)
     total = len(defined) + len(_MOVED) + len(siblings)
-    assert len(defined | _MOVED | siblings) == total == 120
+    assert len(defined | _MOVED | siblings) == total
 
 
 @pytest.mark.parametrize("name", sorted(_SIBLING_DEFS))
@@ -1434,8 +1512,8 @@ def test_the_reclaim_placement_check_reads_the_delete_handler(
 
 def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     """The baseline's per-file rows for the facade and its owners are each one's
-    measured count and sum to the one-module file's 43, and the scan counts a
-    response planted in an owner against that owner."""
+    measured count, and the scan counts a response planted in an owner against that
+    owner."""
     import test_error_code_contract as guard
 
     baseline = json.loads((repo_root() / "error-code-baseline.json").read_text(encoding="utf-8"))
@@ -1446,7 +1524,6 @@ def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     }
     live = guard.tally(guard.scan())
     assert rows == {path: live[path] for path in rows}
-    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 43
     assert {path for path in live if path.startswith("dashboard/agent_admin/")} <= set(rows)
     root = _mirror(tmp_path) / "kiro_crew"
     owner = root / "dashboard/agent_admin/roster.py"
@@ -1520,7 +1597,12 @@ def test_every_redacting_owner_is_classified_like_the_facade() -> None:
         for stem, source in _owner_sources().items()
         if _REDACTOR_CALL_RE.search(source)
     }
-    assert len(redacting) == 4
+    assert sorted(redacting) == [
+        "dashboard/agent_admin/agent_config.py",
+        "dashboard/agent_admin/agent_detail.py",
+        "dashboard/agent_admin/capabilities.py",
+        "dashboard/agent_admin/roster.py",
+    ]
     allowlisted = security_posture.NON_EGRESS_REDACTION_MODULES
     assert redacting | {"dashboard/handlers/agents.py"} <= allowlisted
     sinks = {module for _label, module, _detail in security_posture._REDACTION_SINKS}
@@ -1840,7 +1922,10 @@ async def test_a_sync_refuses_a_credential_shaped_discovered_name(
 ) -> None:
     from kiro_crew.agent_discovery import AgentInfo
 
-    shaped = "ghp_" + "a" * 36
+    # A checksummed GitHub token whose characters are all lowercase letters and
+    # digits, so only its credential shape can refuse it. Assembled at runtime.
+    body = "ylnkmkfjsa23hb7k52t5" + "fqkute8xcn"
+    shaped = "ghp_" + body + base62_crc32(body)
     found = [
         AgentInfo(
             name=shaped, filename=f"{shaped}.json", description="", model="auto", source="package"

@@ -23,11 +23,11 @@ name: Fast Gate
 # red gate does not hide the gates after it: the job fails, and every failing
 # gate is named in the same run.
 #
-# The pull_request filter matches ci.yml's, including `branches: [main]`: the
-# fork reviewers key on this workflow, so a wider filter here would newly review
-# fork PRs opened against a non-main base -- which today get no review at all,
-# because they wait on a CI run that ci.yml's own branch filter never starts.
-# Widening that is a separate decision from moving the gates.
+# The pull_request filter matches ci.yml's, `branches: [main, "release/**"]`:
+# a backport PR into a release branch needs the same gates and the same
+# barrier. The fork reviewers key on this workflow, so a fork PR into a release
+# branch now starts them too; pr-readiness.yml still holds such a PR for a
+# maintainer, because those lanes were only ever vetted on PRs to main.
 #
 # The gates run on every push to main as well, and do the work on every push
 # that is not queue-landed (MERGE_QUEUE_ENABLED 'true' and github.actor
@@ -42,9 +42,9 @@ name: Fast Gate
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   # ci.yml's `await-fast-gate` waits on this workflow's run for the merge
   # group's commit, so the gates must run there.
   merge_group:

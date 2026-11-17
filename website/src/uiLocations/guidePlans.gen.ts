@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:9eb83529988001a6c70677248b86a60a6f6d0ad11e31901a3ef6ab868986c062"
+export const GUIDE_BUILD_DIGEST = "sha256:c1f4b83d62e971520e30c4a9968a95a878482a43076cf131964407703a7b88ed"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -37,6 +37,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "artifacts.list",
   "artifacts.new",
   "artifacts.new-folder",
+  "artifacts.new-mobile",
   "artifacts.starred",
   "backup.export",
   "backup.import-file",
@@ -598,7 +599,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/artifacts",
+        "route": "/artifacts?scope=all",
         "steps": [
           {
             "id": "any:select:artifact_open",
@@ -629,7 +630,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/artifacts",
+        "route": "/artifacts?scope=all",
         "steps": [
           {
             "id": "any:select:artifact_open",
@@ -654,7 +655,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/artifacts",
+        "route": "/artifacts?scope=all",
         "steps": [
           {
             "id": "any:select:artifact_open",
@@ -679,7 +680,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/artifacts",
+        "route": "/artifacts?scope=all",
         "steps": [
           {
             "id": "any:select:artifact_open",
@@ -724,16 +725,17 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
   },
   "artifacts.new": {
     "version": 2,
-    "label_key": "pages.artifactsPage.new_artifact",
+    "label_key": "pages.artifactsPage.quick_doc",
     "placements": [
       {
-        "id": "any",
+        "id": "desktop",
         "route": "/artifacts",
+        "viewport": "desktop",
         "steps": [
           {
-            "id": "any:artifacts.new",
+            "id": "desktop:artifacts.new",
             "location": "artifacts.new",
-            "label_key": "pages.artifactsPage.new_artifact"
+            "label_key": "pages.artifactsPage.quick_doc"
           }
         ]
       }
@@ -749,9 +751,33 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
+            "id": "desktop:artifacts.add-menu",
+            "location": "artifacts.add-menu",
+            "label_key": "pages.artifactsPage.more_ways_to_add_an_artifact",
+            "scope": "menu:artifacts.add-menu"
+          },
+          {
             "id": "desktop:artifacts.new-folder",
             "location": "artifacts.new-folder",
             "label_key": "pages.artifactsPage.new_folder"
+          }
+        ]
+      }
+    ]
+  },
+  "artifacts.new-mobile": {
+    "version": 2,
+    "label_key": "pages.artifactsPage.new_artifact",
+    "placements": [
+      {
+        "id": "mobile",
+        "route": "/artifacts",
+        "viewport": "mobile",
+        "steps": [
+          {
+            "id": "mobile:artifacts.new-mobile",
+            "location": "artifacts.new-mobile",
+            "label_key": "pages.artifactsPage.new_artifact"
           }
         ]
       }
@@ -763,7 +789,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/artifacts",
+        "route": "/artifacts?scope=all",
         "steps": [
           {
             "id": "any:artifacts.starred",

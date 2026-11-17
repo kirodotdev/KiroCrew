@@ -319,8 +319,8 @@ def test_the_ownership_refusal_survives_a_registry_that_lost_its_crew_table(
     with pytest.raises(CrewLogError) as caught:
         check_ownership(KIND_SESSION, entry_type, "gateway")
     assert _code(caught) == lg.CODE_EVENT_TYPE_NOT_OWNED
-    # And the crew's own log still accepts it, now unvalidated -- which is the
-    # state this change replaced, so the two layers are demonstrably separate.
+    # And the crew's own log still accepts it, unvalidated, so the two layers
+    # are demonstrably separate.
     check_ownership(KIND_CREW, entry_type, "crew:conductor")
     validate_data(KIND_CREW, entry_type, {"anything": 1})
 

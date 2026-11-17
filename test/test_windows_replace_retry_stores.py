@@ -22,7 +22,6 @@ from windows_sim import replace_sharing_violation
 from kiro_crew import atomic_write as aw
 from kiro_crew import cron_script, platform_compat
 from kiro_crew.appearance_packs import store as ap
-from kiro_crew.security import redaction_allow
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -90,18 +89,3 @@ def test_grant_epoch_bump_survives_a_contended_rename(
     assert [
         p.name for p in epochs.parent.iterdir() if p.name.startswith(".grant_epochs.json.")
     ] == []
-
-
-def test_redaction_allow_list_survives_a_contended_rename(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / "redaction-allow" / "hosts.json"
-    monkeypatch.setattr(redaction_allow, "_path_override", path)
-    monkeypatch.setattr(redaction_allow, "_snapshot", None)
-
-    with replace_sharing_violation(match="hosts.json", times=2) as sim:
-        assert redaction_allow.allow_host("default", "example.com") is True
-
-    assert sim["n"] == 3
-    assert json.loads(path.read_text("utf-8")) == {"default": ["example.com"]}
-    assert _leftover_temps(path.parent) == []

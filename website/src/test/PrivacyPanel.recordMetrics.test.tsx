@@ -174,6 +174,38 @@ describe('PrivacyPanel metric-recording switch', () => {
     expect(patchConfig).not.toHaveBeenCalled()
   })
 
+  it('lets recording be turned on when the only destination is the build\'s Kiro telemetry', async () => {
+    // The privacy notice names that destination, so the server accepts the write.
+    mount({
+      otlp_configured: true,
+      enable_refused: false,
+      otlp_destinations: [{ name: 'kiro-telemetry', source: 'provider', locked: true }],
+    })
+    const sw = await screen.findByRole('switch', { name: LABEL })
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled', 'true'))
+    expect(await screen.findByText('Turning recording on also sends product usage metrics to Kiro telemetry.')).toBeInTheDocument()
+    await userEvent.click(sw)
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', true))
+  })
+
+  it('names the Kiro telemetry export apart from a collector still waiting for the opt-in', async () => {
+    mount({
+      enabled: true,
+      otlp_configured: true,
+      export_permitted: false,
+      enable_refused: true,
+      otlp_destinations: [
+        { name: 'ops', source: 'otlp_endpoints', locked: false },
+        { name: 'kiro-telemetry', source: 'provider', locked: true },
+      ],
+    })
+    await screen.findByRole('switch', { name: LABEL })
+    expect(await screen.findByText(/Your own collectors get nothing until telemetry.enabled: true/)).toBeInTheDocument()
+    expect(screen.queryByText(/nothing is sent to them/)).not.toBeInTheDocument()
+    expect(screen.getByText('Product usage metrics are being sent to Kiro telemetry.')).toBeInTheDocument()
+    expect(screen.queryByText(/being sent off this machine, to the collectors/)).not.toBeInTheDocument()
+  })
+
   it('still lets an exporting host turn recording OFF', async () => {
     // Reachable: an endpoint added after enabling, or enabled via the CLI/env with
     // one already set. Disabling is exactly what such a host most needs, and the
@@ -293,12 +325,13 @@ describe('PrivacyPanel metric-recording switch', () => {
     // into one priority chain let the pin hide the fact that metrics leave the box.
     mount({ enabled: true, env_pinned: true, env_var: 'KIROCREW_TELEMETRY', otlp_configured: true })
     const sw = await screen.findByRole('switch', { name: LABEL })
-    // Both notes are announced, not just the first. Assert through the idrefs
-    // rather than by text: the panel also prints KIROCREW_TELEMETRY_DISABLED in
-    // its CLI section, so a text query would be ambiguous.
+    // Both notes are announced after the row's own text, not just the first.
+    // Assert through the idrefs rather than by text: the panel also prints
+    // KIROCREW_TELEMETRY_DISABLED in its CLI section, so a text query would be
+    // ambiguous.
     await waitFor(() => {
       const ids = (sw.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
-      expect(ids).toHaveLength(2)
+      expect(ids).toHaveLength(3)
     })
     const ids = (sw.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
     const texts = ids.map(id => document.getElementById(id)?.textContent ?? '')
@@ -322,16 +355,14 @@ describe('PrivacyPanel metric-recording switch', () => {
     mount({ env_pinned: true })
     const sw = await screen.findByRole('switch', { name: LABEL })
     await waitFor(() => expect(sw).toHaveAttribute('aria-disabled', 'true'))
-    const describedBy = sw.getAttribute('aria-describedby')
-    expect(describedBy).toBeTruthy()
-    const note = document.getElementById(describedBy as string)
-    expect(note?.textContent ?? '').toMatch(/KIROCREW_TELEMETRY environment variable/)
+    expect(sw).toHaveAccessibleDescription(/KIROCREW_TELEMETRY environment variable/)
   })
 
-  it('drops the description link when nothing is pinning the switch', async () => {
+  it('drops the pin and egress notes when nothing is pinning the switch', async () => {
     mount()
     const sw = await screen.findByRole('switch', { name: LABEL })
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
-    expect(sw).not.toHaveAttribute('aria-describedby')
+    // Only the row's own text is left as the description.
+    expect(sw.getAttribute('aria-describedby') ?? '').not.toMatch(/record-metrics-(pin|egress)-note/)
   })
 })

@@ -88,24 +88,31 @@ _MAX_QUIET_STREAK = 10
 _JUDGE_QUIET_STREAK_FLOOR_DEFAULT = _MAX_QUIET_STREAK
 
 #: Quiet ticks before a work-ledger watch's floor turn when no worker has reported
-#: since the last delivered turn: four times the shipped floor. A floor turn then
-#: re-reads a long conductor chat to find the board as the conductor left it, since
-#: a worker's report and a stalled worker are WAKEs the probe raises on its own. The
-#: longer floor still DELIVERS, so silence stays bounded -- which also covers a
-#: stall the probe's rate limit folded forward without waking.
-_IDLE_LEDGER_QUIET_FLOOR = 4 * _MAX_QUIET_STREAK
+#: since the last delivered turn. Equal to the shipped floor (10 ticks, about
+#: hourly): the conductor's goal skill treats that turn as an active check of each
+#: open item, so it is worth having on the shipped cadence. A worker's report and a
+#: stalled worker are still WAKEs the probe raises on its own.
+_IDLE_LEDGER_QUIET_FLOOR = _MAX_QUIET_STREAK
+
+#: Quiet ticks before the floor turn of a pull-request watch that only waits on a
+#: reviewer (:func:`_pr_waits_only_on_review`): four times the shipped floor, since
+#: nothing the owner can do moves it and a floor turn only re-reads the same page.
+_REVIEW_WAIT_QUIET_FLOOR = 4 * _MAX_QUIET_STREAK
 
 
 def _quiet_floor(loop: NudgeLoop, monitor: MonitorState) -> int:
     """Quiet ticks before this monitor's floor turn.
 
     The shipped floor, except for a work-ledger watch whose ledger is idle (see
-    :func:`_ledger_is_idle`) and a pull request that only waits on a reviewer (see
-    :func:`_pr_waits_only_on_review`), which wait :data:`_IDLE_LEDGER_QUIET_FLOOR`.
+    :func:`_ledger_is_idle`), which waits :data:`_IDLE_LEDGER_QUIET_FLOOR`, and a
+    pull request that only waits on a reviewer (see :func:`_pr_waits_only_on_review`),
+    which waits :data:`_REVIEW_WAIT_QUIET_FLOOR`.
     Re-read every tick, so a worker report landing mid-streak, or a lane going
     red, puts the floor back to the shipped length at once.
     """
-    if _ledger_is_idle(loop, monitor) or _pr_waits_only_on_review(monitor):
+    if _pr_waits_only_on_review(monitor):
+        return _REVIEW_WAIT_QUIET_FLOOR
+    if _ledger_is_idle(loop, monitor):
         return _IDLE_LEDGER_QUIET_FLOOR
     return _MAX_QUIET_STREAK
 
@@ -117,7 +124,7 @@ def _pr_waits_only_on_review(monitor: MonitorState) -> bool:
     and ``REVIEW_REQUIRED``. Nothing the owner can do moves it, so a floor turn
     every :data:`_MAX_QUIET_STREAK` ticks only re-reads the same page. A review or
     a comment changes the reading, which the judge and the typed probe still wake
-    on at once; the longer floor bounds only the silence.
+    on at once; :data:`_REVIEW_WAIT_QUIET_FLOOR` bounds only the silence.
     """
     from kiro_crew import autonudge_judge as judge
 
@@ -708,6 +715,21 @@ async def _publish_pr_observation(
     return unchanged, {"digest": this_digest, "remarks": ids[:_JUDGE_PR_SEEN_REMARKS]}
 
 
+def _terminal_note(observation: Any, merged: bool) -> str:
+    """The one-line result the owed final turn opens with, from the typed reading.
+
+    ``""`` when nothing was read (a kernel TERMINAL on an unusable target); the
+    fire then falls back to the monitor's own target and outcome.
+    """
+    if observation is None:
+        return ""
+    head = str(getattr(observation, "head", "") or "")[:12] or "unknown"
+    if merged:
+        when = str(getattr(observation, "merged_at", "") or "") or "an unknown time"
+        return f"PR {observation.subject} merged at {when}, head {head}."
+    return f"PR {observation.subject} closed without merging, head {head}."
+
+
 async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool:
     """Observe this loop's subject cheaply; say whether to skip the turn.
 
@@ -977,14 +999,14 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             short_digest = _short_reading_digest(monitor)
 
     if terminal:
-        # The subject is finished (a merged or closed pull request): stop the loop
-        # rather than fire. Not counted as a wake, since no turn is delivered.
-        #
-        # The finish is recorded ON THE MONITOR, or the record reads as merely
-        # paused and the goal popover's Save would revive a watch on a merged subject.
-        # ONE transition with no ``update`` call and no await between the marks: one
-        # durable write commits them, and ``active = False`` is honoured by the
-        # re-arm guard below.
+        # The subject is finished (a merged or closed pull request). The session
+        # that armed the watch is owed ONE final turn carrying that news, on every
+        # surface: a dashboard worker or conductor waiting on the merge has nothing
+        # else to wake it, since the bell notice reaches only the user. So the turn
+        # is marked OWED durably, the loop fires, and settlement (outcome, stop,
+        # bell) runs once delivery is confirmed. No outcome is recorded meanwhile,
+        # so a restart finds a plain live loop, and a refused fire (a busy session)
+        # leaves the debt for the next tick, which observes the same terminal state.
         #
         # Only MERGED is a success; CLOSED WITHOUT MERGING needs the user. Read as
         # typed facts, never prose.
@@ -993,15 +1015,6 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # ``merged`` is its success signal; ``merged`` is never true for a work ledger.
         # No key at all (an unusable target) is not a success.
         succeeded = merged or probes.terminal_succeeded(verdict.keys)
-        # EVERY field this transition writes, including the loop's own
-        # ``stopped_reason``, or a rollback leaves a live loop tagged as terminated.
-        restore = (
-            monitor.outcome,
-            monitor.stopped_reason,
-            monitor.stopped_at,
-            loop.active,
-            loop.stopped_reason,
-        )
         if merged:
             subject_state = "merged"
         elif observation:
@@ -1013,16 +1026,10 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             loop.id,
             subject_state,
         )
-        # SERIALIZED against ``update`` with the MAINTENANCE lock it holds, not
-        # ``_lock``: otherwise a retarget could bind a NEW subject onto the loop this
-        # branch just deactivated, a watch that never ticks. Lock ORDER matches
-        # ``update``'s (maintenance, then ``_lock``) so they cannot deadlock.
-        #
-        # A CHANNEL loop learns of the finish through a delivered TURN, so its
-        # settlement waits: if the final fire is refused (a busy thread) nothing would
-        # re-arm. Mark the turn OWED durably and settle once it lands; no outcome is
-        # recorded meanwhile, so a restart finds a plain live loop.
-        if is_channel_key(loop.slot_key):
+        # A subject with no pull-request reading (a kernel TERMINAL on a target
+        # that cannot be named, e.g. a work ledger with no conductor) has no result
+        # to report, so a dashboard loop on one settles now with the bell alone.
+        if observation is not None or is_channel_key(loop.slot_key):
             classification = "success" if succeeded else "blocked"
             if monitor.terminal_delivered == classification:
                 # Reached only once the settlement-only re-probes stayed
@@ -1031,20 +1038,37 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
                 return await _settle_observed_delivered_terminal(
                     self, loop, monitor, binding, classification
                 )
-            if not monitor.terminal_pending:
+            # A debt owed for a DIFFERENT ending (closed, then reopened and merged
+            # while the session was busy) is replaced, so the turn reports this one.
+            if monitor.terminal_pending != classification:
+                owed_before = (monitor.terminal_pending, monitor.terminal_note)
                 monitor.terminal_pending = classification
+                monitor.terminal_note = _terminal_note(observation, merged)
                 try:
                     # Same writer as the settlements, for the same reason: a
                     # cancelled ``_persist_locked`` releases ``_lock`` mid-write.
                     async with self._lock:
                         await self._write_monitor_snapshot_locked()
                 except Exception:
-                    monitor.terminal_pending = ""
+                    monitor.terminal_pending, monitor.terminal_note = owed_before
                     logger.exception(
                         "AutoNudge: could not record the owed terminal turn for %s",
                         loop.id,
                     )
             return False
+        # EVERY field this transition writes, including the loop's own
+        # ``stopped_reason``, or a rollback leaves a live loop tagged as terminated.
+        restore = (
+            monitor.outcome,
+            monitor.stopped_reason,
+            monitor.stopped_at,
+            loop.active,
+            loop.stopped_reason,
+        )
+        # SERIALIZED against ``update`` with the MAINTENANCE lock it holds, not
+        # ``_lock``: otherwise a retarget could bind a NEW subject onto the loop this
+        # branch just deactivated, a watch that never ticks. Lock ORDER matches
+        # ``update``'s (maintenance, then ``_lock``) so they cannot deadlock.
         settle_lock = await self._acquire_mutation_lock(loop.id)
         if settle_lock is None:
             # Maintenance has claimed this loop. Not ours to settle: fire, and
@@ -1160,7 +1184,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             )
 
     if monitor.terminal_pending and still_open:
-        # The subject came BACK. A channel loop defers its settlement as a durable
+        # The subject came BACK. A gated loop defers its settlement as a durable
         # debt because only a delivered turn can carry the news, and that debt
         # outlives the observation that created it -- so a closed PR that is
         # REOPENED while the final fire is still owed would have its next

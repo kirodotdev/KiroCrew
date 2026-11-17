@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -414,6 +415,7 @@ async def _claim_plan_dir(work_dir: Path) -> tuple[str, Path]:
         try:
             _new_id, task_dir = worker.result()
         except Exception:
+            # The claim failed, so there is no directory to remove.
             pass
         else:
             try:
@@ -1228,7 +1230,10 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     agent = body.get("agent", "")
+    # bool("false") is True: the shared reader maps the usual spellings, and any
+    # other value keeps the same truth test as before.
     fresh = body.get("fresh", False)
+    fresh = _coerce_bool(fresh, bool(fresh))
     workspace_dir = body.get("workspace_dir", "")
     # Same provenance gate as /start: an app/proxy-embedded caller cannot mint
     # trust on the resume/execute path either (no source claim here — the run

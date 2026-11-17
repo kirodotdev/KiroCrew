@@ -298,6 +298,7 @@ def _scan_installed_dev_apps() -> set[str]:
         try:
             meta = _read_installed(entry.name)
         except Exception:
+            # An install record that fails to load is left out, like a missing one.
             continue
         if meta is not None and meta.dev:
             keep.add(entry.name)

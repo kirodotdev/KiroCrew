@@ -7,6 +7,10 @@ and every AWS, SSM and prompt seam is a stand-in: nothing runs ``aws`` or reads 
 
 from __future__ import annotations
 
+import os
+import shlex
+import shutil
+import subprocess
 from unittest import mock
 
 import pytest
@@ -16,6 +20,7 @@ from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.launch_state import LaunchState
 from kiro_crew.cloud.login import LoginPrompt
 from kiro_crew.cloud.login_target import KiroLoginTarget
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 ARGS = ("i-0abc", "dev", "us-east-1")
 
@@ -106,6 +111,60 @@ class TestStreamProgress:
         out = capsys.readouterr().out
         assert out.count("elapsed") == 1  # once 30 s pass with nothing new, not every poll
         assert "still working… 0:31 elapsed" in out
+
+    @pytest.mark.skipif(
+        os.name == "nt" or shutil.which("bash") is None, reason="runs the remote command in bash"
+    )
+    def test_only_the_bootstrap_phase_lines_stream_from_a_noisy_setup_log(
+        self, monkeypatch, capsys, slept, tmp_path
+    ):
+        setup_log = tmp_path / "kirocrew-setup.log"
+        markers = [
+            # The bytes the bootstrap template echoes, product name as it spells it.
+            "=== KiroCrew bootstrap starting Fri Nov 13 12:00:00 UTC 2026 ===",  # brand-ok
+            "--- installing Node.js ---",
+            "--- fetching + installing KiroCrew ---",  # brand-ok
+            "BOOTSTRAP FAILED: install.sh failed",
+        ]
+        noise = [
+            ".dist.next-29160-922f8f64/assets/heic-to-B9edJ3jv.js  3,150.90 kB │ gzip: 791.62 kB",
+            "  git switch -",
+            "Updating files:   6% (1616/26049)",
+            "npm warn deprecated inflight@1.0.6: This module is not supported",
+        ]
+        # The second poll's markers sit under more than six raw lines, as on a real build.
+        polls = [[markers[0], noise[2], markers[1]], noise * 3 + [markers[2]] + noise * 3]
+        # install.sh's spinner rewrites one line with bare \r frames; a phase line can follow it.
+        spinner = "\r  ⠋ Installing npm packages & building React app…\r"
+        polls[1].insert(len(noise), spinner + markers[3])
+
+        def run_on_this_host(instance_id, command, profile, region, **kwargs):
+            with setup_log.open("a", encoding="utf-8") as fh:
+                fh.write("".join(f"{ln}\r\n" for ln in polls.pop(0)))
+            local = command.replace("/var/log/kirocrew-setup.log", shlex.quote(str(setup_log)))
+            proc = subprocess.run(
+                ["bash", "-c", local],
+                capture_output=True,
+                encoding="utf-8",
+                timeout=FALLBACK_TIMEOUT_SECS,
+            )
+            return ssm.CommandResult("Success", proc.stdout, proc.stderr, proc.returncode)
+
+        instance = _event("e1", "Instance", "CREATE_IN_PROGRESS", physical_id="i-0abc")
+        monkeypatch.setattr(ec2, "list_stack_events", lambda *_a: [instance])
+        monkeypatch.setattr(ssm, "run_command", run_on_this_host)
+
+        wizard._stream_progress(
+            _worker(True, True, False), "crew-a", "dev", "us-east-1", set(), set(), ""
+        )
+
+        out = capsys.readouterr().out
+        box_lines = [ln.strip() for ln in out.splitlines() if "[box]" in ln]
+        assert sorted(box_lines) == sorted(f"[box] {m}" for m in markers)
+        for raw in noise + [spinner]:
+            assert raw.strip() not in out
+        assert out.count("full log: /var/log/kirocrew-setup.log on the instance") == 1
+        assert polls == []
 
 
 class TestEnsureRunning:
@@ -214,7 +273,7 @@ def test_the_bootstrap_log_tail_is_best_effort(monkeypatch, outcome, expected):
     assert wizard._fetch_bootstrap_log(*ARGS) == expected
     args, kwargs = run.call_args
     assert (args[0], args[2:]) == ("i-0abc", ("dev", "us-east-1"))
-    assert "tail -n 6 /var/log/kirocrew-setup.log" in args[1]
+    assert "< /var/log/kirocrew-setup.log | grep -aE '^(=== |--- |BOOTSTRAP FAILED)'" in args[1]
     assert kwargs == {"run_as": "root", "total_wait": 30}
 
 

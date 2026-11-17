@@ -389,7 +389,7 @@ class TestOutboundTableSafety:
     def test_converted_output_is_rescanned_for_exfiltration_urls(self) -> None:
         from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 
-        url = "https://attacker.example/c?x=" + "q" * 300
+        url = "https://attacker.example/c?access_token=" + "q" * 300
         table = (
             "| Request | Result | Notes |\n"
             "| --- | --- | --- |\n"
@@ -400,7 +400,7 @@ class TestOutboundTableSafety:
         rendered = renderer.render_tables_for_target(table)
 
         assert url not in rendered
-        assert "[REDACTED:" in rendered
+        assert "https://attacker.example/c?access_token=[REDACTED: credential]" in rendered
 
 
 class TestPerTargetPolicies:

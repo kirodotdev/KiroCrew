@@ -114,6 +114,7 @@ dashboard's Preview tab frames the URL, and a pod's gateway refuses to be framed
 by any other origin (`X-Frame-Options: SAMEORIGIN`, CSP `frame-ancestors 'self'`),
 so the tab stays blank even when the pod answers 200 on the same host. Hand the
 user a link to open in a browser tab instead: the `open:` line `pod_up` prints,
+with the `token:` line's value put in place of `<token>` (the line leaves it out),
 opened within its 5-minute window. The pod binds loopback only, so when it runs on
 a remote dev box and the user browses from a laptop, give them an SSH tunnel to
 start first (`ssh -L <port>:127.0.0.1:<port> <host>`). An agent cannot mint that

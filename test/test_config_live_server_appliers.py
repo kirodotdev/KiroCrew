@@ -55,7 +55,10 @@ class TestServerAppliers:
         """The workflow ceiling and the channel caps are bound by their OWNERS'
         constructors (``live.bind``), so the dashboard registers nothing for them."""
         subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
-        assert not any("workflow_run_timeout" in n or "channel" in n for n in subs)
+        # `dashboard.channels_enabled` is the Channels page's sidebar switch, a plain
+        # dashboard setting whose applier only pushes a refresh frame; no owner binds it.
+        owner_bound = [n for n in subs if n != "dashboard.channels_enabled"]
+        assert not any("workflow_run_timeout" in n or "channel" in n for n in owner_bound)
 
     @pytest.mark.asyncio
     async def test_browser_settings_written_outside_the_dashboard_push_a_refresh(self) -> None:
@@ -400,7 +403,7 @@ class TestServerAppliers:
         state.push_refresh.assert_not_called()
         apply(
             ConfigChange(
-                old=cfg, new=cfg, changed=frozenset({"dashboard.feature_previews.crew_mode"})
+                old=cfg, new=cfg, changed=frozenset({"dashboard.feature_previews.explore"})
             )
         )
         state.push_refresh.assert_called_once_with("config")
@@ -422,6 +425,24 @@ class TestServerAppliers:
         apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.folder_sort"})))
         state.push_refresh.assert_not_called()
         apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.command_bar_enabled"})))
+        state.push_refresh.assert_called_once_with("config")
+
+    def test_a_channels_switch_change_tells_every_dashboard_to_refresh(self) -> None:
+        """`kirocrew app enable channels` reaches open dashboards.
+
+        Channels' sidebar row and Settings row read a config query that never goes
+        stale on its own, so only a refresh frame makes them re-read the switch.
+        """
+        state = SimpleNamespace(
+            workflow_service=None, channel_manager=None, push_refresh=MagicMock()
+        )
+        sub = self._register(state)["dashboard.channels_enabled"]
+        assert sub.prefixes == ("dashboard.channels_enabled",)
+        apply = sub.callback()
+        cfg = KiroCrewConfig()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.folder_sort"})))
+        state.push_refresh.assert_not_called()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.channels_enabled"})))
         state.push_refresh.assert_called_once_with("config")
 
     @pytest.mark.asyncio
@@ -619,8 +640,11 @@ class TestServerAppliers:
             "agent.crew_mode_agent",
             "dashboard.feature_previews",
             "dashboard.stale_wake",
+            "dashboard.chat_runtime_sharing_toggle",
             "apps",
+            "agents.show_sessions_in_list",
             "dashboard.command_bar_enabled",
+            "dashboard.channels_enabled",
             "dashboard.terminal.enabled",
             "crewmate.harness_fallback",
         }

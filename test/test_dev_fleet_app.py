@@ -34,7 +34,7 @@ from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
 
 def _make_hmac_app():
     app = web.Application(middlewares=[mod.hmac_proxy_middleware])
-    app.router.add_get("/health", mod.api_health)
+    app.router.add_get("/health", mod.api_liveness)
     app.router.add_get("/api/fleet", mod.api_health)  # reuse for HMAC testing
     return app
 

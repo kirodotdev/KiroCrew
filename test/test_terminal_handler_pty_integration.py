@@ -794,12 +794,9 @@ class TestTerminalWsIntegration:
                     if msg.type == web.WSMsgType.TEXT:
                         frame = json.loads(msg.data)
                         if frame.get("type") == "ready":
-                            # The reconnecting client learns which shell this
-                            # PTY launched. It mints the session id and opens
-                            # the socket without asking what got spawned, so
-                            # the ready frame is its only source -- and a
-                            # caller writing shell syntax into the PTY has to
-                            # know which shell will read it.
+                            # The ready frame is the reconnecting client's only
+                            # way to learn which shell this PTY runs, and it
+                            # must know before it types shell syntax.
                             assert frame["shell"] == sess.shell
                             assert frame["shell"]
                             # Fence-nameable shells are reported by ABSOLUTE
@@ -1013,8 +1010,8 @@ class TestTerminalWsIntegration:
 
     @pytest.mark.asyncio
     async def test_ws_windows_spawns_conpty(self, monkeypatch, tmp_path):
-        """On Windows a new WS session spawns a ConPTY-backed shell instead of
-        the old 'not supported' refusal. WindowsPty is mocked so the test needs
+        """On Windows a new WS session spawns a ConPTY-backed shell. WindowsPty
+        is mocked so the test needs
         no real pseudo-console (and runs on POSIX CI without pywinpty); forcing
         IS_WINDOWS makes the exercised code path identical on Windows and POSIX.
         """
@@ -1168,16 +1165,9 @@ class TestTerminalWsIntegration:
             "shell never echoed the readiness probe — PTY input/echo " "path is not live"
         )
 
-        # Run a long-lived sleep in the foreground; drain until we see
-        # the command echoed back (so we know the shell is processing
-        # it, not buffering it pre-prompt). The duration is chosen to be
-        # far larger than the SIGINT-verification budget below: a
-        # genuinely dropped SIGINT must leave `sleep` running for the
-        # whole budget, so it can never end on its own and let the shell
-        # run the queued marker echo (which would be a false pass). Here
-        # this drain WANTS the line-discipline echo — it only proves the
-        # shell received the input, so matching the echoed command text
-        # is correct.
+        # A foreground job that outlives the SIGINT budget below, so a dropped
+        # SIGINT cannot be rescued by `sleep` ending on its own. This drain only
+        # proves the input arrived, so matching the line-discipline echo is right.
         await ws.send_bytes(b"sleep 120\n")
         echoed = await _drain_ws_until(
             ws,
@@ -1189,19 +1179,12 @@ class TestTerminalWsIntegration:
             f"input may not have reached an interactive shell: {echoed[-200:]!r}"
         )
 
-        # The echo above is emitted by the line discipline the instant the
-        # bytes arrive -- BEFORE the shell has read the line and put ``sleep``
-        # in the foreground. A ``\x03`` that lands in that window is a VINTR
-        # on a canonical-mode PTY: the kernel FLUSHES the unread ``sleep 120``
-        # line and signals the shell at its prompt, which redraws it and then
-        # runs the marker echo -- a pass with no ``sleep`` ever born, and so
-        # no evidence about whether the child would have received SIGINT. The
-        # sweep saw exactly that: the run that passed took 48 ms while the
-        # four that failed showed ``sleep`` alive with SIGINT ignored. So wait
-        # until the terminal's foreground process group differs from the
-        # shell's own before the first Ctrl+C: bash runs a job in its own
-        # group and hands it the terminal, so that transition IS ``sleep``
-        # being the thing Ctrl+C will reach.
+        # The echo arrives BEFORE the shell has read the line. A ``\x03`` sent
+        # then is a VINTR that flushes the unread ``sleep 120`` and signals the
+        # shell at its prompt, so the marker runs with no ``sleep`` ever born: a
+        # pass that proves nothing. Wait until the terminal's foreground group
+        # leaves the shell's own; bash gives a job its own group, so that switch
+        # means ``sleep`` is what Ctrl+C will reach.
         sess = registry["sigint-sess"]
         shell_pgid = sess.proc.pid
         job_in_foreground = await _drain_ws_while(
@@ -1215,30 +1198,15 @@ class TestTerminalWsIntegration:
             f"(shell {shell_pgid})"
         )
 
-        # Deliver SIGINT and confirm the child actually received it.
-        # This step is racy against shell scheduling on a loaded CI host:
-        # under this class's xdist integration group the forked shell /
-        # reader thread can go unscheduled past a fixed budget, so a single
-        # marker drain can time out even when delivery would eventually
-        # succeed. Handle it by re-poking with Ctrl+C and re-probing the
-        # marker until the shell runs it, rather than the old "\x03
-        # once, wait for a prompt redraw, probe once" — a login shell on a
-        # minimal host may render no prompt at all (see the readiness-gate
-        # note above), which made the prompt drain a pure time sink and
-        # left the single probe to absorb the whole race.
+        # Deliver SIGINT and confirm the child got it. On a loaded host the
+        # shell can go unscheduled past one drain's budget, so each round sends
+        # Ctrl+C again and re-probes; no prompt is awaited, since a minimal
+        # login shell may print none.
         #
-        # EXECUTION-only marker: the probe command is written so the PTY
-        # line-discipline echo of our own keystrokes never contains the
-        # search token. The typed bytes are ``echo SIG''INT_OK`` (an
-        # empty '' splits the literal), so the echoed input reads
-        # ``SIG''INT_OK`` — no ``SIGINT_OK`` substring — while only the
-        # shell's *execution* of the echo emits the concatenated
-        # ``SIGINT_OK`` on stdout. A match therefore proves the shell ran
-        # a command, i.e. SIGINT killed the foreground ``sleep`` and
-        # returned the shell to its prompt. Matching the bare echoed input
-        # (the previous version) let the test pass even when SIGINT was
-        # never delivered — a false pass that would hide a real
-        # terminal-signal regression.
+        # EXECUTION-only marker: the typed ``echo SIG''INT_OK`` echoes back
+        # with the '' still in it, so only the shell RUNNING the echo prints
+        # ``SIGINT_OK``. A match proves SIGINT ended ``sleep`` and the shell
+        # took the next command; matching the echo would pass with no signal.
         found = False
 
         async def poke_and_probe() -> bool:
@@ -1360,7 +1328,7 @@ class TestTerminalWsIntegration:
 
         assert b"KC=PROFILE_OK." in out, (
             "a login-guarded profile stanza did not run: the terminal is not a "
-            "login shell (#5885). Observed PTY tail: "
+            "login shell. Observed PTY tail: "
             f"{out[-400:]!r}"
         )
         assert b"BASHRC_WRONG" not in out
@@ -1380,12 +1348,19 @@ class TestTerminalWsIntegration:
         Bash 5.1+ lets `PROMPT_COMMAND+=(...)` turn the exported scalar into an
         array whose element zero is still the hook, so a scalar-equality test
         alone would match and unset the WHOLE array — taking the profile's own
-        element with it and silently disabling it after the first prompt.
+        element with it and silently disabling it after the first prompt. The hook
+        drops only element zero and shifts the rest down. A systemd host's
+        ``/etc/profile.d`` appends its own element ahead of this profile's, so the
+        probe reads the LAST element rather than a fixed index.
         """
         home = tmp_path / "home"
         home.mkdir()
         (home / ".bash_profile").write_text(
-            "export KC_5885_PROFILE=PROFILE_OK\n" "PROMPT_COMMAND+=(true)\n"
+            "export KC_5885_PROFILE=PROFILE_OK\n"
+            # What systemd's /etc/profile.d OSC-context script does, so every
+            # host exercises the two-element shape, systemd or not.
+            "PROMPT_COMMAND+=(:)\n"
+            "PROMPT_COMMAND+=(true)\n"
         )
 
         cfg_file = tmp_path / "config.json"
@@ -1421,7 +1396,10 @@ class TestTerminalWsIntegration:
                                     # EXECUTION-only marker: the typed bytes carry
                                     # PC''1= so the line-discipline echo of our own
                                     # keystrokes cannot satisfy the match below.
-                                    await ws.send_bytes(b"echo PC''1=${PROMPT_COMMAND[1]:-GONE}.\n")
+                                    await ws.send_bytes(
+                                        b"echo PC''ALL=[${PROMPT_COMMAND[*]}] "
+                                        b"PC''1=${PROMPT_COMMAND[${#PROMPT_COMMAND[@]}-1]:-GONE}.\n"
+                                    )
                             elif msg.type in _SOCKET_ENDED:
                                 return
 
@@ -1440,6 +1418,12 @@ class TestTerminalWsIntegration:
         assert b"PC1=true." in tail, (
             "the profile's own PROMPT_COMMAND element did not survive the "
             f"readiness hook's self-withdrawal. PTY tail: {tail[-400:]!r}"
+        )
+        # The hook withdrew its own element instead of staying in front of the
+        # profile's: the probe printed every element, and none is the hook.
+        assert b"PCALL=[" in tail and b"KIROCREW_TERMINAL_READY" not in tail, (
+            "the readiness hook stayed in the PROMPT_COMMAND array after the "
+            f"first prompt. PTY tail: {tail[-600:]!r}"
         )
 
     @pytest.mark.skipif(
@@ -1461,14 +1445,12 @@ class TestTerminalWsIntegration:
         in a profile replaces the hook and the marker never fires. Releasing the
         barrier anyway -- on a timeout, or on a line-discipline guess -- risks
         handing a queued command to a profile still blocked in `read`, which
-        consumes it silently: executed never, reported sent. An earlier build shipped such a
-        release and had it reviewed back out.
+        consumes it silently: never executed, yet reported sent.
 
         Every sibling case here covers an arm where the hook SURVIVES: appended
         scalar, appended array, inherited, restored, preserved, blank-inherited.
         This is the arm where it does not. Without it, the barrier could be made
-        to open on a clobbered session and the whole suite would stay green --
-        which is exactly how the reviewed-out release passed local gates.
+        to open on a clobbered session and the whole suite would stay green.
 
         The assertion is deliberately PAIRED. A session that never spawned would
         satisfy "no ready frame" on its own, so the shell is first proved live:
@@ -1476,23 +1458,17 @@ class TestTerminalWsIntegration:
         gated on `shell_ready`, only the frontend's registration is). The point is
         that the shell is genuinely usable while the gateway's barrier stays shut.
 
-        The remedy directions are tracked separately; this pins only the
-        CURRENT deliberate behaviour without obstructing them: directions 1 and 3
-        both keep queued injection fail-closed and change only interactive typing,
-        so both survive this invariant.
+        This pins the fail-closed barrier for queued commands only; a change to
+        interactive typing alone does not break it.
         """
         home = tmp_path / "home"
         home.mkdir()
-        # ASSIGN, not append -- this is the shape that replaces the exported
-        # readiness hook, and it is the assignment (which clobbers the hook), not
-        # the value, that this arm pins. The value is the side-effect-free `:`
-        # no-op rather than a realistic `history -a`, deliberately: a login Bash
-        # sources the system profile chain before this file, and `history -a`
-        # would append to whatever HISTFILE that chain leaves set -- which can be
-        # an absolute path outside tmp_path on a real dev box or CI runner. `:`
-        # drops the hook just as completely while writing nothing anywhere. The
-        # echo is the positive control: a sourced profile's text is not echoed to
-        # the PTY, so seeing it proves execution.
+        # ASSIGN, not append: the assignment is what clobbers the exported
+        # readiness hook, and that is what this arm pins. The value is the
+        # no-op `:` rather than `history -a`, because the system profile chain
+        # may have set an absolute HISTFILE outside tmp_path. The echo is the
+        # positive control: a sourced profile is not echoed, so seeing it
+        # proves the profile ran.
         (home / ".bash_profile").write_text("PROMPT_COMMAND=':'\n" "echo KC_PROFILE_RAN\n")
 
         cfg_file = tmp_path / "config.json"
@@ -1570,8 +1546,8 @@ class TestTerminalWsIntegration:
         assert ready_frames == [], (
             "the readiness barrier OPENED for a session whose profile ASSIGNED "
             "PROMPT_COMMAND and therefore dropped the hook. Releasing here risks "
-            "handing a queued command to a profile still reading input, which is "
-            f"why #7641's release was reviewed out. frames={ready_frames!r}"
+            "handing a queued command to a profile still reading input, so the "
+            f"barrier must stay shut. frames={ready_frames!r}"
         )
         assert shell_ready is False, (
             "shell_ready must stay False while the hook is clobbered (None means "

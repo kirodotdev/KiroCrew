@@ -704,7 +704,7 @@ def _save_slot_to_history(
                 raise
             # The rows just written are judged for display once, now, on the
             # verdict worker (display_verdicts); a cheap hand-off, not the work.
-            _display_verdicts.submit_committed(slot.workspace)
+            _display_verdicts.submit_committed()
             # The staged value is now durable. Flip the live flag HERE, still
             # inside the transcript ``_locked`` block, so a concurrent dirty
             # flush -- which needs this same lock to serialize the slot -- cannot

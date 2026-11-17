@@ -170,7 +170,15 @@ than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-All nine backends carry a live capture reaching all seven required classes.
+The twelve backends carry live evidence for their handshakes and transports. Antigravity's
+`handshake-live.jsonl` was captured without an account, and its `turn-live-*.jsonl` are
+three slices of ONE signed-in Google Antigravity ACP 1.4.4 session. That session
+REPLACED `turn-synthesized.jsonl`, which had guessed a `rawInput.message` MCP spelling
+and a `command_line` twin on the `tool_call` frame; the live turn sends the identity
+in `_meta.mcp` and the arguments under `rawInput.arguments`, and its
+`tool_call_update` carries the snake_case twin. Every shape the synthesized file
+stood in for is now either on the wire in those slices or pinned directly by
+`test/test_acp_antigravity_backend.py`.
 `codex/` also keeps a synthesized `session.jsonl`. Stated plainly because it
 bounds what the corpus proves: a synthesized fixture locks the dispatch layer's
 behaviour against refactoring, which is what it was built for, and it does
@@ -180,6 +188,40 @@ carries that second proof.
 `kiro/notifications.jsonl` is synthesized too, but it is not a required-class
 carrier -- the directory's live file already reaches all seven, and this one pins
 `_kiro.dev/*` members no capture here reaches. Its row says which.
+
+`claude/` keeps eight synthesized files beside its live captures, none a
+required-class carrier, all on claude-agent-acp 0.107.0. Four are synthesized
+from the adapter's source, whose lines each `_meta.note` cites. Four are live
+frames off it, marked synthesized because a live claude capture is held to the
+lane's 0.94.0 pin; each note names what was normalized.
+
+- `plan-checklist.jsonl` (source): the legacy `plan` updates of one TodoWrite
+  turn, ending `entries: []`, as sent to a client that declares no
+  `clientCapabilities.plan`. `plan-checklist-tasks.jsonl` (live frames): the
+  eight `plan` frames of a turn whose model used the Task* tools, each change
+  sent twice. Replayed by `test/test_claude_plan_checklist.py`.
+- `harness-notices.jsonl` (source): the `notice` updates sent to a client that
+  declares `clientCapabilities.session.notices`, and the `current_mode_update` /
+  `config_option_update` pairs of plan mode. Replayed by
+  `test/test_claude_harness_notices.py`.
+- `raw-sdk-workflow.jsonl` and `raw-sdk-background-shell.jsonl` (live frames): a
+  Workflow run and a `run_in_background` Bash command on a session that asked
+  for `_meta.claudeCode.emitRawSDKMessages`, with their `_claude/sdkMessage`
+  task frames and the cycle Claude Code runs on its own when the task ends.
+  Replayed by `test/test_claude_raw_sdk_tasks.py`, with
+  `raw-sdk-tasks-live.jsonl`, the live 0.94.0 capture behind
+  `ACP_BACKENDS_RAW_SDK_TASKS`.
+- `read-image.jsonl` (live frames): a Read of a PNG whose completed
+  `tool_call_update` carries an image block. Replayed by
+  `test/test_claude_read_image_rows.py`.
+- `fast-mode.jsonl` (source): the `fast` on/off select, its
+  `session/set_config_option` reply, and a turn that turned Fast mode off, sent
+  as a warning `notice` and a `config_option_update`. Replayed by
+  `test/test_claude_fast_mode_toggle.py`.
+- `compaction-summary.jsonl` (source): a `/compact` whose `completed`
+  `compaction_update` carries the summary, and an in-turn compaction whose
+  summary streams as `compaction_summary_chunk` updates. Replayed by
+  `test/test_claude_compaction_summary.py`.
 
 ### The rule
 
@@ -228,6 +270,13 @@ inventory (`_kiro/mcp/status`, `_kiro/tools/didChange`,
 `_kiro/steering/documents_changed`, `available_commands_update`) is left out of
 the slice instead.
 
+An ACP model message arrives as `agent_message_chunk` frames split at arbitrary byte
+offsets, so an absolute path in the model's own prose can be cut in half and no literal
+swap can match it. A chunk whose text names the recording host is therefore dropped
+WHOLE, like an inventory: Antigravity's live slices lost the chunks that quoted the
+runtime's allowed-workspace list back at it, and every other frame in them is as the
+wire carried it.
+
 This is not an ordinary tidy-up. These files land in a public repository, and a
 revert cleans HEAD, not history. `internal-content-scan` cannot know a codename it
 has never seen, so it is not a safety net — the review step below is.
@@ -244,6 +293,7 @@ has never seen, so it is not a safety net — the review step below is.
 | `goose/` | `goose` | **live** | Five captures off `goose acp` 1.50.1, with all seven required classes reached live. `handshake-live.jsonl` records initialization, session creation, absent-session load, and listing; `turn-live.jsonl` records a builtin tool permission round trip; `mcp-stdio-mount-live.jsonl` proves a stdio MCP round trip; `mcp-stdio-dropped-live.jsonl` records an unstartable element being dropped without failing session creation; `session-load-live.jsonl` records mode persistence across processes. |
 | `deepseek/` | `deepseek` | **live** | Six captures off `dsh --profile acp` (bridge version 0.0.1; harness package 0.1.5-rc.2 for the id-reuse capture) driving a locally served model. `handshake-live.jsonl`: the initialize response, a `session/new` response, the `session/load` **rejection** (`-32601`, the observation `ACP_BACKENDS_RESUME_WITHOUT_LOAD` rests on) and the `session/list` result. `turn-live.jsonl`: one real turn end to end -- `usage_update`, `tool_call`, `tool_call_update`, `agent_message_chunk` and the `stopReason` response. `mcp-stdio-mount-live.jsonl`: a stdio MCP mount completing a ROUND TRIP -- a broker-stub-shaped element pointing at a real server, then the `tool_call` and result for `mcp__crew-probe__crew_probe_echo` -- which is the observation `ACP_BACKENDS_SESSION_MCP_ARRAY` membership rests on. `mcp-stdio-rollback-live.jsonl`: the same element with an unstartable command, which fails `session/new` WHOLE rather than being dropped. `permission-request-live.jsonl`: the `session/request_permission` frame the harness sends once Crew's gate plugin is composed into it, with the `tool_call` before it and the `completed` update after -- the class #10373 had to synthesize, because without that plugin this harness's sandbox decides a tool call itself and asks for nothing. `tool-call-id-reuse-live.jsonl`: the SAME `toolCallId` (`call_0`) across two consecutive turns of one session, each with its own permission frame and its own terminal update -- the premise the shared gate tripwire's per-call state consumption rests on, captured rather than asserted. Host data pruned under a sweep that refuses to finish if any survives; see `deepseek/README.md`. |
 | `mimocode/` | `mimocode` | **live** | Seven captures off `mimo acp` 0.1.15 (npm `@mimo-ai/cli`), nothing synthesized, all seven required classes reached on the harness's own wire; each file's `_meta.note` says how it was driven. Five used a probe client behind a loopback LiteLLM proxy (`cost` reads `0`; the harness's own Bedrock provider returns empty turns on 0.1.15, XiaomiMiMo/MiMo-Code#1311), two its xiaomi provider through Crew's `AcpClient`. `session-live.jsonl`: shell asks carry `rawInput: {}` and the command rides the `tool_call_update`, in either order. `skip-all-bypass-live.jsonl`: a shell call `completed` unasked after `POST /permission/skip-all`, the tripwire's evidence. `mcp-stdio-mount-live.jsonl`: a stdio MCP round trip under the fused title `crew-probe_crew_probe_echo`. `session-load-live.jsonl`: a second process's `session/load`, its result carrying `modes`. `compact-live.jsonl`: `/compact`, `used` 48430 before, 34571 after. `notebook-edit-live.jsonl`: `notebook_edit`'s argument spellings on `tool_call` and permission frame. `actor-subagent-live.jsonl`: a foreground `actor` asking under its own permission. `agentInfo.name` is `OpenCode` throughout. Ids synthetic, the model select cut to its current value, `available_commands_update` dropped. |
+| `antigravity/` | `antigravity` | **live** | `handshake-live.jsonl`: `initialize`, `session/new` and `session/load` off ACP 1.4.4, driven over stdio with an isolated `GEMINI_HOME` under a deliberately invalid `gemini-api-key`, so it carries no model call. `turn-live-tools.jsonl`, `turn-live-refused.jsonl` and `turn-live-mcp.jsonl`: three slices of ONE signed-in 1.4.4 session (seven prompts: shell, token-path read, view, edit, list, search, MCP), split only to stay under the frame limit. The first slice opens with that session's own `initialize` answer (`agentInfo` `antigravity-acp` `1.4.4`) and its `session/new` answer, so the header's name and version are read off a signed-in wire too. Between them: a shell call stating `rawInput.CommandLine` beside `Cwd`; a read stating `file_path` and raising NO permission frame; an edit stating `TargetFile`, its path repeated in `locations[].path` and `content[].path`; four calls the client rejected, each reported as a `tool_call_update` with status `failed`; and a stdio MCP call stating `_meta.mcp` with its arguments under `rawInput.arguments` and repeated flat. The token-path prompt produced no ACP frame at all: the runtime refuses an outside-workspace read at its own pre-tool boundary, so nothing reaches `session/request_permission`. Removed whole at reduction, named in each file's `_meta.note`: chunks whose text echoed the recording host's absolute paths, and one tool call served by a server the recording host's own config mounts. Ids synthetic, the catalog cut to one public gemini id, inventories dropped. No synthesized file: the `command_line` twin is on the live `tool_call_update` and the MCP argument spellings are on the live call, and the rest is pinned by `test/test_acp_antigravity_backend.py`. |
 
 Replacing any row with a live capture is a strict improvement and needs no
 change to the test. Record it, set `recorded` to `live`, fill in the real

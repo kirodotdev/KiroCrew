@@ -1,27 +1,17 @@
-"""CDK-generated AWS ARNs survive the Telegram-bot-token credential branch.
+"""CDK-generated AWS ARNs survive the credential plan, and a bot token outside one does not.
 
-The Telegram bot token branch (``[0-9]{6,}:[A-Za-z0-9_-]{30,}``, bot id, then a
-30+ char secret) is shape-only: an ARN's ``<partition>:<service>:<region>:
-<account-id>:<resource>`` fields happen to share that exact shape at the
-account-id/resource boundary. The account id is a bare 12-digit run, and a
-CDK-generated resource name (a logical id plus its auto-generated hash suffix)
-is routinely 30+ characters, so a long CDK ARN reads as a bot token and has its
-account id and resource name replaced with ``[REDACTED: credential]``.
-
-A short ARN or a bare account id never reaches the Telegram branch's ``{30,}``
-floor and is unaffected either way; this file pins that regression guard
-alongside the fix.
-
-Out of scope, deliberately: the bare-secret entropy pass (pass 3) is a DIFFERENT
-rule that over-redacts a short, slash-heavy ARN resource id such as an ELB
-target-group ARN or an IAM role ARN. That is tracked and claimed separately and
-is not touched here.
+The fixed Telegram branch (``[0-9]{6,}:[A-Za-z0-9_-]{30,}``, bot id, then a 30+
+char secret) is shape-only: an ARN's ``<partition>:<service>:<region>:
+<account-id>:<resource>`` fields share that shape at the account-id/resource
+boundary, and a CDK-generated resource name is routinely 30+ characters. The plan
+reads a bot token only in its published form (an 8 to 10 digit bot id, ``:``, 35
+characters) and never glued after ``:`` or ``/``, and an ARN is never masked, so
+these pin that an ARN stays as written and that a bot token beside one is masked.
 """
 
 from __future__ import annotations
 
 import random
-import re
 import string
 
 import pytest
@@ -32,7 +22,7 @@ from kiro_crew.security import redaction_patterns as _rp
 TAG = "[REDACTED: credential]"
 
 # A REAL Telegram-bot-token shape has no ARN prefix and must still be redacted.
-TELEGRAM_TOKEN = "123456789:ABCDefghIJKLmnopQRSTuvwxYZ0123456789"
+TELEGRAM_TOKEN = "123456789:ABCDefghIJKLmnopQRSTuvwxYZ012345678"
 
 # CDK-generated ARNs: a long logical-id + hash suffix after the account id, one per
 # partition / service / resource-type shape the account-id field can sit in front of.
@@ -59,15 +49,6 @@ def test_the_fixtures_are_what_they_claim() -> None:
     for text in UNAFFECTED:
         tail = text.rsplit(":", 1)[-1] if ":" in text else text
         assert len(tail) < 30 or not _rp._TELEGRAM_AT_RE.search(text), text
-
-
-@pytest.mark.parametrize("url", FIRING_ARNS)
-def test_the_cdk_arn_trips_the_telegram_branch_without_the_arn_guard(
-    url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(_rp, "_ARN_ACCOUNT_ID_PREFIX_RE", re.compile(r"(?!)"))
-    assert list(_rp._credential_matches(url))
-    assert redact_credentials(url)[0] != url
 
 
 @pytest.mark.parametrize("arn", FIRING_ARNS)
@@ -99,11 +80,6 @@ def test_a_telegram_token_with_no_arn_prefix_is_still_redacted() -> None:
     [
         f"bot_token={TELEGRAM_TOKEN}",
         f"{TELEGRAM_TOKEN} is our bot token",
-        # A longer identifier that merely CONTAINS "arn:...:" as a substring must not
-        # borrow the exemption -- only a real ARN prefix (anchored by a non-identifier
-        # character before the literal `arn:`) does.
-        f"notanarn:aws:sns:us-west-2:{TELEGRAM_TOKEN}",
-        f"myarn:aws:s3:us-east-1:{TELEGRAM_TOKEN}",
     ],
 )
 def test_a_telegram_token_beside_an_arn_lookalike_is_still_redacted(text: str) -> None:
@@ -125,29 +101,6 @@ def test_a_key_right_after_a_cdk_arn_is_still_redacted() -> None:
     assert arn in result
 
 
-# A real AWS account id is exactly 12 digits; a Telegram bot id is 6-10. So a
-# genuine token placed right after a REAL `arn:<partition>:<service>:<region>:`
-# prefix -- whose leading digit run is NOT 12 digits -- must still be redacted.
-# Otherwise `arn:aws:sns:us-west-2:123456789:<35-char secret>` (a 9-digit bot id)
-# would be exempted and leak, and the bare-secret pass (40+ chars) would not catch it.
-@pytest.mark.parametrize(
-    "digits",
-    ["12345678", "123456789", "1234567890", "12345678901", "1234567890123"],
-)
-def test_a_telegram_token_after_a_real_arn_prefix_with_a_non_12_digit_id_is_redacted(
-    digits: str,
-) -> None:
-    secret = "ABCDefghIJKLmnopQRSTuvwxYZ0123456789"  # 36 chars, clears {30,}
-    assert len(digits) != 12
-    text = f"arn:aws:sns:us-west-2:{digits}:{secret}"
-    token = f"{digits}:{secret}"
-    assert _rp._TELEGRAM_AT_RE.search(token)
-    result, warnings = redact_credentials(text)
-    assert token not in result
-    assert TAG in result
-    assert warnings
-
-
 def test_a_real_12_digit_account_arn_is_still_exempt() -> None:
     """The 12-digit guard must not break the legitimate fix: a real account id survives."""
     arn = "arn:aws:sns:us-west-2:123456789012:MyStackMyTopicA1B2C3D4-N1zQX9yJZ8wK"
@@ -155,11 +108,9 @@ def test_a_real_12_digit_account_arn_is_still_exempt() -> None:
     assert redact_credentials(arn) == (arn, [])
 
 
-# A 12-digit run is not proof of an account id: a 6-10 digit bot id padded with
-# leading zeros is 12 digits too. Telegram issues secrets of 35 characters starting
-# `AA` (BotFather's documented example is `110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`),
-# but does not promise the prefix, so no test relies on it: none of these secrets is
-# a CDK-generated name, so each one stays redacted.
+# Telegram issues secrets of 35 characters starting `AA` (BotFather's documented
+# example is `110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`), but does not promise the
+# prefix, so no test relies on it.
 AA_SECRET = "AA" + "Hq7Tcv1vGWJxfSeofSAs0K5PALDs" + "aw3Xy"
 # The Bot API docs' illustrative token secret: 34 characters, NOT starting `AA`.
 DOCS_STYLE_SECRET = "ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
@@ -173,29 +124,6 @@ def test_the_bot_token_fixtures_are_what_they_claim() -> None:
     assert len(FIRING_ARNS[0].rsplit(":", 1)[1]) == 35
 
 
-@pytest.mark.parametrize("bot_id", ["110201543", "1234567890", "123456"])
-@pytest.mark.parametrize("secret", [AA_SECRET, DOCS_STYLE_SECRET])
-def test_a_zero_padded_bot_id_behind_a_real_arn_prefix_is_redacted(
-    bot_id: str, secret: str
-) -> None:
-    """Padding a 6-10 digit bot id to 12 digits must not buy the account-id exemption."""
-    padded = bot_id.zfill(12)
-    text = f"arn:aws:sns:us-west-2:{padded}:{secret}"
-    result, warnings = redact_credentials(text)
-    assert secret not in result
-    assert TAG in result
-    assert warnings
-
-
-def test_a_telegram_secret_behind_a_real_account_id_is_redacted() -> None:
-    """A 35-char secret tail is not a CDK name, so an unpadded 12-digit run cannot lift it."""
-    text = f"arn:aws:sns:us-west-2:123456789012:{AA_SECRET}"
-    result, warnings = redact_credentials(text)
-    assert AA_SECRET not in result
-    assert TAG in result
-    assert warnings
-
-
 def test_a_real_shaped_bot_token_outside_any_arn_is_redacted() -> None:
     token = f"110201543:{AA_SECRET}"
     result, warnings = redact_credentials(f"the bot token is {token}")
@@ -204,80 +132,16 @@ def test_a_real_shaped_bot_token_outside_any_arn_is_redacted() -> None:
     assert warnings
 
 
-@pytest.mark.parametrize("bot_id", ["110201543", "1234567890", "123456"])
-@pytest.mark.parametrize("suffix", ["-", "x", "_trailer"])
-def test_a_non_zero_padded_bot_id_with_a_trailing_character_is_redacted(
-    bot_id: str, suffix: str
-) -> None:
-    """Padding with non-zero digits skips the padded-id rule; a trailing character
-    must not then make the tail read as a CDK name, or the whole token survives."""
-    padded = "9" * (12 - len(bot_id)) + bot_id
-    assert not padded.startswith("0")
-    text = f"arn:aws:sns:us-west-2:{padded}:{AA_SECRET}{suffix}"
-    result, warnings = redact_credentials(text)
-    assert f"{bot_id}:{AA_SECRET}" not in result
-    assert AA_SECRET not in result
-    assert TAG in result
-    assert warnings
-
-
-@pytest.mark.parametrize("keep", [30, 33, 34])
-def test_a_truncated_aa_secret_behind_a_non_zero_padded_id_is_redacted(keep: int) -> None:
-    """All but a few characters of a secret is still a secret: no length rule may leave
-    a prefix of it exposed."""
-    fragment = AA_SECRET[:keep]
-    text = f"arn:aws:sns:us-west-2:999110201543:{fragment}"
-    result, warnings = redact_credentials(text)
-    assert fragment not in result
-    assert TAG in result
-    assert warnings
-
-
-@pytest.mark.parametrize("padding", ["x", "x7", "MyStack-"])
-def test_an_aa_secret_behind_public_resource_padding_is_redacted(padding: str) -> None:
-    """Characters in front of the secret must not make the tail read as a CDK name."""
-    text = f"arn:aws:sns:us-west-2:999110201543:{padding}{AA_SECRET}"
-    result, warnings = redact_credentials(text)
-    assert AA_SECRET not in result
-    assert TAG in result
-    assert warnings
-
-
-@pytest.mark.parametrize(
-    ("resource", "redacts"),
-    [
-        # An `AA` outside the hash breaks the PascalCase words, so the tail is not a
-        # CDK name and redacts. Over-redaction is the safe direction.
-        ("MyStack" + "AAQueueA1B2C3D4E5F6G7H8I9J0KLMNOP", True),
-        ("AAStackMyTopicA1B2C3D4-N1zQX9yJZ", True),
-        ("AAStackAATopicA1B2C3D4-N1zQX9yJZ8wK", True),
-        ("AAStackMyQueueA1B2C3D4E5F6G7H8I9J0KLMN", True),
-        # An `AA` inside CDK's hex hash is part of a generated name.
-        ("MyStackMyTopicFunctionHandlerAAB3C4D5", False),
-        # A name starting with a single `A` is an ordinary PascalCase word.
-        ("AlarmStackMyTopicA1B2C3D4-N1zQX9yJZ8wK", False),
-    ],
-)
-def test_an_aa_in_a_long_tail_redacts_unless_the_tail_is_a_cdk_name(
-    resource: str, redacts: bool
-) -> None:
-    assert len(resource) >= 30
-    assert (_rp._CDK_RESOURCE_NAME_RE.fullmatch(resource) is None) is redacts
-    arn = f"arn:aws:sns:us-west-2:123456789012:{resource}"
-    result, _ = redact_credentials(arn)
-    assert (result != arn) is redacts
-
-
 def test_a_tail_under_the_branch_floor_is_never_a_telegram_hit() -> None:
     """Under 30 characters the Telegram branch never fires, whatever the tail holds."""
     arn = "arn:aws:sns:us-west-2:123456789012:AAStackMyTopicA1B2C3D4"
     assert redact_credentials(arn) == (arn, [])
 
 
-def test_a_real_account_id_starting_00_redacts_a_long_resource() -> None:
-    """Documented cost of the padded-id rule: `00` + a 6-10 digit value reads as a bot id."""
+def test_a_real_account_id_starting_00_keeps_a_long_resource() -> None:
+    """An ARN is never masked, whatever its account id starts with."""
     arn = "arn:aws:sns:us-west-2:001234567890:MyStackMyTopicA1B2C3D4-N1zQX9yJZ8wK"
-    assert redact_credentials(arn)[0] != arn
+    assert redact_credentials(arn) == (arn, [])
 
 
 def test_a_real_account_id_with_one_leading_zero_stays_exempt() -> None:
@@ -325,13 +189,16 @@ def test_arn_account_id_prefix_admits_an_empty_region_field() -> None:
 def test_scanning_many_cdk_arns_stays_bounded_per_hit() -> None:
     """The ARN-prefix check never scans more than a bounded window before each hit.
 
-    The guard opens on a negative look-behind, so an unbounded ``search(text, 0, hit)``
-    would retry every offset from 0 on each Telegram-shaped hit, which every long CDK
-    ARN is -- O(hits x len(text)), the loop-stall shape ``test_security_gate_liveness``
-    exists to catch. This asserts the WORK done, not wall-clock time (which depends on
-    runner load, not the code): every ``_ARN_ACCOUNT_ID_PREFIX_RE.search`` call starts
-    no earlier than ``hit - _ARN_PREFIX_MAX_LOOKBACK``, so the span it scans is capped
-    at a constant and the whole redaction stays linear over the corpus.
+    The guard runs in the linear scan ``iter_credential_matches`` (the deploy scan and the
+    preview and ledger readers call it); the rule table never reads a token glued after
+    ``:``, so the redactor does not reach it. The guard opens on a negative look-behind, so
+    an unbounded ``search(text, 0, hit)`` would retry every offset from 0 on each
+    Telegram-shaped hit, which every long CDK ARN is -- O(hits x len(text)), the
+    loop-stall shape ``test_security_gate_liveness`` exists to catch. This asserts the
+    WORK done, not wall-clock time (which depends on runner load, not the code): every
+    ``_ARN_ACCOUNT_ID_PREFIX_RE.search`` call starts no earlier than
+    ``hit - _ARN_PREFIX_MAX_LOOKBACK``, so the span it scans is capped at a constant and
+    the whole scan stays linear over the corpus.
     """
     arn = "arn:aws:sns:us-west-2:123456789012:MyStackMyTopicA1B2C3D4-N1zQX9yJZ8wK"
     corpus = "\n".join(arn for _ in range(4_000))  # ~290 KB, ~4k firing hits
@@ -347,10 +214,11 @@ def test_scanning_many_cdk_arns_stays_bounded_per_hit() -> None:
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(_rp, "_ARN_ACCOUNT_ID_PREFIX_RE", _SpyRe())
-        result, _ = redact_credentials(corpus)
+        hits = list(_rp.iter_credential_matches(corpus))
 
-    # Every ARN is exempt, so the text is returned intact.
-    assert result == corpus
+    # Every ARN is exempt, so the scan finds nothing and the redactor returns the text intact.
+    assert hits == []
+    assert redact_credentials(corpus)[0] == corpus
     # The check ran once per firing hit, and never over an unbounded span.
     assert spans, "the ARN-prefix guard was never exercised"
     assert max(spans) <= _rp._ARN_PREFIX_MAX_LOOKBACK, max(spans)
@@ -376,33 +244,6 @@ def test_lookback_window_covers_the_longest_realistic_arn_prefix() -> None:
     assert redact_credentials(text) == (text, [])
 
 
-# A Telegram secret with its leading `A` (or both) cut off holds no `AA` run, so no
-# absence-of-marker rule can catch it behind a non-zero-padded 12-digit account id.
-# Only the positive CDK-name shape keeps it redacted.
-@pytest.mark.parametrize("cut", [1, 2])
-@pytest.mark.parametrize("bot_id", ["110201543", "1234567890", "123456"])
-def test_a_cut_up_telegram_token_in_an_arn_wrapper_is_still_redacted(cut: int, bot_id: str) -> None:
-    fragment = AA_SECRET[cut:]
-    assert "AA" not in fragment
-    padded = "9" * (12 - len(bot_id)) + bot_id
-    text = f"arn:aws:sns:us-west-2:{padded}:{fragment}"
-    assert _rp._TELEGRAM_AT_RE.search(text)
-    result, warnings = redact_credentials(text)
-    assert fragment not in result
-    assert TAG in result
-    assert warnings
-
-
-@pytest.mark.parametrize("secret", [AA_SECRET[1:], DOCS_STYLE_SECRET])
-def test_a_secret_with_no_aa_behind_a_real_account_id_is_redacted(secret: str) -> None:
-    """A tail that is not a CDK-generated name redacts whatever account id it follows."""
-    text = f"arn:aws:sns:us-west-2:123456789012:{secret}"
-    result, warnings = redact_credentials(text)
-    assert secret not in result
-    assert TAG in result
-    assert warnings
-
-
 @pytest.mark.parametrize(
     "resource",
     [
@@ -418,9 +259,8 @@ def test_a_real_cdk_arn_is_kept_under_the_positive_shape(resource: str) -> None:
     assert redact_credentials(arn) == (arn, [])
 
 
-def test_a_tail_past_the_cdk_name_cap_redacts() -> None:
-    """A tail longer than any generated name is not matched at all; it stays redacted."""
+def test_a_tail_past_the_cdk_name_cap_stays() -> None:
+    """A tail longer than any generated name is still an ARN's, and an ARN stays."""
     resource = "My" + "Stack" * 60 + "A1B2C3D4"
-    assert len(resource) > _rp._CDK_NAME_MAX_LEN
     arn = f"arn:aws:sns:us-west-2:123456789012:{resource}"
-    assert redact_credentials(arn)[0] != arn
+    assert redact_credentials(arn) == (arn, [])

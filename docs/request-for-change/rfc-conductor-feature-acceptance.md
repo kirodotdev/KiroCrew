@@ -5,7 +5,7 @@ author: kirocrew agent session, directed by the repository owner
 created: 2026-11-14
 last-audited: 2026-11-14
 audited-at: ed9d0b0161
-doc-pr: null
+doc-pr: 36987
 implementation-prs: []
 tracking-issues: [36985]
 supersedes: []
@@ -27,7 +27,14 @@ Related: [`rfc-conductor-pr-land-tracking.md`](rfc-conductor-pr-land-tracking.md
 (a PR item stays open until it merges; this RFC narrows which items are PR
 items), [`rfc-conductor-work-ledger.md`](rfc-conductor-work-ledger.md) (the
 ledger and evaluator), [`rfc-worker-debate.md`](rfc-worker-debate.md) (the
-debate that produced the plan-reviewer idea this verifier reuses).
+debate that produced the plan-reviewer idea this verifier reuses),
+[`rfc-conductor-drift-check.md`](rfc-conductor-drift-check.md) and its
+amendment from [#36507](https://github.com/kirodotdev/KiroCrew/pull/36507)
+(a corrected bar is never weaker; §3.6 keeps that rule). Open PR
+[#37030](https://github.com/kirodotdev/KiroCrew/pull/37030) adds the
+independent plan reviewer that §3.2 reuses and a split rule close to §3.5;
+merge order: this document first, then #37030 rebases, then the skill PR
+for this RFC rebases onto both.
 
 ## 1. The ask
 
@@ -79,17 +86,37 @@ Two effects follow:
 3. **The ledger bar is a pointer to that evidence.** An intermediate item
    records `{"kind": "file", "path": "<the verifier's evidence file>"}`. The
    conductor reads the file and decides with `accept_eval`, never from the
-   author's own claim.
+   author's own claim. The evidence file must contain a verdict line
+   (`verdict: pass` or `verdict: fail`); a missing or `fail` verdict is never
+   accepted, whether or not the evaluator change in §8 follows. The author
+   item gets a placeholder bar until the verifier is dispatched, and the
+   conductor promotes it to the `file` bar with `action=accept` then, so a
+   patrol never counts a not-yet-written file as a failed attempt.
 4. **Only the final delivery item uses `pr_merged`.** The item that lands the
    work opens the PR and carries `pr_merged` (tracked to merge per
-   `rfc-conductor-pr-land-tracking.md`). Many items may land through one PR.
+   `rfc-conductor-pr-land-tracking.md`), with every repository check, for
+   all the work the intermediate items carried. Many items may land through
+   one PR. No item's code reaches main on evidence alone.
 5. **Split by the feature's parts.** Cut along parts that can each be shown
    working on their own, not along PRs and not along steps of one change.
    The "one per issue" row stays for batches of independent issues.
+6. **A bar only moves toward the goal.** The evidence bar is chosen when the
+   item is written. A bar already set to `pr_checks` or `pr_merged` is never
+   later replaced by a `file` pointer; a mid-round correction stays "never
+   weaker than the goal asks" (the `goal_plan` rule in `_LEDGER_CONDUCTOR_RULES`, `spec_prompts.py`, from #36507).
+7. **The owner report names every evidence acceptance.** In its next report
+   to the owner, the conductor lists each item it accepted on verifier
+   evidence: the item, the evidence file path, the verifier session and the
+   one-line verdict.
 
 The prototype is about 28 added and 11 removed lines across the two skill
-files (`goal-conductor/SKILL.md`, `team-lead/SKILL.md`), with no code change.
-It is built on a local branch only, outside this PR.
+files (`goal-conductor/SKILL.md`, `team-lead/SKILL.md`), built on a local
+branch only, outside this PR. It is not skill text only: the patrol message
+(`PATROL_MESSAGE` in `conductor_patrol.py`) and the `accept_eval` tool text
+(the `accept_eval` tool description in `mcp_work.py`) say "settle a pass with one write", which would close
+an item whose `file` bar exists even with a `fail` verdict. The
+implementation PR changes those two strings to "read the evidence verdict
+first", with a test.
 
 ## 4. What stays
 
@@ -112,15 +139,21 @@ Mitigations:
 
 - **Independence.** The verifier wrote none of the item's work and runs in a
   separate session, so the author does not grade itself.
-- **Evidence, not claims.** The file holds commands and outputs, so the
-  conductor and the person can re-read what was run.
+- **Evidence, not claims.** The file holds commands, outputs and a verdict
+  line, so the conductor and the person can re-read what was run.
+- **The person sees each one.** The owner report names every item accepted
+  on evidence, with its file path and verifier (§3.7).
+- **No weakening mid-round.** A machine bar already set is never swapped for
+  evidence (§3.6).
 - **CI still gates the merge.** The final delivery item carries `pr_merged`;
   every repository check still runs on the PR before anything lands on main.
 - **Read-only verifier.** It never commits, pushes or decides, so a wrong
   verifier can delay an item but not land code.
 
 Known limit: the `file` kind proves the evidence file exists, not what it
-says. The conductor's read of the file is the check. See §8.
+says. Until the evaluator reads the verdict line (§8), the conductor's read
+of that line is the check, and §3.3 forbids accepting a missing or `fail`
+verdict.
 
 ## 6. How it will be tested
 
@@ -138,15 +171,15 @@ here before any status change past `accepted`.
 
 ## 7. Rollback
 
-The change is skill text only. Reverting the skill PR restores the
-evaluator-kind rule; ledger items already written keep valid bars (`file` and
+The change is skill text plus two prompt strings in Python. Reverting the
+implementation PR restores the evaluator-kind rule; ledger items already written keep valid bars (`file` and
 `pr_merged` exist today), so nothing needs migration.
 
 ## 8. Open questions
 
-1. Should the `file` bar check a verdict line inside the evidence file (for
-   example `verdict: pass`), so the evaluator rejects a "fail" file on its
-   own? That is a small evaluator change and would need its own PR.
+1. Should the evaluator itself read the verdict line, so a `fail` file is
+   rejected without the conductor's read? The skill rule in §3.3 holds
+   either way; the evaluator change would be its own small PR.
 2. Which session verifies when no plan reviewer exists: a fresh worker per
    item, or one verifier per round? The cost is one extra session per round
    at most if shared.

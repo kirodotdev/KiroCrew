@@ -213,6 +213,24 @@ async def test_a_forced_restart_still_waits_on_an_inbound_callback_reservation(g
     assert "did not settle" in _refused_detail(gateway)
 
 
+def test_a_restart_gives_an_unsettled_callback_thirty_seconds_then_defers(gateway):
+    """The drain bound is 30 s of loop time: long enough to settle, short enough to answer.
+
+    Runs on virtual time, so the 30 s cost nothing and the deadline is read exactly.
+    """
+    from turn_harness import VirtualClock, _VirtualTimeLoop
+
+    gateway.sessions.inbound_callback_count = 1
+    clock = VirtualClock(start=0.0)
+
+    with asyncio.Runner(loop_factory=lambda: _VirtualTimeLoop(clock)) as runner:
+        admission = runner.run(restart_admission.admit_restart(gateway.orch, force=True))
+
+    assert admission.reason == restart_admission.REASON_DRAIN
+    assert 30.0 <= clock.elapsed() < 30.5
+    assert not gateway.sessions.fenced
+
+
 @pytest.mark.asyncio
 async def test_a_forced_restart_does_not_wait_on_a_claim_held_by_a_running_turn(gateway):
     """A messaging turn holds its inbound-callback claim for the whole turn.

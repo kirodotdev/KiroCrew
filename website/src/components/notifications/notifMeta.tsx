@@ -108,6 +108,7 @@ export function notePriority(n: { priority?: string }): Priority {
  *  its English `title`/`body` for every reader with no catalog, and an id these
  *  maps do not hold falls back to them. */
 const SYSTEM_NOTE_TITLE_KEY = {
+  bot_limits_held: 'components.notifications.systemNote.bot_limits_held_title',
   turn_limit: 'components.notifications.systemNote.turn_limit_title',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_title',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_title',
@@ -122,9 +123,12 @@ const SYSTEM_NOTE_TITLE_KEY = {
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_title',
   repeated_failures: 'components.notifications.systemNote.repeated_failures_title',
   mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_title',
+  moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_title',
+  moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
+  bot_limits_held: 'components.notifications.systemNote.bot_limits_held_body',
   turn_limit: 'components.notifications.systemNote.turn_limit_body',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_body',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_body',
@@ -139,6 +143,8 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_body',
   repeated_failures: 'components.notifications.systemNote.repeated_failures_body',
   mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_body',
+  moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_startup_body',
+  moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_idle_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway

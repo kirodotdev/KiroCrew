@@ -15,6 +15,7 @@ from model_registry_row_helpers import add_claude_only_row
 
 from kiro_crew.cli import main
 from kiro_crew.config.paths import data_home
+from kiro_crew.testing.synthetic_credentials import synth
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
     MAX_SHORT_STRING,
@@ -22,6 +23,10 @@ from kiro_crew.validation import (
     TEMPLATE_NAME_HINT,
     TEMPLATE_NAME_RE,
 )
+
+#: A URL whose userinfo carries a password, built at run time (``password`` itself is
+#: a placeholder word the redactor keeps).
+_CREDENTIAL_URL = "https://user:" + synth(16, seed=404) + "@example.com"
 
 
 def _write_config(tmp_path: Path, data: dict) -> Path:
@@ -360,7 +365,7 @@ class TestAgentCreate:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         cfg_path = _write_config(tmp_path, _base_config())
-        name = "https://user:password@example.com"
+        name = _CREDENTIAL_URL
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
@@ -577,7 +582,7 @@ class TestAgentUpdateDisplayName:
     ) -> None:
         cfg_path = _write_config(tmp_path, _labelled_config())
         before = cfg_path.read_bytes()
-        label = "https://user:password@example.com"
+        label = _CREDENTIAL_URL
 
         with pytest.raises(SystemExit) as exc_info:
             _run_agent_cli(cfg_path, "update", "research", "--display-name", label)
@@ -666,7 +671,7 @@ class TestAgentListLabel:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         data = _labelled_config()
-        label = "https://user:password@example.com"
+        label = _CREDENTIAL_URL
         data["agents"]["scribe"]["display_name"] = label
         cfg_path = _write_config(tmp_path, data)
 

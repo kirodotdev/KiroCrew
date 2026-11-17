@@ -390,7 +390,7 @@ class TestPinnedToleratesMalformedEntries:
             json.dumps({"version": 1, "pins": [1, {"path": str(target)}]})
         )
         svc = PinnedFilesService(str(tmp_path), lambda channel, *args: None)
-        # Would raise TypeError before the fix; must cleanly remove the real pin.
+        # Must not raise TypeError; must cleanly remove the real pin.
         assert svc.remove_pin(str(target)) is True
         assert [p for p in svc.get_pins() if isinstance(p, dict)] == []
 

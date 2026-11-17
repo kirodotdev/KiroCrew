@@ -695,7 +695,7 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
 
     # An app turn (``AgentTurnSDK.run``: a meeting's agents) passes this prompt as
     # its approver, as a cron job does. Without it a call the hook gate neither
-    # denies nor grants is approved with nobody asked.
+    # denies nor grants is refused, since nobody can be asked.
     from kiro_crew.apps import agent_turn_sdk
 
     agent_turn_sdk.set_turn_approver(
@@ -708,6 +708,12 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
     assert self.sessions is not None
     assert self.cron_svc is not None
 
+    # Publish the owner's redaction setting to this process before the server takes a
+    # request, in every mode (the offline test mode included): the output seams read the
+    # process value, never the file.
+    from kiro_crew.dashboard.handlers import credential_redaction as _redaction
+
+    await asyncio.to_thread(_redaction.seed_pushed_switch)
     configured_host, dashboard_port = parse_dashboard_url(self._cfg.dashboard.url)
     # --port override (literal int or "auto" for ephemeral)
     if self._port_override == "auto":
@@ -793,6 +799,12 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
 
     assert self.sessions is not None
     assert self.cron_svc is not None
+    # Publish the owner's redaction setting to this process before the server takes a
+    # request, in every mode (the offline test mode included): the output seams read the
+    # process value, never the file.
+    from kiro_crew.dashboard.handlers import credential_redaction as _redaction
+
+    await asyncio.to_thread(_redaction.seed_pushed_switch)
     configured_host, dashboard_port = parse_dashboard_url(self._cfg.dashboard.url)
     # --port override (literal int or "auto" for ephemeral)
     if self._port_override == "auto":
@@ -1247,7 +1259,8 @@ async def run(self: GatewayOrchestrator) -> None:
     # runner lane now that both consumers exist (the WorkflowService is
     # built by the dashboard server). AFTER the READY print, not before it:
     # the coordinator's first build runs `rebuild()` over every waiting row,
-    # and `test_memory_startup` pins that no such work precedes readiness.
+    # and `test_memory_startup` pins that nothing is awaited between
+    # `_init_api_server` and the READY print.
     # Nothing dispatches in between -- the subagent pump is held closed
     # (``defer_queue_dispatch``) and the dashboard workers and cron start
     # further down, after the memory barrier.
@@ -1394,7 +1407,6 @@ async def run(self: GatewayOrchestrator) -> None:
                 # A policy that withdraws the redaction opt-in must purge open dashboards.
                 from kiro_crew.dashboard.handlers import credential_redaction as _redaction
 
-                await asyncio.to_thread(_redaction.seed_pushed_switch)
                 register_post_install_hook(
                     lambda: _redaction.push_switch_moved_by_policy(_app, _loop)
                 )

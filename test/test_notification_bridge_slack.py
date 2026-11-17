@@ -29,7 +29,9 @@ from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 
 #: A synthetic GitHub classic token (valid checksum) the redactor removes.
 _SECRET = github_classic(seed=102)
-_EXFIL_URL = "https://evil.example.com/steal?data=" + "A" * 250
+#: A URL carrying a credential parameter: its value is masked, the URL stays.
+_EXFIL_VALUE = "A" * 250
+_EXFIL_URL = "https://evil.example.com/steal?access_token=" + _EXFIL_VALUE
 
 
 class _FakeSlack:
@@ -140,7 +142,7 @@ class TestExitCriterion:
         [(channel, text)] = slack.posts
         assert channel == "D-OWNER"
         assert _SECRET not in text
-        assert "evil.example.com/steal" not in text
+        assert _EXFIL_VALUE not in text
         assert "[REDACTED" in text
         # Paired governance records, both scopes, then one delivery record.
         assert {(d["scope"], d["item"], d["outcome"]) for d in sel_log.decisions} == {
@@ -412,6 +414,39 @@ class TestKeyedCommit:
         assert await state.last_notification_persist is False
         await state.notification_bridge.drain()
         assert slack.posts == []
+
+    @pytest.mark.asyncio
+    async def test_a_quiet_replacement_posts_no_second_chat_message(
+        self, monkeypatch, tmp_path, sel_log
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+        slack = _FakeSlack()
+        state = DashboardState(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(),
+            lessons=MagicMock(),
+            start_time=0.0,
+            slack_client=slack,
+            owner_id="U-OWNER",
+        )
+        state.notification_channel_settings.update("system.cron", deliver_to=["slack"])
+        for title in ("build 1 of 3", "build 2 of 3"):
+            state.notification_bus.push(
+                NotificationPayload(
+                    source="system",
+                    channel="system.cron",
+                    title=title,
+                    body="b",
+                    priority="critical",
+                    key="build",
+                )
+            )
+            assert await state.last_notification_persist is True
+        await state.notification_bridge.drain()
+        # The second note replaces the first at the same priority, so it is quiet:
+        # the owner was told once, as the bell and banner tell them once.
+        assert len(slack.posts) == 1
 
 
 class TestTransport:

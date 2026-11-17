@@ -785,14 +785,53 @@ def test_a_changed_status_after_blocked_wakes(then):
     assert [b for b in _waking(item) if f"status={then}" in b], then
 
 
-def test_the_same_status_after_the_conductors_decision_wakes():
+def test_the_same_wait_after_the_conductors_decision_does_not_wake():
+    """The owner's case it_bc232b0e: blocked, a decide, the same blocked again."""
     _open_ledger()
     item = _create()
-    _report(item, "blocked", summary="stuck")
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="blocked", summary="stuck", reason="needs_human"
+    )
     assert len(_waking(item)) == 1
-    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="retry once")
-    _report(item, "blocked", summary="retried, still stuck")
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="wait")
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="blocked", summary="still waiting", reason="needs_human"
+    )
+    assert _waking(item) == [], "the same cause across a decide is no news"
+
+
+def test_the_same_status_with_a_new_reason_wakes():
+    _open_ledger()
+    item = _create()
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="blocked", summary="stuck", reason="approval"
+    )
     assert len(_waking(item)) == 1
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="ok")
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="blocked", summary="now a person", reason="needs_human"
+    )
+    assert len(_waking(item)) == 1, "a new reason is news"
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="blocked", summary="back to approval", reason="approval"
+    )
+    assert len(_waking(item)) == 1, "a reason back-to-back but changed is news too"
+
+
+def test_an_identical_question_across_a_decide_does_not_wake_but_a_new_one_does(monkeypatch):
+    clock = _store_clock(monkeypatch)
+    _open_ledger()
+    item = _create()
+    _report(item, "question", summary="A or B?")
+    assert len(_waking(item)) == 1
+    clock.advance(60)
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="thinking")
+    clock.advance(60)
+    _report(item, "question", summary="A or B?")
+    assert _waking(item) == [], "the identical question again is no news"
+    clock.advance(60)
+    _report(item, "question", summary="C or D?")
+    assert len(_waking(item)) == 1, "a different question is a new ask"
 
 
 def test_a_progress_between_two_blocked_reports_makes_the_second_news():
@@ -805,24 +844,23 @@ def test_a_progress_between_two_blocked_reports_makes_the_second_news():
     assert len(_waking(item)) == 1
 
 
-def test_many_stalls_cannot_evict_a_report_still_in_the_tail(monkeypatch):
-    """Progress reports coalesce, so a ``blocked`` event stays in the tail while each
-    one moves ``last_report_at`` and mints a new stall token. Only the newest stall
-    token can recur, so older ones must not crowd the report's token out."""
+def test_progress_reports_that_keep_the_status_raise_one_stall(monkeypatch):
+    """The owner's case it_6782b470: a worker reports ``progress`` and stops, again and
+    again. Each report moves ``last_report_at``, but the stall is about the same
+    status run, so it wakes once for the ``blocked`` and once for the ``progress``
+    that followed it -- not once per report -- and the ``blocked`` report's own
+    token is never crowded out."""
     _open_ledger()
     item = _create()
     _report(item, "blocked", summary="stuck")
     monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
     # The probe is observed directly, without the kernel, because the kernel's own
     # mask would hide a repeat and the probe's answer is what is under test.
-    # An hour per step, so the hourly budget never refuses a stall and hides the
-    # eviction behind a rate limit.
+    # An hour per step, so the hourly budget never refuses a stall.
     from kiro_crew.testing.clock import ManualClock
 
     clock = ManualClock()
     clock.install(monkeypatch, lw)
-    # ``last_report_at`` has one-second resolution, so the store reads the same
-    # clock: each step's report then mints a distinct stall token.
     clock.install(monkeypatch, work_ledger, time=False, datetime=True)
     briefs: list[str] = []
     for index in range(lw._MAX_REMEMBERED_TOKENS + 4):
@@ -831,9 +869,112 @@ def test_many_stalls_cannot_evict_a_report_still_in_the_tail(monkeypatch):
             _report(item, "progress", summary=f"step {index}")
         briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
     assert sum(f"item={item} status=blocked" in brief for brief in briefs) == 1
-    assert sum(f"item={item} reason=stall" in brief for brief in briefs) == (
-        lw._MAX_REMEMBERED_TOKENS + 4
-    )
+    stalls = [brief for brief in briefs if f"item={item} reason=stall" in brief]
+    assert stalls == [
+        f"[work-ledger wake] item={item} reason=stall last_status=blocked",
+        f"[work-ledger wake] item={item} reason=stall last_status=progress",
+    ]
+
+
+def _store_clock(monkeypatch):
+    """A clock the store stamps ``last_report_at`` and ``decided_at`` from."""
+    from kiro_crew import work_ledger_records
+    from kiro_crew.testing.clock import ManualClock
+
+    clock = ManualClock()
+    clock.install(monkeypatch, work_ledger_records, time=False, datetime=True)
+    return clock
+
+
+def _stalls(item: str, probe=None) -> list[str]:
+    tick = _observe(probe or _probe(), _ctx())
+    return [o.brief for o in tick.observations if f"item={item} reason=stall" in o.brief]
+
+
+def test_a_parked_worker_answering_each_decide_with_progress_stalls_once(monkeypatch):
+    """The owner's case it_d2445efa: the conductor parks the worker with a decide, the
+    worker answers with ``progress`` and waits; a later decide answered the same way
+    is not a second stall."""
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    clock = _store_clock(monkeypatch)
+    _open_ledger()
+    item = _create()
+    for step in range(3):
+        clock.advance(600)
+        work_ledger.apply_conductor_action(
+            CONDUCTOR, "decide", item_id=item, decision=f"hold {step}"
+        )
+        clock.advance(60)
+        _report(item, "progress", summary=f"holding {step}")
+        assert len(_stalls(item)) == (1 if step == 0 else 0), step
+
+
+def test_an_unanswered_decide_re_arms_the_stall(monkeypatch):
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    clock = _store_clock(monkeypatch)
+    _open_ledger()
+    item = _create()
+    _report(item, "progress", summary="working")
+    assert len(_stalls(item)) == 1
+    clock.advance(60)
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="do X")
+    assert len(_stalls(item)) == 1, "the worker has not answered the new decide"
+    assert _stalls(item) == []
+
+
+def test_a_closed_session_re_arms_the_stall(monkeypatch):
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    _open_ledger()
+    item = _create()
+    _report(item, "progress", summary="working")
+    assert len(_stalls(item)) == 1
+    assert _stalls(item) == []
+    gone = WorkLedgerProbe(worker_closed=lambda _k: True)
+    assert len(_stalls(item, gone)) == 1, "the session ending is news"
+
+
+def test_an_item_waiting_on_a_person_raises_no_stall(monkeypatch):
+    """An open ``ask`` record means the item waits on a person, so the probe raises no
+    stall; the board's ``stale`` flag is left alone, a closed worker session still
+    raises, and the conductor's next ``decide`` (which clears the record) re-arms it."""
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    _open_ledger()
+    item = _create()
+    _report(item, "progress", summary="table written, waiting")
+    work_ledger.apply_ask_record(CONDUCTOR, item, what="owner picks the fix")
+    later = datetime.now(timezone.utc) + timedelta(hours=2)
+    asked = work_ledger.read_work_item(CONDUCTOR, item)
+    assert work_ledger.is_stale(asked, worker_running=False, now=later), "board flag unchanged"
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    assert _stalls(item) == []
+    assert len(_stalls(item, WorkLedgerProbe(worker_closed=lambda _k: True))) == 1
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="go")
+    assert len(_stalls(item)) == 1
+
+
+def test_a_re_armed_stall_is_delivered_through_the_kernel_mask(monkeypatch):
+    """The kernel masks an observation key for ``realert_secs``, so a re-armed stall
+    (here the worker's session ending) must carry a key of its own to be delivered."""
+    from kiro_crew import irq
+    from kiro_crew.cron_script import Report, Skip
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    _open_ledger()
+    item = _create()
+    _report(item, "progress", summary="working")
+    with pytest.raises(Report):
+        irq.run(_ctx(), _probe())
+    with pytest.raises(Skip):
+        irq.run(_ctx(), _probe())
+    with pytest.raises(Report) as closed:
+        irq.run(_ctx(), WorkLedgerProbe(worker_closed=lambda _k: True))
+    assert f"item={item} reason=stall" in str(closed.value)
 
 
 def test_a_driver_that_discards_its_verdict_cannot_spend_another_drivers_wake():
@@ -1483,3 +1624,45 @@ def test_the_budget_counts_distinct_wakes_rather_than_re_reads():
     assert lw.already_woke(CONDUCTOR, ITEM, "fresh") is False
     # A different item has its own budget.
     assert lw.within_rate_limit(CONDUCTOR, OTHER_ITEM) is True
+
+
+@pytest.mark.parametrize(
+    "conductor", [CONDUCTOR, "member-dm:crewmate-bot:1794359705"], ids=["conductor-mode", "bot"]
+)
+def test_a_bot_conductor_gets_the_same_once_per_reason_filter(monkeypatch, conductor):
+    """A Bot conductor arms the same ``watch="work-ledger"`` probe on its own slot,
+    so the repeat and stall rules hold for it exactly as for conductor mode."""
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    clock = _store_clock(monkeypatch)
+    work_ledger.ensure_conductor(conductor, goal="g")
+    item = str(
+        work_ledger.apply_conductor_action(
+            conductor, "create", title="t", acceptance={"kind": "human_approval"}
+        )["item"].item_id
+    )
+
+    def briefs() -> list[str]:
+        probe = WorkLedgerProbe()
+        ctx = _ctx(conductor)
+        probe.identity(ctx)
+        return [o.brief for o in probe.observe(ctx).observations if item in o.brief]
+
+    work_ledger.apply_worker_report(
+        conductor, item, status="blocked", summary="a", reason="needs_human"
+    )
+    assert any("status=blocked" in b for b in briefs())
+    clock.advance(60)
+    work_ledger.apply_conductor_action(conductor, "decide", item_id=item, decision="wait")
+    clock.advance(60)
+    work_ledger.apply_worker_report(
+        conductor, item, status="blocked", summary="b", reason="needs_human"
+    )
+    clock.advance(60)
+    assert briefs() == [], "the same cause across a decide, and the same stall, are no news"
+    work_ledger.apply_worker_report(conductor, item, status="progress", summary="p1")
+    assert [b for b in briefs() if "status=blocked" in b] == []
+    clock.advance(60)
+    work_ledger.apply_worker_report(conductor, item, status="progress", summary="p2")
+    assert briefs() == [], "a second progress is neither a repeat wake nor a new stall"

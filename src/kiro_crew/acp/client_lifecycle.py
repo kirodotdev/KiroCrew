@@ -8,34 +8,28 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``_bound_workspace_fd``, ``_buffer``,
-``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_capability_projection_gaps``,
-``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
-``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_claude_worker_builtin_tools``,
+Instance fields written: ``_background_launches``, ``_between_turn_credits``,
+``_bound_workspace_fd``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+``_cancelled``, ``_capability_projection_gaps``, ``_channel_id``, ``_child_pids``,
 ``_confirmed_capability_session``, ``_consult_future``, ``_copilot_mcp_config_path``,
-``_crew_bridge_snapshots``,
-``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
-``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
-``_mcp_ref_spec``,
-``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
-``_mimocode_governed_stop``,
-``_oauth_emitted_servers``, ``_pending_oauth_requests``,
-``_permission_surface_share_validated``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``,
-``_pid``, ``_process``, ``_process_adapter``, ``_process_instance``,
-``_process_tree_confirmed_dead``,
+``_crew_bridge_snapshots``, ``_fork_request``, ``_kill_sent``, ``_last_activity``,
+``_last_stop_reason``, ``_liveness_oracle``, ``_loaded_capability_template``,
+``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mcp_report_frame_floor``,
+``_member_stub_allowlist``, ``_mimocode_governed_stop``, ``_oauth_emitted_servers``,
+``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``, ``_pid``,
+``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
-``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
-``_session_key``, ``_session_mcp_cache``, ``_session_mcp_snapshot``,
-``_session_mcp_unhonoured``, ``_spawn_start_token``, ``_spawn_work_dir``,
-``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
-``_spec_write_cwd``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``.
+``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``, ``_session_key``,
+``_session_mcp_cache``, ``_session_mcp_snapshot``, ``_session_mcp_unhonoured``,
+``_spawn_start_token``, ``_spawn_work_dir``, ``_spec_denied_tools``,
+``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_write_cwd``,
+``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``, ``_stdin_stalled``,
+``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
 ``_native_skill_projection``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
-``_sandbox_wrapped_by_crew``, ``_seed_owner``, ``_start_time``, ``_stub_session_token``,
-``_work_dir``, ``last_prompt_stats``, ``memory_mode``.
+``_sandbox_wrapped_by_crew``, ``_start_time``, ``_stub_session_token``, ``_work_dir``,
+``last_prompt_stats``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -48,7 +42,7 @@ import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import platform_compat, process_identity
-from kiro_crew.acp import runtime_process_tree, seed_provenance
+from kiro_crew.acp import raw_sdk_tasks, runtime_process_tree
 from kiro_crew.acp._dispatch import BackgroundLaunchRecord
 from kiro_crew.acp.client_spawn_env import KIRO_CLI_BIN
 from kiro_crew.acp.client_timeouts import (
@@ -286,7 +280,7 @@ async def _cleanup_failed_live_spawn(self: AcpClient) -> None:
         # session it belonged to is over -- so it is discarded on exactly the
         # terms a graceful shutdown uses. In the `finally` for the same reason
         # the caller puts `_reset_state` in one: this is the last chance.
-        await self._discard_claude_settings_seed()
+        await self._discard_settings_seed()
 
 
 async def _to_thread_guarding_sandbox(
@@ -509,6 +503,7 @@ async def _kill_process(self: AcpClient, *, force: bool = False, exit_grace: flo
             try:
                 pipe.close()  # type: ignore[union-attr]
             except Exception:
+                # One pipe that fails to close must not stop the others or the cleanup below.
                 pass
 
     # Snapshot child PIDs before killing — children in different
@@ -633,7 +628,10 @@ def _reset_state(self: AcpClient) -> None:
                 try:
                     pipe.close()  # type: ignore[union-attr]
                 except Exception:
+                    # One pipe that fails to close must not stop the others or the cleanup below.
                     pass
+    # Claude Code's background tasks ran in the dead process (``acp.raw_sdk_tasks``).
+    raw_sdk_tasks.forget_tasks(self)
     # Clean up sandbox temp files (macOS seatbelt profile)
     self._discard_sandbox_cleanup()
     # The process this projection's views were prepared for is dead, so its
@@ -668,52 +666,9 @@ def _reset_state(self: AcpClient) -> None:
             os.remove(copilot_config)
         except OSError:
             pass
-    # The settings.local.json THIS session seeded is removed by
-    # _discard_claude_settings_seed, which every caller awaits in the `try` of
-    # the `finally` that reaches here -- it is async because the ownership hash,
-    # the durable revoke and the unlink are all blocking, and this method is
-    # synchronous and runs on the event loop. That pairing also means this may
-    # run because the discard's await was CANCELLED: the flags below are already
-    # cleared by then, and the shielded transaction still finishes the disk
-    # half. getattr: _reset_state runs on clients built without __init__ in
-    # tests, and such a client has no work_dir to derive the seed's path from.
-    owner = getattr(self, "_seed_owner", "")
-    if getattr(self, "_claude_settings_authored", False):
-        self._claude_settings_authored = False
-        self._claude_settings_written = None
-    self._claude_settings_claim_unrevoked = False
-    if getattr(self, "_work_dir", None) is not None:
-        path = self._claude_local_settings_path()
-        # The seed itself and its durable holder are removed by
-        # ``_discard_claude_settings_seed``, which every production caller
-        # awaits off the loop before reaching here. This synchronous fallback
-        # hands back only the in-memory slot, taking no lock and doing no I/O,
-        # so an interrupted discard cannot leave the event loop blocked.
-        #
-        # Unconditional, not gated on the instance flags: ``release_local`` is
-        # a no-op unless ``_LIVE[key] == owner``, so it never touches a sibling
-        # client object's lease held under a different token. It covers both
-        # refused durable withdrawals -- the authored discard whose ``forget``
-        # and ``release`` were refused with the seed restored, and the
-        # un-revoked hand-back whose retry was refused -- and the authored one
-        # is the case a flag-gated drop leaks: the refused ``release`` puts the
-        # in-memory slot back while the discard's ``finally`` has already
-        # cleared authorship, so nothing flag-gated runs and every later
-        # session on this work_dir in this process is wedged
-        # (``held_by_another`` and ``claim`` consult that slot first). The
-        # persisted holder is the half this cannot reach: it carries this
-        # process's live identity, so it stands until this process exits.
-        seed_provenance.release_local(path, owner)
-        # A sharer never wrote the file and never held the live claim; its
-        # whole teardown is withdrawing the shared-reader registration, so
-        # the owner's teardown (or a later adoption) stops holding the file
-        # for a reader that is gone.
-        if getattr(self, "_claude_settings_shared", False):
-            seed_provenance.unshare_local(path, owner)
-    # The trailing plain assignments are unconditional so a client built
-    # without __init__ in tests resets clean too.
-    self._claude_settings_shared = False
-    self._permission_surface_share_validated = False
+    # A backend that seeds a per-session settings file drops its in-memory claim
+    # here; the disk half went with ``_discard_settings_seed`` before this ran.
+    self._reset_settings_seed_state()
     # Drop the translated MCP array: the spec is read PER SPAWN, which is what
     # lets installing or toggling a server take effect on the next session, so
     # a replacement process must not inherit this one's snapshot.
@@ -743,7 +698,6 @@ def _reset_state(self: AcpClient) -> None:
     self._spec_write_allowlist = None
     self._spec_write_cwd = ""
     self._spec_zero_tools = False
-    self._claude_worker_builtin_tools = None
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
     # The adapter carries its launch's read-back, so dropping it drops that too.
@@ -1076,7 +1030,7 @@ async def shutdown(self: AcpClient) -> None:
         # untracks the PIDs and must run even if the seed's await is cancelled.
         # The settle is shielded, so the disk half completes either way.
         try:
-            await self._discard_claude_settings_seed()
+            await self._discard_settings_seed()
         finally:
             self._reset_state()  # untracks all PIDs (root + children)
 

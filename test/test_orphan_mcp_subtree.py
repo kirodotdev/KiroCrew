@@ -29,7 +29,7 @@ import pytest
 from kiro_crew import platform_compat
 
 _POSIX_ONLY = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX process-management semantics only; see issue #2041"
+    sys.platform == "win32", reason="POSIX process-management semantics only"
 )
 
 # Root of the orphaned tree: a marked MCP launcher that passes the sweep gate.

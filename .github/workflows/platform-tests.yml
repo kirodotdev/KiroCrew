@@ -171,7 +171,7 @@ jobs:
           enable-cache: false
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[voice,desktop]" --group dev
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
 
       # The macOS peer-identity check is admission-gating: gatewayd refuses any
       # connection that is not MATCH, so this canary -- a real transport.serve /

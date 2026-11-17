@@ -57,6 +57,8 @@ from typing import Union
 
 __all__ = [
     "DEFAULT_MAX_CDIR_ENTRY_BYTES",
+    "WORKBOOK_MAX_EXPANDED_BYTES",
+    "WORKBOOK_MAX_MEMBERS",
     "ZipInventoryRejected",
     "vet_zip_inventory",
     "vet_zip_inventory_bytes",
@@ -83,6 +85,13 @@ _CDIR_SIZE_SATURATED = 0xFFFFFFFF
 # so this leaves ample room for name/extra/comment without letting the byte
 # ceiling become the effective member limit.
 DEFAULT_MAX_CDIR_ENTRY_BYTES = 512
+
+# Ceilings for one .xlsx workbook, for every reader that opens one (the sheet
+# preview, file grep's document pass, the knowledge reader): the members its
+# directory may declare, and the bytes those members may expand to. An on-disk
+# size cap bounds only the compressed archive.
+WORKBOOK_MAX_MEMBERS = 4096
+WORKBOOK_MAX_EXPANDED_BYTES = 200 * 1024 * 1024
 
 ZipSource = Union[str, "os.PathLike[str]"]
 

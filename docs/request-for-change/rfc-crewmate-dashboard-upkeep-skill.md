@@ -1,12 +1,12 @@
 ---
 title: Crewmate dashboard upkeep -- per-field upkeep text served by dashboard_fields, generated helper scripts for the fields whose data is outside the crew log, named by one pointer line that survives compaction
-status: in-progress
+status: partial
 author: Raymond Chen, with kirocrew-worker
 created: 2026-10-11
-last-audited: 2026-10-12
-audited-at: 0cda1525d8
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [19069]
 tracking-issues: [19481]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crewmate dashboard upkeep skill
 
-- Status: in-progress. The design is the product owner's ruling of 2026-10-11:
+- Status: partial. Rollout step 2 shipped in [#19069](https://github.com/kirodotdev/KiroCrew/pull/19069) (`src/kiro_crew/dashboard_upkeep.py`, `upkeep` rows in `dashboard_fields`, helpers under `dashboard_templates/builtin/*/helpers/`); step 3 (the `upkeep` key on the v3 package Model, now that #18707 merged) is not built (checked at `1d08e941b3`). The design is the product owner's ruling of 2026-10-11:
   fold-backed fields already update themselves, so nothing new is built for
   them; per-board upkeep guidance covers only the fields the crewmate writes;
   a generated helper script fetches the data that lives outside the crew log;

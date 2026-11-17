@@ -28,7 +28,7 @@ import pytest
 from non_utf8_comm import comm_is_settable, renamed_child
 
 from conftest import _find_posix_test_shell
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _SKILL = (
     Path(__file__).resolve().parent.parent
@@ -113,15 +113,31 @@ def test_bounded_returns_true_when_call_completes(driver):
 @pytest.mark.skipif(
     not hasattr(signal, "setitimer"), reason="SIGALRM-based bound is POSIX-only"
 )
-def test_bounded_gives_up_on_a_blocking_call(driver, capsys):
-    """The defect: context.close() blocks forever. It must now be abandoned."""
-    started = time.monotonic()
+def test_bounded_gives_up_on_a_blocking_call(driver, capsys, monkeypatch):
+    """The defect: context.close() blocks forever. It must be abandoned at its cap."""
+    armed = []
+    real_setitimer = signal.setitimer
+
+    def _recording_setitimer(which, seconds, *interval):
+        armed.append((which, seconds))
+        return real_setitimer(which, seconds, *interval)
+
+    monkeypatch.setattr(signal, "setitimer", _recording_setitimer)
+    finished = []
 
     def _wedged():
-        time.sleep(30)          # stands in for the never-finalizing recording
+        # Stands in for the never-finalizing recording; the long sleep is a lost-run
+        # bound, and ``finished`` shows whether it ran out or was interrupted.
+        time.sleep(FALLBACK_TIMEOUT_SECS)
+        finished.append(True)
 
     assert driver._bounded("context.close", 0.5, _wedged) is False
-    assert time.monotonic() - started < 10, "bounded call did not return early"
+    assert finished == [], "the blocking call ran to its end instead of being abandoned"
+    # The cap the call is held to is the one it was given, then disarmed.
+    assert armed == [
+        (signal.ITIMER_REAL, 0.5),
+        (signal.ITIMER_REAL, 0),
+    ], f"the call was held to timer settings {armed}, not its 0.5s cap then disarmed"
     assert "TIMEOUT" in capsys.readouterr().out
 
 

@@ -71,8 +71,9 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
-import { crewModePreviewOn } from './crewModePreview'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { RECENT_WINDOW_PRESETS } from '../pages/recentWindow'
+import { turnOffCrewModeAsLts } from './crewModeOff'
+import { __setFeaturePreviewLockKnownForTests, applyLockedControls } from '../utils/editionLocks'
 
 const CREW_ONLY = 'mc-session-crew-only'
 const RUNNING_ONLY = 'mc-session-running-only'
@@ -156,6 +157,17 @@ describe('a conductor mode root\'s crew members', () => {
 })
 
 describe('the conductor mode filter offer', () => {
+  it('builds the filter menu only once it opens', async () => {
+    // The menu sits closed on every render of the sidebar, including the first
+    // render of the chat page, so its rows must cost nothing until it opens.
+    const label = vi.spyOn(RECENT_WINDOW_PRESETS[0], 'label', 'get')
+    renderSidebar(PLAIN_SLOTS)
+    await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
+    expect(label).not.toHaveBeenCalled()
+    await openFilterMenu()
+    expect(screen.getAllByRole('menuitem').some(el => el.textContent?.startsWith('In progress'))).toBe(true)
+    label.mockRestore()
+  })
   it('is absent, hint included, while no chat runs on the conductor', async () => {
     renderSidebar(PLAIN_SLOTS)
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
@@ -212,9 +224,22 @@ describe('the conductor mode filter offer', () => {
   })
 })
 
-describe('with the conductor mode preview off', () => {
-  // The file turns the preview on for every test; these turn it off again.
-  beforeEach(() => localStorage.removeItem(PREVIEW_CREW_MODE))
+describe('before the edition lock is known', () => {
+  it.each(['1', '2'])('keeps a stored conductor mode filter (%s) and brings it back once a standard build answers', async (stored) => {
+    localStorage.setItem(CREW_ONLY, stored)
+    __setFeaturePreviewLockKnownForTests(false)
+    renderSidebar(WITH_ROOT)
+    await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
+    expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
+    expect(localStorage.getItem(CREW_ONLY)).toBe(stored)
+    act(() => { __setFeaturePreviewLockKnownForTests(true) })
+    await waitFor(() => expect(screen.queryByTestId('filter-chip-crew')).not.toBeNull())
+    expect(localStorage.getItem(CREW_ONLY)).toBe(stored)
+  })
+})
+
+describe('in a build without conductor mode (LTS)', () => {
+  beforeEach(() => { turnOffCrewModeAsLts() })
 
   it('lists a crew member as an ordinary row and draws no crew card', async () => {
     renderSidebar(WITH_CREW_MEMBER)
@@ -236,8 +261,8 @@ describe('with the conductor mode preview off', () => {
     expect(crewRow()).toBeUndefined()
     expect(screen.queryByTestId('filter-crew-hint')).toBeNull()
 
-    // Turning the preview on does not bring it back: it was turned off.
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    // Lifting the lock does not bring it back: it was turned off.
+    act(() => { applyLockedControls([]) })
     await waitFor(() => expect(screen.queryByText('plain b')).not.toBeNull())
     expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
     expect(localStorage.getItem(CREW_ONLY)).toBe('0')
@@ -267,6 +292,3 @@ describe('with the conductor mode preview off', () => {
     expect(localStorage.getItem(CREW_ONLY)).toBe('0')
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

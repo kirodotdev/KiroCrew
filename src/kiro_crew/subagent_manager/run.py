@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         ToolApprovalCallback,
     )
+    from ..tracing.steps import Approval
 
 #: Delayed re-reads armed, one after another, while the store cannot answer the
 #: queue depth; the last one that still fails says so at WARNING.
@@ -131,7 +132,9 @@ class _ApprovalPrompt:
         self._run = run
         self._info = info
 
-    def opened(self, ask: Ask) -> tuple[str, tuple[str, int]]:
+    def opened(self, ask: Ask) -> tuple[str, tuple[str, int], Approval | None]:
+        from kiro_crew.tracing import steps as trace_steps
+
         info = self._info
         info._awaiting_approval = True
         approval_id = self._run._crew_log_approval_id(info, ask.request_id)
@@ -141,15 +144,30 @@ class _ApprovalPrompt:
             tool=ask.event.tool_name or "",
             reason=ask.event.title or "",
         )
-        return approval_id, origin
+        # Its span, under the child's own open turn (tracing/steps.py).
+        trace = trace_steps.approval_opened(
+            approval_id,
+            subagent_id=info.id,
+            tool_call_id=str(getattr(ask.event, "tool_call_id", "") or ""),
+        )
+        return approval_id, origin, trace
 
     def closed(self, token: object, decision: str, by: str) -> None:
-        approval_id, origin = cast("tuple[str, tuple[str, int]]", token)
+        from kiro_crew.tracing import steps as trace_steps
+
+        approval_id, origin, trace = cast("tuple[str, tuple[str, int], Approval | None]", token)
         self._info._awaiting_approval = False
         self._info.last_activity = _time.time()
         self._info._last_activity_mono = _time.monotonic()
         self._run._record_crew_log_approval_decided(
             origin, approval_id=approval_id, decision=decision, by=by
+        )
+        # "" is an answer this site cannot attribute (a person, or an approver's own
+        # host shortcut), so the span names nobody, as the crew-log entry does.
+        trace_steps.approval_closed(
+            trace,
+            approved=decision == "approved",
+            by=trace_steps.decided_by(host=True) if by == "host" else "",
         )
 
 

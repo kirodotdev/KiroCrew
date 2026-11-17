@@ -358,3 +358,32 @@ describe('TelemetryPanel — the dollar window behind the summary', () => {
     expect(screen.getByText('$0.03')).toBeInTheDocument()
   })
 })
+
+// A crew running a credit-billed and a dollar-billed harness side by side
+// spends in both units in one window; the gateway nests the dollar view under
+// `usd`, and the tab shows it as a second card rather than dropping it.
+describe('TelemetryPanel — a window billed in both units', () => {
+  it('shows the credits card and the cost card together', async () => {
+    const usdView = cost({
+      unit: 'usd',
+      credits: 0.75,
+      prior_credits: 0,
+      priciest: { credits: 0.5, slot: 'chat-2-1700000000', ts: '2026-08-05' },
+      by_model: [row('claude-x', 0.75)],
+      by_category: [row('dashboard', 0.75)],
+      conversations: [convo({ slot: 'chat-2-1700000000', credits: 0.75 })],
+    })
+    await mount({ usd: usdView })
+    await waitFor(() => expect(screen.getByText('Credits by model')).toBeInTheDocument())
+    expect(screen.getByText('Cost by model')).toBeInTheDocument()
+    expect(screen.getAllByText('$0.75').length).toBeGreaterThan(0)
+  })
+
+  it('remembers the nested cost card apart from the credits card', async () => {
+    localStorage.setItem('telemetry:spend-table-open', '1')
+    await mount({ usd: cost({ unit: 'usd', credits: 0.75, conversations: [convo({ credits: 0.75 })] }) })
+    await waitFor(() => expect(screen.getByText('Cost by model')).toBeInTheDocument())
+    const toggles = screen.getAllByRole('button', { name: /Full table/ })
+    expect(toggles.map(t => t.getAttribute('aria-expanded'))).toEqual(['true', 'false'])
+  })
+})

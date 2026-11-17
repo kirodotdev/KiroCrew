@@ -575,7 +575,8 @@ class TestGetOrCreatePoolIntegration:
         mgr._warm_pool.put_nowait((pooled, time.monotonic()))
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
         with patch.object(crew_oauth, "bridges_chat_sessions", return_value=bridged):
-            await mgr.get_or_create("test-key", agent="kirocrew")
+            provider, _, _ = await mgr.get_or_create("test-key", agent="kirocrew")
+        assert (provider is not pooled) is bridged
         assert (mgr._drain_and_claim.await_count == 0) is bridged
 
     @pytest.mark.asyncio

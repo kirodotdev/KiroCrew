@@ -25,11 +25,15 @@ it, because the namespace plan reads ``os.getuid``.
 from __future__ import annotations
 
 import os
+import re
 import sys
+from collections import Counter
+from pathlib import Path
 
 import pytest
 
 from kiro_crew import sandbox, sandbox_plan
+from kiro_crew.config import config_dir
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -50,14 +54,14 @@ def _no_host_ssh_probe(monkeypatch):
 
 TIERS = ("standard", "cc", "strict")
 
-#: Protected names held by an ENCLOSING stand-in mask today. Measured, not aspired
-#: to: it is EMPTY, because nothing in the launcher holds a protected
-#: name for the namespace lifetime. Every mask is placed once, at spawn.
+#: Protected names held by an ENCLOSING stand-in mask today. The scratch
+#: index stays behind the whole scratch-root mask for the namespace lifetime,
+#: including after the gateway atomically republishes the index.
 #:
 #: A fix that gives a name a durable hold adds it here, and the equality
 #: assertion below then locks it: the name can never fall back to leaf-name
 #: holding without this constant being edited in the same diff.
-HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset()
+HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset({"scratch/.trees.json"})
 
 
 def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:
@@ -272,13 +276,12 @@ class TestLeafOnlyPopulationIsRecorded:
     """A ratchet on the names held only by their own leaf name.
 
     Every entry is a name a host-side atomic replace can put a writable object
-    at, for the rest of a running namespace's life. The count is recorded so a
+    at, for the rest of a running namespace's life. The names are recorded so a
     new one cannot be added silently: adding a protected name that only a leaf
-    mask holds has to be a deliberate, visible edit to this number.
+    mask holds has to be a deliberate, visible line in :attr:`LEAF_ONLY`.
     """
 
-    #: Measured per tier. Not a target -- a debt. Today it is the WHOLE
-    #: population: nothing is durably held.
+    #: The leaf-only names, measured. Not a target -- a debt.
     #:
     #: The launcher spells every data-home leaf once per spelling of the crew
     #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
@@ -494,6 +497,21 @@ class TestLeafOnlyPopulationIsRecorded:
     #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
     #: the data-home root, so leaf-only is the only hold, as for
     #: ``ssh_auth_sock_consent.json``.
+    #: One more root-level file, three entries per tier:
+    #: ``memory_provider_consent.json`` -- the owner's consent to send memory to a
+    #: provider app that keeps it off this machine, sealed read-only so an agent
+    #: cannot consent to its own egress; a file at the data-home root, so leaf-only
+    #: is the only hold, as for ``decisions_consent.json``.
+    #: One more root-level directory, three entries per tier:
+    #: ``memory_provider_migrations`` -- memory move jobs and their id ledgers,
+    #: sealed read-only so an agent cannot choose what a rollback deletes; a
+    #: directory at the data-home root beside writable siblings, so leaf-only is the
+    #: only hold, as for ``memory_stores``.
+    #: One more root-level directory, three entries per tier:
+    #: ``memory_provider_bench`` -- provider benchmark runs, their scratch-store
+    #: ledgers and own-memory eval sets, sealed read-only so an agent cannot choose
+    #: which store a cleanup resets; a directory at the data-home root, so leaf-only
+    #: is the only hold, as for ``memory_provider_migrations``.
     #:
     #: Four app-declared directories, a dozen entries per tier (the data and the
     #: lifecycle's move-aside spelling, at each data-home spelling):
@@ -507,19 +525,196 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   directory, which agents read and write, so an enclosing mask would hide the
     #:   app's data and leaf-only is the only hold, as for ``host-exec-grants``.
     #:
-    #: One more root-level leaf, three entries per tier (one per data-home path):
+    #: Two more root-level leaves, three entries per tier each (one per data-home path):
     #:
     #: * ``chat_steering_off.json`` -- the steering files each chat switched off,
     #:   sealed read-only so an agent cannot switch off a rule for its own chat. A
     #:   file at the data-home root beside writable siblings, rewritten in place,
     #:   so leaf-only is the only hold, as for ``shared_crew_preview.json``.
-    EXPECTED: dict[str, int] = {"standard": 351, "cc": 358, "strict": 359}
+    #: * ``mcp_body_fields.json`` -- the MCP message-body fields the owner
+    #:   allowed, sealed read-only so an agent cannot allow its own fields past
+    #:   the tool_input size ceiling. A file at the data-home root beside
+    #:   writable siblings, so leaf-only is the only hold, as for
+    #:   ``credential_redaction.json``.
+    #:
+    #: ``import-staging`` adds three entries per tier. The gateway extracts and
+    #: removes temporary trees INSIDE this masked directory, never replacing the
+    #: directory itself. Its parent is the data-home root beside writable siblings,
+    #: so no enclosing stand-in can hold it: leaf-only by design, like update-staging.
+    #:
+    #: Six more per tier, one app-declared directory: Notes' ``state/`` under its data
+    #: directory (``credentialMasks``), at both data-home spellings and their move-aside
+    #: spellings, plus the relocated home. Its parent ``data/`` holds the app's logs, so
+    #: it cannot take a stand-in; nothing republishes ``state`` itself (its writers rename
+    #: files INSIDE it), and its parents are pinned against rename.
+    #:
+    #: The record is one line per name, not a count per tier: two changes that each
+    #: add a different leaf add different lines and stay green merged, where a count
+    #: would be rewritten to the same number by both (testing-conventions.md
+    #: § Merge-safe ratchets and counts). A key spells its path with ``<crew>`` for
+    #: a crew home, ``~`` for ``$HOME`` and ``<isolated>`` for the suite's
+    #: per-test isolation root; the value is how many crew-home spellings the plan
+    #: emits for it, and the tiers that hold it. Every entry is exact.
+    LEAF_ONLY: dict[str, tuple[int, str]] = {
+        "<crew>/.env": (3, "standard cc strict"),
+        "<crew>/.kiro_cli_binary_trust.json": (3, "standard cc strict"),
+        "<crew>/.vault": (3, "standard cc strict"),
+        "<crew>/admission_policy.json": (3, "standard cc strict"),
+        "<crew>/agent_model_state.json": (3, "standard cc strict"),
+        "<crew>/agent_model_state.json.lock": (3, "standard cc strict"),
+        "<crew>/agentcore-inbound": (3, "standard cc strict"),
+        "<crew>/app-agent-launch": (3, "standard cc strict"),
+        "<crew>/app_admission.json": (3, "standard cc strict"),
+        "<crew>/appearance-library": (3, "standard cc strict"),
+        "<crew>/apps/.dev-grants.json": (3, "standard cc strict"),
+        "<crew>/apps/.md-notebook-data-tmp/state": (3, "standard cc strict"),
+        "<crew>/apps/.meetings-data-tmp/notes": (3, "standard cc strict"),
+        "<crew>/apps/.spec-builder-data-tmp/trust": (3, "standard cc strict"),
+        "<crew>/apps/aws-control/data": (3, "standard cc strict"),
+        "<crew>/apps/md-notebook/data/state": (3, "standard cc strict"),
+        "<crew>/apps/meetings/data/edits": (3, "standard cc strict"),
+        "<crew>/apps/meetings/data/notes": (3, "standard cc strict"),
+        "<crew>/apps/spec-builder/data/trust": (3, "standard cc strict"),
+        "<crew>/auth-store-staging": (3, "standard cc strict"),
+        "<crew>/aws-control-staging": (3, "standard cc strict"),
+        "<crew>/aws_service_consent.json": (3, "standard cc strict"),
+        "<crew>/backup": (3, "standard cc strict"),
+        "<crew>/browser-cookies.txt": (3, "standard cc strict"),
+        "<crew>/browser-engine": (3, "standard cc strict"),
+        "<crew>/browser-harness": (3, "standard cc strict"),
+        "<crew>/browser-harness-ipc": (3, "standard cc strict"),
+        "<crew>/browser-mode-enabled": (3, "standard cc strict"),
+        "<crew>/browser-profile": (3, "standard cc strict"),
+        "<crew>/browser-recordings": (3, "standard cc strict"),
+        "<crew>/chat_steering_off.json": (3, "standard cc strict"),
+        "<crew>/cloud.json": (3, "standard cc strict"),
+        "<crew>/cloud_launch_state.json": (3, "standard cc strict"),
+        "<crew>/computer_use.json": (3, "standard cc strict"),
+        "<crew>/config-provenance": (3, "standard cc strict"),
+        "<crew>/config.json": (3, "standard cc strict"),
+        "<crew>/config.local.json": (3, "standard cc strict"),
+        "<crew>/credential_redaction.json": (3, "standard cc strict"),
+        "<crew>/crew-log": (3, "standard cc strict"),
+        "<crew>/crew-oauth-bridge": (3, "standard cc strict"),
+        "<crew>/crew-panels": (3, "standard cc strict"),
+        "<crew>/crew-teams": (3, "standard cc strict"),
+        "<crew>/cron-history": (3, "standard cc strict"),
+        "<crew>/cron-running": (3, "standard cc strict"),
+        "<crew>/data.sqlite3": (3, "standard cc strict"),
+        "<crew>/data.sqlite3-journal": (3, "standard cc strict"),
+        "<crew>/data.sqlite3-shm": (3, "standard cc strict"),
+        "<crew>/data.sqlite3-wal": (3, "standard cc strict"),
+        "<crew>/decisions": (3, "standard cc strict"),
+        "<crew>/decisions_consent.json": (3, "standard cc strict"),
+        "<crew>/denied_commands.json": (3, "standard cc strict"),
+        "<crew>/diag": (3, "standard cc strict"),
+        "<crew>/engines": (3, "standard cc strict"),
+        "<crew>/gateway_id": (3, "standard cc strict"),
+        "<crew>/host-exec-grants": (3, "standard cc strict"),
+        "<crew>/import-staging": (3, "standard cc strict"),
+        "<crew>/inbound-spool": (3, "standard cc strict"),
+        "<crew>/kas": (3, "standard cc strict"),
+        "<crew>/kas-mcp-launch": (3, "standard cc strict"),
+        "<crew>/kirocrew-bin": (3, "standard cc strict"),
+        "<crew>/ledger": (3, "standard cc strict"),
+        "<crew>/ledgers": (3, "standard cc strict"),
+        "<crew>/live-target-staging": (3, "standard cc strict"),
+        "<crew>/live_target.json": (3, "standard cc strict"),
+        "<crew>/mcp-apps": (3, "standard cc strict"),
+        "<crew>/mcp-launch-approvals": (3, "standard cc strict"),
+        "<crew>/mcp/resolved": (3, "standard cc strict"),
+        "<crew>/mcp_body_fields.json": (3, "standard cc strict"),
+        "<crew>/md-notebook-staging": (3, "standard cc strict"),
+        "<crew>/member-memory-bindings": (3, "standard cc strict"),
+        "<crew>/member-records": (3, "standard cc strict"),
+        "<crew>/memory_provider_bench": (3, "standard cc strict"),
+        "<crew>/memory_provider_consent.json": (3, "standard cc strict"),
+        "<crew>/memory_provider_migrations": (3, "standard cc strict"),
+        "<crew>/memory_stores": (3, "standard cc strict"),
+        "<crew>/microvm_crews.json": (3, "standard cc strict"),
+        "<crew>/models": (3, "standard cc strict"),
+        "<crew>/oauth_endpoints.json": (3, "standard cc strict"),
+        "<crew>/ops_mission_control_policy.json": (3, "standard cc strict"),
+        "<crew>/ops_mission_control_secrets.json": (3, "standard cc strict"),
+        "<crew>/panel-dismissals": (3, "standard cc strict"),
+        "<crew>/panel-templates": (3, "standard cc strict"),
+        "<crew>/pi-gate": (3, "standard cc strict"),
+        "<crew>/pinned-order": (3, "standard cc strict"),
+        "<crew>/playwright-extension-token": (3, "standard cc strict"),
+        "<crew>/playwright-storage-state.json": (3, "standard cc strict"),
+        "<crew>/policy_cache": (3, "standard cc strict"),
+        "<crew>/profiles": (3, "standard cc strict"),
+        "<crew>/project_hooks_consent.json": (3, "standard cc strict"),
+        "<crew>/quarantined-clones": (3, "standard cc strict"),
+        "<crew>/redaction-allow": (3, "standard cc strict"),
+        "<crew>/refresh_chains.json": (3, "standard cc strict"),
+        "<crew>/registry_trust.json": (3, "standard cc strict"),
+        "<crew>/released-sessions": (3, "standard cc strict"),
+        "<crew>/routing": (3, "standard cc strict"),
+        "<crew>/run": (1, "standard cc strict"),
+        "<crew>/run/voice-runtime": (3, "standard cc strict"),
+        "<crew>/scratch": (3, "standard cc strict"),
+        "<crew>/secret-request-policy": (3, "standard cc strict"),
+        "<crew>/security_policy.json": (3, "standard cc strict"),
+        "<crew>/seed-provenance": (3, "standard cc strict"),
+        "<crew>/settings_seeds.json": (3, "standard cc strict"),
+        "<crew>/shared_crew_preview.json": (3, "standard cc strict"),
+        "<crew>/skill-projection": (3, "standard cc strict"),
+        "<crew>/ssh_auth_sock_consent.json": (3, "standard cc strict"),
+        "<crew>/subagents": (3, "standard cc strict"),
+        "<crew>/tag-grants": (3, "standard cc strict"),
+        "<crew>/tasks": (3, "standard cc strict"),
+        "<crew>/template-mcp-additions": (3, "standard cc strict"),
+        "<crew>/token_signing.key": (3, "standard cc strict"),
+        "<crew>/update-staging": (3, "standard cc strict"),
+        "<crew>/update_next_start.json": (3, "standard cc strict"),
+        "<crew>/vouched-executions": (3, "standard cc strict"),
+        "<crew>/web-push": (3, "standard cc strict"),
+        "<crew>/webhooks": (3, "standard cc strict"),
+        "<crew>/whatsapp": (3, "standard cc strict"),
+        "<crew>/work": (3, "standard cc strict"),
+        "<crew>/work-ledger": (3, "standard cc strict"),
+        "<crew>/workflow_library": (3, "standard cc strict"),
+        "<crew>/workspace/md-notebook/pat": (3, "standard cc strict"),
+        "<crew>/workspace/md-notebook/settings.json": (3, "standard cc strict"),
+        "<crew>/workspace/md-notebook/vaults.json": (3, "standard cc strict"),
+        "<isolated>/kiro-agents": (1, "standard cc strict"),
+        "<isolated>/kiro-home/.kiro/crew/run": (1, "standard cc strict"),
+        "~/.aws": (1, "cc strict"),
+        "~/.azure": (1, "standard cc strict"),
+        "~/.config/gcloud": (1, "standard cc strict"),
+        "~/.config/gh": (1, "strict"),
+        "~/.docker": (1, "standard cc strict"),
+        "~/.git-credentials": (1, "cc strict"),
+        "~/.gnupg": (1, "standard cc strict"),
+        "~/.gpg": (1, "standard cc strict"),
+        "~/.kiro/crew-auth-staging": (1, "standard cc strict"),
+        "~/.kube": (1, "cc strict"),
+        "~/.midway": (1, "cc strict"),
+        "~/.netrc": (1, "cc strict"),
+        "~/.npmrc": (1, "cc strict"),
+        "~/.pypirc": (1, "cc strict"),
+    }
 
-    @pytest.mark.parametrize("tier", TIERS)
-    def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
-        _, leaf_only = _split(tier)
-        expected = self.EXPECTED[tier]
-        assert len(leaf_only) <= expected, _leaf_only_growth_message(tier, len(leaf_only), expected)
+    def test_leaf_only_names_match_the_record(self) -> None:
+        observed = {tier: _leaf_only_names(_split(tier)[1]) for tier in TIERS}
+        drift = _leaf_only_drift(observed, self.LEAF_ONLY)
+        assert not drift, _leaf_only_growth_message(drift)
+
+    def test_the_drift_names_the_line_to_write(self) -> None:
+        recorded = {"<crew>/a": (3, "standard cc strict"), "<crew>/b": (3, "strict")}
+        observed = {
+            "standard": {"<crew>/a": 3, "~/.new": 1},
+            "cc": {"<crew>/a": 3},
+            "strict": {"<crew>/a": 3},
+        }
+        assert _leaf_only_drift(observed, recorded) == [
+            '        "<crew>/b": (0, ""),  # was (3, "strict")',
+            '        "~/.new": (1, "standard"),  # was (0, "")',
+        ]
+        assert _leaf_only_drift({t: {"<crew>/a": 3} for t in TIERS}, recorded) == [
+            '        "<crew>/b": (0, ""),  # was (3, "strict")'
+        ]
 
     def test_the_growth_message_states_the_root_leaf_decision(self) -> None:
         """The failure text is the next author's only guidance, so it is pinned.
@@ -528,25 +723,88 @@ class TestLeafOnlyPopulationIsRecorded:
         stand-in, and the recorded leaf-only decision for a data-home root leaf,
         whose parent no stand-in can hold.
         """
-        message = _leaf_only_growth_message("standard", 325, 322)
-        assert "standard now holds 325" in message
-        assert "up from 322" in message
+        line = '        "<crew>/x": (3, "standard"),  # was (0, "")'
+        message = _leaf_only_growth_message([line])
+        assert line in message
         assert "enclosing directory mask" in message
         assert "no stand-in can hold" in message
         assert "leaf-only by design" in message
         assert "credential_redaction.json" in message
-        assert "EXPECTED" in message
+        assert "LEAF_ONLY" in message
 
 
-def _leaf_only_growth_message(tier: str, count: int, expected: int) -> str:
-    """The ratchet's failure text for a grown leaf-only count on *tier*."""
+def _leaf_only_names(paths: list[str]) -> dict[str, int]:
+    """*paths* keyed the way :attr:`TestLeafOnlyPopulationIsRecorded.LEAF_ONLY` is.
+
+    The crew homes and the isolation root are matched before ``$HOME``: under
+    some runners the isolation root sits below ``$HOME``, and its homes must not
+    read as the real ones.
+    """
+    crew = str(config_dir())
+    home = str(Path.home())
+    # A runner whose temp dir sits behind a symlink (macOS ``/var``) may hand the
+    # plan either spelling of the isolation root.
+    roots = dict.fromkeys((str(Path(crew).parent), os.path.realpath(Path(crew).parent)))
+    isolated = re.compile("(?:" + "|".join(map(re.escape, roots)) + r")/\d+-")
+    prefixes = tuple(
+        (root, "<crew>")
+        for root in dict.fromkeys(
+            (crew, os.path.realpath(crew), home + "/.kiro/crew", home + "/.kirocrew")
+        )
+    )
+    names: Counter[str] = Counter()
+    for path in paths:
+        key = next(
+            (
+                token + path[len(root) :]
+                for root, token in prefixes
+                if path == root or path.startswith(root + "/")
+            ),
+            None,
+        )
+        if key is None:
+            key = isolated.sub("<isolated>/", path, count=1)
+        if key == path and (path == home or path.startswith(home + "/")):
+            key = "~" + path[len(home) :]
+        names[key] += 1
+    return dict(names)
+
+
+def _row(value: tuple[int, str]) -> str:
+    return f'({value[0]}, "{value[1]}")'
+
+
+def _leaf_only_drift(
+    observed: dict[str, dict[str, int]], recorded: dict[str, tuple[int, str]]
+) -> list[str]:
+    """The ``LEAF_ONLY`` line to write for every name whose spellings or tiers moved.
+
+    A name the tiers spell a different number of times measures as ``-1``, which
+    no recorded line can match.
+    """
+    measured: dict[str, tuple[int, str]] = {}
+    for name in sorted({n for names in observed.values() for n in names}):
+        counts = {observed[tier][name] for tier in TIERS if name in observed[tier]}
+        tiers = " ".join(tier for tier in TIERS if name in observed[tier])
+        measured[name] = (counts.pop() if len(counts) == 1 else -1, tiers)
+    return [
+        f'        "{name}": {_row(measured.get(name, (0, "")))},'
+        f"  # was {_row(recorded.get(name, (0, '')))}"
+        for name in sorted(set(measured) | set(recorded))
+        if measured.get(name) != recorded.get(name)
+    ]
+
+
+def _leaf_only_growth_message(drift: list[str]) -> str:
+    """The ratchet's failure text for leaf-only names that moved."""
     return (
-        f"{tier} now holds {count} protected names by their own leaf name only, up "
-        f"from {expected}. Each new one is a name a host-side republish can leave "
+        "The protected names held by their own leaf name only no longer match "
+        "LEAF_ONLY. Each new one is a name a host-side republish can leave "
         "writable inside a live namespace. If its parent directory can take a "
         "stand-in, hold it with an enclosing directory mask instead. A leaf at the "
         "data-home root cannot: no stand-in can hold the root, so such a leaf is "
         "leaf-only by design, as credential_redaction.json and the other root "
         "leaves recorded in TestLeafOnlyPopulationIsRecorded are. For one of those, "
-        "raise EXPECTED and record the leaf and its reason beside it in the same diff."
+        "write its LEAF_ONLY line and record its reason beside it in the same diff; "
+        "for a name that is gone (a spelling count of 0), delete its line:\n" + "\n".join(drift)
     )

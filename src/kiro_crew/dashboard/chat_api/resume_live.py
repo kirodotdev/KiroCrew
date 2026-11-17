@@ -98,6 +98,9 @@ async def _live_slot_for_resume(
 
 async def _live_slot_resume_payload(state, existing) -> dict:
     """The resume endpoint's dedup body: the already-open slot's live window."""
+    # Call-time import: this module's functions run in ``chat_handlers``' namespace.
+    from kiro_crew.apps.hidden_sessions import listed_surface
+
     # The live slot a resume resolves to can be a restored sidebar row, under a
     # name the per-slot route's own lookup did not match (``dashboard:<key>``):
     # its window loads here, with the read off the loop, before anything reads it.
@@ -124,6 +127,6 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         "next_before": next_before,
         "memory_mode": existing.memory_mode,
         "mode": existing.mode,
-        "surface": existing.mode,
+        "surface": listed_surface(existing.mode),
         "folder_id": existing.folder_id,
     }

@@ -16,11 +16,10 @@ boundary: never a real subprocess.
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, library
 
@@ -28,8 +27,13 @@ from kiro_crew.apps.builtins.pptx_maker.backend import engine, library
 class _LibraryFixture(unittest.TestCase):
     """A temp engine user-config dir, with the engine bridge mocked out."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.config_dir = self.tmp / "sdpm"
         self.config_dir.mkdir(parents=True)
         self._patches = [
@@ -46,7 +50,6 @@ class _LibraryFixture(unittest.TestCase):
     def tearDown(self) -> None:
         for patch in self._patches:
             patch.stop()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _state(self) -> dict:
         path = self.config_dir / "state.json"

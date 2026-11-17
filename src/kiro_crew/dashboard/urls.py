@@ -89,6 +89,7 @@ def _resolve_hostname_bounded(host: str, timeout: float | None = None) -> str | 
         try:
             result.append(socket.gethostbyname(host))
         except Exception:
+            # No address: the empty result reads as unresolved.
             pass
 
     worker = threading.Thread(target=_lookup, name="kc-hostname-resolve", daemon=True)

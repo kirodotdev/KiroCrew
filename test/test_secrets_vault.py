@@ -209,7 +209,7 @@ def test_restrict_to_owner_called_on_read(tmp_path, monkeypatch):
 
 # ── Agent isolation: the .vault keystone leaf denies same-UID reads ──
 #
-# GPT 5.6 review flagged (vault.py:217): a prompt-injected agent running as the
+# A review concern (vault.py): a prompt-injected agent running as the
 # same UID can `import SecretVault` / `open('.vault/...')` and read plaintext,
 # so "revert until .vault is hidden by every agent OS sandbox". This is a false
 # positive for the Kiro Crew agent path: `.vault` is registered as a keystone

@@ -1146,7 +1146,8 @@ def flock_owner_pid(path: str | os.PathLike | os.stat_result) -> int | None:
     :func:`pids_holding_file` for candidates and do not present them as owners.
 
     Returns ``None`` on non-Linux, when ``/proc`` is unreadable, or when no
-    ``FLOCK`` entry matches the file. Blocked waiters (``->`` rows) are skipped.
+    ``FLOCK`` entry matches the file with an owner the kernel can name (an owner
+    printed as ``0`` names nobody). Blocked waiters (``->`` rows) are skipped.
 
     Matching is on the full ``major:minor:inode`` triple that ``/proc/locks``
     prints, because inode numbers are only unique WITHIN a filesystem -- an
@@ -1193,6 +1194,13 @@ def _flock_acquirer_row(fields: list[str], want: tuple[int, int, int]) -> int | 
     ``"23: FLOCK ADVISORY WRITE 39542 103:01:146872 0 EOF"``. A blocked waiter is
     ``"23: -> FLOCK ..."`` and owns nothing; other lock types, short rows and
     unparsable fields are skipped the same way.
+
+    An owner of ``0`` (or below) names nobody. The kernel prints the acquirer as
+    seen from the reader's pid namespace, and it prints ``0`` when it cannot: the
+    acquirer has exited and its pid is released (seen on Linux 6.1 for a flock a
+    forked child inherited), or it lives in a namespace the reader cannot see.
+    pid 0 is never a process, so such a row is a lock with no nameable owner and
+    the caller gets its "holder could not be identified" answer.
     """
     if len(fields) < 6 or "->" in fields[:2] or fields[1] != "FLOCK":
         return None
@@ -1202,7 +1210,7 @@ def _flock_acquirer_row(fields: list[str], want: tuple[int, int, int]) -> int | 
         found = (int(major, 16), int(minor, 16), int(ino))
     except (ValueError, IndexError):
         return None
-    return pid if found == want else None
+    return pid if found == want and pid > 0 else None
 
 
 def _flock_acquirer_in_proc_locks(want: tuple[int, int, int]) -> int | None:

@@ -126,6 +126,7 @@ from kiro_crew.acp._frame_record import record_frame  # noqa: F401
 from kiro_crew.acp.agent_env import agent_env_overlay  # noqa: F401
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.client_class import AcpClient  # noqa: F401
+from kiro_crew.acp.client_claude import ClaudeAcpClient  # noqa: F401
 from kiro_crew.acp.client_claude_seed import _claude_settings_usable  # noqa: F401
 from kiro_crew.acp.client_claude_session import _CLAUDE_CARRIED_PERMISSION_KEYS  # noqa: F401
 from kiro_crew.acp.client_claude_session import _CLAUDE_CREW_GOVERNED_SETTING_SOURCES  # noqa: F401
@@ -146,14 +147,18 @@ from kiro_crew.acp.client_claude_session import _project_settings_restrictions  
 from kiro_crew.acp.client_claude_session import (  # noqa: F401
     _claude_adapter_honours_setting_sources,
 )
+from kiro_crew.acp.client_deepseek import DeepseekAcpClient  # noqa: F401
+from kiro_crew.acp.client_goose import GooseAcpClient  # noqa: F401
+from kiro_crew.acp.client_goose_session import GOOSE_VERIFIED_VERSION_PREFIX  # noqa: F401
+from kiro_crew.acp.client_goose_session import _goose_versions_noted  # noqa: F401
 from kiro_crew.acp.client_lifecycle import _SUPPRESSED_STDERR_MARKERS  # noqa: F401
 from kiro_crew.acp.client_lifecycle import _T  # noqa: F401
+from kiro_crew.acp.client_mimocode import MimocodeAcpClient  # noqa: F401
 from kiro_crew.acp.client_model_selection import _JSONRPC_INVALID_PARAMS  # noqa: F401
 from kiro_crew.acp.client_model_selection import _is_config_value_rejection  # noqa: F401
 from kiro_crew.acp.client_model_selection import _push_model_via_effort_split  # noqa: F401
-from kiro_crew.acp.client_permissions import GOOSE_VERIFIED_VERSION_PREFIX  # noqa: F401
+from kiro_crew.acp.client_opencode import OpencodeAcpClient  # noqa: F401
 from kiro_crew.acp.client_permissions import PI_ACP_VERIFIED_VERSION  # noqa: F401
-from kiro_crew.acp.client_permissions import _goose_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _pi_adapter_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _scrub_observed  # noqa: F401
 from kiro_crew.acp.client_spawn_env import _CODEX_ACP_DEP_MARKER  # noqa: F401
@@ -186,6 +191,7 @@ from kiro_crew.acp.client_start import _PROTOCOL_VERSION_BY_BACKEND  # noqa: F40
 from kiro_crew.acp.client_start import CLIENT_NAME  # noqa: F401
 from kiro_crew.acp.client_start import CLIENT_VERSION  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION  # noqa: F401
+from kiro_crew.acp.client_start import PROTOCOL_VERSION_ANTIGRAVITY  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_CLAUDE  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_DEEPSEEK  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_GOOSE  # noqa: F401
@@ -254,6 +260,7 @@ from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP  
 from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP  # noqa: F401
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text  # noqa: F401
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable  # noqa: F401
+from kiro_crew.acp.node_compile_cache import apply_node_compile_cache
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks  # noqa: F401
 from kiro_crew.acp.runtime_models import (  # noqa: F401
     DEFAULT_MODEL,
@@ -594,6 +601,7 @@ def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> di
     if kiro_api_key:
         inject_kiro_cli_api_key(env)
         apply_child_env_defaults(env)
+        apply_node_compile_cache(env)
     else:
         strip_kiro_cli_api_key(env)
     return env
@@ -774,6 +782,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_resolve_claude_acp_bin",
         "_resolve_claude_code_executable",
         "_claude_adapter_installed_version",
+        "_claude_adapter_known_version",
     ),
     "kiro_crew.acp.harness.opencode": (
         "_OPENCODE_LAUNCH",
@@ -910,13 +919,12 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
 
 
-# The ``client_*`` owner modules hold code that was this module's own: the
-# ``AcpClient`` members the class binds, and the module-level names re-imported above,
-# which this module keeps binding. ``_facade_mirror`` keeps the whole patch surface: a
-# name in ``_EXPORTS`` is forwarded to its one owner exactly as before (read, write and
-# delete there; ``dir()`` lists it), and a write of any other name this module binds
-# reaches every client owner binding the same object -- the readers one global of this
-# module had before the split. ``surface`` is this module's own namespace, so an
+# The ``client_*`` owner modules hold the ``AcpClient`` members the class binds and
+# the module-level names re-imported above, which this module keeps binding.
+# ``_facade_mirror`` keeps the whole patch surface: a name in ``_EXPORTS`` is forwarded
+# to its one owner (read, write and delete there; ``dir()`` lists it), and a write of
+# any other name this module binds reaches every client owner binding the same
+# object. ``surface`` is this module's own namespace, so an
 # owner's private helper is never part of the facade. ``test/test_client_bindings.py``
 # pins the reach.
 #: The client's owner modules, lowest layer first.
@@ -924,11 +932,17 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_timeouts",
     "kiro_crew.acp.client_spawn_env",
     "kiro_crew.acp.client_permissions",
+    "kiro_crew.acp.client_goose_session",
+    "kiro_crew.acp.client_opencode_session",
+    "kiro_crew.acp.client_deepseek_session",
+    "kiro_crew.acp.client_mimocode_session",
     "kiro_crew.acp.client_elicitation",
+    "kiro_crew.acp.client_antigravity",
     "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
     "kiro_crew.acp.client_claude_seed",
     "kiro_crew.acp.client_seed_ownership",
+    "kiro_crew.acp.client_claude_turn",
     "kiro_crew.acp.client_model_selection",
     "kiro_crew.acp.client_mcp_array",
     "kiro_crew.acp.client_tool_events",
@@ -941,6 +955,11 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_turn",
     "kiro_crew.acp.client_new_conversation",
     "kiro_crew.acp.client_class",
+    "kiro_crew.acp.client_claude",
+    "kiro_crew.acp.client_goose",
+    "kiro_crew.acp.client_opencode",
+    "kiro_crew.acp.client_deepseek",
+    "kiro_crew.acp.client_mimocode",
 )
 _MIRROR = _facade_mirror.install(
     sys.modules[__name__],
@@ -971,6 +990,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         CLAUDE_CODE_BIN,
         _claude_acp_argv_cache,
         _claude_adapter_installed_version,
+        _claude_adapter_known_version,
         _resolve_claude_acp_bin,
         _resolve_claude_code_executable,
         _resolve_vendored_claude_acp,

@@ -1,7 +1,7 @@
 """What a tool call IS: the gate's typed input (:class:`ToolCall`), the
-non-model-authored identity tests, the first-party app and builtin-agent
-registries' readers and writers, the canonical MCP reference, the title
-normalization and the pattern matchers.
+non-model-authored identity tests (the computer-use observation test among them),
+the first-party app and builtin-agent registries' readers and writers, the canonical
+MCP reference, the title normalization and the pattern matchers.
 
 Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`.
 """
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _TITLE_TRUNCATION_MARKER,
         _TOOL_TITLE_PREFIXES,
         CORE_MCP_SERVER,
+        CU_CLASS_OBSERVE,
         DEEPSEEK_READ_ONLY_TOOLS,
         KIRO_TOOL_ALIASES,
         TOOL_AUTO_APPROVE,
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
         _bounded_pattern_search,
         _every_operation_names_a_path,
         as_spec_denied_grant,
+        computer_use_action_classes,
+        computer_use_action_from_title,
         logger,
         policy_aliases,
         security,
@@ -212,6 +215,10 @@ class ToolCall:
     #: ``AcpEvent.spec_denied_grant``: grants that hold only after the
     #: ``spec-denies`` row finds no deny naming the call. ``None`` grants nothing.
     spec_denied_grant: SpecDeniedGrant | None = None
+    #: ``AcpEvent.spec_unjudged_denies``: a Bot worker's ``deniedCommands`` entries
+    #: neither KAS nor the gate can judge. Read by the ``spec-unjudged-denies`` tier,
+    #: which REFUSES a shell call that is not read-only. A restriction, never a grant.
+    spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = ()
     #: ``AcpEvent.spec_shell_readonly``: the KAS session's own agent sets
     #: ``autoAllowReadonly: true`` beside ``denyByDefault``, so the
     #: ``spec-shell-allowlist`` tier lets a read-only command past for the
@@ -264,6 +271,8 @@ class ToolCall:
         ``resolved_agent`` the event does not carry). A name that is not a field is
         a ``TypeError`` at the site, never a silently ignored keyword.
         """
+        from kiro_crew.agent_sdk.kas_tool_view import worker_deny_records
+
         unknown = set(overrides) - set(cls.__dataclass_fields__)
         if unknown:
             raise TypeError(
@@ -298,6 +307,7 @@ class ToolCall:
             ),
             "spec_write_cwd": _plain_str(getattr(event, "spec_write_cwd", "")),
             "spec_denied_grant": as_spec_denied_grant(getattr(event, "spec_denied_grant", None)),
+            "spec_unjudged_denies": worker_deny_records(getattr(event, "spec_unjudged_denies", ())),
             "spec_shell_readonly": getattr(event, "spec_shell_readonly", False) is True,
             "spec_granted_paths": _granted_patterns(getattr(event, "spec_granted_paths", None)),
             "spec_granted_read_paths": _granted_patterns(
@@ -336,6 +346,7 @@ class ToolCall:
             "spec_write_allowlist": self.spec_write_allowlist,
             "spec_write_cwd": self.spec_write_cwd,
             "spec_denied_grant": self.spec_denied_grant,
+            "spec_unjudged_denies": self.spec_unjudged_denies,
             "spec_shell_readonly": self.spec_shell_readonly,
             "spec_granted_paths": self.spec_granted_paths,
             "spec_granted_read_paths": self.spec_granted_read_paths,
@@ -695,6 +706,39 @@ def _is_deepseek_read_only_builtin(
     return policy_name in _HOST_READ_ONLY_BUILTIN_TOOLS
 
 
+def _cu_read_only_auto_approve(tool_name: str) -> bool:
+    """True when *tool_name* is a computer-use OBSERVATION tool and the feature is on.
+
+    Two independent conditions, both required:
+
+    * the action is classified ``observe`` by the code-owned table in
+      ``platform/governance.py`` (never by a title heuristic, and never by a
+      private copy of the table — the class table is the single source of truth);
+    * the keystone primary enable says the feature is on, so a disabled feature's
+      tools are not silently pre-approved.
+
+    Fail-CLOSED (False on any error): failing to auto-approve merely falls through
+    to interactive approval, which is the safe direction.
+    """
+    action = computer_use_action_from_title(tool_name)
+    if not action:
+        return False
+    if CU_CLASS_OBSERVE not in computer_use_action_classes(action):
+        return False
+    try:
+        # Deferred deliberately: ``enable_state`` imports ``config.loader``, which
+        # hooks.py keeps OFF its module import path (the loader fires the data-home
+        # migration and pulls the whole config stack). Reached only after the
+        # cheap prefix + class tests above, so an ungoverned host with no
+        # computer-use traffic never pays for it.
+        from kiro_crew.computer_use import enable_state
+
+        return enable_state.is_enabled()
+    except Exception:
+        logger.debug("computer-use enable-state probe failed", exc_info=True)
+        return False
+
+
 def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:
     """True when *mcp_server_name* is *app*'s OWN app-scoped MCP server.
 
@@ -719,7 +763,8 @@ def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:
 def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
     """Install the set of shipped-manifest-declared ``<app>:<server>`` names.
 
-    Called once at gateway boot with the names from
+    Called at gateway boot, and after every app lifecycle or trust change, with
+    the names from
     ``apps.execution.builtin_app_mcp_servers`` (which enumerates the same
     immutable manifest sources as ``builtin_app_names``) and the adopted servers
     ``apps.builtin_adoption_gate`` keeps (each one a shipped manifest declares,
@@ -736,7 +781,7 @@ def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
     """True when *mcp_server_name* is a server a shipped builtin manifest declares.
 
     Pure in-memory, case-insensitive membership test against
-    ``_BUILTIN_APP_MCP_SERVERS`` (warmed at boot from immutable manifests). The
+    ``_BUILTIN_APP_MCP_SERVERS`` (warmed off the loop from immutable manifests). The
     app-own-server auto-approve requires this in addition to prefix ownership so
     a ``<app>:``-prefixed entry the app never declared (e.g. one injected into
     the mutable global MCP config) cannot win an auto-approval. Fail-closed
@@ -748,7 +793,8 @@ def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
 def set_builtin_app_names(names: Iterable[str]) -> None:
     """Install the set of first-party (builtin) app names for the gate.
 
-    Called once at gateway boot with the names discovered from the shipped
+    Called at gateway boot, and after every app lifecycle or trust change, with the
+    names discovered from the shipped
     manifests (``apps.execution.builtin_app_names``, which enumerates the same
     sources as ``shipped_builtin_app_root`` — core + the active edition) plus each
     former builtin whose adopted record keeps a server
@@ -787,7 +833,8 @@ def _is_first_party_app(app: str) -> bool:
 def set_builtin_app_agents(mapping: "Mapping[str, str]") -> None:
     """Install the agent → owning-builtin-app map for the gate.
 
-    Called once at gateway boot with ``apps.execution.builtin_app_agents()`` —
+    Called beside the two sets (``builtin_adoption_gate.publish_gate_app_trust``)
+    with ``apps.execution.builtin_app_agents()`` —
     derived only from shipped manifests whose install is builtin-owned (or adopted
     with a kept server, ``apps.builtin_adoption_gate``), with
     ambiguous names already dropped. Dependency-inverted like

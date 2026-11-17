@@ -76,10 +76,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _check_task  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _check_task_generation  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _check_via_provider  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _container_image_fields  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _do_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _fetch_feed_bytes  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _invalidate_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _last_update_check  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _read_feed_manifest  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _release_update_check_task  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _run_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _upcoming_for_feed  # noqa: F401
@@ -97,12 +99,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_step_up import api_update_disarm  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _LOG_LEVELS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _LOG_RING_SIZE  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_streams import _REDACTING  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _SSE_INTERVAL_SECS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _log_ring  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _log_ring_handler  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _QueueLogHandler  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _RingLogHandler  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _safe_ws_send  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_streams import _stream_safe  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import _without_pin_ranks  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import api_log_level  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_streams import api_log_level_get  # noqa: F401
@@ -148,6 +152,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import __version__ as _local_version  # noqa: F401
     from kiro_crew import platform_compat  # noqa: F401
+    from kiro_crew import release_channel  # noqa: F401
     from kiro_crew import shutdown_event  # noqa: F401
     from kiro_crew import update_boot_apply  # noqa: F401
     from kiro_crew import update_next_start  # noqa: F401
@@ -170,6 +175,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.cron import stop_cron_before_restart  # noqa: F401
     from kiro_crew.dashboard import restart_resume  # noqa: F401
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
+    from kiro_crew.dashboard.handlers import _update_image  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
     from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes  # noqa: F401
     from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate  # noqa: F401
@@ -196,6 +202,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import ERR_VERSION_UNPARSEABLE  # noqa: F401
     from kiro_crew.platform.update_capability import EXTERNALLY_MANAGED_MESSAGES  # noqa: F401
     from kiro_crew.platform.update_capability import MANAGED_BY_COMMAND  # noqa: F401
+    from kiro_crew.platform.update_capability import MANAGED_BY_CONTAINER  # noqa: F401
     from kiro_crew.platform.update_capability import MANAGED_BY_GIT  # noqa: F401
     from kiro_crew.platform.update_capability import MODE_NONE  # noqa: F401
     from kiro_crew.platform.update_capability import MODE_NOTIFY  # noqa: F401

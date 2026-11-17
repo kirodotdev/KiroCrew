@@ -19,6 +19,7 @@ export interface CorePopoutPageEntry {
 /** Route -> the page a pop-out window renders for it. */
 export const CORE_POPOUT_PAGES: Readonly<Record<string, CorePopoutPageEntry>> = {
   '/projects': { page: lazy(() => import('./ProjectsPage')), labelKey: 'nav.task_runner' },
+  '/channels': { page: lazy(() => import('./ChannelPage')), labelKey: 'nav.channels' },
 }
 
 /** The entry for *route*, or `undefined` when it names no core pop-out page. */

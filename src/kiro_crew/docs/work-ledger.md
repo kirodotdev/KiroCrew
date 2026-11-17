@@ -52,6 +52,7 @@ An item is the unit of dispatch. It holds:
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
+| `discussion` | worker | only when it hosts a discussion: where it stands, shown on the goal board as a discussing row |
 
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
@@ -211,6 +212,8 @@ report. Every report replaces it. Nothing wakes the conductor at that time yet; 
 worker still idle one window after it is flagged `stale` like any other. A
 remote-dispatch report does not carry it to the hub's board yet.
 
+**`discussion` is where a discussion the worker hosts stands.** It is an object: `phase` (`talking`, `checking`, `asking` or `done`), `round`, `minutes`, `direction` (up to 200 chars), `agreed` (up to 8 lines), `disputed` (up to 5 `{point, sides}`), `checking` (up to 3 lines), `recent` (up to 6 `{who, text}`) and `thread` (up to 512 chars), an http(s) URL or an `/artifacts`, `/chat`, `/schedule`, `/capabilities` or `/settings` path to the full back-and-forth. The worker sends the whole object every time; each report replaces it, and one without it clears it. A part over its cap, malformed or unknown is refused whole (`field_too_long` or `invalid_value`), and the refusal's `field` names the part, such as `discussion.agreed[3]`: nothing is cut. It rides the `work/recorded` entry and the work fold, so `work_ledger_read` and the goal board read it. The goal board shows an open item that carries one as "Discussing", with its counts on the row and the rest behind a toggle. A question for the person still goes through `status: question` and the board's needs-you band.
+
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
 `work-ledger` loop forward to within seconds. `progress`
@@ -326,8 +329,10 @@ spend, an irreversible step or deleting someone's work, a costly preference
 they cannot infer, or a choice the person said they want to make.
 
 Parallel work is bounded in code, not only in the prompt. Each goal may hold at
-most `concurrency_cap` items open at once. The default is 6; a `goal` write sets
-it (`concurrency_cap`, 1 to 32). A `create` past it is refused
+most `concurrency_cap` items open at once. `resource_status` decides the wave;
+a bound the user set is `concurrency_cap`, written by a `goal` write (1 to 32).
+With none set it is 32, the store's own open bound, which refuses first with
+`item_cap_exceeded`. A `create` past a lower cap is refused
 `goal_concurrency_cap_reached`, and the board writes nothing. That is not a
 stop: the next item that lands frees a seat, and the conductor waits for it
 rather than asking to raise the cap. Closed items never count toward it.
@@ -401,6 +406,23 @@ its reports any more. For such an item the board offers **Stop current turn**,
 which cancels the worker's running turn and keeps its session, branch and
 reports. There is no take-over. To ask where a goal stands, you can still ask the
 conductor session — it answers from the record.
+
+### When a run is done
+
+A conductor ends its run by sending you one final report and then stopping its
+patrol loop. The board reads that: once it has items and no loop is active on the
+conductor's session, the run is **done** when every item is closed and **stopped**
+when some are still open. A rejected or abandoned item counts as closed but not
+done. Nothing is stored for this, so a new goal, a re-armed patrol or a new item
+puts the run back to working on the next read; the board read also waits for a
+new goal's first item before it calls anything settled. The board read
+(`GET /api/crew-board`) and the conductor mode chat's Sessions row both carry this
+as `run` (`settled`, `open`, `accepted`, `not_done`, `at_limit`, `patrol_on`; the row only once
+the board has an item); the code is `dashboard/conductor_mode_run.py`. A stop the
+conductor made and one you made look the same to the board, so it never says who
+stopped the run. `at_limit` marks a patrol that ended at its time or budget bound,
+and `patrol_on` whether the loop is on: a new goal that waits on its first item with
+no loop on is not shown as working.
 
 ## Cleaning up finished ledgers
 

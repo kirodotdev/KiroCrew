@@ -1,0 +1,2 @@
++428
+PR #30794: the new `security/mcp_body_fields.py` module (the owner's list of third-party MCP message-body fields, judged by the one document-body scan under the 256 KiB source-body ceiling and the path tier, with a credential or exfiltration-URL match only logged; the size refusal's Settings link; the store's strict reader and in-place writer; and the rule that a `kirocrew-*` server or an executable-named field is never a row), plus its keystone leaf in `paths_lists`.

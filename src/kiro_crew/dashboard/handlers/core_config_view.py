@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.external_text import redact_external_text as _redact_external
+from kiro_crew.security import refuses
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
@@ -108,7 +109,7 @@ def _mask_agent_free_text(value: object) -> object:
     # No falsy pre-check on purpose: ``_redact_external`` returns falsy input
     # unchanged, so ``""`` compares equal and passes through — a ``value and``
     # guard here would only look like the fail-open bug class without being it.
-    if _redact_external(value) != value:
+    if refuses(value, _redact_external):
         return _SENSITIVE_MASK
     return value
 
@@ -336,7 +337,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return _deny("invalid JSON")
+            return _deny("invalid JSON", code="invalid_json")
         if body_not_object_error(body) is not None:
             # The same answer, through ``_deny`` so it is audited like every refusal.
             return _deny("body must be a JSON object", code="body_not_object")
@@ -510,7 +511,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         await _hot_apply_after_write()
         return web.json_response({"ok": True, "restart_required": restart_required})
 
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     return web.json_response(_config_body(cfg, await _kas_in_use(cfg)))
 
 

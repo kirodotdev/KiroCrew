@@ -297,6 +297,91 @@ def entry_reaches(entry: str, ref: str) -> bool:
     return _glob_hits(ref, entry) or (verb != "" and _glob_hits(verb, entry))
 
 
+def glob_free(entry: str) -> bool:
+    """Whether *entry* names one tool or verb, with no glob in its grant pattern."""
+    return _TOOL_GLOB_CHARS.isdisjoint(_canonical_grant_pattern(entry) or entry)
+
+
+def grant_fold(entry: str) -> str:
+    """The case-folded grant pattern a glob-free entry is matched by."""
+    return (_canonical_grant_pattern(entry) or entry).casefold()
+
+
+class OtherReach:
+    """Whether an entry of *entries* other than a glob-free *key* itself reaches *key*.
+
+    Same answer as ``any(entry_reaches(e, key) for e in entries if e != key)``,
+    without trying every entry: a glob-free entry reaches a glob-free key only
+    when it folds to the key's own pattern or, bare, to the key's verb.
+    """
+
+    def __init__(self, entries: Iterable[str]) -> None:
+        self._exact: dict[str, list[str]] = {}
+        globbed: list[str] = []
+        for entry in entries:
+            if glob_free(entry):
+                self._exact.setdefault(grant_fold(entry), []).append(entry)
+            else:
+                globbed.append(entry)
+        self._globbed = ReachIndex(globbed)
+
+    def reached_by_another(self, key: str) -> bool:
+        folded = grant_fold(key)
+        verb = folded.partition("/")[2]
+        near = [*self._exact.get(folded, ()), *(self._exact.get(verb, ()) if verb else ())]
+        return self._globbed.reaches(key) or any(e != key and entry_reaches(e, key) for e in near)
+
+
+class ReachIndex:
+    """``any(entry_reaches(entry, ref) for entry in entries)``, without trying every entry.
+
+    Same answer for every *ref*, so a reader with many entries and many refs is
+    not all-pairs. A glob-free entry matches only its own case-folded spelling
+    (``_glob_hits`` is then plain equality, either side folded), so those are set
+    lookups. An entry whose server part is glob-free can only match a ref on that
+    server, so it is tried only for refs on that server. The rest (server-part
+    globs, bare globs) are tried for every ref with :func:`entry_reaches` itself.
+    Case folding never adds or removes ``/`` or a glob character, which is what
+    lets the folded spelling pick the bucket.
+    """
+
+    def __init__(self, entries: Iterable[str] = ()) -> None:
+        self._exact_mcp: set[str] = set()
+        self._exact_bare: set[str] = set()
+        self._by_server: dict[str, list[str]] = {}
+        self._scan: list[str] = []
+        for entry in entries:
+            self.add(entry)
+
+    def add(self, entry: str) -> None:
+        pattern = _canonical_grant_pattern(entry)
+        if pattern is None:
+            if _TOOL_GLOB_CHARS.isdisjoint(entry):
+                self._exact_bare.add(entry.casefold())
+            else:
+                self._scan.append(entry)
+            return
+        folded = pattern.casefold()
+        server = folded[len(_MCP_PREFIX) :].partition("/")[0]
+        if _TOOL_GLOB_CHARS.isdisjoint(folded):
+            self._exact_mcp.add(folded)
+        elif _TOOL_GLOB_CHARS.isdisjoint(server):
+            self._by_server.setdefault(server, []).append(entry)
+        else:
+            self._scan.append(entry)
+
+    def reaches(self, ref: str) -> bool:
+        folded = (_canonical_grant_pattern(ref) or ref).casefold()
+        verb = folded.partition("/")[2]
+        if folded in self._exact_mcp or folded in self._exact_bare:
+            return True
+        if verb and verb in self._exact_bare:
+            return True
+        server = folded[len(_MCP_PREFIX) :].partition("/")[0] if folded.startswith("@") else None
+        tried = self._by_server.get(server, []) if server is not None else []
+        return any(entry_reaches(entry, ref) for entry in (*tried, *self._scan))
+
+
 #: Glob syntax kiro-cli documents in the tool part of an ``allowedTools`` entry.
 #: Anything else (brackets, braces, negation) is not pinned down for kiro-cli, so
 #: :func:`entry_grants` reads it as no grant.

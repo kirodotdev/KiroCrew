@@ -37,6 +37,7 @@ from typing import Any
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.dev_fleet import release_worktree, repository, runtime
 from kiro_crew.dashboard.handlers import worktree as dash_worktree
@@ -1378,7 +1379,7 @@ async def test_real_git_a_credential_shaped_filter_name_is_redacted_from_the_ref
     home.mkdir()
     env = _fixture_env(home)
     clone = _origin_with_tag(tmp_path, env, "v0.10.0")
-    token = "ghp_" + "a" * 36
+    token = github_classic(seed=71)
     assert _git(env, clone, "config", "--local", f"filter.{token}.smudge", "cat").returncode == 0
     monkeypatch.setattr(repository, "_repo", lambda: str(clone))
 

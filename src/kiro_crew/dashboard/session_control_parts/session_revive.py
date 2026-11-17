@@ -43,7 +43,12 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     _normalize_slot_key,
     _safe_folder_tree,
+    count_restored_workers,
     creator_slot_cap_refusal,
+    note_new_worker,
+    own_worker_member,
+    read_worker_execution,
+    worker_cap_refusal,
 )
 from kiro_crew.sel import sel
 
@@ -548,6 +553,8 @@ async def revive_session(
         # ``deny`` that raises it after the resume returns.
         return SessionControlError(reason, status=status, code=code)
 
+    revived_execution: list[Any] = [None]
+
     async def _containment(built: "_ChatSlot") -> ResumeRefusal | None:
         # The LAST gate, on the slot the resume hydrated and before it is
         # published (the core holds it retracted and under construction while
@@ -576,6 +583,11 @@ async def revive_session(
             return ResumeRefusal(
                 "sessions mirrored to a channel are not addressable", "mirrored_target", 403
             )
+        # A revived Bot worker takes a seat under its Bot's `max_workers`: its saved
+        # record is read here, and the seat is checked in `_final_check`.
+        revived_execution[0] = await asyncio.to_thread(read_worker_execution, history_key)
+        if own_worker_member(revived_execution[0]):
+            await count_restored_workers(state)
         claimed_creator = str(meta.get("created_by") or "")
         if not getattr(built, "_created_by", "") and claimed_creator:
             # Creator attribution restored the way a restart's rehydrate restores
@@ -633,6 +645,9 @@ async def revive_session(
             return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
             return ResumeRefusal(cap_reason, "creator_slot_cap_reached", 409)
+        if (worker_reason := worker_cap_refusal(state, revived_execution[0])) is not None:
+            return ResumeRefusal(worker_reason, "bot_worker_cap_reached", 409)
+        note_new_worker(built.key, revived_execution[0])
         from kiro_crew.dashboard.approval_inheritance import (
             inherit_posture,
             is_profile_worker,

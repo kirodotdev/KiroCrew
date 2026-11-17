@@ -9,7 +9,8 @@
  *
  * Only route, label key, group and the advertising flags live here. A field the
  * registry documents (`appOnly`, `hiddenFromNav`, `previewFlag`, `pinnable`,
- * `configSwitch`, `formerApp`) means exactly what `registry.ts` says it means.
+ * `configSwitch`, `configSwitchDefault`, `formerApp`) means exactly what
+ * `registry.ts` says it means.
  */
 import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 
@@ -41,6 +42,7 @@ export interface SurfaceNavData {
   previewFlag?: string
   pinnable?: boolean
   configSwitch?: string
+  configSwitchDefault?: boolean
   formerApp?: string
 }
 
@@ -61,6 +63,11 @@ export const BUILTIN_SURFACE_NAV = {
   projects: {
     navId: 'projects', route: '/projects', label: surfaceMachineValue('Task Runner'), labelKey: 'nav.task_runner',
     group: surfaceMachineValue('Apps'), configSwitch: 'taskrunner.enabled', formerApp: 'projects',
+  },
+  channels: {
+    navId: 'channels', route: '/channels', label: surfaceMachineValue('Channels'), labelKey: 'nav.channels',
+    group: surfaceMachineValue('Apps'), configSwitch: 'dashboard.channels_enabled', configSwitchDefault: false,
+    formerApp: 'channels',
   },
   schedule: {
     navId: 'schedule', route: '/schedule', label: surfaceMachineValue('Schedule'), labelKey: 'nav.schedule',
@@ -131,14 +138,16 @@ export const SURFACE_FORMER_APPS: ReadonlyMap<string, string> = new Map(
 
 /**
  * Whether a surface's `configSwitch` lets it be offered, given the
- * `['kirocrewConfig']` read. Only a literal `false` turns it off, so a surface
- * with no switch, or a config not read yet, is offered as before.
+ * `['kirocrewConfig']` read. A surface with no switch is offered. A switch that
+ * holds no boolean (a config not read yet) reads as its `configSwitchDefault`:
+ * on unless that is `false`, so a default-on surface is offered as before and a
+ * default-off one stays off until the gateway says it is on.
  */
-export function surfaceSwitchedOn(s: { configSwitch?: string }, config: unknown): boolean {
+export function surfaceSwitchedOn(s: { configSwitch?: string; configSwitchDefault?: boolean }, config: unknown): boolean {
   if (!s.configSwitch) return true
   let value: unknown = config
   for (const part of s.configSwitch.split('.')) {
     value = value !== null && typeof value === 'object' ? (value as Record<string, unknown>)[part] : undefined
   }
-  return value !== false
+  return typeof value === 'boolean' ? value : s.configSwitchDefault !== false
 }

@@ -22,6 +22,7 @@ import {
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
 import { precompressPlugin } from './scripts/precompress.mjs'
+import { compileHintsPlugin } from './scripts/compile-hints.mjs'
 import { stripHtmlCommentsPlugin } from './scripts/strip-html-comments.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { firstLoadGroups } from './scripts/lib/firstLoadGroup.mjs'
@@ -785,7 +786,7 @@ export default defineConfig({
     // the Babel pass costs per listed file instead of per module. After the
     // stamp (it reads source offsets), before react() (it needs JSX intact).
     ...reactCompilerPlugins(),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
@@ -978,6 +979,11 @@ export default defineConfig({
         target: `http://localhost:${backendPort}`,
         ws: true,
         changeOrigin: true, // Backend validates Host header for CSRF; without this, dev proxy sends localhost:3000
+      },
+      // The Crew API's Owner routes (the Bots roster reads /v1/crew/owner/bots).
+      '/v1/crew/': {
+        target: `http://localhost:${backendPort}`,
+        changeOrigin: true,
       },
       // Proxy app UI bundle file requests to the backend (serves from ~/.kiro/crew/apps/)
       // Only matches /apps/{name}/ui/* — not /apps (React Router page)

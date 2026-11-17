@@ -184,6 +184,13 @@ export interface Surface {
    */
   configSwitch?: string
   /**
+   * What `configSwitch` reads as while the config holds no boolean for it (not
+   * read yet, or an older gateway): the setting's own default. Omitted means on;
+   * `false` is a surface its user turns on, which shows nothing until the
+   * gateway's value says it is on.
+   */
+  configSwitchDefault?: boolean
+  /**
    * The built-in app this surface was before it moved into core. The rail's Apps
    * group lists installed apps in `GET /api/apps` order (by name), so until the
    * user drags the group into an order of their own, the row stands where that

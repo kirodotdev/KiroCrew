@@ -525,21 +525,38 @@ class TestSlackChannels:
 
 class TestSlackIntake:
     @pytest.mark.asyncio
-    async def test_a_message_in_a_refused_channel_is_dropped_and_audited(self, monkeypatch) -> None:
+    async def test_a_message_in_a_refused_channel_is_dropped_and_audited(
+        self, monkeypatch, tmp_path
+    ) -> None:
         from slack_events_coverage_helpers import _event, _make_orch
 
+        from kiro_crew.sel import SecurityEventLog
         from kiro_crew.slack import events as ev
 
         monkeypatch.setattr(
             "kiro_crew.slack.channel_policy.channel_refusal", lambda _c, **_k: "refused"
         )
-        fake_sel = MagicMock()
+        # A real log, read back. The log is a process singleton: cleared around the
+        # construction, so this test owns it and no other caller is handed it.
+        monkeypatch.setattr(SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+        audit = SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(SecurityEventLog, "_initialized", False)
         orch = _make_orch()
-        with patch("kiro_crew.slack.events.sel", return_value=fake_sel):
+        event = _event()
+        with patch("kiro_crew.slack.events.sel", return_value=audit):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
-                await ev._route_message(orch, _event(), ev.SeenCache())
+                await ev._route_message(orch, event, ev.SeenCache())
         hm.assert_not_called()
-        assert fake_sel.log_api_access.call_args.kwargs["error"] == "channel_not_allowed_by_policy"
+        # The sender check writes its own row first; the channel refusal is one more,
+        # naming the sender and the refused channel.
+        policy_rows = [
+            (r["operation"], r["outcome"], r["caller_identity"], r["resources"])
+            for r in audit.recent()
+            if r["event_type"] == "api_access" and r["error"] == "channel_not_allowed_by_policy"
+        ]
+        assert policy_rows == [("slack.message", "denied", event["user"], event["channel"])]
 
     @pytest.mark.asyncio
     async def test_a_pure_stop_is_not_held_to_the_channel_list(self, monkeypatch) -> None:

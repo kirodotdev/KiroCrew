@@ -1,10 +1,10 @@
 ---
 title: A crewmate's dispatched workers run on its model and effort, with a profile override
-status: accepted
+status: implemented
 author: iamwhatever
 created: 2026-10-12
-last-audited: 2026-10-12
-audited-at: e5a0b3d3b2
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [19368]
 tracking-issues: [19344]
@@ -14,7 +14,11 @@ superseded-by: []
 
 # RFC: A crewmate's dispatched workers run on its model and effort, with a profile override
 
-- Status: accepted. This is the product owner's decision, given 2026-10-12 in
+- Status: implemented in
+  [#19368](https://github.com/kirodotdev/KiroCrew/pull/19368) (merged 2026-10-14):
+  `worker_session_defaults` in `config/sections_agent_fields.py`, read by
+  `session_create` in `dashboard/session_control_parts/session_create.py`.
+  Accepted as the product owner's decision, given 2026-10-12 in
   the "Crew page polish" goal (item Y): a worker session a crewmate opens
   through `session_create` inherits that crewmate's model and reasoning effort
   when the call names neither; the crewmate's profile gets a **Worker model** /

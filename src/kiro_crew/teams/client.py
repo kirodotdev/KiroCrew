@@ -57,14 +57,12 @@ except Exception:  # pragma: no cover - exercised only when PyJWT absent
     _PyJWKClient = None  # type: ignore[assignment,misc]
     HAS_JWT = False
 
-#: Byte ceiling a bot message is sized against. The Connector's hard limit is
-#: ~100 KB; Microsoft recommends staying under 80 KB, and the widely-quoted 28 KB
-#: figure is the Incoming-Webhook / message-extension-card limit, not a bot
-#: message. The recommended value, not the hard one: a rejected activity is a lost
-#: answer, and the gap absorbs the rest of the JSON envelope (ids, serviceUrl,
-#: recipient) that shares the body with the text. Enforced at the wire by
-#: ``_fit_activity`` in ``_post_activity``: an over-budget text-carrying activity
-#: is tail-truncated to fit rather than sent to a certain 413.
+#: Byte ceiling a bot message is sized against: Microsoft's recommended 80 KB, not
+#: the Connector's ~100 KB hard limit (the often-quoted 28 KB is the webhook /
+#: card limit). A rejected activity is a lost answer, and the gap absorbs the rest
+#: of the JSON envelope (ids, serviceUrl, recipient). ``_fit_activity`` in
+#: ``_post_activity`` tail-truncates an over-budget text activity instead of
+#: sending it to a certain 413.
 TEAMS_MAX_ACTIVITY_TEXT_BYTES = 80 * 1024
 
 #: Worst-case UTF-8 cost of ONE character on the wire: an astral codepoint (emoji,

@@ -114,9 +114,13 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "request body must be JSON"}, status=400)
+        return web.json_response(
+            {"error": "request body must be JSON", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     return await put_investigation(body)
 
 

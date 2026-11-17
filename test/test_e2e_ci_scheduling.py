@@ -310,12 +310,19 @@ finally:
         self.assertEqual(proc.returncode, 0, output)
 
     def test_drain_preserves_direct_popen_exit_status(self):
+        # The child's shutdown outlasts the drain's rescan interval with its
+        # handler already gone, as interpreter finalization does on a slow
+        # runner, so a repeated SIGTERM would replace status 23 with -15.
         probe = """
 import pathlib, runpy, subprocess, sys, time
 m = runpy.run_path(sys.argv[1])
 ready = pathlib.Path('ready')
 code = '''import pathlib, signal, sys, time
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(23))
+def stop(*_):
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    time.sleep(.3)
+    sys.exit(23)
+signal.signal(signal.SIGTERM, stop)
 pathlib.Path('ready').touch()
 time.sleep(60)
 '''
@@ -331,12 +338,12 @@ def spawn(*args, **kwargs):
     return child
 subprocess.Popen = spawn
 try:
-    result = m['_supervise']({'child': [sys.executable, '-c', code]}, timeout=.1, grace=.5)
+    result = m['_supervise']({'child': [sys.executable, '-c', code]}, timeout=.1, grace=5)
     print('result=', result, 'status=', children[0].returncode, flush=True)
 finally:
     for child in children:
         if child.poll() is None:
-            child.terminate()
+            child.kill()
         child.wait(timeout=5)
 """
         proc = self.start({"probe": [sys.executable, "-c", probe, str(HELPER)]})
@@ -497,7 +504,14 @@ raise SystemExit(m['main']())
         self.assertNotIn("--no-vs-base", render["run"])
         # The render needs the browser the E2E job provisions the same way: the
         # exact revision @playwright/test pins, downloaded before the render.
-        install = next(s for s in steps if s.get("run") == "npx playwright install chromium")
+        # The install ends on `npx playwright install chromium`; a host guard for
+        # images Playwright has no entry for (ubuntu 26.04) may precede it.
+        install = next(
+            s
+            for s in steps
+            if str(s.get("run", "")).rstrip().splitlines()[-1:]
+            == ["npx playwright install chromium"]
+        )
         self.assertLess(steps.index(install), steps.index(render))
         self.assertEqual(install["timeout-minutes"], 6)
         # The gate runs nowhere else in the workflow: one job owns it.

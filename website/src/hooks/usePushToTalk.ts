@@ -48,6 +48,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { pttKeyCouldStartMuteChord } from '../lib/dictationMute'
 import {
   loadPttConfig,
   matchesBinding,
@@ -143,6 +144,9 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
   disabledRef.current = disabled
   const shiftDraftStopRef = useRef(shiftDraftStop)
   shiftDraftStopRef.current = shiftDraftStop
+  // A stop waiting for the key's release, because the press could also be the
+  // first key of the mute chord (see the stop branch in the keydown handler).
+  const deferredStopRef = useRef<{ intent: StopIntent | undefined } | null>(null)
 
   /**
    * Late-bound seams the session core calls back into. `disarm` and the reset
@@ -279,6 +283,31 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
   }, [disabled, disarm])
 
   useEffect(() => {
+    /** End the running capture, or abort a startup that has not captured yet. */
+    const endCapture = (intent: StopIntent | undefined) => {
+      const pending = session.startPending()
+      // Clear the owner so the settle handler stops the session if the startup
+      // lands anyway, but leave the sequence alone so that handler still runs.
+      session.setOwner(null)
+      if (pending) {
+        // Startup still in flight: commit only if capture has actually begun
+        // (`recording`), otherwise `stop()` is a no-op and the startup would
+        // go live after this press — only `cancel()` aborts it.
+        if (voiceRef.current.recording) voiceRef.current.stop(intent)
+        else voiceRef.current.cancel()
+      } else voiceRef.current.stop(intent)
+    }
+    /** Carry out a stop that was waiting for the key's release, if one was. */
+    const settleDeferredStop = () => {
+      const deferred = deferredStopRef.current
+      if (!deferred) return false
+      deferredStopRef.current = null
+      const capturing = voiceRef.current.recording
+        || (session.startPending() && session.owner() !== null)
+      if (phaseRef.current === 'idle' && capturing) endCapture(deferred.intent)
+      return true
+    }
+
     const onKeyDown = (e: KeyboardEvent) => {
       // While disabled the key never ARMS a gesture, but it can still END one:
       // a press that stops a running capture (idle phase, capturing) or the
@@ -310,6 +339,9 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
 
       // Any non-matching keystroke is also our chance to reconcile.
       if (!shiftedStop && !matchesBinding(e, binding)) {
+        // Another key joined the bound modifier, so the press was a chord and
+        // not a stop.
+        deferredStopRef.current = null
         const phase = phaseRef.current
         if (phase === 'idle') return
         // The bound modifier is no longer physically down, so we missed its
@@ -352,17 +384,16 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
       if (phaseRef.current === 'idle' && capturing) {
         // A press that ends a running capture is a deliberate stop.
         const intent: StopIntent | undefined = shiftedStop ? undefined : 'finish'
-        const pending = session.startPending()
-        // Clear the owner so the settle handler stops the session if the startup
-        // lands anyway, but leave the sequence alone so that handler still runs.
-        session.setOwner(null)
-        if (pending) {
-          // Startup still in flight: commit only if capture has actually begun
-          // (`recording`), otherwise `stop()` is a no-op and the startup would
-          // go live after this press — only `cancel()` aborts it.
-          if (voiceRef.current.recording) voiceRef.current.stop(intent)
-          else voiceRef.current.cancel()
-        } else voiceRef.current.stop(intent)
+        // Unless the key is a lone modifier the mute chord also uses. That
+        // chord is only pressed during a recording and begins with this same
+        // keydown, so stopping here would end (and, with send on stop, send)
+        // the dictation the chord was meant to pause. Wait for the release:
+        // released alone it is the stop; joined by another key it is a chord.
+        if (pttKeyCouldStartMuteChord(binding)) {
+          deferredStopRef.current = { intent }
+          return
+        }
+        endCapture(intent)
         return
       }
       if (phaseRef.current !== 'idle') return
@@ -400,6 +431,8 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
     const onKeyUp = (e: KeyboardEvent) => {
       const { binding, mode } = cfgRef.current
       if (e.code !== binding.code) return
+      // The bound modifier came up with no other key pressed: it was the stop.
+      if (settleDeferredStop()) return
       const was = phaseRef.current
       if (was === 'idle') return
       if (was === 'holding') {
@@ -432,7 +465,9 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
     // A release that never arrives is the defining failure of a hold binding.
     // Losing focus or visibility mid-hold is the common cause, so commit what
     // was said instead of leaving the mic open.
-    const onBlur = () => { if (phaseRef.current !== 'idle') disarm(true) }
+    // A stop waiting on a release is carried out too: the key-up will not
+    // arrive, and the person did press the key that stops the recording.
+    const onBlur = () => { settleDeferredStop(); if (phaseRef.current !== 'idle') disarm(true) }
     const onVisibility = () => { if (document.hidden && phaseRef.current !== 'idle') disarm(true) }
 
     document.addEventListener('keydown', onKeyDown, true)

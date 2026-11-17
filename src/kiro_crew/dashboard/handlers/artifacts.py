@@ -255,6 +255,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.artifact_source import classify_source  # noqa: F401
     from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND  # noqa: F401
     from kiro_crew.artifacts import EXPECT_ABSENT  # noqa: F401
+    from kiro_crew.artifacts import MAX_AUTO_WIDGET_ARTIFACTS  # noqa: F401
     from kiro_crew.artifacts import MAX_CONTENT_BYTES  # noqa: F401
     from kiro_crew.artifacts import USER_SELECTABLE_KINDS  # noqa: F401
     from kiro_crew.artifacts import ArtifactAlreadyExistsError  # noqa: F401
@@ -283,6 +284,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.handlers._shared import bounded_json_error_code  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import string_field_error  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.executors import discovery_executor  # noqa: F401
     from kiro_crew.executors import subprocess_executor  # noqa: F401

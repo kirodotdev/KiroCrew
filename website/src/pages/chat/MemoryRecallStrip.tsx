@@ -66,7 +66,7 @@ function Detail({ label, value }: { label: string; value: string | React.ReactNo
  *
  * The record on the row is the ONLY condition, for the reason `DecisionStrip`
  * states: a stamped record is history that already sits on this machine, so
- * drawing it sends nothing, while the Decisions (Jev) switch governs whether a
+ * drawing it sends nothing, while the Decisions switch governs whether a
  * FUTURE turn may ask.
  *
  * Collapsed it is COUNTS, not names — how many memories similarity recalled, how

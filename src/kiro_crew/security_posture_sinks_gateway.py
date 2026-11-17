@@ -19,8 +19,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Interrupted work in a Bot reply",
         "dashboard/responsive_chat.py",
         "The bounded interrupted-turn reference passed to the next model prompt. "
-        "Structural markers are neutralized, then exfiltration URLs and "
-        "credentials are redacted before the reference enters model context.",
+        "Structural markers are neutralized, then credentials, inside URLs "
+        "too, are redacted before the reference enters model context.",
     ),
     (
         "The settings diagnosis",
@@ -37,14 +37,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "The title and result text of each change card and guide row written "
         "into a chat transcript and rendered in the browser. The text comes from "
         "an agent's proposal or a gateway outcome, so each string passes the "
-        "exfiltration-URL then the credential redactor before it is stored.",
+        "credential redactors, inside URLs too, before it is stored.",
     ),
     (
         "A return-triggered warm task brief",
         "dashboard/warm_task_brief.py",
         "The original request and model-generated task facts written into a chat "
         "transcript and rendered in the browser. Each string passes the "
-        "exfiltration-URL then the credential redactor before it is stored.",
+        "credential redactors, inside URLs too, before it is stored.",
     ),
     (
         "Change-card details shown before Apply",
@@ -59,7 +59,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "The goals, key results and their readings a Bot may write "
         "about itself, on their way to the Goals tab, the Bot's tools and its "
         "saved goal reports. Each string passes the "
-        "exfiltration-URL then the credential redactor before it leaves the record.",
+        "credential redactors, inside URLs too, before it leaves the record.",
     ),
     (
         "The symptom probes",
@@ -107,7 +107,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "by `faulthandler` from C, which cannot redact as it writes, so read time "
         "is the ONLY point at which they can be scrubbed at all; and a sampled "
         "frame can name a literal. Each string passes the shared path-shortening "
-        "then the exfiltration-URL and credential chain, and the shortening runs "
+        "then the credential chain (inside URLs too), and the shortening runs "
         "FIRST because it is what removes the home prefix that the credential "
         "scanners do not look for. A scanner that raises drops the field rather "
         "than emitting it unredacted.",
@@ -180,7 +180,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "bytes are what leaves the machine: a credential in a tool argument is "
         "ordinary (an `aws` command, a curl header), so refusing on it would mean "
         "the seam never looks at the calls most worth looking at. Each field passes "
-        "the shared exfiltration-URL then credential chain and is clipped only "
+        "the shared credential chain (inside URLs too) and is clipped only "
         "AFTER that, because clipping first can halve a secret into a fragment "
         "neither redactor matches; a scanner that raises drops the field instead of "
         "sending it. The gate then scans the placeholder, so a request it clears "
@@ -226,7 +226,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "send a companion-defined secret verbatim to a third party. A composition "
         "failure re-raises out of the shim and DROPS the field here, which is the "
         "same direction every other arm of this module fails in. The shipped "
-        "exfiltration-URL pass runs on top, because the shim covers credentials. "
+        "URL pass runs on top, because the shim covers credentials. "
         "Authorized by a THIRD keystone scope (`consent.STATE_KEY_COMPACTION`), "
         "because neither the message excerpt the main switch records nor the "
         "single-call `tool_args` scope describes it.",
@@ -265,7 +265,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "a response, so what it writes outlives the process and is read back "
         "later by folds and the session panel; that makes it an output boundary "
         "with a longer reach than an egress response, not a lesser one. Every "
-        "body passes the shared exfiltration-URL then credential chain in the "
+        "body passes the shared credential chain (inside URLs too) in the "
         "emitter rather than at its call sites, so a new call site cannot forget, "
         "and a redaction that fails writes the empty string instead of the input.",
     ),
@@ -274,10 +274,29 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "browser_harness/live_hub.py",
         "Every textual value of the browser_live websocket event, including page "
         "URLs, titles, step labels and nested quick-ask text, passes the platform-aware "
-        "credential and exfiltration-URL redactor at publish time. A scanner failure "
+        "credential redactor (inside URLs too) at publish time. A scanner failure "
         "drops the event. The replay routes (handlers/browser_recordings.py) pass "
         "their turn list and turn detail JSON through the same function. Browser "
         "state and binary pixel frames are unchanged.",
+    ),
+    (
+        "Browser action change reports",
+        "browser_harness/change_report.py",
+        "The `changes` report a click, type or select carries while "
+        "`browser.report_changes` is on: the page address, title, dialog names, "
+        "the message of a JavaScript dialog (read uncut), "
+        "alert text, the names of fields that failed validation and control names, "
+        "all written by the page; no validation message is read. "
+        "Each string is stripped of control characters and passed through the "
+        "platform-aware credential and exfiltration-URL redactor, and only then cut to "
+        "one bounded line, before it reaches the agent; text too long to read whole is "
+        "left out, never cut, in the walker and here, so a cut can never split a "
+        "credential before redaction. Text the page does not draw is not read, and "
+        "text that holds a token once its white space is removed, by a prefixed rule "
+        "or by any token format the credential detectors know, is left "
+        "out. Nothing inside a field names anything, and a name built from several "
+        "elements is read whole or not at all. The address is cleaned by the recordings' "
+        "`clean_url` first. No field's value is read.",
     ),
     (
         "Subagent wait broadcasts",
@@ -286,7 +305,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "browser, the SSE relay and every app holding a `subagent:*` scope. It is the "
         "same provider- and store-authored prose the task routes scrub and the sibling "
         "`subagent_done` event redacts field by field, so it passes the shared "
-        "exfiltration-URL + credential chain before it leaves the process.",
+        "credential chain (inside URLs too) before it leaves the process.",
     ),
     (
         "Task queue panel responses",
@@ -295,7 +314,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "event's data payload and each row's wait reason, both of which carry a "
         "tool's or a provider's own error text verbatim. Every string, including "
         "the ones nested in dicts and lists, passes through the shared "
-        "exfiltration-URL + credential chain before serialization; row "
+        "credential chain (inside URLs too) before serialization; row "
         "identifiers are left intact because the panel keys its rows by them.",
     ),
     (
@@ -303,30 +322,103 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "
         "failure details served to the memory recovery panel. These fields pass "
-        "through the shared credential + exfiltration-URL chain before egress.",
+        "through the shared credential chain (inside URLs too) before egress.",
     ),
     (
         "Memory record editor responses",
         "dashboard/handlers/memory_edit.py",
         "Record detail, correction previews, and bulk operation results served to "
-        "the memory editor. Nested fields pass through the shared credential + "
-        "exfiltration-URL chain before reaching the browser.",
+        "the memory editor. Nested fields pass through the shared credential "
+        "chain (inside URLs too) before reaching the browser.",
     ),
     (
         "Member memory recall and copy responses",
         "dashboard/handlers/memory_member.py",
         "Selected facts, experiences, corrections, and owner-selected copy results "
         "returned to the dashboard or the memory_recall tool. Nested fields pass "
+        "through the shared credential chain (inside URLs too) before serialization.",
+    ),
+    (
+        "Memory provider item responses",
+        "dashboard/handlers/memory_provider.py",
+        "Item text an app's memory provider returns, served to the owner by the "
+        "provider browse routes. Each item's text passes "
+        "through the shared credential + exfiltration-URL chain before "
+        "serialization.",
+    ),
+    (
+        "Memory provider move and export responses",
+        "dashboard/handlers/memory_provider_migrations.py",
+        "Move plans (with their sampled item text) and the JSONL export of an app's "
+        "memory provider or Crew's own memory, served to the owner. Each job and "
+        "each export record passes through the shared credential + exfiltration-URL "
+        "chain before serialization.",
+    ),
+    (
+        "Memory provider benchmark responses",
+        "dashboard/handlers/memory_provider_bench.py",
+        "Benchmark plans, run states, reports and own-memory probe text, served to "
+        "the owner. Every body passes "
         "through the shared credential + exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Own-memory eval set",
+        "eval/bench/own_memory.py",
+        "A copy of the owner's memory taken for a benchmark. An item that either "
+        "redactor would change is dropped before anything is written, so no partly "
+        "masked secret reaches the eval set or a provider.",
+    ),
+    (
+        "Memory provider lesson responses",
+        "memory_provider/lesson_routes.py",
+        "Lesson rules, categories and supersession results a memory provider "
+        "returns, served by the lesson routes while a provider replaces Crew "
+        "memory. Each field passes through the shared credential + "
+        "exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Model-written memory sent to a memory provider",
+        "memory_provider/migration.py",
+        "`redact_model_written`: the text and negative clause of memory a model wrote pass the "
+        "shared credential + exfiltration-URL chain before Crew sends them to an "
+        "app's memory provider.",
+    ),
+    (
+        "Consolidation items sent to a memory provider",
+        "memory_provider/consolidation.py",
+        "Facts, episodes and lessons a consolidation pass extracted pass the shared "
+        "credential + exfiltration-URL chain (`migration.redact_model_written`) before they are "
+        "put to a provider that replaces Crew memory.",
+    ),
+    (
+        "Task lessons and transcript spans sent to a memory provider",
+        "memory_provider/chokepoints.py",
+        "A task run's lesson and a consolidation transcript span pass the shared "
+        "credential + exfiltration-URL chain (`migration.redact_model_written`, "
+        "`_redact_memory_field`) before they are sent to a provider that replaces "
+        "Crew memory.",
+    ),
+    (
+        "Recall queries sent to a memory provider",
+        "memory_provider/recall.py",
+        "An agent's `memory_recall` query passes the shared credential + "
+        "exfiltration-URL chain before Crew sends it to a provider's search.",
+    ),
+    (
+        "Chat messages sent to a memory provider",
+        "memory_provider/render.py",
+        "The user's message, sent as the session-start context query and the "
+        "per-message lesson search, passes the shared credential + "
+        "exfiltration-URL chain before Crew sends it to a provider.",
     ),
     (
         "Bedrock Knowledge Base retrieval queries",
         "knowledge/connectors/bedrock_kb.py",
         "The user's knowledge-search query text as sent to the AWS Bedrock "
         "Retrieve API -- an off-host egress boundary. A query pasted with a "
-        "credential-shaped token or an exfiltration-shaped URL would land in "
+        "credential-shaped token, inside a URL or not, would land in "
         "a third-party service's request log, so the query runs the shared "
-        "credential + exfiltration-URL chain immediately before the client "
+        "credential chain (inside URLs too) immediately before the client "
         "call, once per remote search.",
     ),
     (
@@ -339,7 +431,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "fallback command embeds the artifact CDN base -- with a token-bearing "
         "KIROCREW_CDN_BASE either would land credentials in terminal scrollback, "
         "the dashboard or the audit chain, so both strings run the context "
-        "redactor (redact_via_context: credentials and exfiltration URLs, plus a "
+        "redactor (redact_via_context: credentials, inside URLs too, plus a "
         "loaded companion's patterns) in full before any cap.",
     ),
     (
@@ -350,7 +442,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "or failure note). Both embed the CDN base -- with a userinfo-bearing "
         "KIROCREW_CDN_BASE either would land credentials in terminal scrollback, "
         "so each displayed string runs only the shared credential redactor "
-        "(no exfiltration-URL pass: the value is the operator's own CDN base) "
+        "(no URL pass: the value is the operator's own CDN base) "
         "immediately before print; the fetch still uses the real URL.",
     ),
     (
@@ -363,16 +455,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "errors quote the offending text, so an endpoint that echoes back the "
         "request's `Authorization` header (its own request reflected, a proxy error "
         "page) would carry that credential to both surfaces. Every detail goes "
-        "through `_sanitize_detail`, which applies the shared credential + "
-        "exfiltration-URL chain and additionally elides the operator-configured "
+        "through `_sanitize_detail`, which applies the shared credential "
+        "chain (inside URLs too) and additionally elides the operator-configured "
         "source URL and its bare hostname.",
     ),
     (
         "AutoNudge monitor responses",
         "dashboard/handlers/autonudge.py",
         "Structured monitor state served by the AutoNudge dashboard endpoints. "
-        "Provider observations are arbitrary nested JSON and can quote credentials "
-        "or exfiltration URLs, so every string key and value in the monitor mapping "
+        "Provider observations are arbitrary nested JSON and can quote credentials, "
+        "inside URLs too, so every string key and value in the monitor mapping "
         "passes through the platform-aware redaction chain before the response leaves "
         "the backend. A loop's own text fields -- `message` and `stopped_reason` -- go "
         "through the same chain on `GET /api/autonudge`, its per-loop detail and the "
@@ -408,8 +500,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "so a failure "
         "can carry a `credential_process` command line, an SSO start URL, or a "
         "role ARN, and an endpoint override can carry an inline-credential URL -- "
-        "so the first stderr line goes through the shared credential + "
-        "exfiltration-URL chain at the source, before it is put on an `Identity`.",
+        "so the first stderr line goes through the shared credential "
+        "chain (inside URLs too) at the source, before it is put on an `Identity`.",
     ),
     (
         "Azure DevOps comment bodies",
@@ -418,7 +510,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "DevOps. A comment body is frequently model-authored -- a crew's reply, or an "
         "AI summary the user accepted -- and publishing it is irreversible: it lands "
         "somewhere public and permanent on the customer's own organization, so a "
-        "credential or an exfiltration URL cannot be walked back. `_comment_text` "
+        "credential, inside a URL or not, cannot be walked back. `_comment_text` "
         "therefore runs the two-pass chain at the client, immediately before the body "
         "reaches `az devops invoke`, rather than trusting each caller to have "
         "redacted; the crew path already redacts and loses nothing, because both "
@@ -434,7 +526,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "hardened destination does not do -- rewriting the bytes that leave -- because a "
         "private bucket still holds whatever was put in it, and the operator's own "
         "account is not the only place a restored bundle can end up. An operator opts IN "
-        "to rewriting the outbound copy through the credential + exfiltration-URL chain; "
+        "to rewriting the outbound copy through the credential chain (inside URLs too); "
         "it is OFF by default because substituting a tag changes length, which "
         "invalidates any format that depends on byte offsets. When it is on, databases "
         "are rewritten value-by-value through SQL rather than over their bytes, and every "
@@ -448,7 +540,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "apps/builtins/aws_control/backend/backup.py",
         "Where a bundle actually leaves the machine. This module runs no scanner itself: "
         "the only redaction it performs is the call into `snapshot.prepare_redacted_copy`, "
-        "which runs the full credential + exfiltration-URL chain in `snapshot_redact.py` "
+        "which runs the full credential chain (inside URLs too) in `snapshot_redact.py` "
         "(the row above). It is named here anyway because the call ORDER is the control -- "
         "redaction runs before the upload is authorized and before any bytes reach the "
         "transport, so a redaction that raises stops the push instead of letting it "
@@ -463,9 +555,9 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "session_summary.py",
         "Intent-summary payloads persisted to the `.intents` sidecar and served by "
         "`GET /api/chat/slots/{slot}/summary`. The payload is model output derived "
-        "from transcript text, so a secret or beacon URL pasted into the chat can be "
+        "from transcript text, so a secret pasted into the chat can be "
         "reproduced inside it; `normalize_payload` runs the whole nested payload "
-        "through the credential + exfiltration-URL chain before the write, because "
+        "through the credential chain (inside URLs too) before the write, because "
         "the sidecar is durable and read straight back to the panel.",
     ),
     (
@@ -473,7 +565,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/card_lifecycle.py",
         "Bounded recent transcript messages sent to the background model and its "
         "HTML/text response served by GET /api/chat/slots/{slot}/dashboard-card. "
-        "Both boundaries run credential and exfiltration-URL redaction before "
+        "Both boundaries run credential redaction (inside URLs too) before "
         "model input or cached publication; the owner-only GET never generates content.",
     ),
     (
@@ -491,8 +583,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/session_control_parts/delivery_containment.py",
         "The excerpt of a queued message a drain dropped, posted back to the channel "
         "it was addressed from (`notify_channel_recipient_dropped`): conversation "
-        "text leaving for an external channel, scanned for credentials and "
-        "exfiltration URLs on the way out.",
+        "text leaving for an external channel, scanned for credentials, "
+        "inside URLs too, on the way out.",
     ),
     (
         "Session control read",
@@ -529,14 +621,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Authored workflow source, reusable definitions, revision lineage, and run output "
         "served to the Agent Capabilities panel or returned through the workflow MCP tools. "
         "These values can contain model-authored text or tool results, so every nested key and "
-        "value passes through the credential + exfiltration-URL chain before egress.",
+        "value passes through the credential chain (inside URLs too) before egress.",
     ),
     (
         "Chat pin previews",
         "dashboard/chat_pins.py",
         "Message previews submitted to POST /api/chat/pins are persisted to "
         "chat_pins.json and re-rendered by the pinned-messages panel, so the "
-        "preview is an output boundary; credentials and exfiltration URLs are "
+        "preview is an output boundary; credentials, inside URLs too, are "
         "redacted before storage and on every response path (list and "
         "idempotent duplicate-create) via _redacted_pin.",
     ),
@@ -562,7 +654,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "apps/builtins/mochi/hooks.py",
         "Agent-authored notify text (perform_pet_action summary/chatMessage) crosses to "
         "the browser via the `mochi:notify` broadcast and the chat push; `redact_tree` "
-        "scrubs credentials and exfiltration URLs before publish, the same "
+        "scrubs credentials, inside URLs too, before publish, the same "
         "output-boundary reason as the app plan/activity-log sinks.",
     ),
     (
@@ -626,7 +718,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Every md-notebook API error body. Handlers drive git and filesystem work "
         "over caller-supplied vault URLs, ids and note paths, so an unmodeled "
         "exception carries absolute paths and git stderr; `_safe_error` scrubs "
-        "credentials, exfiltration URLs and host paths before the JSON reaches the "
+        "credentials (inside URLs too) and host paths before the JSON reaches the "
         "browser — the same output-boundary reason as the dashboard error sinks.",
     ),
     (
@@ -877,8 +969,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
         "line through the board's deep redactor) and every timeline bar and mark "
-        "label, which are slices of transcript rows: each passes exfiltration-URL "
-        "and credential redaction (the display battery for timeline labels) "
+        "label, which are slices of transcript rows: each passes credential "
+        "redaction, inside URLs too (the display battery for timeline labels) "
         "before it reaches the browser.",
     ),
     (
@@ -892,14 +984,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Remote session Git views",
         "coder/session_browse.py",
         "Git status, log and diff output and error text pass the shared "
-        "exfiltration-URL and credential redactor at the gateway before reaching "
+        "credential redactor (inside URLs too) at the gateway before reaching "
         "the dashboard, preserving record separators and patch framing.",
     ),
     (
         "Agent spec chooser descriptions",
         "agent_spec_pin_ops.py",
         "Each claimant's `description` and package label, read from a spec file an "
-        "agent may have written, pass the exfiltration-URL and credential redactors "
+        "agent may have written, pass the credential redactors (inside URLs too) "
         "before they are carried in the chat metadata of the spec chooser card.",
     ),
     (
@@ -937,5 +1029,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "under the suggestion. The line can echo a `gitdir:` path from a `.git` file "
         "whoever can write the folder chose, so it passes `redact_via_context` "
         "before it leaves the gateway.",
+    ),
+    (
+        "Crew tags a peer advertises to a dispatching hub",
+        "dashboard/remote_dispatch_headroom.py",
+        "The `tags` in this crew's remote-dispatch headroom, read by the owner's hub "
+        "on another machine. They come from `work_ledger.remote_dispatch_tags`, are "
+        "held to a short lower-case word shape, and a tag the exfiltration-URL and "
+        "credential redactors (`redact`) would change is dropped rather than sent, "
+        "because an operator can paste a token into the list. The login words "
+        "beside them are fixed constants.",
     ),
 )

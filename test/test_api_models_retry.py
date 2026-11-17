@@ -360,7 +360,7 @@ def test_structured_context_window_seeds_central_authority(tmp_path):
     ):
         resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 200
-    # The non-registry GPT window is now resolvable through the central authority.
+    # The non-registry GPT window is resolvable through the central authority.
     assert mr.model_window("gpt-5.6-terra") == 272000
 
 

@@ -25,7 +25,7 @@ Rank weighs harnesses fixed and user impact against size; ties go to the fix tha
 | 3 | R-LAU-12 | claude, codex, opencode, goose, pi, copilot, deepseek | S | reuse `rerun_signs_in_via_kiro_cli` (`dashboard/kiro_readiness.py`) at `dashboard/openai_compat.py` | no | no open PR | the OpenAI-compatible endpoint is refused on non-kiro hosts when kiro-cli is signed out |
 | 4 | R-SPEC-10 | claude, codex, opencode, goose | S | reuse: replace `_on_kas(client)` at `dashboard/chat_turn/turn_dispatch_gates.py` with `CREW_FIRES_SPEC_OBSERVER_HOOKS` | no | no open PR | agentSpawn context is lost after a compaction |
 | 5 | R-ERR-3 | claude, codex, opencode, goose, pi, copilot, deepseek | S code, plus a capture each | reuse the watcher at `undelivered_call_watch.py` with a pattern per harness | yes | no open PR | conductors miss lost reports from non-KAS workers |
-| 6 | R-LAU-3 | kiro-cli, KAS (relay), deepseek | S | reuse `_TESTED_VERSION_RANGES` (`acp/client_turn_control.py`) | deepseek: yes (version source) | no open PR; #26459 (open) is related for claude | silent upgrades caused #25171 and #36125 |
+| 6 | R-LAU-3 | deepseek | S | reuse `_TESTED_VERSION_RANGES` (`acp/client_turn_control.py`) | deepseek: yes (version source) | no open PR; #26459 (open) is related for claude | silent upgrades caused #25171 and #36125 |
 | 7 | R-LAU-7 | opencode, pi | S | reuse the deepseek and codex tree kill | no | #35757 (open) | probe process leak |
 | 8 | R-MOD-1, R-MOD-2 | copilot | M | config options | yes | #36118 (open) | no model or effort picker on copilot |
 | 9 | R-STR-3 | copilot | M | | yes | #34088 (open) | copilot turns hang on a background shell |
@@ -43,8 +43,8 @@ The largest ❓ clusters, where one install per harness clears many cells at onc
 
 | Harness | ✅ met | ❌ not met | ❓ unknown | ➖ n/a | Met share of applicable (✅ / ✅+❌+❓) |
 |---|---|---|---|---|---|
-| kiro-cli | 59 | 1 | 6 | 7 | 59/66 (89%) |
-| KAS | 71 | 1 | 1 | 0 | 71/73 (97%) |
+| kiro-cli | 60 | 0 | 6 | 7 | 60/66 (91%) |
+| KAS | 72 | 0 | 1 | 0 | 72/73 (99%) |
 | claude | 44 | 7 | 14 | 8 | 44/65 (68%) |
 | codex | 43 | 8 | 13 | 9 | 43/64 (67%) |
 | opencode | 32 | 9 | 21 | 11 | 32/62 (52%) |
@@ -52,7 +52,7 @@ The largest ❓ clusters, where one install per harness clears many cells at onc
 | pi | 31 | 8 | 21 | 13 | 31/60 (52%) |
 | copilot | 28 | 13 | 18 | 14 | 28/59 (47%) |
 | deepseek | 29 | 10 | 19 | 15 | 29/58 (50%) |
-| all 9 | 373 | 65 | 131 | 88 | 73 rows × 9 = 657 cells |
+| all 9 | 375 | 63 | 131 | 88 | 73 rows × 9 = 657 cells |
 
 Counts cover the 73 rows shown in the matrix. The 10 rows marked 🔒 are left out of the counts.
 
@@ -64,7 +64,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 |---|---|---|---|---|---|---|---|---|---|---|
 | R-LAU-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | shared degrade path; `test_harness_parity.py::test_unselectable_backend_degrades_to_default` |
 | R-LAU-2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `test_acp_launch_goldens.py` |
-| R-LAU-3 | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | range table `acp/client_turn_control.py` (goose 1.50.x, codex-acp 2.x, claude-agent-acp 0.94.x, pi-acp 0.0.34); opencode major `acp/harness/opencode.py`; copilot exact pin `acp/client_copilot.py`, `agent_sdk/backends_launch.py` |
+| R-LAU-3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | range table `acp/client_turn_control.py` (goose 1.50.x, codex-acp 2.x, claude-agent-acp 0.94.x, pi-acp 0.0.34, kiro-cli 2.27.0 to 3.x, held to the kiro and KAS captures by `test_real_adapter_fixture_pins.py`; a KAS relay is read by the kiro-cli it runs under, the bundle is pinned); opencode major `acp/harness/opencode.py`; copilot exact pin `acp/client_copilot.py`, `agent_sdk/backends_launch.py` |
 | R-LAU-4 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/backend_install.py` probe per harness |
 | R-LAU-5 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | `test/test_real_adapter_fixture_pins.py` pins codex, opencode, claude, pi, copilot; kiro/KAS floor tests in the same file |
 | R-LAU-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | direct client `acp/client_start.py` (initialize OSError/AcpError with stderr); runtime `acp/runtime_liveness.py` (#30533); doctor (#27562) |
@@ -75,7 +75,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-LAU-11 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | kiro-family fixes #23442, #31813, #25569, #29431; other launch paths not audited for loop blocking |
 | R-LAU-12 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | rerun gates fixed `dashboard/kiro_readiness.py` |
 | R-AUTH-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/host_auth.py` one declaration each |
-| R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; claude, codex, opencode declare no phrase |
+| R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for opencode, goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; opencode's hosted fall-back refused at start (`is_opencode_hosted_fallback`, `acp/no_model_provider.py`, raised by `_refuse_opencode_hosted_fallback` in `acp/client_opencode_session.py`); claude, codex declare no phrase |
 | R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither |
 | R-AUTH-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | only kiro-cli login (cloud `cloud/login.py`) and KAS login are Crew-run |
 | R-AUTH-5 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | Kiro account check only gates kiro-family turns (`dashboard/kiro_readiness.py`) |
@@ -139,7 +139,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-USE-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ❓ | kiro/KAS restart fixes (#35428, #33149); inline compaction harnesses never restart (`INLINE_COMPACTION` `backends_turns.py`); deepseek recycle not checked |
 | R-PRM-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `ACP_BACKENDS_SENT_IMAGE_RECORD` `backends_turns.py`; others inline every turn by design, replay cost unmeasured |
 | R-ROW-1 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | kiro-cli v3 rows (#25650, #26589); other harnesses' tool-row shapes per version unmeasured |
-| R-CMD-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `KIRO_SLASH_COMMANDS` `backends_turns.py`, `HARNESS_OWNED_SLASH_COMMANDS`, `LOCAL_HARNESS_COMMANDS`, codex row `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`; others keep the prompt path unchecked |
+| R-CMD-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `KIRO_SLASH_COMMANDS` `backends_turns.py`, `HARNESS_OWNED_SLASH_COMMANDS`, `LOCAL_HARNESS_COMMANDS`, a `ACP_BACKEND_PROMPT_HANDLER_COMMANDS` row per non-kiro harness, read off each prompt handler (goose and copilot from source, not live) |
 | R-ERR-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | #28513, #30038 shared |
 | R-ERR-2 | ✅ | ✅ | ✅ | ❓ | ❓ | ✅ | ❓ | ❓ | ❓ | kiro/KAS #28549; claude #30087; goose #28414 |
 | R-ERR-3 | ➖ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | KAS pattern |
@@ -150,21 +150,13 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 
 ### kiro-cli
 
-✅ 59, ❌ 1, ❓ 6, ➖ 7.
-
-| Req | Size | Where | Reuse or new design | Install to verify | User impact | Owner |
-|---|---|---|---|---|---|---|
-| R-LAU-3 | S | floors only: `kiro_cli.py` (2.35.2), `acp/chat_runtime_sharing.py` (3.1.0); no upper bound | reuse `_TESTED_VERSION_RANGES` (`client_turn_control.py`) | no | a new kiro-cli major runs unmeasured (3.1 loading every .json, #36125) | no open PR |
+✅ 60, ❌ 0, ❓ 6, ➖ 7.
 
 Unknown (❓, not measured): R-LAU-8, R-MCP-9, R-MCP-10, R-MCP-14, R-MOD-3, R-ERR-5.
 
 ### KAS
 
-✅ 71, ❌ 1, ❓ 1, ➖ 0.
-
-| Req | Size | Where | Reuse or new design | Install to verify | User impact | Owner |
-|---|---|---|---|---|---|---|
-| R-LAU-3 | S | relay route: floor `acp/harness/kas.py` only; bundle route is pinned (`acp/kas_pin.py`, 0.66.104) | reuse range table for the relay engine version | no | relay users on a newer engine get no notice | no open PR |
+✅ 72, ❌ 0, ❓ 1, ➖ 0.
 
 Unknown (❓, not measured): R-LAU-8.
 

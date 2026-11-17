@@ -433,7 +433,7 @@ describe('KiroAccountModal', () => {
     renderWithProviders(<KiroAccountModal open onClose={onClose} usage="failed" />)
 
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    const alert = within(dialog).getByRole('alert')
+    const alert = within(dialog).getByRole('status')
     expect(alert).toHaveTextContent('Could not read your balance.')
     expect(within(dialog).getByRole('button', { name: /^Refresh$/ })).toBeEnabled()
     const handoff = within(dialog).getByRole('button', { name: /Ask the agent/i })
@@ -559,7 +559,7 @@ describe('KiroAccountModal refresh', () => {
     fireEvent.click(within(dialog).getByRole('button', REFRESH))
     await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1))
     expect(await within(dialog).findByRole('button', REFRESH)).toBeEnabled()
-    expect(within(dialog).getAllByRole('alert')).toHaveLength(1)
+    expect(within(dialog).getAllByRole('status')).toHaveLength(1)
   })
 
   it('reports an unreadable gateway config through ErrorNotice and retries the config read', async () => {
@@ -578,7 +578,7 @@ describe('KiroAccountModal refresh', () => {
     rerender(<KiroAccountModal open onClose={onClose} usage="config-unreadable" />)
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kirocrewConfig'] }))
     const dialog = screen.getByRole('dialog', { name: 'Kiro Account' })
-    const alert = within(dialog).getByRole('alert')
+    const alert = within(dialog).getByRole('status')
     expect(alert).toHaveTextContent('Could not load settings, so your balance can’t be shown.')
     expect(within(alert).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(within(dialog).queryByRole('progressbar')).not.toBeInTheDocument()
@@ -820,7 +820,7 @@ describe('KiroAccountModal refresh', () => {
     refreshMock.mockRejectedValue(REFUSAL(500, 'boom'))
     renderWithProviders(<QueryFedModal initial="failed" />)
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not read your balance.')
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Could not read your balance.')
 
     fireEvent.click(within(dialog).getByRole('button', REFRESH))
 
@@ -842,7 +842,7 @@ describe('KiroAccountModal refresh', () => {
     refreshMock.mockRejectedValue(REFUSAL(409, '{"code":"refresh_in_flight"}'))
     renderWithProviders(<QueryFedModal initial="failed" />)
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not read your balance.')
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Could not read your balance.')
 
     fireEvent.click(within(dialog).getByRole('button', REFRESH))
 

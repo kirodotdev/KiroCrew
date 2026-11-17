@@ -483,17 +483,14 @@ separately — deliberately, and neither is optional.**
 The tree half is redacted inside `render_tree`; the header was concatenated *after*
 that pass, and `detail` is not our prose — every driver confirmation interpolates
 app-supplied text (`_click_text` embeds `app.name`, the process name macOS reports,
-which is attacker-controlled). A process named `Notes key=AKIA…` therefore put a raw
+which is attacker-controlled). A process named `Notes key=ghp_…` therefore put a raw
 credential directly in front of a fully redacted tree. Fixed by redacting `detail` at
 the interpolation.
 
 Redacting the *joined* string instead would put the image note through the redactor,
 and `render_tree` appends that note after its own redaction on purpose: it is
 machine-generated, and the model must receive the spool path byte-exact to open it or
-hand it to the user. A path is one base64-alphabet run to the bare-secret-key
-heuristic, which withholds only this host's macOS per-user directory id
-(`redaction._host_darwin_user_dir_id`), not every temp root a spool can land under; see
-`render._render_image_note`. Hence: header redacted on its own, already-redacted body
+hand it to the user; see `render._render_image_note`. Hence: header redacted on its own, already-redacted body
 passed through untouched. Both halves of
 that rule are pinned by tests, the second one structurally — a mutating tool's refresh
 walk is `want_image=False`, so no behavioural test in that file would notice a
@@ -1633,6 +1630,18 @@ return a failed `DriverResult` naming what did *not* happen ("the keystrokes wer
 NOT sent"), because a model told only "focus failed" would assume the input landed
 and go verify a change that never occurred.
 
+**A Cmd shortcut to a background app is sent with a caveat on macOS.** macOS hands a
+Cmd shortcut to the frontmost app's menu bar and key window, so one posted to a
+background app can do nothing while a bare "sent" reads as success. Measured: Cmd+A
+posted to a background TextEdit left the selection unchanged, pressing Edit > Select
+All through `AXPress` did nothing either, and the same Cmd+A selected all the text
+once TextEdit was frontmost. Other apps and shortcuts were not measured, and the key
+goes to the target app's pid either way, so it is never delivered to the wrong app.
+So the macOS driver still posts the key, then reads the app's `AXFrontmost` for any
+key carrying the Cmd modifier and, when it is not `true` (an unreadable value counts
+as background), keeps `ok=True` but says macOS may have ignored it and names the
+element routes. Plain keys get no caveat.
+
 ### Threading
 
 The gateway is async and the native work is blocking, so every accessibility
@@ -1874,7 +1883,7 @@ that actually talks to AppKit.
 These are the protections that survive the governance removal, and they survive
 BECAUSE they were never governance keys. Each is unconditional code — no policy
 file, no profile, no toggle — which is exactly why removing the ceiling did not
-touch them. They sit with `_SENSITIVE_HOME_DIRS` and the AKIA redaction:
+touch them. They sit with `_SENSITIVE_HOME_DIRS` and the credential redaction:
 
 - **Secure-field value redaction** — `render` emits `<secure>`; the value bytes
   are never rendered, not truncated, not masked-with-a-hint.

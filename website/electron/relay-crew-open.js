@@ -13,9 +13,11 @@
  * Answers `{ ok: true }` or `{ ok: false, error: <code> }`, never a token, a
  * Crew URL or an expiry. Log lines name the endpoint and the outcome only.
  *
- * When any renewal stops on SIGNED_OUT (the gateway reads the Kiro sign-in on
- * every mint), every renewal stops and every relay Crew window closes. This is
- * noticed at the next renewal, not at the moment of sign-out.
+ * Sign out and Switch account in this dashboard call `closeAll` through the
+ * preload, so every renewal stops and every relay Crew window closes at once.
+ * A sign-out anywhere else (kiro-cli, another window, a vault change) is caught
+ * at the next renewal: when any renewal stops on SIGNED_OUT (the gateway reads
+ * the Kiro sign-in on every mint), everything closes the same way.
  *
  * An account switch is caught per window: each window keeps the gateway's
  * non-secret sign-in marker from its first grant and sends it on every
@@ -58,6 +60,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       const answer = await requestToken(endpointId, crew.signInMarker || null);
       if (answer && answer.ok) {
         crew.crewUrl = answer.crewUrl;
+        crew.relayDomain = answer.relayDomain;
         crew.name = answer.name;
         if (!crew.signInMarker && answer.signInMarker) crew.signInMarker = answer.signInMarker;
         return answer.grant;
@@ -124,7 +127,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
 
   async function openNew(endpointId) {
     const holder = createTokenHolder();
-    const crew = { crewUrl: "", name: "", signInMarker: null };
+    const crew = { crewUrl: "", relayDomain: "", name: "", signInMarker: null };
     const at = epoch;
     const { renewal, error } = await startRenewal(endpointId, holder, crew);
     if (!renewal) {
@@ -139,7 +142,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     }
     let win;
     try {
-      win = openWindow({ endpointId, crewUrl: crew.crewUrl, title: crew.name, getToken: holder.current });
+      win = openWindow({ endpointId, crewUrl: crew.crewUrl, relayDomain: crew.relayDomain, title: crew.name, getToken: holder.current });
       wire({ win, renewal });
       win.onClosed(() => { if (windows.get(endpointId)?.win === win) windows.delete(endpointId); });
       // Registered once per window, not in wire(): a restart re-wires the same window.
@@ -218,6 +221,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
   }
 
   return {
+    closeAll,
     async open(endpointId) {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       const existing = windows.get(endpointId);

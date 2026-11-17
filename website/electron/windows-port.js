@@ -250,9 +250,11 @@ function parseNetstatListenPids(stdout, port) {
   return [...pids];
 }
 
+// windowsHide adds CREATE_NO_WINDOW. Without it, every probe this GUI app runs
+// gets a new console of its own, which a terminal-run netstat never pays for.
 function execFileText(execFileFn, command, args, timeout) {
   return new Promise((resolve, reject) => {
-    execFileFn(command, args, { timeout }, (err, stdout) => {
+    execFileFn(command, args, { timeout, windowsHide: true }, (err, stdout) => {
       if (err) return reject(err);
       resolve(String(stdout || ""));
     });
@@ -341,8 +343,9 @@ function unwrapWmicProcessIdentity(stdout) {
 /**
  * Return a process command line. PowerShell is preferred because WMIC is
  * optional on current Windows releases; WMIC remains the compatibility
- * fallback. Failure to identify a process returns an empty string so callers
- * classify it as foreign and never terminate it.
+ * fallback. Failure to identify a process returns an empty string, which
+ * callers treat as an UNIDENTIFIED holder -- never as a process proven to be
+ * someone else's, and never as one safe to terminate.
  */
 async function windowsProcessCommand(
   pid,

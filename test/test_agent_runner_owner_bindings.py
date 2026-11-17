@@ -58,6 +58,8 @@ _DEFINED: dict[str, frozenset[str]] = {
             "_COMMAND_WRAPPERS",
             "_FORBIDDEN_BINARIES",
             "_FORBIDDEN_SUBCOMMANDS",
+            "_GLAB_ALIASES",
+            "_GLAB_COMMANDS",
             "_GovernanceDeny",
             "_MAX_UNWRAP_DEPTH",
             "_SHELL_BINARIES",

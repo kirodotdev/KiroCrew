@@ -1,6 +1,19 @@
 """Harness-native sub-agent Activity cards (kiro-cli's, KAS's and Claude Code's) and the native
 AskUserQuestion card a dashboard turn shows, and the stream's native sub-agent arms
-(``_on_subagent_list``, ``_on_subagent_activity``)."""
+(``_on_subagent_list``, ``_on_subagent_activity``).
+
+A row Crew built from a harness's background-task messages (a ``BackgroundCardRow``, a
+Claude Code Workflow agent, ``acp.raw_sdk_workflow_cards``) carries four fields beyond
+kiro-cli's shape, read off no other row: a ``label`` and a ``model`` the card shows, a
+``result`` it ends with when no output reached it, and ``background``, an agent that
+outlives the turn that drew it. Its card stays open past an end of turn Crew did not
+cut short while the harness still runs it
+(``_keep_background_open``), closes as interrupted if the harness loses it first
+(``_close_lost_background``), is carried into the next turn's tracker
+(``_carried_background_native``), is never closed for staleness, and never counts as
+an active native crew. The harness's background-task messages reach a turn only through
+the stream the turn marks as its own (``_expect_background_draw``), so a stream another
+reader opens on the same client (a compaction, a channel) leaves them for the next turn."""
 
 from __future__ import annotations
 
@@ -9,6 +22,15 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import (
+    STOP_REASON_CANCEL_UNACKED,
+    STOP_REASON_TIMEOUT,
+    BackgroundCardRow,
+    expect_dashboard_turn,
+    live_background_card_ids,
+    on_background_cards_lost,
+)
+from kiro_crew.dashboard.native_child_stop import STOP_REQUESTED
 from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_OUTPUT_HARD,
     NATIVE_SUBAGENT_OUTPUT_TAIL,
@@ -23,6 +45,8 @@ if TYPE_CHECKING:
         NATIVE_SUBAGENT_DONE_RESULT_CAP,
         NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
         STOP_REASON_CANCELLED,
+        STOP_REASON_STALE_RECOVER,
+        STOP_REASON_TOOL_STALL,
         _redact_tool_field,
         logger,
         redact_credentials,
@@ -122,6 +146,27 @@ def _append_native_output(
     return total
 
 
+#: Bound on a card's label and model as shown.
+_NATIVE_CARD_FIELD_MAX = 200
+
+
+def _native_card_field(value: object, limit: int = _NATIVE_CARD_FIELD_MAX) -> str:
+    """A backend-authored display field of a roster row, redacted and bounded."""
+    text, _ = redact_exfiltration_urls(value if isinstance(value, str) else "")
+    text, _ = redact_credentials(text)
+    return text[:limit]
+
+
+def _native_card_extras(info: dict) -> dict[str, str]:
+    """The optional ``label`` and ``model`` a card's frames carry, when it has them."""
+    return {key: info[key] for key in ("label", "model") if info.get(key)}
+
+
+def _native_card_result(card_output, card_id: str, info: dict) -> str:
+    """A closing card's result: its output, else the row's own result, else the marker."""
+    return _native_card_feed(card_output, card_id) or info.get("row_result") or "(output in chat)"
+
+
 def _native_card_feed(card_output, card_id: str) -> str:
     """Build, bound, and redact native output at the broadcast boundary."""
     feed = _native_done_result((card_output or {}).get(card_id))
@@ -199,6 +244,12 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 "last_activity": now,
                 "last_tool": "",
             }
+            if isinstance(sub, BackgroundCardRow):
+                tracker[sid]["background"] = sub.get("background") is True
+                for key in ("label", "model"):
+                    field_value = _native_card_field(sub.get(key))
+                    if field_value:
+                        tracker[sid][key] = field_value
             # Register in state-level dict so DELETE /api/spawn/{id} can cancel native cards.
             _register_native_card(state, card_id, slot.key, sid)
             logger.debug(
@@ -209,7 +260,13 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             )
             state.broadcast_ws(
                 "subagent_spawn",
-                {"id": card_id, "slot": slot.key, "task": task, "agent": agent},
+                {
+                    "id": card_id,
+                    "slot": slot.key,
+                    "task": task,
+                    "agent": agent,
+                    **_native_card_extras(tracker[sid]),
+                },
             )
         else:
             # Card is still being reported this update — keep it alive. Update
@@ -223,18 +280,26 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             continue
         if stype and stype not in _running:
             err = None
-            if stype in ("failed", "error") and smsg:
+            # The cancelled end of a child a person asked the harness to stop is
+            # drawn as the card-only Stop draws it (``dashboard.native_child_stop``).
+            stopped = bool(info.pop(STOP_REQUESTED, False)) and _is_cancelled_end(stype, smsg)
+            if stype in ("failed", "error") and smsg and not stopped:
                 err, _ = redact_exfiltration_urls(smsg)
                 err, _ = redact_credentials(err)
                 err = _clip_card_error(err)
             info["done"] = True
-            _feed = _native_card_feed(card_output, card_id)
+            row_result = sub.get("result") if isinstance(sub, BackgroundCardRow) else None
+            if isinstance(row_result, str) and row_result.strip():
+                info["row_result"] = redact_and_truncate(row_result, 2000)
             _elapsed = time.time() - info["started"]
-            _result = _feed or "(output in chat)"
+            _result = _native_card_result(card_output, card_id, info)
             info["elapsed"] = _elapsed
             info["error"] = err
             info["result"] = _result
             info["done_at"] = time.time()
+            if stopped:
+                info["stopped"] = True
+                info["outcome"] = "stopped"
             _unregister_native_card(state, card_id)
             state.broadcast_ws(
                 "subagent_done",
@@ -243,9 +308,11 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                     "slot": slot.key,
                     "elapsed": _elapsed,
                     "error": err,
+                    **({"stopped": True} if stopped else {}),
                     "task": info["task"],
                     "agent": info["agent"],
                     "result": _result,
+                    **_native_card_extras(info),
                 },
             )
         elif smsg and smsg.lower() != "running":
@@ -264,7 +331,8 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
     # fails to emit a terminal status. Cards still present in the current
     # list_update are alive by definition and never timed out here.
     for sid, info in list(tracker.items()):
-        if info.get("done"):
+        if info.get("done") or info.get("background"):
+            # A background agent's end is the harness's to report.
             continue
         if sid in _seen_sids:
             continue  # still reported by kiro-cli this update — not stale
@@ -300,6 +368,12 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             )
 
 
+def _is_cancelled_end(stype: str, smsg: str) -> bool:
+    """Whether a roster status is a cancelled child's end: ``failed`` with ``cancelled``,
+    how the claude client reports ``idle`` with stop reason ``cancelled``."""
+    return stype == "failed" and smsg == "cancelled"
+
+
 def _register_native_card(state, card_id: str, slot_key: str, session_id: str) -> None:
     """Register a native subagent card in the state-level dict for cancel support."""
     if not hasattr(state, "_native_cards"):
@@ -327,18 +401,21 @@ def _native_subagent_close_all(
 
     ``error`` is None only when the parent turn landed normally; a stopped,
     timed-out or crashed turn passes ``NATIVE_SUBAGENT_INTERRUPTED_ERROR`` so a
-    child cut off mid-run does not show as a clean completion.
+    child cut off mid-run does not show as a clean completion. A background card
+    marked ``kept_open`` stays open: the harness still runs it, after a turn Crew
+    did not cut short (``_keep_background_open``). One it does not run never
+    reported its end, so it closes as interrupted whatever ``error`` says.
     """
     for sid, info in tracker.items():
-        if info.get("done"):
+        if info.get("done") or info.get("kept_open"):
             continue
         info["done"] = True
         _cid = f"native:{_redact_tool_field(sid)}"
-        _feed = _native_card_feed(card_output, _cid)
         _elapsed = time.time() - info.get("started", time.time())
-        _result = _feed or "(output in chat)"
+        _result = _native_card_result(card_output, _cid, info)
+        _error = NATIVE_SUBAGENT_INTERRUPTED_ERROR if info.get("background") else error
         info["elapsed"] = _elapsed
-        info["error"] = error
+        info["error"] = _error
         info["result"] = _result
         info["done_at"] = time.time()
         _unregister_native_card(state, _cid)
@@ -348,12 +425,139 @@ def _native_subagent_close_all(
                 "id": _cid,
                 "slot": slot.key,
                 "elapsed": _elapsed,
-                "error": error,
+                "error": _error,
                 "task": info.get("task", ""),
                 "agent": info.get("agent", ""),
                 "result": _result,
+                **_native_card_extras(info),
             },
         )
+
+
+def _live_background_cards(turn: _ChatTurn) -> "frozenset[str]":
+    """The background cards the slot's harness still runs; none when it cannot say."""
+    try:
+        return live_background_card_ids(turn.slot._acp_client)
+    except Exception:  # noqa: BLE001 - an unanswered question keeps no card open
+        logger.debug("live background cards could not be read", exc_info=True)
+        return frozenset()
+
+
+def _crew_cut_short(stop_reason: str) -> bool:
+    """Whether Crew cut a turn short that ended with *stop_reason*: a Stop, or a recovery
+    that cancelled the turn or killed its process. Either stops the harness's background
+    work with the turn (Claude Code stops every background Workflow at a
+    ``session/cancel``); an ending the harness chose itself (``end_turn``,
+    ``max_tokens``, a refusal) leaves it running."""
+    return stop_reason in (
+        STOP_REASON_CANCELLED,
+        STOP_REASON_STALE_RECOVER,
+        STOP_REASON_TOOL_STALL,
+        STOP_REASON_TIMEOUT,
+        STOP_REASON_CANCEL_UNACKED,
+    )
+
+
+def _keep_background_open(turn: _ChatTurn, stop_reason: str, *, session_lost: bool = False) -> None:
+    """Mark the open background cards ``_native_subagent_close_all`` leaves open.
+
+    The ones the harness still runs, unless Crew cut the turn short
+    (:func:`_crew_cut_short`) or the turn's session goes with it (*session_lost*). The
+    cards kept open close as interrupted if the client loses their runs before they
+    report their end (``_close_lost_background``).
+    """
+    background = [
+        (sid, info)
+        for sid, info in turn._native_tracker.items()
+        if info.get("background") and not info.get("done")
+    ]
+    if not background:
+        return
+    cut_short = session_lost or _crew_cut_short(stop_reason)
+    live = frozenset() if cut_short else _live_background_cards(turn)
+    kept = False
+    for sid, info in background:
+        info["kept_open"] = sid in live
+        kept = kept or info["kept_open"]
+    if not kept:
+        return
+    state = turn.state
+    slot = turn.slot
+    try:
+        on_background_cards_lost(slot._acp_client, lambda: _close_lost_background(state, slot))
+    except Exception:  # noqa: BLE001 - a card left open closes at the next turn's end
+        logger.debug("watching the background cards' runs failed", exc_info=True)
+
+
+def _keep_background_open_at_release(turn: _ChatTurn) -> None:
+    """Mark, by the rule a landing uses (:func:`_keep_background_open`), the open
+    background cards the turn's release leaves open, however the turn ended.
+
+    A turn that ended on an error (a provider error after the harness's own retries)
+    got no landing, so it keeps open the cards the harness still runs. One cancelled
+    (a Stop or the turn ceiling) keeps none, and neither does one whose session the
+    release resets or whose conversation it discards (its process died, or a recovery
+    replaces the session): the runs go with the session.
+
+    A turn that landed already chose, by what the harness ran then. The run's end read
+    since (the idle reader runs once the turn's read is done) is the next turn's to
+    draw, so the release asks the client nothing: it only closes the cards kept open
+    when the session goes or Crew cut the turn short.
+    """
+    stop_reason = getattr(turn, "_stop_reason", "") or ""
+    session_lost = bool(
+        getattr(turn, "needs_session_reset", False)
+        or getattr(turn, "needs_conversation_discard", False)
+    )
+    if not getattr(turn, "_saw_terminal_event", False):
+        _keep_background_open(turn, stop_reason, session_lost=session_lost)
+    elif session_lost or _crew_cut_short(stop_reason):
+        for info in turn._native_tracker.values():
+            if info.get("background"):
+                info["kept_open"] = False
+
+
+def _expect_background_draw(client: object, expected: bool = True) -> None:
+    """Mark the stream the dashboard turn opens next on *client*, its provider, as the
+    one that draws what the harness's background work made (``acp.raw_sdk_tasks``), or,
+    with *expected* false, take the mark back at the turn's release."""
+    try:
+        expect_dashboard_turn(getattr(client, "client", None), expected)
+    except Exception:  # noqa: BLE001 - an unmarked turn leaves the work for the next one
+        logger.debug("marking the turn's background draw failed", exc_info=True)
+
+
+def _close_lost_background(state, slot) -> None:
+    """Close *slot*'s open background cards as interrupted: the client lost their runs
+    (its session was replaced or its process ended), so no end will come for them."""
+    background = {
+        sid: info for sid, info in slot._native_subagent_tracker.items() if info.get("background")
+    }
+    for info in background.values():
+        info["kept_open"] = False
+    _native_subagent_close_all(
+        state,
+        slot,
+        background,
+        slot._native_subagent_output,
+        error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+    )
+
+
+def _carried_background_native(tracker: "dict[str, dict]") -> "dict[str, dict]":
+    """The background cards of the slot's last tracker, for the next turn's.
+
+    Carried as they are: an open card keeps its start time, and the next turn's roster
+    updates it rather than drawing it again, and only that turn's landing keeps it
+    open. A closed one stays closed: a later roster naming it (the run's end, read
+    after a Stop closed its cards) draws no second card.
+    """
+    carried = {
+        sid: info for sid, info in tracker.items() if info.get("background") and info.get("id")
+    }
+    for info in carried.values():
+        info["kept_open"] = False
+    return carried
 
 
 def _retain_terminal_native(
@@ -362,7 +566,8 @@ def _retain_terminal_native(
     ttl_secs: float = NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
     now: "float | None" = None,
 ) -> "dict[str, dict]":
-    """Retain recent terminal records for bounded post-turn reconnect replay."""
+    """Retain recent terminal records for bounded post-turn reconnect replay, and the
+    open background cards a later turn carries on."""
     current = time.time() if now is None else now
     terminal = [
         (sid, info)
@@ -374,7 +579,12 @@ def _retain_terminal_native(
     if keep >= 0 and len(terminal) > keep:
         terminal.sort(key=lambda item: float(item[1].get("done_at") or 0.0), reverse=True)
         terminal = terminal[:keep]
-    return {sid: info for sid, info in terminal}
+    background = {
+        sid: info
+        for sid, info in tracker.items()
+        if info.get("background") and not info.get("done") and info.get("id")
+    }
+    return {sid: info for sid, info in terminal} | background
 
 
 def _safe_native_crew_debug_title(title: str) -> str:
@@ -431,8 +641,8 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
         # (its fixed reason fused with the redacted tool title) into
         # ``event.text`` at its source, and the event carries no structured
         # reason/title field to localize from. A token here needs a new field
-        # on the ACP event, read by other consumers too, so it is deferred to a
-        # follow-up rather than threaded in this change.
+        # on the ACP event, read by other consumers too, so it is not threaded
+        # through here.
         _txt = redact(event.text)
         slot.append("notice", _txt, "msg msg-info")
     # Some kiro-cli builds also stream the sub-agent's own text via

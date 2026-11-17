@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import traceback
 from collections.abc import Callable
@@ -71,6 +72,19 @@ def _native_projection_for_fake_processes(monkeypatch):
     # Launch lifecycle tests own no native agent tree. Keep the projection hop
     # real and off-loop; its file and mapping behavior has separate coverage.
     monkeypatch.setattr(skill_projection, "prepare_native_skill_projection", prepare)
+
+
+@pytest.fixture(autouse=True)
+def _no_managed_agent_shadow_scan(_floor_monkeypatch):
+    # The shadow gate resolves the work dir through the bounded sensitive-path
+    # resolver, which fails closed when a loaded runner misses its budget. These
+    # tests own spawn lifecycle, not that gate, whose contract
+    # test_managed_agent_shadow covers; stub it as test_kiro_acp_engine_pin does.
+    from kiro_crew.acp import managed_agent_shadow
+
+    _floor_monkeypatch.setattr(
+        managed_agent_shadow, "managed_agent_shadow_refusal", lambda agent, work_dir: None
+    )
 
 
 async def _stop_stderr_drain(client: AcpClient) -> None:
@@ -562,9 +576,22 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         assert client._child_pids == {}
 
     @pytest.mark.asyncio
-    async def test_client_spawn_reports_the_failure_at_error(self, tmp_path, caplog) -> None:
+    @pytest.mark.parametrize("resolver", ["live", "over_budget"])
+    async def test_client_spawn_reports_the_failure_at_error(
+        self, tmp_path, caplog, monkeypatch, resolver
+    ) -> None:
         """The kill is silent to the user otherwise: nothing downstream sees a
-        spawn that died after the process existed."""
+        spawn that died after the process existed.
+
+        ``over_budget`` is a loaded CI runner whose sensitive-path resolver misses
+        its budget: the spawn must still reach the tracking failure."""
+        if resolver == "over_budget":
+            from kiro_crew import security
+
+            def _saturated(*_args, **_kwargs):
+                raise TimeoutError("no resolver child took the request")
+
+            monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _saturated)
         client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
 
         mock_proc = MagicMock()
@@ -662,6 +689,33 @@ class TestRuntimeSpawnCarriesItsInstance:
 
 
 class TestRuntimeProjectedLaunchDocuments:
+    @pytest.fixture(autouse=True)
+    def _inline_path_screen(self, _floor_monkeypatch):
+        # The launch record screens each path through the bounded sensitive-path
+        # resolver, which fails closed when a loaded runner misses its budget and
+        # leaves the record empty. These tests own what the record holds, not that
+        # screen, whose budget contract test_llm_helpers_tool_input_offload covers.
+        from kiro_crew import member_essential_context
+
+        _floor_monkeypatch.setattr(member_essential_context, "validate_file_path", os.path.realpath)
+
+    @pytest.mark.asyncio
+    async def test_the_class_screen_holds_while_the_path_resolver_misses_its_budget(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A saturated resolver, as on a loaded runner, must not reach this class:
+        without the inline screen above, this record comes back empty."""
+        from kiro_crew import security
+
+        def _saturated(*_args, **_kwargs):
+            raise TimeoutError("no resolver child took the request")
+
+        monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _saturated)
+        runtime, _calls = await self._drive(monkeypatch, tmp_path, inherits=False)
+
+        guide = tmp_path / "workspace" / ".kiro" / "steering" / "guide.md"
+        assert runtime._native_launch_sources == {str(guide): ""}
+
     @staticmethod
     async def _drive(
         monkeypatch,

@@ -440,7 +440,7 @@ class TestAgentPackageHandlers:
     ):
         """Redact, then cut: cutting first splits the credential so no pattern
         matches it, and its first part reaches the browser."""
-        token = "ghp_" + "a1B2c3D4e5" * 3 + "F6g7H8"
+        token = github_classic(seed=63)
         message = "x" * 490 + " " + token + " tail"  # the token spans char 500
 
         async def _op(*_args):
@@ -588,31 +588,11 @@ class TestPluginHandlers:
 
 
 class TestRedactExternalLayerOrder:
-    """The lexical URL-parameter scrub must run LAST, not first.
+    """The lexical URL-parameter scrub removes a credential value and keeps the rest.
 
-    ``redact_exfiltration_urls`` classifies a URL as suspicious partly by query
-    LENGTH and replaces the WHOLE url when it fires. Running the scrub first
-    shortens ``?token=<210 chars>&host=…&path=…`` below that threshold, so the
-    exfil scan stops firing and every other parameter — the actual payload, which
-    the regex does not name — renders verbatim in the dashboard. That silently
-    REMOVES a pre-existing guard, so both directions are pinned here.
+    A URL is never replaced whole: only the value of a credential parameter goes, so
+    the scrub must still catch a short token and leave every other parameter readable.
     """
-
-    _EXFIL = (
-        "install failed: fetching https://collect.attacker.example/?token="
-        + "A" * 210
-        + "&host=corp-laptop&user=alice&path=/home/alice/.aws/credentials"
-    )
-
-    def test_long_query_exfil_url_is_still_fully_redacted(self):
-        from kiro_crew.dashboard.handlers.discover import _redact_external
-
-        out = _redact_external(self._EXFIL)
-        # The whole-URL redaction must still fire...
-        assert "collect.attacker.example" not in out or "[REDACTED" in out
-        # ...and the non-token parameters must not survive.
-        assert "corp-laptop" not in out
-        assert "/home/alice/.aws/credentials" not in out
 
     def test_short_token_is_still_scrubbed(self):
         """The new win must survive the reorder."""
@@ -644,9 +624,9 @@ class TestRedactExternalLayerOrder:
         """
         from kiro_crew.dashboard.handlers.discover import _redact_external
 
-        out = _redact_external("?token=AKIAIOSFODNN7EXAMPLE")
+        out = _redact_external("https://h.example/x?token=AKIAIOSFODNN7EXAMPLE")
         assert "AKIAIOSFODNN7EXAMPLE" not in out
-        assert out == "?token=[REDACTED: credential]"
+        assert out == "https://h.example/x?token=[REDACTED: credential]"
 
     def test_redaction_is_idempotent(self):
         """Re-redacting an already-redacted string must be a no-op."""

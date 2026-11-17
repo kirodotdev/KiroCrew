@@ -36,6 +36,7 @@
     "set_project": "Set project",
     "reset_conversation": "Reset conversation",
     "chat_tag": "Tag session",
+    "chat_rename": "Rename session",
     "suggest_followup": "Suggest follow-ups",
     "request_server": "Request MCP server",
     "send_message": "Send message",
@@ -139,7 +140,8 @@
     "session_read_message": "Read session message",
     "session_summary": "Read session summary",
     "work_dispatch": "Dispatch work item",
-    "session_queue": "Manage session queue"
+    "session_queue": "Manage session queue",
+    "crew_list": "List remote crews"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

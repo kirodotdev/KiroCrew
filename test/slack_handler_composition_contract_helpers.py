@@ -119,9 +119,9 @@ class _Slack(MockSlackClient):
         self._maybe_fail("post_ephemeral")
         return await super().post_ephemeral(channel, user_id, text, blocks, thread_ts)
 
-    async def stop_stream(self, channel, ts, final_text=None):
+    async def stop_stream(self, channel, ts, final_text=None, blocks=None):
         self._maybe_fail("stop_stream")
-        return await super().stop_stream(channel, ts, final_text)
+        return await super().stop_stream(channel, ts, final_text, blocks)
 
     async def update_message(self, channel, ts, text):
         self._maybe_fail("update_message")

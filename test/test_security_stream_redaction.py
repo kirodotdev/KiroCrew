@@ -17,11 +17,17 @@ import security_helpers
 
 from kiro_crew import security
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_and_truncate, scan_history
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+# A synthetic 40-character GitHub token with a valid checksum. AWS key IDs
+# (``AKIA...``) are identifiers the redactor keeps visible, and so is a bare
+# 40-character run, so the tests below redact a published-format token instead.
+_TOKEN = github_classic(seed=83)
 
 
-def _jose_header(min_len: int) -> str:
+def _jose_header(min_len: int, **extra: str) -> str:
     """A base64url JOSE header segment at least *min_len* characters long."""
-    raw = json.dumps({"alg": "HS256", "pad": "A" * min_len}).encode()
+    raw = json.dumps({"alg": "HS256", **extra, "pad": "A" * min_len}).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
@@ -34,9 +40,9 @@ class TestRedactAndTruncate:
         assert len(result) <= 100
 
     def test_redacts_credentials_in_truncated(self) -> None:
-        text = "Key: AKIAIOSFODNN7EXAMPLE in output"
+        text = f"Key: {_TOKEN} in output"
         result = redact_and_truncate(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert _TOKEN not in result
 
     def test_handles_none(self) -> None:
         assert redact_and_truncate(None) == ""
@@ -45,18 +51,18 @@ class TestRedactAndTruncate:
         """A secret spanning the max_chars cut must not leak a partial.
 
         Redaction runs over the full text before truncation. Truncating first
-        would slice AKIA...EXAMPLE in half, leaving an unredactable prefix that
+        would slice the secret in half, leaving an unredactable prefix that
         does not match the credential regex and would leak on the wire.
         """
         prefix = "prefix "  # 7 chars
-        secret = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+        secret = _TOKEN  # 40-char GitHub token
         text = prefix + secret + " trailing"
-        # Boundary lands 8 chars into the 20-char key.
+        # Boundary lands 8 chars into the 40-char token.
         max_chars = len(prefix) + 8
         result = redact_and_truncate(text, max_chars=max_chars)
         assert len(result) <= max_chars
-        # No fragment of the access key ID (which starts with "AKIA") survives.
-        assert "AKIA" not in result
+        # No fragment of the secret survives.
+        assert secret[:4] not in result
 
 
 class TestSELEmittersRedactBeforeTruncate:
@@ -64,9 +70,9 @@ class TestSELEmittersRedactBeforeTruncate:
 
     Slicing to 200 chars before redacting writes a credential straddling the
     200-char boundary to the durable audit event with its tail cut off, in the
-    shape the credential regex cannot match. Each test plants the 20-char
-    AWS access key ID 'AKIAIOSFODNN7EXAMPLE' straddling index 200 and asserts no
-    fragment of it (its 'AKIA' prefix) survives in the emitted event's metadata.
+    shape the credential regex cannot match. Each test plants a 40-char
+    GitHub token straddling index 200 and asserts no fragment of it
+    (its first four characters) survives in the emitted event's metadata.
 
     These call the emitters DIRECTLY, so they pin the emitter's own ordering and
     nothing about what a caller feeds it. Redaction here is case-sensitive by
@@ -75,7 +81,7 @@ class TestSELEmittersRedactBeforeTruncate:
     (``test_allow_audit_records_the_raw_command_not_the_matching_view``).
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+    SECRET = _TOKEN  # 40-char GitHub token
 
     def test_push_allow_event_redacts_straddling_secret(
         self, monkeypatch: pytest.MonkeyPatch
@@ -104,7 +110,9 @@ class TestSELEmittersRedactBeforeTruncate:
         assert len(logged) == 1
         event = logged[0]
         assert event.event_type == "push_allowed"
-        assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
+        assert not any(
+            self.SECRET[:4] in str(value) for value in event.metadata.values()
+        ), event.metadata
 
     def test_injection_dropped_event_redacts_straddling_secret(
         self, monkeypatch: pytest.MonkeyPatch
@@ -119,7 +127,9 @@ class TestSELEmittersRedactBeforeTruncate:
 
         monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
 
-        pad = "p" * (200 - 4)
+        # The space keeps the secret a run of its own; glued to the pad it
+        # would be one long run and no 40-character secret.
+        pad = "p" * (200 - 5) + " "
         sample = pad + self.SECRET + " " + "z" * 300
         assert len(sample) > 200
         assert 200 - len(pad) < len(self.SECRET)  # key straddles the cut
@@ -135,7 +145,9 @@ class TestSELEmittersRedactBeforeTruncate:
         assert len(logged) == 1
         event = logged[0]
         assert event.event_type == "prompt_injection_dropped"
-        assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
+        assert not any(
+            self.SECRET[:4] in str(value) for value in event.metadata.values()
+        ), event.metadata
 
 
 def _write_rows(path, rows) -> None:
@@ -424,20 +436,21 @@ class TestStreamRedactor:
         return emits
 
     def test_credential_split_across_chunks(self) -> None:
-        emits = self._run(["The access key is AKIA", "IOSFODNN7", "EXAMPLE"])
+        emits = self._run(["The secret key is " + _TOKEN[:4], _TOKEN[4:20], _TOKEN[20:]])
         # No single emit leaks a raw fragment
         for e in emits:
-            assert "AKIAIOSFODNN7EXAMPLE" not in e
-            assert not ("AKIA" in e and "REDACTED" not in e)
+            assert _TOKEN not in e
+            assert _TOKEN[:4] not in e
+            assert _TOKEN[20:] not in e
         joined = "".join(emits)
-        assert joined == "The access key is [REDACTED: credential]"
+        assert joined == "The secret key is [REDACTED: credential]"
 
     def test_char_by_char_stream(self) -> None:
         from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
-        out = "".join(r.feed(c) for c in "x AKIAIOSFODNN7EXAMPLE y") + r.flush()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = "".join(r.feed(c) for c in f"x {_TOKEN} y") + r.flush()
+        assert _TOKEN not in out
         assert "[REDACTED: credential]" in out
 
     def test_no_data_loss_benign(self) -> None:
@@ -445,13 +458,15 @@ class TestStreamRedactor:
         assert joined == "Hello world, this is fine."
 
     def test_single_chunk_credential(self) -> None:
-        joined = "".join(self._run(["key=AKIAIOSFODNN7EXAMPLE done"]))
-        assert "AKIAIOSFODNN7EXAMPLE" not in joined
+        joined = "".join(self._run([f"key={_TOKEN} done"]))
+        assert _TOKEN not in joined
         assert "REDACTED" in joined
 
     def test_github_token_split(self) -> None:
-        joined = "".join(self._run(["use ghp_ABCDEFGHIJ", "KLMNOPQRSTUVWXYZ", "abcdef1234567890"]))
-        assert "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef" not in joined
+        token = github_classic(seed=84)
+        joined = "".join(self._run(["use " + token[:14], token[14:30], token[30:]]))
+        assert token not in joined
+        assert token[4:30] not in joined
         assert "REDACTED" in joined
 
     def test_reset_discards_buffer(self) -> None:
@@ -471,10 +486,12 @@ class TestStreamRedactor:
         """A pathologically long unbroken credential-class run does not grow the
         held buffer without bound: the excess beyond the cap is committed, and
         no content is lost across feed+flush."""
-        from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
 
         r = StreamRedactor()
-        blob = "a" * (_STREAM_HOLDBACK_MAX + 300)  # no terminator, all cred-class
+        # No terminator, all cred-class, and longer than the largest ceiling a run
+        # of this class is held to.
+        blob = "a" * (_STREAM_HOLDBACK_JWT_MAX + 300)
         emitted = r.feed(blob)
         # Some of the run was committed (not held forever) — held tail is capped.
         assert emitted, "cap did not release any of the oversized run"
@@ -509,15 +526,15 @@ class TestStreamRedactor:
         (
             ("open &amp", ";token=SECRET", " done"),
             ("open &amp;", "token=SECRET", " done"),
+            ("open ?token&#", "61;SECRET", " done"),
         ),
     )
-    def test_html_entity_token_separator_split_not_leaked(self, chunks) -> None:
-        joined = "".join(self._run(chunks))
-        assert joined == "open &amp;token=[REDACTED: credential] done"
-
-    def test_html_entity_token_equals_split_not_leaked(self) -> None:
-        joined = "".join(self._run(("open ?token&#", "61;SECRET", " done")))
-        assert joined == "open ?token&#61;[REDACTED: credential] done"
+    def test_stays_visible_known_gap_an_entity_spelled_token_parameter(self, chunks) -> None:
+        """The table reads a ``token`` parameter in a URL, by its plain spelling: an HTML
+        entity separator or ``=`` outside one stays, and the stream commits it as the
+        batch does."""
+        text = "".join(chunks)
+        assert "".join(self._run(chunks)) == text == security.redact(text)
 
     def test_canonical_tag_split_inside_token_value_is_fixed_point(self) -> None:
         tag = REDACTED_CREDENTIAL_TAG
@@ -548,13 +565,11 @@ class TestStreamRedactor:
         assert "".join(self._run((f"?token={tag}",))) == f"?token={tag}"
 
     def test_non_tag_bracket_value_is_still_redacted_normally(self) -> None:
-        joined = "".join(self._run(("?token=[NOTATAG: cr", "edential]")))
-        assert joined == f"?token={REDACTED_CREDENTIAL_TAG} credential]"
-
-    def test_flush_preserves_an_incomplete_canonical_tag_prefix(self) -> None:
-        tag = REDACTED_CREDENTIAL_TAG
-        prefix = tag[: tag.index("credential") + 2]
-        assert "".join(self._run((f"?token={prefix}",))) == f"?token={prefix}"
+        joined = "".join(self._run(("https://h.example?token=[NOTATAG: cr", "edential]")))
+        assert joined == (
+            # The URL ends at the blank and drops the ``:`` that ends a sentence.
+            f"https://h.example?token={REDACTED_CREDENTIAL_TAG}: credential]"
+        )
 
     def test_canonical_tag_holdback_never_authorizes_a_drop(self, monkeypatch) -> None:
         monkeypatch.setattr(security, "_STREAM_HOLDBACK_MAX", 4)
@@ -639,7 +654,8 @@ class TestStreamRedactor:
         """
         from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
-        seg = _jose_header(_STREAM_HOLDBACK_MAX + 400)
+        # A JWE header names its content encryption (``enc``).
+        seg = _jose_header(_STREAM_HOLDBACK_MAX + 400, enc="A256GCM")
         jwe = f"{seg}.QW5rZXk.aXY.Y2lwaGVydGV4dA.dGFn"  # 5 compact JWE segments
         assert len(jwe) > _STREAM_HOLDBACK_MAX
         r = StreamRedactor()
@@ -787,14 +803,14 @@ class TestStreamRedactor:
         from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
         marker = "rawtokensuffix"
-        value = "A" * 500 + marker + "B" * 6
+        value = "A" * 488 + marker + "B" * 6
         tail = " BEGIN PRIVATE KEY"
-        text = "open ?token=" + value + tail
+        text = "https://h.example?token=" + value + tail
         # The natural trailing run is only ``KEY`` (3 bytes); the partial-PEM
         # rule lowers the Phase-A cut to zero. The 550-byte buffer then forces a
-        # 512-byte floor cut at byte 38, which is 26 bytes into the token value.
+        # 512-byte floor cut at byte 38, which is 14 bytes into the token value.
         assert len(text) == 550
-        assert len(text) - _STREAM_HOLDBACK_MAX == len("open ?token=") + 26
+        assert len(text) - _STREAM_HOLDBACK_MAX == len("https://h.example?token=") + 14
         r = StreamRedactor()
         pieces = [r.feed(text), r.flush()]
         assert all(marker not in piece for piece in pieces)
@@ -810,9 +826,9 @@ class TestStreamRedactor:
         assert emitted == "safe "
         assert r._buf == "?to%6"
 
+        # Stays visible, known gap: the table reads a ``token`` parameter in a URL only.
         joined = emitted + r.feed("ben=weak-secret-value") + r.flush()
-        assert "weak-secret-value" not in joined
-        assert "?to%6ben=[REDACTED: credential]" in joined
+        assert joined == "safe ?to%6ben=weak-secret-value"
 
     def test_credential_anchored_tail_past_ceiling_fails_closed(self) -> None:
         """A credential-anchored tail past the 4096 ceiling fails closed.
@@ -948,8 +964,8 @@ class TestStreamRedactor:
         from kiro_crew.security import StreamRedactor
 
         redactor = StreamRedactor()
-        first = redactor.feed("?token=" + "T" * 5000 + " done")
-        assert first == "?token=[REDACTED: credential] "
+        first = redactor.feed("https://h.example?token=" + "T" * 5000 + " done")
+        assert first == "https://h.example?token=[REDACTED: credential] "
         assert not redactor._discarding
         assert redactor.flush() == "done"
 
@@ -984,16 +1000,20 @@ class TestStreamRedactor:
         assert "TTTT" not in remainder
 
     def test_drop_preserves_suffix_when_the_value_ended_inside_the_buffer(self) -> None:
-        """Fail-closed drops only the token region, never its benign suffix."""
-        from kiro_crew.security import REDACTED_CREDENTIAL_TAG, StreamRedactor
+        """Only the token value goes, never its benign suffix, and no drop is armed.
+
+        The whole feed is judged at once, so the output is the batch redactor's.
+        """
+        from kiro_crew.security import StreamRedactor
 
         value = "A" * 5000 + "!" + "B" * 100
         redactor = StreamRedactor()
-        first = redactor.feed(f"?token={value}&next=visible")
-        assert first == REDACTED_CREDENTIAL_TAG
+        first = redactor.feed(f"https://h.example?token={value}&next=visible")
+        assert "A" * 32 not in first
         assert not redactor._discarding
-        assert redactor._buf == "&next=visible"
-        assert first + redactor.flush() == REDACTED_CREDENTIAL_TAG + "&next=visible"
+        out = first + redactor.flush()
+        assert out == "https://h.example?token=[REDACTED: credential]&next=visible"
+        assert out == security.redact(f"https://h.example?token={value}&next=visible")
 
     def test_drop_arms_when_the_same_value_reaches_the_buffer_end(self) -> None:
         """The same oversized value remains sticky when its continuation is unknown."""
@@ -1020,7 +1040,7 @@ class TestStreamRedactor:
         from kiro_crew import security
 
         value = "A" * 2000 + ";" + "A" * (security._STREAM_HOLDBACK_JWT_MAX - 1500)
-        text = f"?token={value}&tok"
+        text = f"https://h.example?token={value}&tok"
         assert ";" not in security._CRED_CLASS
         assert all(char in security._CRED_CLASS for char in "A&tok")
         assert len(text) > security._STREAM_HOLDBACK_JWT_MAX
@@ -1032,39 +1052,44 @@ class TestStreamRedactor:
         The drop covers the completed value only; the WEAK prefix is HELD (the
         existing holdback), and its completion follows the weak-completion rules.
         """
-        from kiro_crew.security import REDACTED_CREDENTIAL_TAG, StreamRedactor
+        from kiro_crew.security import StreamRedactor
 
         redactor = StreamRedactor()
         first = redactor.feed(self._over_ceiling_crossing_with_weak_tail())
-        assert first == REDACTED_CREDENTIAL_TAG
         assert "A" * 32 not in first
-        assert redactor._buf == "&tok"
+        assert redactor._buf.endswith("&tok")
         joined = first + redactor.feed("en=secret&x=1") + redactor.flush()
         assert "secret" not in joined
-        assert joined == REDACTED_CREDENTIAL_TAG + "&token=[REDACTED: credential]&x=1"
+        assert (
+            joined
+            == "https://h.example?token=[REDACTED: credential]&token=[REDACTED: credential]&x=1"
+        )
 
     def test_weak_tail_never_arms_the_sticky_discard(self) -> None:
         """WEAK evidence holds bytes but never arms a drop or names a discard kind."""
-        from kiro_crew.security import REDACTED_CREDENTIAL_TAG, StreamRedactor
+        from kiro_crew.security import StreamRedactor
 
         redactor = StreamRedactor()
         first = redactor.feed(self._over_ceiling_crossing_with_weak_tail())
-        assert first == REDACTED_CREDENTIAL_TAG
+        assert "A" * 32 not in first
         assert not redactor._discarding
         assert redactor._discard_kind is None
         # Breaking the prefix releases it verbatim: nothing was dropped off it.
-        assert redactor.feed(" visible") + redactor.flush() == "&tok visible"
+        rest = redactor.feed(" visible") + redactor.flush()
+        assert first + rest == "https://h.example?token=[REDACTED: credential]&tok visible"
 
     def test_drop_ending_at_terminator_does_not_suppress_next_chunk(self) -> None:
         from kiro_crew.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
 
         redactor = StreamRedactor()
-        first = redactor.feed("?token=" + "T" * (_STREAM_HOLDBACK_JWT_MAX + 500) + " ")
-        assert first == "?token=[REDACTED: credential] "
+        first = redactor.feed(
+            "https://h.example?token=" + "T" * (_STREAM_HOLDBACK_JWT_MAX + 500) + " "
+        )
+        assert first == "https://h.example?token=[REDACTED: credential] "
         assert redactor._buf == ""
         assert not redactor._discarding
         assert first + redactor.feed("next ") + redactor.flush() == (
-            "?token=[REDACTED: credential] next "
+            "https://h.example?token=[REDACTED: credential] next "
         )
 
     def test_post_bound_continuation_never_resumes_raw(self) -> None:

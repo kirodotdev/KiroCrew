@@ -9,6 +9,7 @@ gateway's boot path, where the crew log's storage subsystem must stay unloaded.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, NotRequired, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
@@ -65,6 +66,24 @@ WORK_REMOTE_DISPATCH_SETTING: str = "work_ledger.remote_dispatch"
 WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
 #: The statuses a ``reason`` may ride on.
 WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
+
+
+def waits_on_person(
+    status: object, reason: object, *, answered: bool, running: bool = False
+) -> bool:
+    """Whether an OPEN item's last report waits on the PERSON: a ``blocked`` /
+    ``question`` naming one of :data:`WORK_BLOCKED_REASONS`, not answered since (a
+    conductor ``decide`` or a person's ``steer`` after the report), and its worker's
+    turn not *running*. The one rule behind every "needs you" count: the Board and
+    sidebar (``work_ledger_board.awaits_person``) and the crew-log workstreams fold."""
+    return (
+        not running
+        and not answered
+        and status in WORK_REASON_STATUSES
+        and reason in WORK_BLOCKED_REASONS
+    )
+
+
 #: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
 #: steer outranks the conductor's decision: the conductor reads new steer events
 #: before it decides and never overrules them. ``retire`` is the hub moving a remote
@@ -107,6 +126,29 @@ WORK_MAX_DEPTH_DEFAULT: int = 2
 WORK_MAX_DEPTH_MIN: int = 2
 WORK_MAX_DEPTH_MAX: int = 10
 WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
+
+#: One crew tag (``work_ledger.remote_dispatch_tags``) or one remote-dispatch
+#: ``requires`` name: a short lower-case word with at least one letter and no
+#: dot, so a tag cannot carry a path, a URL, a dotted host name or a bare
+#: account number. Here because the config package needs it and may not import
+#: the remote-dispatch modules. Use ``fullmatch``: ``$`` would pass a newline.
+DISPATCH_TAG_RE = re.compile(r"(?=[a-z0-9_-]*[a-z])[a-z0-9][a-z0-9_-]{0,31}")
+
+#: Most tags a crew advertises, and most names one ``requires`` list holds.
+MAX_DISPATCH_TAGS: int = 16
+
+
+def coerce_dispatch_tags(raw: object) -> tuple[str, ...]:
+    """*raw* as a deduplicated tuple of valid tags, in order; anything else dropped."""
+    if not isinstance(raw, list):
+        return ()
+    out: list[str] = []
+    for tag in raw:
+        if isinstance(tag, str) and DISPATCH_TAG_RE.fullmatch(tag) and tag not in out:
+            out.append(tag)
+    return tuple(out[:MAX_DISPATCH_TAGS])
+
+
 #: Fields a conductor action may set on an item. What the write route logs from
 #: the committed item is what the fold applies to the rebuilt one; the two read
 #: this one table so they cannot drift apart. A worker's fields are fixed.
@@ -241,6 +283,119 @@ def coerce_ask(raw: Any) -> dict[str, Any] | None:
     }
 
 
+#: A ``work_report``'s optional ``discussion``: where a worker-hosted discussion
+#: stands, for the Board's "discussing" row. Every report carries the whole object
+#: and replaces the last one. Caps per text field, then per list
+#: (``(max items, {key: max chars})``); a value over a cap is refused, never cut.
+WORK_DISCUSSION_PHASES: tuple[str, ...] = ("talking", "checking", "asking", "done")
+WORK_DISCUSSION_TEXT_CHARS: dict[str, int] = {"direction": 200, "thread": 512}
+WORK_DISCUSSION_STRING_LISTS: dict[str, tuple[int, int]] = {
+    "agreed": (8, 120),
+    "checking": (3, 120),
+}
+WORK_DISCUSSION_OBJECT_LISTS: dict[str, tuple[int, dict[str, int]]] = {
+    "disputed": (5, {"point": 120, "sides": 160}),
+    "recent": (6, {"who": 20, "text": 200}),
+}
+WORK_DISCUSSION_COUNTS: dict[str, int] = {"round": 99, "minutes": 1440}
+#: What ``thread`` must look like: the Board's own LINKABLE rule, so the link it
+#: draws is one the host opens.
+WORK_DISCUSSION_THREAD_RE = re.compile(
+    r"^(?:https?://|/(?:artifacts|chat|schedule|capabilities|settings)\b)"
+)
+
+
+def discussion_problem(raw: Any) -> tuple[str, str, str] | None:
+    """Why *raw* is not a valid ``discussion``, as ``(kind, field, message)``, or ``None``.
+
+    ``kind`` is ``"too_long"`` for a value over a cap and ``"invalid"`` otherwise;
+    ``field`` names the exact part, e.g. ``discussion.agreed[3]``. Unknown keys are
+    refused, so a typo is not silently dropped.
+    """
+    if not isinstance(raw, dict):
+        return ("invalid", "discussion", "discussion must be an object")
+    known = {"phase", *WORK_DISCUSSION_TEXT_CHARS, *WORK_DISCUSSION_STRING_LISTS}
+    known |= {*WORK_DISCUSSION_OBJECT_LISTS, *WORK_DISCUSSION_COUNTS}
+    for key in raw:
+        if key not in known:
+            return ("invalid", f"discussion.{key}", f"discussion has no field {key!r}")
+    if raw.get("phase") not in WORK_DISCUSSION_PHASES:
+        return (
+            "invalid",
+            "discussion.phase",
+            f"discussion.phase must be one of {', '.join(WORK_DISCUSSION_PHASES)}",
+        )
+
+    def text(value: Any, cap: int, where: str) -> tuple[str, str, str] | None:
+        if not isinstance(value, str):
+            return ("invalid", where, f"{where} must be a string")
+        if len(value) > cap:
+            return ("too_long", where, f"{where} is {len(value)} chars; the cap is {cap}")
+        return None
+
+    for name, cap in WORK_DISCUSSION_TEXT_CHARS.items():
+        if name in raw and (bad := text(raw[name], cap, f"discussion.{name}")):
+            return bad
+    thread = raw.get("thread")
+    if thread and not WORK_DISCUSSION_THREAD_RE.match(thread):
+        return (
+            "invalid",
+            "discussion.thread",
+            "discussion.thread must be an http(s) URL or a /artifacts, /chat, /schedule, "
+            "/capabilities or /settings path",
+        )
+    for name, cap in WORK_DISCUSSION_COUNTS.items():
+        value = raw.get(name, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= cap:
+            return ("invalid", f"discussion.{name}", f"discussion.{name} must be 0..{cap}")
+    lists: dict[str, tuple[int, Any]] = {
+        **WORK_DISCUSSION_STRING_LISTS,
+        **WORK_DISCUSSION_OBJECT_LISTS,
+    }
+    for name, (most, shape) in lists.items():
+        value = raw.get(name, [])
+        where = f"discussion.{name}"
+        if not isinstance(value, list):
+            return ("invalid", where, f"{where} must be a list")
+        if len(value) > most:
+            return ("too_long", where, f"{where} has {len(value)} entries; the cap is {most}")
+        for i, entry in enumerate(value):
+            at = f"{where}[{i}]"
+            if isinstance(shape, int):
+                if bad := text(entry, shape, at):
+                    return bad
+                continue
+            if not isinstance(entry, dict):
+                return ("invalid", at, f"{at} must be an object")
+            for key in entry:
+                if key not in shape:
+                    return ("invalid", f"{at}.{key}", f"{at} has no field {key!r}")
+            for key, cap in shape.items():
+                if bad := text(entry.get(key), cap, f"{at}.{key}"):
+                    return bad
+    return None
+
+
+def coerce_discussion(raw: Any) -> dict[str, Any] | None:
+    """*raw* as a complete ``discussion`` (absent parts filled), or ``None``. NEVER raises.
+
+    The store refuses an invalid one on write, so ``None`` here means a value no
+    writer of this version produced; a reader then shows no discussion at all.
+    """
+    if discussion_problem(raw) is not None:
+        return None
+    out: dict[str, Any] = {"phase": raw["phase"]}
+    for name in WORK_DISCUSSION_COUNTS:
+        out[name] = raw.get(name, 0)
+    for name in WORK_DISCUSSION_TEXT_CHARS:
+        out[name] = raw.get(name, "")
+    for name in WORK_DISCUSSION_STRING_LISTS:
+        out[name] = list(raw.get(name, []))
+    for name in WORK_DISCUSSION_OBJECT_LISTS:
+        out[name] = [dict(entry) for entry in raw.get(name, [])]
+    return out
+
+
 def worker_statuses(remote_dispatch: bool) -> tuple[str, ...]:
     """The statuses a ``work_report`` may be written with, in declaration order."""
     if remote_dispatch:
@@ -307,6 +462,8 @@ class WorkBoardItem(TypedDict):
     pending_since: str | None
     #: The conductor's ``ask`` record (:func:`coerce_ask`); present only while set.
     ask: NotRequired[dict[str, Any]]
+    #: The worker's last ``discussion`` (:func:`coerce_discussion`); present only while set.
+    discussion: NotRequired[dict[str, Any]]
     events: list[WorkBoardEvent]
 
 

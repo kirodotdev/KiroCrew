@@ -1079,8 +1079,8 @@ class TestDispatcher:
 
     @pytest.mark.asyncio
     async def test_compact_timeout_reports_gracefully(self) -> None:
-        # Regression: nested 120s timeouts made the graceful-timeout branch
-        # unreachable and destroyed a healthy session. A compaction that yields
+        # Nested 120s timeouts would make the graceful-timeout branch
+        # unreachable and destroy a healthy session. A compaction that yields
         # no terminal status must report a timeout and KEEP the session.
         d, cli, sess = _dispatcher({"u1"})
 

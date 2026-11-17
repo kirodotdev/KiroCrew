@@ -28,7 +28,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import session_pid
-from kiro_crew.session_cleanup_spare import rss_limit_for
+from kiro_crew.session_cleanup_spare import note_rss_measured, rss_limit_for
 
 if TYPE_CHECKING:
     from kiro_crew.session_cleanup import SessionCleanup
@@ -185,6 +185,7 @@ async def report_busy_sessions(
                     cleanup._deps.get_maintenance_executor(), measure, pid
                 )
                 rss_by_pid[pid] = rss
+                note_rss_measured(pid, rss)
             # Scaled by the chat leases on the pid, as the idle pass scales it: a
             # shared runtime's tree holds every co-tenant's memory.
             limit = rss_limit_for(cleanup, pid, rss)

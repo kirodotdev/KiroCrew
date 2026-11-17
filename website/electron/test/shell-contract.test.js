@@ -238,6 +238,7 @@ test("the local-dashboard gate has exactly one spelling", () => {
     "gateway:can-restart",
     "gateway:restart",
     "relay-crew:open",
+    "relay-crew:close-all",
   ]) {
     assert.match(
       IPC_REGISTRAR_SOURCE,

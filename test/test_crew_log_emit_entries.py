@@ -716,7 +716,7 @@ def test_oversize_attachment_metadata_keeps_the_received_message():
 
 
 def test_every_body_family_produces_one_body_representation():
-    # FR-7 is amended in this change to include bodies, so the redacted body is
+    # FR-7 includes bodies, so the redacted body is
     # what goes in the log. The invariant is the SHAPE every body-bearing entry
     # has, asserted on the entries rather than on the source that produces them:
     # exactly one of `text` or `chunks`, never both and never neither. That holds

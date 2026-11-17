@@ -57,6 +57,7 @@ __all__ = [
     "context_provider_of",
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
+    "spec_with_default_crew_servers",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_honours_session_options",
@@ -716,6 +717,11 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
         return spec
 
 
+def spec_with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """*spec* with Crew's default servers added, for a read-only check; see :func:`_with_default_crew_servers`."""
+    return _with_default_crew_servers(agent, spec)
+
+
 def kiro_cli_resolves() -> bool:
     """Does kiro-cli resolve, through the resolver ``_resolve_spawn_plan`` calls?
 
@@ -1091,8 +1097,10 @@ def claude_adapter_honours_session_options() -> bool:
 
     ``CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`` is where the adapter is verified to
     spread ``_meta.claudeCode.options`` into the session, which the read-only
-    shape of a Side Chat or thread-reply session depends on. A missing adapter, or
-    one whose version cannot be read, answers False. The spawn's own cached
+    shape of a Side Chat or thread-reply session depends on. The version is the
+    adapter's package.json, or for a wrapper script what it reported at its latest
+    handshake (``_claude_adapter_known_version``). A missing adapter, or one whose
+    version is not known, answers False. The spawn's own cached
     resolution is read first, as :func:`claude_adapter_cached_negative` does.
     Blocking (resolves the adapter and reads its package.json); call it off the loop.
     """
@@ -1104,7 +1112,7 @@ def claude_adapter_honours_session_options() -> bool:
     argv = resolution[0] if isinstance(resolution, tuple) else None
     if not argv:
         return False
-    version = _client._claude_adapter_installed_version(argv)
+    version = _client._claude_adapter_known_version(argv)
     if _client._claude_adapter_honours_setting_sources(version):
         return True
     logger.warning(
@@ -1210,6 +1218,35 @@ def self_served_resolves(backend: str) -> bool:
 
     binary, _searched_path = _resolve_self_served_bin(backend)
     return bool(binary)
+
+
+def antigravity_components_resolve() -> tuple[bool, bool]:
+    """``(server, helper)`` for Google Antigravity's two-file distribution.
+
+    The install probe must distinguish a complete archive from either half, so
+    unlike a self-served binary this is not one conjunction. The fresh resolve
+    does not replace the spawn cache: a probe after an install reports
+    ``restart_required`` instead of changing what the running gateway will spawn.
+    """
+    from kiro_crew.acp.harness.antigravity import probe_antigravity_runtime
+
+    resolution = probe_antigravity_runtime()
+    return bool(resolution.server), bool(resolution.helper)
+
+
+def antigravity_cached_negative() -> bool:
+    """Whether the running process cached an incomplete Antigravity pair."""
+    from kiro_crew.acp.harness.antigravity import antigravity_cached_resolution
+
+    cached = antigravity_cached_resolution()
+    return cached is not None and (not cached.server or not cached.helper)
+
+
+def antigravity_install_hint() -> str:
+    """The registry/version guidance shared with the spawn failure."""
+    from kiro_crew.acp.harness.antigravity import ANTIGRAVITY_INSTALL_HINT
+
+    return ANTIGRAVITY_INSTALL_HINT
 
 
 def self_served_cached_negative(backend: str) -> bool:
@@ -1337,6 +1374,7 @@ def pi_cached_negative() -> bool:
         try:
             found, _searched = cached  # type: ignore[misc]
         except Exception:
+            # A cache value that is not a (found, searched) pair is skipped.
             continue
         if not found:
             return True
@@ -1409,6 +1447,13 @@ def forget_cached_resolution(backend: str) -> None:
     for name in sentinel_globals:
         if hasattr(_client, name):
             setattr(_client, name, unresolved)
+
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_ANTIGRAVITY
+
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        from kiro_crew.acp.harness.antigravity import forget_antigravity_resolution
+
+        forget_antigravity_resolution()
 
     # The self-served harnesses share one dict keyed by backend, so forgetting one
     # is a key deletion and the others keep their answers.

@@ -1308,6 +1308,9 @@ class _PumpMixin(ManagerComponent):
         _log_decision: str = "rejected"
         _log_by: str = "host"
         _log_cause: str = ""
+        _trace_approval: Any = None
+        from kiro_crew.tracing import steps as trace_steps
+
         try:
             try:
                 from kiro_crew.security import (
@@ -1345,6 +1348,10 @@ class _PumpMixin(ManagerComponent):
                 # shows it as pending -- which is the whole point of recording it.
                 _log_origin = self._record_crew_log_spawn_approval_requested(
                     info, approval_id=request_id, reason=f"spawn_run({task_preview})"
+                )
+                # Its span, under the parent's spawn tool span (tracing/steps.py).
+                _trace_approval = trace_steps.approval_opened(
+                    request_id, subagent_id=info.id, spawn=True
                 )
                 try:
                     answer = await self._manager._on_spawn_approval(
@@ -1423,6 +1430,11 @@ class _PumpMixin(ManagerComponent):
                 decision=_log_decision,
                 by=_log_by,
                 cause=_log_cause,
+            )
+            trace_steps.approval_closed(
+                _trace_approval,
+                approved=_log_decision == "approved",
+                by=trace_steps.decided_by(host=_log_by == "host", cause=_log_cause),
             )
 
         if not approved:

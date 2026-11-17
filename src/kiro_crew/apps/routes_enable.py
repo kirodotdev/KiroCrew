@@ -464,7 +464,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 # stalls -- the property the previous ``to_thread`` was there for.
                 #
                 # Lock order is app_lifecycle_lock -> config lock, matching
-                # ``handle_app_uninstall`` (routes.py), which already nests them that way
+                # ``_run_uninstall`` (routes_uninstall.py), which already nests them that way
                 # for the same reason. Verified across the tree: 14 functions take
                 # ``app_lifecycle_lock`` and none of them is reachable from inside a
                 # config-lock block, so the reverse order does not exist.
@@ -611,7 +611,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
                 # stalls -- the property the previous ``to_thread`` was there for.
                 #
                 # Lock order is app_lifecycle_lock -> config lock, matching
-                # ``handle_app_uninstall`` (routes.py), which already nests them that way
+                # ``_run_uninstall`` (routes_uninstall.py), which already nests them that way
                 # for the same reason. Verified across the tree: 14 functions take
                 # ``app_lifecycle_lock`` and none of them is reachable from inside a
                 # config-lock block, so the reverse order does not exist.

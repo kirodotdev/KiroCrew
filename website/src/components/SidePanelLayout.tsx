@@ -6,6 +6,7 @@ import { NavBackBar } from './NavBackBar'
 import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { useBottomTerminalOpen, useTerminalPosition } from '../hooks/useBottomTerminal'
@@ -217,6 +218,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
   const isMobile = useIsMobile()
   // "More below" cue under the desktop tab list. Settings has twenty rows, so
   // on a laptop-height window the last few (Developer, About) sit
@@ -474,9 +476,11 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // Deliberately a passive effect, NOT useLayoutEffect: react-router 7 drops
   // navigations fired from a layout effect during the initial mount (its ready
   // flag is set in a passive effect) — see the same note on SettingsPage's
-  // legacy tab remap.
+  // legacy tab remap. The write is skipped while a newer navigation is still
+  // pending, so it never replaces the entry that navigation created.
   React.useEffect(() => {
     if (isMobile || !rememberKey || rawTab || !tab || tab === first) return
+    if (!renderedLocationIsCurrent()) return
     if (basePath) {
       const seg = toPathSegment(tab)
       if (seg != null) navigate({ pathname: `${basePath}/${seg}`, search: location.search }, { replace: true })
@@ -487,7 +491,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       next.set('tab', tab)
       return next
     }, { replace: true })
-  }, [isMobile, rememberKey, rawTab, tab, first, setParams, basePath, navigate, location.search])
+  }, [isMobile, rememberKey, rawTab, tab, first, setParams, basePath, navigate, location.search, renderedLocationIsCurrent])
 
   // Remember the tab that is effectively shown — in component state, so an
   // in-place param drop has something to fall back to, and in sessionStorage,

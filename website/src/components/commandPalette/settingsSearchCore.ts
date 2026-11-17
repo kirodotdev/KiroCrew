@@ -33,8 +33,9 @@
  *  3. Any other part hit, discounted ×0.6 — the row merely mentions the term
  *     in its description/keywords/tab.
  */
+import { crewModeEnabled } from '../../lib/crewMode'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
-import { PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
@@ -66,7 +67,7 @@ export interface SettingEntryScore {
  * re-append it.
  */
 /**
- * Registry id of the Decisions (Jev) main toggle — the card's own switch.
+ * Registry id of the Decisions main toggle — the card's own switch.
  *
  * The card carries more rows than this one; :data:`DECISIONS_SETTING_IDS` below is
  * the whole governed set, and the predicate reads that.
@@ -78,10 +79,10 @@ export interface SettingEntryScore {
  * that the page has the row, so an unfiltered corpus would land the user on a section
  * where nothing is there — which reads as a broken page rather than an absent feature.
  */
-export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
+export const DECISIONS_SETTING_ID = 'developer.decisions'
 
 /**
- * Every registry id the Decisions (Jev) card owns, the main toggle included.
+ * Every registry id the Decisions card owns, the main toggle included.
  *
  * The card is one governed unit: `capabilities.decisions` withdraws every control on it,
  * so a search that knows the feature is denied must withhold the address field and
@@ -122,13 +123,11 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
 export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.artifact-deploy',
   'developer.webhooks',
-  'developer.conductor-mode',
   'developer.explore',
   'developer.mcp-sign-in-by-kiro-crew',
   'developer.chat-on-a-crew',
   'developer.composable-layout',
   'developer.folder-conductor',
-  'developer.bot-sessions-on-the-bot-s-profile',
   'developer.mark-out-of-date-dashboard-fields',
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
@@ -142,6 +141,9 @@ export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
 /** Registry ids of the two update switches on the About tab (`utils/updateSwitches`). */
 export const GATEWAY_AUTO_UPDATE_SETTING_ID = 'about.update-the-gateway-automatically'
 export const APP_AUTO_DOWNLOAD_SETTING_ID = 'about.install-app-updates-automatically'
+
+/** The config key of Channels' switch, which `ChannelsSetting` draws only while it is on. */
+export const CHANNELS_SWITCH_KEY = 'dashboard.channels_enabled'
 
 /** Registry ids of the Instances tab's two rows: RemoteCrewPanel draws the enable
  *  card only while remote crews are off, and the auto-connect switch only while on. */
@@ -180,6 +182,13 @@ export interface SettingsSearchGovernance {
    * unknown, and both Instances rows are offered.
    */
   remoteCrewsEnabled?: boolean
+  /**
+   * Whether Channels is turned on (`dashboard.channels_enabled`), from the
+   * `['kirocrewConfig']` read. Display > View draws Channels' switch only while it
+   * is, because Channels is an opt-in the dashboard does not advertise, so its
+   * entry is offered only once the read SUCCEEDED and said `true`.
+   */
+  channelsOn?: boolean
 }
 
 /**
@@ -208,8 +217,8 @@ export function settingEntryOffered(
   }
   // Display > Explore is drawn only while the Explore preview is on.
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
-  // Chat > Sessions draws Start New Chats in Conductor Mode only while the conductor mode preview is on.
-  if (entry.configKey === 'dashboard.new_chat_crew_mode') return readPreviewFlag(PREVIEW_CREW_MODE)
+  // Chat > Sessions draws Start New Chats in conductor mode in every build that offers conductor mode.
+  if (entry.configKey === 'dashboard.new_chat_crew_mode') return crewModeEnabled()
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
   if (entry.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake') {
     return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
@@ -220,6 +229,7 @@ export function settingEntryOffered(
   if (entry.id === KIRO_SIGN_IN_SETTING_ID) return governance.kiroSignInOffered !== false
   if (entry.id === ENABLE_REMOTE_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== true
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
+  if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

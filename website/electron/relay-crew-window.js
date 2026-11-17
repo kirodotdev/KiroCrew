@@ -7,6 +7,7 @@ const {
   openExternalSafely,
 } = require("./external-scheme");
 const { createReachabilityWatch } = require("./relay-crew-reachability");
+const { normalizeBounds, viewHoldsFocus } = require("./browser-view");
 
 /**
  * A window that shows a remote Crew's dashboard through the Kiro relay.
@@ -37,6 +38,8 @@ const RELAY_HEADER = "Kiro-Relay-Authorization";
 // Added to the Crew session's user agent so the Crew's dashboard can tell it is
 // in this window (its offline wording). Not a credential: anyone can send it.
 const RELAY_WINDOW_UA_MARKER = "kiroCrewRelayWindow";
+// Added after it on a pane's page only: the page leaves out its own header.
+const RELAY_PANE_UA_MARKER = "kiroCrewRelayPane";
 const NOTICE_FILE = path.join(__dirname, "relay-crew-notice.html");
 const NOTICE_PRELOAD = path.join(__dirname, "relay-crew-notice-preload.js");
 const NOTICE_CHANNEL = "relay-crew-notice:act";
@@ -62,8 +65,8 @@ function isEndpointId(value) {
   return true;
 }
 
-// shortcut: one window per Crew. The view is built separately so it can move
-// into a dashboard pane later.
+// shortcut: one window per Crew. The view is built separately so the pane
+// (openRelayCrewPane) builds the very same one.
 const openWindows = new Map();
 
 function createTokenHolder() {
@@ -79,19 +82,20 @@ function relayPartitionName(endpointId) {
   return `relay-crew-${endpointId}`; // no "persist:" prefix: in memory only
 }
 
-// The Crew's origin, or null unless `crewUrl` is a bare https origin whose
-// host is `<endpointId>.<relay domain>`.
-function crewOrigin(endpointId, crewUrl) {
-  if (!isEndpointId(endpointId)) return null;
+// The Crew's origin, or null unless `crewUrl` is a bare https origin on the
+// default port whose host is exactly `<endpointId>.<relayDomain>`. No relay
+// domain matches no Crew: the token goes to the relay's own names only.
+function crewOrigin(endpointId, crewUrl, relayDomain) {
+  if (!isEndpointId(endpointId) || typeof relayDomain !== "string" || !relayDomain) return null;
   let url;
   try {
     url = new URL(crewUrl);
   } catch {
     return null;
   }
-  if (url.protocol !== "https:" || url.username || url.password
+  if (url.protocol !== "https:" || url.username || url.password || url.port
     || url.pathname !== "/" || url.search || url.hash
-    || !url.hostname.startsWith(`${endpointId}.`)) {
+    || url.hostname !== `${endpointId}.${relayDomain}`) {
     return null;
   }
   return url.origin;
@@ -146,8 +150,8 @@ function installRelayHeaderRule(ses, origin, getToken) {
   });
 }
 
-function createRelayCrewView({ endpointId, crewUrl, getToken }, deps) {
-  const origin = crewOrigin(endpointId, crewUrl);
+function createRelayCrewView({ endpointId, crewUrl, relayDomain, getToken }, deps) {
+  const origin = crewOrigin(endpointId, crewUrl, relayDomain);
   if (!origin || typeof getToken !== "function") {
     throw new Error("relay crew: invalid endpoint or crew URL");
   }
@@ -225,29 +229,13 @@ function createNoticeView(deps, onAction) {
   return view;
 }
 
-function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
-  const existing = openWindows.get(endpointId);
-  if (existing && !existing.isClosed()) {
-    existing.focus();
-    return existing;
-  }
-  const { view, session: ses, origin } = createRelayCrewView(
-    { endpointId, crewUrl, getToken },
-    deps,
-  );
+// What a Crew's view needs once it has a home, the same for the window and the
+// pane: the reachability watch, the local notice over the page, the handle's
+// listeners and the teardown. `host` puts a view on screen (`add`, `place`) and
+// takes one off (`remove`).
+function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps) {
   const log = crewLog(endpointId, deps);
-  const win = new deps.BaseWindow({ width: 1200, height: 820, title: title || "Kiro Crew" });
-  win.contentView.addChildView(view);
   let noticeView = null;
-  const fitView = () => {
-    if (win.isDestroyed()) return;
-    const { width, height } = win.getContentBounds();
-    view.setBounds({ x: 0, y: 0, width, height });
-    if (noticeView) noticeView.setBounds({ x: 0, y: 0, width, height });
-  };
-  fitView();
-  win.on("resize", fitView);
-
   const statusListeners = [];
   const closedListeners = [];
   const visibilityListeners = [];
@@ -294,19 +282,14 @@ function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
     if (!noticeView) return;
     const gone = noticeView;
     noticeView = null;
-    try { win.contentView.removeChildView(gone); } catch { /* mid-teardown */ }
+    try { host.remove(gone); } catch { /* mid-teardown */ }
     try { gone.webContents.close(); } catch { /* mid-teardown */ }
   };
 
-  // Renewal stops for a window nobody is looking at.
-  for (const [event, hidden] of [["minimize", true], ["hide", true], ["restore", false], ["show", false]]) {
-    win.on(event, () => { if (!closed) notify(visibilityListeners, hidden); });
-  }
-
-  win.on("closed", () => {
+  // Once. `what` names the host in the log line.
+  const teardown = (what) => {
     if (closed) return;
     closed = true;
-    openWindows.delete(endpointId);
     ses.webRequest.onBeforeSendHeaders(null);
     ses.webRequest.onCompleted(null);
     ses.webRequest.onErrorOccurred(null);
@@ -319,9 +302,9 @@ function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
     Promise.resolve()
       .then(() => Promise.all([ses.clearStorageData(), ses.clearCache()]))
       .catch(() => log("could not clear the partition"));
-    log("window closed");
+    log(`${what} closed`);
     notify(closedListeners);
-  });
+  };
 
   const handle = {
     endpointId,
@@ -343,14 +326,12 @@ function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
       Promise.resolve(view.webContents.loadURL("about:blank")).catch(() => {});
       if (!noticeView) {
         noticeView = createNoticeView(deps, (action) => notify(noticeActionListeners, action));
-        win.contentView.addChildView(noticeView);
-        fitView();
+        host.add(noticeView);
+        host.place(noticeView);
       }
       Promise.resolve(noticeView.webContents.loadFile(NOTICE_FILE, { query: { ...text } }))
         .catch(() => log("notice failed to load"));
     },
-    focus: () => { if (closed) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); },
-    close: () => { if (!closed && !win.isDestroyed()) win.close(); },
     isClosed: () => closed,
     onMainFrameStatus: (cb) => { statusListeners.push(cb); },
     onClosed: (cb) => { closedListeners.push(cb); },
@@ -358,10 +339,176 @@ function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
     onUnreachable: (cb) => { unreachableListeners.push(cb); },
     onNoticeAction: (cb) => { noticeActionListeners.push(cb); },
   };
+  return {
+    handle,
+    log,
+    teardown,
+    notify,
+    // The Crew's views on screen: its page, and the notice while one is up.
+    views: () => (noticeView ? [view, noticeView] : [view]),
+    setHidden: (hidden) => { if (!closed) notify(visibilityListeners, hidden); },
+  };
+}
+
+function openRelayCrewWindow({ endpointId, crewUrl, relayDomain, title, getToken }, deps) {
+  const existing = openWindows.get(endpointId);
+  if (existing && !existing.isClosed()) {
+    existing.focus();
+    return existing;
+  }
+  const parts = createRelayCrewView({ endpointId, crewUrl, relayDomain, getToken }, deps);
+  const win = new deps.BaseWindow({ width: 1200, height: 820, title: title || "Kiro Crew" });
+  win.contentView.addChildView(parts.view);
+  const place = (v) => {
+    if (win.isDestroyed()) return;
+    const { width, height } = win.getContentBounds();
+    v.setBounds({ x: 0, y: 0, width, height });
+  };
+  const crew = attachRelayCrew({ endpointId, ...parts }, {
+    add: (v) => win.contentView.addChildView(v),
+    remove: (v) => win.contentView.removeChildView(v),
+    place,
+  }, deps);
+  const fitView = () => { for (const v of crew.views()) place(v); };
+  fitView();
+  win.on("resize", fitView);
+
+  // Renewal stops for a window nobody is looking at.
+  for (const [event, hidden] of [["minimize", true], ["hide", true], ["restore", false], ["show", false]]) {
+    win.on(event, () => crew.setHidden(hidden));
+  }
+
+  win.on("closed", () => {
+    if (crew.handle.isClosed()) return;
+    openWindows.delete(endpointId);
+    crew.teardown("window");
+  });
+
+  const isClosed = crew.handle.isClosed;
+  const handle = {
+    ...crew.handle,
+    focus: () => { if (isClosed()) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); },
+    close: () => { if (!isClosed() && !win.isDestroyed()) win.close(); },
+  };
   openWindows.set(endpointId, handle);
-  Promise.resolve(view.webContents.loadURL(`${origin}/`))
-    .catch(() => log("first load failed"));
-  log("window opened");
+  Promise.resolve(parts.view.webContents.loadURL(`${parts.origin}/`))
+    .catch(() => crew.log("first load failed"));
+  crew.log("window opened");
+  return handle;
+}
+
+// The Crew-switch chord the dashboard binds: Cmd on macOS or Ctrl elsewhere,
+// with digit 1 to 6 and no other modifier. The pane holds the keyboard while it
+// is in use, so main reads the chord before the page does. Answers the 0-based
+// tab index, or -1.
+// shortcut: the default chords only; a rebound shortcut is not followed until
+// the dashboard hands main its bindings.
+const PANE_CHORD_DIGITS = 6;
+function paneChordIndex(input, platform) {
+  if (!input || typeof input !== "object" || input.type !== "keyDown") return -1;
+  const primary = platform === "darwin" ? input.meta && !input.control : input.control && !input.meta;
+  if (!primary || input.alt || input.shift) return -1;
+  const match = /^Digit([1-9])$/.exec(typeof input.code === "string" ? input.code : "");
+  const digit = match ? Number(match[1]) : 0;
+  return digit >= 1 && digit <= PANE_CHORD_DIGITS ? digit - 1 : -1;
+}
+
+// shortcut: one pane per Crew, and none while the Crew is open in a window:
+// both would use the Crew's one partition.
+const openPanes = new Map();
+
+// The window's Crew view, as a child of the main window instead. `parent` is
+// the main BaseWindow and `dashboard` its dashboard view, which gets the
+// keyboard back whenever the pane leaves the screen holding it. The caller owns
+// the rect, when the pane shows and how many stay warm. Not wired in yet.
+function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, platform = process.platform }, deps) {
+  const existing = openPanes.get(endpointId);
+  if (existing && !existing.isClosed()) return existing;
+  const inWindow = openWindows.get(endpointId);
+  if (inWindow && !inWindow.isClosed()) throw new Error("relay crew: already open in a window");
+  const parts = createRelayCrewView({ endpointId, crewUrl, relayDomain, getToken }, deps);
+  const { view } = parts;
+  const wc = view.webContents;
+  // Both whole tokens: the page keeps its relay window wording and leaves out
+  // its own header. Layout only, for this page alone; not a credential.
+  wc.setUserAgent(`${parts.session.getUserAgent()} ${RELAY_PANE_UA_MARKER}`);
+  let rect = null;
+  let shown = true;
+  let parentAway = false;
+  let reportedHidden = false;
+  parent.contentView.addChildView(view);
+  const crew = attachRelayCrew({ endpointId, ...parts }, {
+    add: (v) => { parent.contentView.addChildView(v); v.setVisible(shown); },
+    remove: (v) => parent.contentView.removeChildView(v),
+    place: (v) => { if (rect) v.setBounds(rect); },
+  }, deps);
+  const isClosed = crew.handle.isClosed;
+  const chordListeners = [];
+  const handBack = () => {
+    try { if (!dashboard.webContents.isDestroyed()) dashboard.webContents.focus(); } catch { /* mid-teardown */ }
+  };
+  const setBounds = (next) => {
+    const clean = normalizeBounds(next, parent.getContentBounds());
+    if (!clean) return;
+    rect = clean;
+    for (const v of crew.views()) v.setBounds(rect);
+  };
+  // As for the Preview panel (browser-view.js): decide the hand-back before
+  // the hide, and make it after.
+  const sync = () => {
+    const reclaim = !shown && viewHoldsFocus(view);
+    for (const v of crew.views()) v.setVisible(shown);
+    if (reclaim) handBack();
+    // Renewal parks while the pane is hidden or the main window is.
+    const hidden = !shown || parentAway;
+    if (hidden !== reportedHidden) { reportedHidden = hidden; crew.setHidden(hidden); }
+  };
+  const parentEvents = [["minimize", true], ["hide", true], ["restore", false], ["show", false]]
+    .map(([event, away]) => [event, () => { parentAway = away; sync(); }]);
+  for (const [event, fn] of parentEvents) parent.on(event, fn);
+  const close = () => {
+    if (isClosed()) return;
+    const reclaim = viewHoldsFocus(view);
+    for (const [event, fn] of parentEvents) parent.removeListener(event, fn);
+    parent.removeListener("closed", close);
+    openPanes.delete(endpointId);
+    try { parent.contentView.removeChildView(view); } catch { /* mid-teardown */ }
+    crew.teardown("pane");
+    if (reclaim) handBack();
+  };
+  parent.on("closed", close);
+  // Focus the page takes while off screen goes back, a tick later, and only
+  // while the main window is the active one.
+  wc.on("focus", () => setImmediate(() => {
+    if (!isClosed() && !shown && parent.isFocused()) handBack();
+  }));
+  wc.on("before-input-event", (event, input) => {
+    const index = paneChordIndex(input, platform);
+    if (index < 0) return;
+    event.preventDefault();
+    crew.notify(chordListeners, index);
+  });
+  setBounds(bounds);
+
+  const handle = {
+    ...crew.handle,
+    focus: () => {
+      if (isClosed()) return;
+      if (parent.isMinimized()) parent.restore();
+      parent.show();
+      parent.focus();
+      shown = true;
+      sync();
+      wc.focus();
+    },
+    close,
+    setBounds: (next) => { if (!isClosed()) setBounds(next); },
+    setVisible: (visible) => { if (isClosed()) return; shown = visible === true; sync(); },
+    onChord: (cb) => { chordListeners.push(cb); },
+  };
+  openPanes.set(endpointId, handle);
+  Promise.resolve(wc.loadURL(`${parts.origin}/`)).catch(() => crew.log("first load failed"));
+  crew.log("pane opened");
   return handle;
 }
 
@@ -372,4 +519,6 @@ module.exports = {
   installRelayHeaderRule,
   createRelayCrewView,
   openRelayCrewWindow,
+  paneChordIndex,
+  openRelayCrewPane,
 };

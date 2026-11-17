@@ -15,6 +15,10 @@ Two repairs, both covered here:
   list with its own tool so the two copies agree again.
 * ``PATCH /api/chat/slots/{slot}/todo`` -- a person ticking one row of the pill
   directly, which was impossible before (the tool result was the only writer).
+
+Neither applies on a harness that keeps its checklist itself
+(``ACP_BACKENDS_PLAN_CHECKLIST``): its list is ``read_only`` and its turns carry
+no block, pinned under "a harness that keeps its checklist itself".
 """
 
 from __future__ import annotations
@@ -929,6 +933,62 @@ async def test_warm_turn_with_a_pending_tick_prepends_the_sync_block(tmp_path, m
     assert "- <<<UNTRUSTED_TODO_TEXT id=2: RCA SC" in sent[0]
     assert "[Task checklist — automatic recovery]" not in sent[0]
     assert sent[0].endswith("BUILT")
+
+
+# ── a harness that keeps its checklist itself (an ACP plan) ──────────────────
+
+
+def _plan_list(slot: _ChatSlot) -> None:
+    """The read-only snapshot ``acp.plan_checklist`` makes of a claude ``plan``."""
+    slot.set_todo(
+        {
+            "description": "",
+            "tasks": [
+                {"id": "1", "text": "Boil water", "completed": True},
+                {"id": "2", "text": "Steep tea bag", "completed": False},
+            ],
+            "read_only": True,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_list_refuses_the_tick() -> None:
+    """No prompt block reaches a harness that keeps its own list, so a tick is refused."""
+    slot = _slot()
+    _plan_list(slot)
+    state = _state(slot)
+    status, body = await _patch(_app(state), "s1", _body(slot, "2", True))
+    assert (status, body["code"]) == (409, "todo_read_only")
+    assert body["todo"] == slot.todo_payload()
+    assert slot.todo_payload()["completed"] == 1  # type: ignore[index]
+    assert slot._todo_overrides == {}
+    state.broadcast_ws.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_warm_turn_on_a_plan_checklist_harness_carries_no_sync_block(
+    tmp_path, monkeypatch
+) -> None:
+    """The sync block says "Call todo_list `complete`", a tool claude does not have.
+
+    The list here is a ``todo_list`` one with a person's tick pending, the one shape
+    that renders a sync block, so the turn's harness alone keeps it out.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    state, sent = _runner_state(tmp_path, monkeypatch, is_new=False, resumed=False)
+    provider = state.sessions.get_or_create.return_value[0]
+    provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
+    slot = state.get_or_create_slot("pill-chat")
+    _seed_pill(slot)
+    slot.set_todo_task_completed("2", True)
+    await _runner_turn(state, slot)
+    assert sent and "[Task checklist" not in sent[0]
+    assert sent[0].endswith("BUILT")
+    # Not delivered, so not marked stated: it is said if the slot moves to kiro-cli.
+    assert slot._todo_overrides["2"]["stated"] is False
 
 
 @pytest.mark.asyncio

@@ -219,13 +219,13 @@ describe('the collapsed line', () => {
     render(<MemoryRecallStrip record={readMemoryRecallRecord({ ...WIRE, error: 'timeout' })!} />)
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
     expect(text).toContain('kept after fallback')
-    expect(text).not.toContain('Jev kept')
+    expect(text).not.toContain('Decision model kept')
   })
 
   it('credits Jev on a healthy record', () => {
     render(<MemoryRecallStrip record={record} />)
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
-    expect(text).toContain('Jev kept')
+    expect(text).toContain('Decision model kept')
     expect(text).not.toContain('kept after fallback')
   })
 
@@ -238,7 +238,7 @@ describe('the collapsed line', () => {
     expect(screen.getByTestId('memory-recall-strip-saved').textContent).toContain('prompt chars')
     const title =
       screen.getByTestId('memory-recall-strip-saved').getAttribute('title') ?? ''
-    expect(title).toContain("Jev's narrowing removed")
+    expect(title).toContain("the decision model's narrowing removed")
     expect(title).toContain('before redaction and before the response budget')
   })
 
@@ -249,7 +249,7 @@ describe('the collapsed line', () => {
     // Still legended, for what the number is an average OF.
     expect(scores).toHaveAttribute(
       'title',
-      "Jev's average confidence that one memory was worth the prompt, from 0 to 1, and how long the answer took",
+      "The decision model's average confidence that one memory was worth the prompt, from 0 to 1, and how long the answer took",
     )
   })
 
@@ -285,7 +285,7 @@ describe('the expanded body', () => {
     const unstated = readMemoryRecallRecord({ ...WIRE, message_chars: undefined })!
     render(<MemoryRecallStrip record={unstated} />)
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
-    expect(screen.getByTestId('memory-recall-strip').textContent).not.toContain('Sent to Jev')
+    expect(screen.getByTestId('memory-recall-strip').textContent).not.toContain('Sent to the decision model')
   })
 
   it('retitles the kept list on a failure rather than crediting Jev', () => {
@@ -295,7 +295,7 @@ describe('the expanded body', () => {
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
     expect(text).toContain('Kept (fallback)')
-    expect(text).not.toContain('Kept by Jev')
+    expect(text).not.toContain('Kept by the decision model')
     // And the list itself is still there.
     for (const key of WIRE.baseline_keys) expect(text).toContain(key)
   })
@@ -304,7 +304,7 @@ describe('the expanded body', () => {
     render(<MemoryRecallStrip record={record} />)
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
-    expect(text).toContain('Kept by Jev')
+    expect(text).toContain('Kept by the decision model')
     expect(text).not.toContain('Kept (fallback)')
   })
 
@@ -313,7 +313,7 @@ describe('the expanded body', () => {
     // not only rate Jev.
     render(<MemoryRecallStrip record={record} />)
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
-    expect(screen.getByLabelText('Jev kept the right memories')).toBeInTheDocument()
+    expect(screen.getByLabelText('The decision model kept the right memories')).toBeInTheDocument()
     expect(screen.getByLabelText('Similarity recalled the right memories')).toBeInTheDocument()
   })
 
@@ -327,8 +327,8 @@ describe('the expanded body', () => {
     render(<MemoryRecallStrip record={record} />)
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
-    expect(text).toContain("Rate Jev's narrowing")
-    expect(text).toContain('Rate the search (before Jev)')
+    expect(text).toContain("Rate the decision model's narrowing")
+    expect(text).toContain('Rate the search (before the decision model)')
     // The teeth: one shared noun across both is what made them one vote, and the
     // search pair has to say WHERE in the sequence it sits or "the search" and
     // "Jev's narrowing" still read as two names for one step.
@@ -360,8 +360,8 @@ describe('the expanded body', () => {
     expect(text).toContain('Dropped to fit')
     // BOTH numbers in one wording, so the subtraction closes where a reader sees it:
     // the header says Jev kept 3, this says 2 of those 3 did not fit, so 1 arrived.
-    expect(text).toContain('2 of the 3 Jev kept did not fit the response')
-    expect(text).toContain('Jev kept: 3')
+    expect(text).toContain('2 of the 3 the decision model kept did not fit the response')
+    expect(text).toContain('Decision model kept: 3')
   })
 
   it('keeps the header count as the DECISION\'s, not the delivered set', () => {
@@ -389,9 +389,9 @@ describe('the expanded body', () => {
     render(<MemoryRecallStrip record={readMemoryRecallRecord({ ...WIRE, error: 'timeout' })!} />)
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
-    expect(text).not.toContain("Rate Jev's narrowing")
-    expect(screen.queryByLabelText('Jev kept the right memories')).toBeNull()
-    expect(screen.queryByLabelText('Jev kept the wrong memories')).toBeNull()
+    expect(text).not.toContain("Rate the decision model's narrowing")
+    expect(screen.queryByLabelText('The decision model kept the right memories')).toBeNull()
+    expect(screen.queryByLabelText('The decision model kept the wrong memories')).toBeNull()
     expect(text).toContain('Rate the search')
     expect(screen.getByLabelText('Similarity recalled the right memories')).toBeInTheDocument()
   })
@@ -404,7 +404,7 @@ describe('the expanded body', () => {
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
     const note = screen.getByTestId('memory-recall-strip-search-ran').textContent ?? ''
     expect(note).toContain('The search itself ran')
-    expect(note).toContain("only Jev's narrowing failed")
+    expect(note).toContain("only the decision model's narrowing failed")
   })
 
   it('draws no search-ran note when the decision landed', () => {

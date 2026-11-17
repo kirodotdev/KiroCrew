@@ -59,7 +59,6 @@ from kiro_crew.dashboard.transcript_snapshot import (
 from kiro_crew.history import carry_provenance
 from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.security.redaction_allow import allowed_hosts_for
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -623,10 +622,15 @@ def _shape_fork_child(
     if len(forked_from) <= MAX_FORK_PARENT_KEY_CHARS:
         new_slot.forked_from = forked_from
         new_slot.forked_from_created_at = bounded_transcript_created_at(slot._disk_meta_created_at)
+    # Keep the namespace that made the parent's alias-or-template decision. The
+    # execution carrier alone cannot preserve it: a template-stamped alias and
+    # an alias mistakenly stored as a template id share one carrier shape on
+    # disk. Saving the stamp on the child lets a later read tell them apart.
+    new_slot.agent_kind = str(getattr(slot, "agent_kind", "") or "")
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
-    # "Auto (Jev)" session that arrived pinned would run the parent's next turns
+    # "Auto (decision model)" session that arrived pinned would run the parent's next turns
     # on a model the parent had explicitly stopped choosing by hand.
     # Inheriting is arming a SECOND routed session, so it answers to the same owner
     # predicate as the arm itself; the caller says whether it passed that predicate.
@@ -1397,14 +1401,8 @@ async def fork_slot(
         # verdicts already judge them. Without this the birth save rescans the
         # whole copied window whenever the process cache has gone cold (a
         # restart, or other sessions' renders): 1,624 scans and 2.7 s of a
-        # 2.9 s fork for a 25 MB parent. Stored tags carry the workspace's
-        # allowed link hosts and the save judges with none, so with any host
-        # allowed no tag would match; the scope is skipped rather than seeding
-        # the parent's sidecar with tags no render reads.
-        reuse = not await asyncio.to_thread(allowed_hosts_for, slot.workspace)
-        await save_slot_off_loop(
-            state, new_slot, verdict_source=slot_history_key(slot) if reuse else None
-        )
+        # 2.9 s fork for a 25 MB parent.
+        await save_slot_off_loop(state, new_slot, verdict_source=slot_history_key(slot))
         new_slot._resumed_count = len(new_slot.messages)
     except Exception:
         # The child's row was announced when the mint block exited. A partial

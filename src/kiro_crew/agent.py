@@ -172,6 +172,7 @@ from kiro_crew.agent_parts.spec_lookup import (
     _project_shadow_of,
     _read_spec_capped,
     _resolve_spec_path,
+    _scanned_name,
     _spec_path_is_safe,
     _spec_path_shape_refusal,
     agent_spec_path,
@@ -179,18 +180,20 @@ from kiro_crew.agent_parts.spec_lookup import (
     session_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
-    _ASK_ONLY_WHEN_NEEDED_RULE,
     _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
     _DASHBOARD_MANAGER_SYSTEM_PROMPT,
     _DEPENDENT_CALLS_RULE,
     _LEDGER_CONDUCTOR_RULES,
+    _LEDGER_WORKER_RULES,
     _PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
     _SEALED_CREW_PATHS_LEAD,
     _SEALED_CREW_PATHS_RULE,
     _SECURITY_CONDUCTOR_SYSTEM_PROMPT,
+    _SHARED_CONDUCTOR_RULES_BLOCK,
     _TEAM_LEAD_SYSTEM_PROMPT,
+    _WORKER_PROMPT_SECTIONS,
     _WORKER_SEALED_CREW_PATHS_RULE,
     _WORKER_SYSTEM_PROMPT,
     GUEST_AGENT_PROMPT,
@@ -303,6 +306,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
+from kiro_crew.shell_audit_log import platform_spec_hooks
 from kiro_crew.user_json import loads_user_json
 from kiro_crew.validation import is_registered_agent_name
 
@@ -540,6 +544,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _worker_model_is_user_pinned,
         _worker_unassignable_servers,
         _write_worker_spec,
+        dashboard_author_ownership_digest,
         default_spec_fingerprint,
         default_spec_identity,
         rederive_worker_agent,
@@ -1157,6 +1162,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_foreign_worker_spec_reason",
         "_foreign_dashboard_author_spec_reason",
         "_is_confirmed_managed_dashboard_author",
+        "dashboard_author_ownership_digest",
         "_refuse_foreign_worker_spec",
         "default_spec_fingerprint",
         "_spec_fingerprint",
@@ -1347,7 +1353,7 @@ def _refresh_dynamic_fields(
     bundled_hooks = bundled.get("hooks")
     if not bundled_hooks:
         raise RuntimeError("Cannot refresh security fields: hooks missing from bundled defaults")
-    config["hooks"] = kiro_hooks._kiro_hooks_only(bundled_hooks)
+    config["hooks"] = platform_spec_hooks(kiro_hooks._kiro_hooks_only(bundled_hooks))
 
     # Upgrade cleanup: drop the retired deniedCommands/autoAllowReadonly that an
     # older build injected into this existing config, so kiro-cli stops enforcing

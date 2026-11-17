@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -273,16 +272,44 @@ class TestOversizeFailClosed:
         assert mechanism == "always_deny_input"
 
     @pytest.mark.asyncio
-    async def test_the_guard_bounds_the_scan_far_under_the_watchdog(self) -> None:
-        """A 1 MB body returns promptly instead of scanning for minutes."""
+    async def test_the_guard_bounds_the_scan_far_under_the_watchdog(self, monkeypatch) -> None:
+        """A 1 MB body is refused by its size before any predicate scans it.
+
+        Asserted as the strings the three regex-heavy predicates are handed: none
+        is longer than the scan cap. A predicate handed the oversized body is
+        refused on the spot instead of scanning it.
+        """
+        cap = llm_helpers._MAX_SCANNABLE_TOOL_INPUT_CHARS
+        oversized_scans: list[tuple[str, int]] = []
+
+        def bounded(name, real):
+            def predicate(s, *args, **kwargs):
+                if len(s) > cap:
+                    oversized_scans.append((name, len(s)))
+                    raise AssertionError(f"{name} was handed a {len(s)}-char string")
+                return real(s, *args, **kwargs)
+
+            return predicate
+
+        # Patched once each through the mirrored facade, which hands the same
+        # spy to every owner module that binds the name.
+        monkeypatch.setattr(
+            llm_helpers,
+            "sensitive_path_refusal",
+            bounded("sensitive_path_refusal", llm_helpers.sensitive_path_refusal),
+        )
+        monkeypatch.setattr(
+            llm_helpers,
+            "is_sensitive_bash_command",
+            bounded("is_sensitive_bash_command", llm_helpers.is_sensitive_bash_command),
+        )
+        monkeypatch.setattr(llm_helpers, "is_denied", bounded("is_denied", llm_helpers.is_denied))
         payload = json.dumps({"content": "a" * (1024 * 1024)})
-        started = time.perf_counter()
         approved, _provider, _rows = await _resolve(payload)
-        elapsed = time.perf_counter() - started
         assert approved is False
-        assert elapsed < 5.0, (
-            f"oversized input took {elapsed:.2f}s -- the size guard is not "
-            "short-circuiting before the regex predicates"
+        assert oversized_scans == [], (
+            f"the oversized input reached the regex predicates {oversized_scans} -- "
+            "the size guard is not short-circuiting before them"
         )
 
 
@@ -310,9 +337,7 @@ class TestLiveness:
         try:
             await asyncio.sleep(0.02)
             before = ticks
-            started = time.monotonic()
             approved, _provider, _rows = await _resolve(json.dumps({"content": body}))
-            elapsed = time.monotonic() - started
         finally:
             stop = True
             task.cancel()
@@ -322,10 +347,9 @@ class TestLiveness:
                 pass
 
         assert approved is True
-        # Generous: the scan itself legitimately costs tens of seconds on this
-        # payload (is_sensitive_bash_command dominates). What the watchdog cares
-        # about is that the LOOP stayed live throughout, asserted below.
-        assert elapsed < 120.0, f"scan took {elapsed:.1f}s — far past any sane bound"
+        # The scan's own cost is not bounded here (the timeout mark stops a hang by
+        # name); what the watchdog cares about is that the LOOP stayed live
+        # throughout.
         assert ticks > before, (
             f"the event loop made no progress during the scan (ticks stuck at "
             f"{before}); the scan is still blocking the loop"

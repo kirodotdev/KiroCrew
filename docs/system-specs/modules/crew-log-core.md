@@ -257,8 +257,9 @@ opposite handling. The pair `(turn, attempt)` is therefore the identity a fold g
 | `step/completed` | `{turn, step, ms}` | yes |
 
 `context/composed` is where the per-turn bill for what the gateway injects lands: `sources` names
-every block put in front of the model — `system`, `memory`, `lessons`, `skills_index`, `steering`,
-`project`, `tool_specs`, `ledger_context` — each with its `tokens`.
+every block put in front of the model by its `src/kiro_crew/context_blocks.py` label (for example
+`agent_instructions`, `memory`, `lessons`, `skill_index`, `steering`, `working_folder`,
+`your_message`), each with its `tokens`.
 
 ### Tool, approval
 

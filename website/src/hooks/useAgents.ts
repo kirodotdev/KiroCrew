@@ -122,7 +122,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // unchanged, so without this a new `agent.crew_mode_agent` left the picker
   // hiding the old conductor and offering the new one.
   const [crewCatalogKey, setCrewCatalogKey] = useState('')
-  // The Crew Mode preview decides whether a conductor is hidden from the picker.
+  // Whether this build offers conductor mode decides whether a conductor is hidden from the picker.
   const crewMode = useCrewMode()
   const reload = useCallback(() => {
     setReloading(true)

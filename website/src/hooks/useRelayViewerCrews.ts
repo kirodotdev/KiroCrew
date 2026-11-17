@@ -34,6 +34,19 @@ export async function openRelayCrew(endpointId: string): Promise<RelayCrewOpenRe
   }
 }
 
+/** Ask the desktop shell to close every relay Crew window now, after this
+ *  dashboard's Sign out or Switch account lands. Does nothing without the bridge
+ *  and never throws: a sign-out made elsewhere is caught at the next renewal. */
+export async function closeRelayCrews(): Promise<void> {
+  const b = (window as { relayCrewAPI?: { closeAll?: () => Promise<unknown> } }).relayCrewAPI
+  if (typeof b?.closeAll !== 'function') return
+  try {
+    await b.closeAll()
+  } catch {
+    /* the renewal backstop still closes them */
+  }
+}
+
 /** Plain text for a typed refusal code (the control plane client's codes, design
  *  section 5). Matched case-insensitively; every other code, the bridge's own
  *  INVALID_ENDPOINT and UNAVAILABLE included, gets the generic text. */

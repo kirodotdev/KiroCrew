@@ -25,6 +25,75 @@ kirocrew eval --all
 kirocrew eval --judge my_scenario
 ```
 
+## Your own scenarios
+
+```bash
+# Every .json/.yaml/.yml scenario file in a folder (its own files, not subfolders)
+kirocrew eval --dir ./evals
+
+# One scenario file
+kirocrew eval --file ./evals/support_bot.yaml
+
+# Choose what answers: a crew member or agent, and a model
+kirocrew eval --dir ./evals --agent reviewer --model my-model-id
+
+# Run the set 3 times; a scenario passes only if all 3 runs pass (pass^k)
+kirocrew eval --dir ./evals --repeat 3
+```
+
+`--dir` and `--file` replace the bundled scenarios, so they cannot be combined with
+scenario names or `--all`. The scenario file format is the one the bundled files use
+(`name`, `sessions`, `turns`, `assertions`). A file that does not load is named and
+nothing runs; so is a name two files share.
+
+`--agent` takes a crew member or an agent name, resolved as `kirocrew chat --agent`
+resolves it. `--model` is the explicit pick for every scenario session and outranks
+the agent's own model. Both apply to the sessions the scenario drives; the memory
+consolidation between sessions keeps its default agent and model.
+
+With `--repeat N` each scenario runs N times in a row. The report shows the runs
+passed (`Runs passed: 2/3`), the scenario counts as passed only when every run did,
+and the JSON summary adds `runs` and `runs_passed` per scenario and a top-level
+`repeat`. The JSON also records `agent` and `model` when you gave them. Without the
+new flags the command and its files are unchanged.
+
+## Gating on a saved run
+
+```bash
+# Compare each scenario's score with an earlier run's JSON summary
+kirocrew eval --dir ./evals --baseline eval_results/main.json --max-drop 0.05
+
+# Also write the results as a JUnit XML file for a CI test report
+kirocrew eval --dir ./evals --baseline eval_results/main.json --junit eval.xml
+```
+
+A scenario's score is its share of passed assertions (the `assertions` field of the
+JSON summary, `passed/total`), or 1 or 0 when it has no assertions. `--baseline`
+takes a file an earlier run wrote; `--max-drop` is the fall in a score, as a fraction
+from 0 to 1, that is still allowed (default `0`: any fall counts).
+
+With a baseline, one line names each scenario whose score fell by more than
+`--max-drop` (`Regression: alpha: 1.00 -> 0.50 (allowed drop 0.05)`), and the command
+exits 1. The baseline only adds to the exit code: every failed scenario still fails the
+run, as it does without one, so `--max-drop` decides which falls are named regressions,
+never whether a failure counts. A score alone cannot tell a known failure from a new
+one (a turn that errors records no assertion result, so a scenario can fail at an
+unchanged score), which is why the baseline never excuses a failure. A scenario in only
+one of the two runs is printed as `Not compared` and is never a regression.
+
+`--junit PATH` writes one test case per scenario, with a failure for each failed
+scenario; a regression's failure carries its `score fell from ... to ...` line. The file
+is written whether or not the run passes, through the same guard the benchmark reports
+use: a destination the sensitive-path check protects, or a link at the file name, is
+refused rather than written through.
+
+None of these flags can stop a run that would otherwise go ahead. A baseline that is
+missing, unreadable, refused by the sensitive-path check, or not an eval result file,
+a `--max-drop` that is not a number from 0 to 1, and a `--junit` file that cannot be
+written each print one warning that names the file and the reason, and the command
+carries on as it would without that flag. Without any of them the output, files and
+exit code are what they were.
+
 `--no-jail` (the shared top-level CLI flag) applies here as it does to every
 `kirocrew` command.
 
@@ -189,6 +258,49 @@ Scenarios are JSON files in `src/kiro_crew/eval/scenarios/`. Each defines sessio
 | `judge` | Runs only with `--judge`; otherwise it is not scored. A separate LLM judge scores the response 1–5 against the assertion's `value`, else the scenario's top-level `judge_criteria`, else its `description`; it passes at a score of 3 or more (`LLMJudge` `pass_threshold` 3.0, no CLI override). An unparseable judge reply scores 0 and fails |
 
 String-matching assertions are case-insensitive by default. Add `case_sensitive: true` to override.
+
+### Tool-use assertions
+
+Three more types score the tools a turn called instead of its reply text, so a
+scenario can tell an agent that looked something up from one that guessed right:
+
+| Type | Behavior |
+|------|----------|
+| `tool_called` | The turn called the tool named in `value`. Optional `args` (a mapping) narrows it to a call that also carries those arguments |
+| `tool_not_called` | The turn made no call to the tool named in `value`; with `args`, no call to it with those arguments |
+| `tool_order` | `tools` (a list of names) were called in that order, other calls allowed between them; `exact: true` allows no other call at all |
+
+```yaml
+assertions:
+  - type: tool_called
+    value: read_file
+    args: {path: config.yaml}
+  - type: tool_not_called
+    value: write_file
+  - type: tool_order
+    tools: [grep, read_file]
+```
+
+A tool is named as the backend names it in its own frames, never by the call's display
+title: `read_file` on one backend, `Read` on another, or `server/tool` (`@server/tool`
+also works) for a tool an MCP server provides. A backend that names a call only when it
+asks permission is named from that request. A string in `args` matches when the argument
+contains it (case-insensitive unless `case_sensitive: true`), so `path: config.yaml`
+matches `/work/config.yaml`; any other value must equal the argument. Arguments are the
+call's own input as its last update states it, with an MCP call's transport wrapper
+removed. Only top-level arguments are compared.
+
+A call no frame names, or one whose arguments no frame states, is never guessed at. While
+such a call could be the one a `tool_not_called` forbids, that assertion fails; a
+`tool_called` or `tool_order` that only such a call could satisfy fails too. The report
+prints the reason beside the assertion and lists the call as `(unnamed tool)`. Tool names
+are printed with credentials and exfiltration URLs redacted.
+
+The calls counted are the ones the agent made, whether or not the harness ran them.
+The harness still refuses every tool that is not read-only (see Tool Safety), so a
+`tool_not_called` on a write tool checks that the agent did not try one. A scenario
+file that uses these types must give each a name or `tools` list; one that does not
+is refused by name, as an unknown type is, and nothing runs.
 
 ## Tool Safety
 

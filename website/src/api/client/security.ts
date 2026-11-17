@@ -60,14 +60,47 @@ export interface AwsConsentStatus {
 }
 
 /**
- * The owner's credential-redaction switch (Settings > Security > Credential
- * redaction). `enabled` is the position as RECORDED by the backend, which reads a
- * missing or unreadable record as `true`; `changed_at` is empty until the owner
- * has flipped it at least once.
+ * The owner's one credential-redaction setting (Settings > Security > Redaction), the
+ * whole body of GET and PUT `/api/security/credential-redaction`. `enabled` is the
+ * position in force, which the backend reads as `true` when the record cannot be read
+ * or a governance policy keeps redaction on; `changed_at` is empty until the owner has
+ * flipped it at least once. `locked_by_policy` is true on a governed host whose policy
+ * keeps redaction on: the PUT refuses an OFF there (403
+ * `credential_redaction_locked_by_policy`), so the dashboard locks the toggle.
  */
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
+  locked_by_policy: boolean
+}
+
+/** One `(server, tool, field)` MCP message-body field. */
+export interface McpBodyFieldRow {
+  server: string
+  tool: string
+  field: string
+}
+
+/** The MCP message-body fields: reviewed defaults, owner-added rows, and the
+ *  fields the tool_input gate recently refused for size. */
+export interface McpBodyFieldsData {
+  defaults: McpBodyFieldRow[]
+  owner: Array<McpBodyFieldRow & { added_at: string }>
+  refused: Array<McpBodyFieldRow & { refused_at: string }>
+}
+
+/** The two config paths `/api/security/safety-switches` reads and writes. */
+export type SafetySwitchKey = 'mcp.protect_kiro_permission_rules' | 'mcp.honour_auto_approve'
+
+/**
+ * The owner's MCP safety switches (Settings > Security > Safety switches).
+ * `enabled` is the configured value; `in_force` is what the gate that reads it
+ * sees now, which differs only when `degraded` (the config could not be read in
+ * full) makes that gate fall back.
+ */
+export interface SafetySwitchesState {
+  degraded: boolean
+  switches: { key: SafetySwitchKey; enabled: boolean; in_force: boolean }[]
 }
 
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
@@ -491,7 +524,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
-    // Redaction cards: the per-workspace allowed-host list (Settings → Security →
+    // Blocked link cards: the per-workspace allowed-host list (Settings → Security →
     // Redaction). Every route is owner-only.
     redactionAllowedHosts: () =>
       get('/api/redaction/allowed-hosts').then(j) as Promise<{ workspaces: Record<string, string[]> }>,
@@ -597,6 +630,12 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    // MCP safety switches (Settings > Security > Safety switches). Owner only on
+    // both verbs; the PUT names one switch and is its only dashboard writer.
+    safetySwitches: () =>
+      fetch('/api/security/safety-switches').then(j) as Promise<SafetySwitchesState>,
+    setSafetySwitch: (key: SafetySwitchKey, enabled: boolean) =>
+      put('/api/security/safety-switches', { key, enabled }).then(j) as Promise<SafetySwitchesState>,
     /** The owner's per-folder choice to run a folder agent's own hooks on KAS.
      *  Owner only; the handler is the record's only dashboard writer. */
     setProjectHooksConsent: (folder: string, enabled: boolean) =>
@@ -623,6 +662,18 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/apply', { signature }).then(j) as Promise<ConfigPendingData>,
     discardConfigPending: (leaf: string, signature: string) =>
       post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/discard', { signature }).then(j) as Promise<ConfigPendingData>,
+
+    // MCP message-body fields (Settings > Security > Message body fields). Owner
+    // gated; the add takes only a field the gate itself refused for size.
+    mcpBodyFields: () =>
+      get('/api/security/mcp-body-fields').then(j) as Promise<McpBodyFieldsData>,
+    allowMcpBodyField: (row: McpBodyFieldRow) =>
+      post('/api/security/mcp-body-fields', row).then(j) as Promise<McpBodyFieldsData>,
+    removeMcpBodyField: (row: McpBodyFieldRow) =>
+      del(
+        '/api/security/mcp-body-fields?server=' + encodeURIComponent(row.server)
+        + '&tool=' + encodeURIComponent(row.tool) + '&field=' + encodeURIComponent(row.field),
+      ).then(j) as Promise<McpBodyFieldsData>,
   }
 
   return { posture, policies, secrets, consents }

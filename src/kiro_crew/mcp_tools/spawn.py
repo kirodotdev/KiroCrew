@@ -217,7 +217,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # Support both single task and batch tasks. A ``tasks`` entry is a prompt
     # string or an object carrying per-task overrides; both
     # normalise to (prompt, overrides) here so the dispatch loop has one shape.
-    task_overrides: list[dict[str, str]] = []
+    task_overrides: list[dict[str, Any]] = []
     if tasks and isinstance(tasks, list):
         task_list = []
         for t in tasks:
@@ -226,7 +226,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
                 if not prompt.strip():
                     continue
                 task_list.append(prompt)
-                task_overrides.append({k: v for k, v in t.items() if k != "task" and v})
+                # An explicit ``light: false`` is a value of its own: it overrides
+                # a batch-wide ``light: true`` for this task.
+                task_overrides.append(
+                    {k: v for k, v in t.items() if k != "task" and (v or v is False)}
+                )
             elif isinstance(t, str) and t.strip():
                 task_list.append(t)
                 task_overrides.append({})
@@ -270,6 +274,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     label = normalize_spawn_label(args.get("label"))
     keep = bool(args.get("keep"))
     silent = args.get("silent") is True
+    light = args.get("light") is True
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
     inc_memory = args.get("include_memory", True) is not False
@@ -362,6 +367,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         t_effort = over.get("reasoning_effort") or reasoning_effort
         t_backend = over.get("backend") or backend
         t_label = normalize_spawn_label(over.get("label")) or label
+        t_light = over["light"] if isinstance(over.get("light"), bool) else light
         if a in refused_agents:
             # Short line on purpose: the full roster is already on the first
             # refusal above, and repeating it once per remaining member would
@@ -391,6 +397,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["backend"] = t_backend
         if t_label:
             body["label"] = t_label
+        if t_light:
+            body["light"] = True
         if keep:
             body["keep"] = True
         if silent:
@@ -457,6 +465,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
         if d.get("runtime_note"):
             runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
+        # What a ``light`` flag did, or why it did nothing: the gateway words both.
+        for light_key in ("light", "warning"):
+            if isinstance(d.get(light_key), str) and d[light_key]:
+                runtime_notes.append((str(d.get("id", "?")), ("", d[light_key][:300])))
         if d.get("failover_from"):
             # The run is not on the backend this call named: say where it went.
             runtime_notes.append(
@@ -567,7 +579,13 @@ def _spawn_run_receipt(
         started = [m for m in members if m[0] not in queued_reasons]
         deferred = [m for m in members if m[0] in queued_reasons]
         if started:
-            if parent_session:
+            if parent_session and _completion_ends_in_bell(parent_session):
+                # No completion event and no polling advice: the
+                # closing receipt line says what this caller should do.
+                spawn_lines.append(
+                    f"Spawned {len(started)} subagent(s). Completion events will not reach this caller:"
+                )
+            elif parent_session:
                 spawn_lines.append(
                     f"Spawned {len(started)} subagent(s). Results will arrive as completion events:"
                 )
@@ -635,7 +653,7 @@ def _spawn_run_receipt(
             "The gateway may have accepted these tasks before the response failed. "
             "Do not retry automatically. Check spawn_list"
         )
-        if parent_session:
+        if parent_session and not _completion_ends_in_bell(parent_session):
             guidance += " and wait for completion events"
         guidance += (
             ". spawn_list lists queued spawns too, but a submission still in flight "
@@ -644,7 +662,9 @@ def _spawn_run_receipt(
         )
         spawn_lines.append(guidance)
     if agent_ids:
-        if parent_session:
+        if parent_session and _completion_ends_in_bell(parent_session):
+            spawn_lines.append("\n" + _SUBAGENT_RECEIPT)
+        elif parent_session:
             if can_work:
                 spawn_lines.append(
                     "\nAdvance only your ready, non-overlapping parent work for a short bounded "
@@ -672,6 +692,30 @@ def _spawn_run_receipt(
     return "\n".join(spawn_lines)
 
 
+#: The receipt a sub-agent caller gets once its children are dispatched. A
+#: completion whose parent is a ``subagent:`` session has no conversation to be
+#: injected into: the gateway rings the bell only (``_finish_subagent_cron_or_notify``),
+#: so nothing resumes a sub-agent that ended its turn to wait. It must not
+#: be told to poll either: a ``spawn_run`` parent keeps its slot (``taskq_child_registered``),
+#: so a polling parent can starve its own children. Only ``spawn_sub_agents`` yields it.
+_SUBAGENT_RECEIPT = (
+    "This caller is a subagent: [Subagent completion event] messages will not reach "
+    "it, and nothing resumes it after its turn ends. spawn_run is for starting "
+    "parallel work while you do work of your own. To collect a child's result in "
+    "this turn, use spawn_sub_agents, which waits for it without holding your slot. "
+    "Dispatch is not completion."
+)
+
+
+def _completion_ends_in_bell(parent_session: str) -> bool:
+    """Whether a child's completion is delivered to *parent_session* by the bell alone.
+
+    Mirrors the routing in ``subagent_injection``: a ``subagent:`` parent has no
+    tab, channel or cron session to inject into.
+    """
+    return parent_session.startswith("subagent:")
+
+
 def spawn_continue(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SPAWN_CONTINUE_SCHEMA)
     conv = (args.get("conversation") or "").strip()
@@ -689,6 +733,16 @@ def spawn_continue(name: str, args: dict[str, Any]) -> str:
     d = mcp_core._post(f"/api/spawn/{conv}/continue", body)
     if d.get("error"):
         return f"Error: {d['error']}"
+    if _completion_ends_in_bell(parent_session):
+        # spawn_sub_agents cannot wait on a continued run (no conversation
+        # parameter), so this caller is pointed at the run's own record.
+        run_id = d.get("id", "?")
+        return (
+            f"Continued conversation {conv} as run {run_id}. This caller is a subagent: "
+            "[Subagent completion event] messages will not reach it, and nothing resumes "
+            "it after its turn ends. Read the result with "
+            f"spawn_status(agent_id={run_id!r}) once the run has finished."
+        )
     return (
         f"Continued conversation {conv} as run {d.get('id', '?')}. "
         "The result will arrive as a [Subagent completion event] — "

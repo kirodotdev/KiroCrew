@@ -95,7 +95,7 @@ export function CrewWorkerComposerGate({ root, worker, workerTitle, waitingForAp
 /**
  * A steer that was delivered but not recorded on the ledger (the send receipt's
  * `ledger_error`, noted per slot by the transport). The gate renders it for a
- * Crew Mode worker; a composer without the gate (the Crew Mode preview off, while
+ * Crew Mode worker; a composer without the gate (a build without conductor mode, LTS, while
  * the server still records the send as a steer) renders it on its own, so the
  * failure is never silent. No Crew Mode chrome: just this one line.
  */

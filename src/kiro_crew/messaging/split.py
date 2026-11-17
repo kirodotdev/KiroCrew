@@ -77,6 +77,7 @@ from kiro_crew.messaging.display_safety import (
     outside_redaction_tags,
     redact_for_display,
 )
+from kiro_crew.messaging.graphemes import joins_previous
 
 __all__ = [
     "split_markdown_safe",
@@ -162,6 +163,7 @@ _CLOSE_RE = re.compile(r"^ {0,3}((?:`{3,})|(?:~{3,}))[ \t]*$")
 # opening with any other character can never be one — the test a hard cut applies
 # to the remainder it defers.
 _DELIM_LEAD = frozenset(" `~")
+
 
 # Characters a GFM separator row may contain (``| --- |``, ``|:--|--:|``).
 _TABLE_SEP_CHARS = set("-:| \t")
@@ -1252,7 +1254,10 @@ def _safe_cut(fence: _Fence | None, frag: str, room: int) -> int:
       nothing but a long enough run closes a block its own line does not.
 
     So a candidate is accepted only when neither half moves the fence state, and
-    the widest such candidate wins. The reference is the state BEFORE the line,
+    the widest such candidate wins. It must also keep every visible character
+    whole (`messaging.graphemes.joins_previous`, the grapheme rule the
+    other cutters share): a flag, a ZWJ emoji or an accented letter
+    cut in two shows as broken glyphs on both sides. The reference is the state BEFORE the line,
     never the line's own transition: for a line still arriving that transition is
     revocable, so keying the cut on it would move an already-sealed boundary once
     the rest of the line landed.
@@ -1279,7 +1284,7 @@ def _safe_cut(fence: _Fence | None, frag: str, room: int) -> int:
         if _advance(fence, frag[:width]) is not fence:
             continue
         widest = widest or width
-        if frag[width] not in _DELIM_LEAD:
+        if frag[width] not in _DELIM_LEAD and not joins_previous(frag, width):
             return width
     return widest
 

@@ -345,7 +345,7 @@ def _stored_aliases(entity_id: str, text: object) -> list[str]:
     if not isinstance(parsed, list) or not all(isinstance(a, str) for a in parsed):
         raise ValueError(
             f"add_entity_aliases: entity {entity_id!r} has aliases that are not a "
-            f"JSON array of strings (invariant violation): {text!r}"
+            "JSON array of strings (invariant violation)"
         )
     return parsed
 
@@ -403,7 +403,7 @@ def add_entity_aliases(self: KnowledgeStore, entity_id: str, new_aliases: list[s
                 "add_entity_aliases: %d alias(es) discarded for entity %r "
                 "(MAX_ENTITY_ALIASES=%d reached)",
                 overflow,
-                canonical,
+                entity_id,
                 MAX_ENTITY_ALIASES,
             )
         if accepted:

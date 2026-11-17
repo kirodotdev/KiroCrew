@@ -1,13 +1,14 @@
 """A Webex reply that answers a bridged tool approval (RFC bridge actions, B4g).
 
-Webex has no quoted reply: a reply is a message in the thread the note started,
-so ``parentId`` names the note. Webex threads are FLAT, so any reply in that thread
-names it, never a later message, and the thread stays open after the answer. So
-this takes a message only when it is an exact ``approve`` or ``deny`` in such a
-thread, in a direct room, under a message the registry still knows;
-``notifications.bridge_reply`` decides and audits it. Anything else, a follow-up
-or a command typed in the thread included, is left to the ordinary turn path
-untouched, as are a space reply, a reply to any other message and a plain message.
+Webex has no quoted reply: a reply is a message in the thread the note started, so
+``parentId`` names the note. Webex threads are FLAT, so any reply in that thread
+names it, never a later message, and the thread stays open after the answer. So this
+takes a message only when it answers the linked decision (``approve`` or ``deny``
+for an approval, an option number for a question) in such a thread, in a direct
+room, under a message the registry still knows; ``notifications.bridge_reply``
+decides and audits it. Anything else, a follow-up or a command typed in the thread
+included, is left to the ordinary turn path untouched, as are a space reply, a reply
+to any other message and a plain message.
 
 The owner is the sender's ``personEmail``, read from Webex's own message record and
 lower-cased, against the one configured ``user:<email>`` owner DM: the identity the
@@ -44,11 +45,20 @@ async def consume_bridged_reply(
         return False
     text = str(getattr(inbound, "text", "") or "")
     # Unlike a quoted reply, a thread stays open: the owner keeps talking in it
-    # after answering. Only an answer word is an answer here; every other message
-    # in the thread is the ordinary conversation it would have been without a note.
-    if text.strip().lower() not in DECISION_VALUES:
-        return False
+    # after answering. Only what answers the linked decision is an answer here, an
+    # option number for a question and an answer word for an approval; every other
+    # message in the thread is the ordinary conversation it would have been without
+    # a note.
     sender = str(getattr(inbound, "person_email", "") or "").lower()
+    registry = getattr(state, "bridge_actions", None)
+    token = registry.token_for_message(TRANSPORT, f"{sender}:{parent}") if registry else ""
+    context = registry.context_for(token) if registry is not None and token else None
+    word = text.strip().lower()
+    if context is not None and context.kind == "question":
+        if not (len(word) <= 2 and word.isascii() and word.isdigit()):
+            return False
+    elif word not in DECISION_VALUES:
+        return False
     return await answer_bridged_reply(
         state,
         transport=TRANSPORT,

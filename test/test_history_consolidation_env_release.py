@@ -48,6 +48,33 @@ async def _not_dispatched(c, key: str) -> None:
 async def _drain(c) -> None:
     while c._tasks:
         await asyncio.gather(*list(c._tasks), return_exceptions=True)
+        # A gather of done tasks does not yield; let their _tasks.discard run.
+        await asyncio.sleep(0)
+
+
+def test_drain_returns_when_a_finished_task_still_waits_for_its_discard(monkeypatch, tmp_path):
+    """A finished task leaves ``_tasks`` on the loop's next pass, so ``_drain`` must yield."""
+    real_gather = asyncio.gather
+    calls: list[int] = []
+
+    def counted(*aws, **kw):
+        calls.append(1)
+        assert len(calls) < 50, "_drain spun without yielding to the loop"
+        return real_gather(*aws, **kw)
+
+    async def go() -> None:
+        async def noop() -> None:
+            return None
+
+        c = _make_consolidator(_seed_log(tmp_path))
+        task = asyncio.get_running_loop().create_task(noop())
+        c._tasks.add(task)
+        task.add_done_callback(c._tasks.discard)
+        await asyncio.sleep(0)  # the task finishes; its discard is queued, not run
+        monkeypatch.setattr(asyncio, "gather", counted)
+        await _drain(c)
+
+    asyncio.run(go())
 
 
 class TestClearingOneSession:

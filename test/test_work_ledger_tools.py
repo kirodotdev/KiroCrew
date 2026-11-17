@@ -404,6 +404,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "goal_concurrency_cap_reached": 409,
+        "host_memory_critical": 409,
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
@@ -1053,7 +1054,7 @@ def test_the_schema_caps_restate_the_stores_own():
 def test_the_worker_schema_has_no_conductor_field():
     """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
     names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
-    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
+    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at", "discussion"}
     for forbidden in (
         "item_id",
         "session",

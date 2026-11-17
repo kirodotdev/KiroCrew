@@ -1,10 +1,10 @@
-"""A work-ledger watch waits longer for its quiet floor while no worker has reported.
+"""A work-ledger watch's quiet floor while no worker has reported.
 
 A gated loop is delivered anyway after ``_MAX_QUIET_STREAK`` quiet ticks. For a
 work-ledger watch that turn re-reads a long conductor chat to find the board as the
-last delivered turn left it. These tests pin the narrower rule: while the worker-report
+last delivered turn left it. These tests pin the rule: while the worker-report
 revision is the one the last turn was delivered at, the floor is
-``_IDLE_LEDGER_QUIET_FLOOR`` ticks, and it still delivers there. Every other path -- a
+``_IDLE_LEDGER_QUIET_FLOOR`` ticks (now equal to the shipped floor), and it delivers there. Every other path -- a
 new report, a report or stall wake, a failed recent turn, another watch kind -- keeps
 the shipped floor.
 """
@@ -21,6 +21,7 @@ from kiro_crew.monitoring.models import MonitorState
 _SLOT = "chat-1-123"
 _FLOOR = _an._MAX_QUIET_STREAK
 _IDLE_FLOOR = _gate._IDLE_LEDGER_QUIET_FLOOR
+_REVIEW_FLOOR = _gate._REVIEW_WAIT_QUIET_FLOOR
 
 
 @pytest.fixture(autouse=True)
@@ -81,14 +82,14 @@ async def _ticks_until_floor(service: AutoNudgeService, loop: NudgeLoop, limit: 
     raise AssertionError(f"no floor within {limit} ticks")
 
 
-def test_the_idle_floor_is_longer_than_the_shipped_one():
-    assert _IDLE_FLOOR == 4 * _FLOOR
+def test_the_idle_floor_is_the_shipped_one():
+    # An idle conductor is woken on the shipped floor (10 ticks, about hourly)
+    # so its goal skill can check each open item.
+    assert _IDLE_FLOOR == _FLOOR == 10
 
 
 @pytest.mark.asyncio
-async def test_an_unchanged_revision_waits_out_the_longer_floor_then_delivers(
-    tmp_path, monkeypatch
-):
+async def test_an_unchanged_revision_waits_out_the_idle_floor_then_delivers(tmp_path, monkeypatch):
     fired: list[str] = []
     ledger = _Ledger("rev-1")
     service = _service(tmp_path, monkeypatch, ledger, fired)
@@ -129,10 +130,10 @@ async def test_a_report_mid_streak_brings_the_floor_back_at_once(tmp_path, monke
     service = _service(tmp_path, monkeypatch, ledger, fired)
     loop = _loop(service, ledger_revision="rev-1", ledger_delivered_revision="rev-1")
     try:
-        for _ in range(2 * _FLOOR):
+        for _ in range(_FLOOR - 1):
             assert await service._monitor_tick_is_quiet(loop) is True
         ledger.revision = "rev-2"
-        assert await service._monitor_tick_is_quiet(loop) is False, "past the shipped floor"
+        assert await service._monitor_tick_is_quiet(loop) is False, "at the shipped floor"
     finally:
         service.stop()
 
@@ -345,8 +346,9 @@ def _plain_loop() -> NudgeLoop:
     return NudgeLoop(id="monitor-pr", slot_key=_SLOT, message="watch", idle_secs=30, gate=True)
 
 
-def test_a_pull_request_waiting_only_on_review_gets_the_longer_floor():
-    assert _gate._quiet_floor(_plain_loop(), _pr_monitor(_review_wait_facts())) == _IDLE_FLOOR
+def test_a_pull_request_waiting_only_on_review_gets_the_review_wait_floor():
+    assert _REVIEW_FLOOR == 4 * _FLOOR
+    assert _gate._quiet_floor(_plain_loop(), _pr_monitor(_review_wait_facts())) == _REVIEW_FLOOR
 
 
 @pytest.mark.parametrize(
@@ -369,7 +371,7 @@ def test_a_pull_request_with_anything_else_to_do_keeps_the_shipped_floor(overrid
 
 
 def test_an_unchanged_review_wait_still_skips_the_judge(monkeypatch):
-    # The longer floor must not turn every unchanged tick into a judge call that
+    # The review-wait floor must not turn every unchanged tick into a judge call that
     # then delivers at the judge's own ten-tick floor.
     service = AutoNudgeService.__new__(AutoNudgeService)
     monkeypatch.setattr(service, "_judge_quiet_streak_floor", lambda: _FLOOR, raising=False)

@@ -666,7 +666,7 @@ class TestPolicySignatureTrustRoot:
         assert adm._DEFAULT_POLICY_BODY["require_policy_signature"] is False
 
     def test_non_string_trust_keys_are_dropped_not_stringified(self):
-        # GPT finding: a blanket str(v) turned a malformed entry into a PREDICTABLE
+        # A blanket str(v) turned a malformed entry into a PREDICTABLE
         # signing secret — {"fleet": null} became the literal key "None", so anyone
         # guessing that a fleet left a null could forge a signature that verifies
         # for that issuer (mutation-confirmed). An empty string is the same hazard.

@@ -9,7 +9,8 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { setQuestionCard, clearQuestionCard } from '../store/chatSlice'
-import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
+import dashboardReducer, { updateSlot, sseDisconnected } from '../store/dashboardSlice'
+import { BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
 import notificationsReducer from '../store/notificationsSlice'
 import { FOLLOWUP_CHIP_DEBOUNCE_MS } from '../components/FollowUpBar'
 
@@ -102,8 +103,8 @@ function makeStore(slotKey: string, slotExtra: Record<string, unknown> = {}) {
   })
 }
 
-async function renderPane(slotKey: string, slotExtra: Record<string, unknown> = {}, messages = PANE_MESSAGES) {
-  ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages, running: false, has_more: false, total: messages.length })
+async function renderPane(slotKey: string, slotExtra: Record<string, unknown> = {}, messages = PANE_MESSAGES, detailExtra: Record<string, unknown> = {}) {
+  ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages, running: false, has_more: false, total: messages.length, ...detailExtra })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore(slotKey, slotExtra)
   await act(async () => {
@@ -427,5 +428,114 @@ describe('ChatPane plan-shaped follow-ups', () => {
     const [wireText, slot] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(wireText).toBe('Alpha')
     expect(slot).toBe('pane-sendnow-plain')
+  })
+})
+
+/** A discussion card's Start / No thanks, as GrillCard dispatches it. */
+function cardSend(text: string, slot: string) {
+  const detail: { text: string; slot: string; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
+  act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+  return detail.result
+}
+/** What each card send came to, in order (`onOutcome`). */
+let cardOutcomes: string[] = []
+let cardReasons: (string | undefined)[] = []
+
+describe('ChatPane discussion-card sends (a deliberate press: sent whatever Quick Send says)', () => {
+  // `mockResolvedValue` outlives clearAllMocks: reset it both ways so no test here or after sees another's Quick Send.
+  const quickSendOff = () => { ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: false }) }
+  beforeEach(quickSendOff)
+  afterEach(quickSendOff)
+  const sentTexts = () => (api.sendChat as ReturnType<typeof vi.fn>).mock.calls.map(c => [c[0], c[1]])
+  beforeEach(() => { cardOutcomes = []; cardReasons = [] })
+
+  it('locks a reply\'s discussion card whose Start still waits in the queue', async () => {
+    const grill = { q: 'Who writes it?', must: 'x', skip: 'y', who: [{ name: 'A', stance: 'a' }, { name: 'B', stance: 'b' }], minutes: 15 }
+    const rows = [
+      { role: 'user', content: 'go', ts: '2026-11-16T00:00:00Z', meta: { mid: 'u-1' } },
+      { role: 'assistant', content: `Ready to proceed.\n[GRILL: ${JSON.stringify(grill)}]`, ts: '2026-11-16T00:00:01Z', meta: { mid: 'm-g' } },
+    ]
+    await renderPane('pane-q1', {}, rows as typeof PANE_MESSAGES, { queue: [{ id: 'q-1', content: 'Start the discussion\nkey: m-g:0' }] })
+    await waitFor(() => expect(screen.getByTestId('grill-card-sent').textContent).toBe('Sent.'))
+    expect(screen.queryByTestId('grill-card-start')).toBeNull()
+  })
+
+  it('reports a refused send as refused', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 400, json: () => Promise.resolve({ error: 'nope' }) })
+    await renderPane('pane-o1')
+    expect(cardSend('不用讨论了', 'pane-o1')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['refused']))
+  })
+
+  it('reports a lost answer as not confirmed', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await renderPane('pane-o2')
+    expect(cardSend('不用讨论了', 'pane-o2')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['indeterminate']))
+  })
+
+  it('reports a send with nothing to send as refused', async () => {
+    await renderPane('pane-o3')
+    expect(cardSend('   ', 'pane-o3')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['refused']))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('sends through the pane\'s send path with Quick Send off', async () => {
+    await renderPane('pane-g1')
+    expect(cardSend('不用讨论了', 'pane-g1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect(composer().value).toBe('')
+  })
+
+  it('sends with Quick Send on, too', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPane('pane-g2')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    expect(cardSend('不用讨论了', 'pane-g2')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g2']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('queues behind a busy pane (Queue mode)', async () => {
+    localStorage.setItem(`${BUSY_SEND_MODE_LS_KEY}:pane-g3`, 'queue')
+    await renderPane('pane-g3', { subagents_running: true })
+    expect(cardSend('不用讨论了', 'pane-g3')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g3']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('sends while a chip selection is open, leaving the picked chip in the box', async () => {
+    await renderPane('pane-g4')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha', { shiftKey: true }) })
+    vi.useRealTimers()
+    expect(cardSend('不用讨论了', 'pane-g4')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g4']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect(composer().value).toBe('Alpha')
+  })
+
+  it('stages in the pane\'s box while the gateway is offline', async () => {
+    const store = await renderPane('pane-g6')
+    act(() => { store.dispatch(sseDisconnected(null)) })
+    expect(cardSend('不用讨论了', 'pane-g6')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('stages during a force stop, which clears the queue', async () => {
+    await renderPane('pane-g7', { running: true, stop_state: 'killing' })
+    expect(cardSend('不用讨论了', 'pane-g7')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('leaves a card from another chat alone', async () => {
+    await renderPane('pane-g5')
+    expect(cardSend('不用讨论了', 'pane-other')).toBeNull()
+    expect(composer().value).toBe('')
   })
 })
