@@ -20,9 +20,23 @@ import pytest
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.skill_projection_parts import alias_reclaim as _reaper_owner
+from kiro_crew.acp.skill_projection_parts.native_projection import NativeSkillProjection
 
 # The queue the reaper thread drains, read before any test can swap it out.
 _REAPER_QUEUE = projection._COLLECTED_ENDS
+
+
+def _projection_finalizers_pending() -> bool:
+    """Whether a projection with an armed end finalizer still exists.
+
+    Only such a projection can queue an end when the collector frees it. A full
+    collection costs O(heap) and the worker's heap grows over the run (about 1 s
+    a test on Windows CI), so the teardown pays it only when this holds.
+    """
+    for info in tuple(weakref.finalize._registry.values()):  # type: ignore[attr-defined]
+        if isinstance(info.weakref(), NativeSkillProjection):
+            return True
+    return False
 
 
 def _hold_the_prune_clock(monkeypatch):
@@ -138,7 +152,8 @@ def _wait_for_dropped_projection_ends() -> None:
     thread and queue are read directly for that reason. The thread is read
     from the module that starts it: the facade keeps the value it had at import.
     """
-    gc.collect()
+    if _projection_finalizers_pending():
+        gc.collect()
     reaper = _reaper_owner._REAPER
     if projection._COLLECTED_ENDS is _REAPER_QUEUE and reaper is not None and reaper.is_alive():
         drained = threading.Event()

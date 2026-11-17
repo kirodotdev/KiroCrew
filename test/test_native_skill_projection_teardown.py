@@ -20,6 +20,7 @@ from native_skill_projection_helpers import (
 from kiro_crew.acp import skill_projection as projection
 
 native_tree = native_skill_projection_helpers.native_tree
+cyclic_gc_quiesced = native_skill_projection_helpers.cyclic_gc_quiesced
 
 
 def test_a_projection_still_held_at_teardown_cannot_prune_into_a_removed_tree(
@@ -55,3 +56,27 @@ def test_a_projection_registered_before_the_test_is_left_alone(native_tree):
     assert mine._lease_finalizer is None
     assert earlier._lease_finalizer is not None and earlier._lease_finalizer.alive
     earlier.release()
+
+
+def test_a_dropped_projection_in_a_cycle_is_still_ended_by_the_teardown(
+    native_tree, cyclic_gc_quiesced
+):
+    """The teardown skips its full collection only when no armed projection is left.
+
+    A projection that is cycle garbage and absent from the registry can only be ended by
+    the collector, so the helper must still collect for it. Automatic collection is
+    off here, so only the helper's own collection can end it.
+    """
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    before = _active_projections_now()
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared is not None
+    late_end = prepared._lease_finalizer
+    assert late_end is not None and late_end.alive
+    prepared.cycle = prepared  # type: ignore[attr-defined]
+    with projection._ACTIVE_PROJECTIONS_LOCK:
+        projection._ACTIVE_PROJECTIONS.pop(id(prepared))
+    del prepared
+    _end_projections_started_since(before)
+    assert not late_end.alive, "a cyclic projection's end was left for a later collection"
