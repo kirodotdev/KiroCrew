@@ -220,7 +220,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         try:
             await transport.send_message(
                 link.channel_id,
-                "🔗 Session linked from dashboard — continuing here.",
+                "Session linked from dashboard — continuing here.",
                 thread_id=link.thread_id,
             )
         except Exception:

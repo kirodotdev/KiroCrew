@@ -708,7 +708,7 @@ SECONDARY_LOOPBACK_FOR = {"127.0.0.1": "::1", "::1": "127.0.0.1"}
 AMBIGUOUS_LOOPBACK_HOSTS = frozenset({"localhost", "kirocrew.localhost"})
 
 
-_UNATTENDED_EXPIRY_TITLE = "🔒 Auto-approve expired while an unattended run was in progress"
+_UNATTENDED_EXPIRY_TITLE = "Auto-approve expired while an unattended run was in progress"
 
 
 # How long a mutating request waits for the startup crewmate prune before it is

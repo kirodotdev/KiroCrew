@@ -221,7 +221,7 @@ class TestThrottledTurnRetry:
 
         assert kas.calls == TRANSIENT_RETRIES + 1
         assert kas.copies("hello") == 1, kas.history
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         outcomes.assert_called_once_with("throttle", "exhausted", TRANSIENT_RETRIES)
 
     @pytest.mark.asyncio

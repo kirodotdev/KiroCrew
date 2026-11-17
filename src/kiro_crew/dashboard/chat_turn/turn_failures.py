@@ -209,7 +209,6 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     _directive_self_wake = turn._directive_self_wake
     _escalation = turn._escalation
     _message_without_merge_cards = turn._message_without_merge_cards
-    _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
     _turn_priority = turn._turn_priority
@@ -437,7 +436,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # without dropping that text.
         slot.append(
             "error",
-            f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
+            f"Error: {_err_text}",
             "msg msg-err",
             meta=_unentitled_meta,
         )

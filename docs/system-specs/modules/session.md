@@ -5503,8 +5503,8 @@ are the live provider's `cwd` and `work_scratch_dir`, peeked with
 `sessions.get_provider`. Each extracted image goes out through the channel's own
 picture send (`send_outbound_image(conversation_id, file, *, thread_id) -> bool`),
 the call its renderer uses. Every reference that is not sent, because a gate did
-not admit it, extraction refused it, or the upload failed, becomes `🖼 <name>` in
-the text, and a refusal or failure adds one `⚠ <name> …` line in a separate
+not admit it, extraction refused it, or the upload failed, becomes `Image: <name>` in
+the text, and a refusal or failure adds one `Warning: <name> …` line in a separate
 message after the answer, so an `[OPTIONS:]` trailer still ends the answer.
 Refusals and uploads are SEL-audited as `<channel>_mirror.upload_files` with reason
 codes and counts only.
@@ -5523,7 +5523,7 @@ their mirror names every picture.
 Both user-message echoes (Slack's `> *Sent from Kiro Crew:*` quote and the plain
 channel-neutral `Sent from Kiro Crew:` line, one `MIRROR_ECHO_LABEL`) send
 no bytes: a pasted `![image](<path>)` and an `[attached_file N] <path>` marker
-become `🖼 <name>` / `📎 <name>` (`_mirror_echo_text`, reading the turn's own
+become `Image: <name>` / `File: <name>` (`_mirror_echo_text`, reading the turn's own
 `meta.files`), because the dashboard uploads store is not a root any channel
 upload admits.
 

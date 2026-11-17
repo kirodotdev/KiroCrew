@@ -208,8 +208,8 @@ adds it to `/sessions`.
 
 If you message a resumed session while the dashboard is in the middle of a turn, the
 message goes to that dashboard session rather than to this chat's own queue: it is
-folded into the running turn ("↪️ Steering that session") or queued on the session
-("⏳ Queued for that session") and runs when that turn finishes. Attachments are not
+folded into the running turn ("Steering that session") or queued on the session
+("Queued for that session") and runs when that turn finishes. Attachments are not
 carried into a dashboard turn, so a message with files is refused with a note to resend
 it afterwards.
 

@@ -1479,7 +1479,9 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 for _failed in await _slack_upload(
                     state.slack_client, _mirror_chan, _mirror_post_ts or "", _mirror_files
                 ):
-                    _mirror_notes.append(f"⚠ Couldn't upload: {_local_file_name(_failed.dest)}")
+                    _mirror_notes.append(
+                        f"Warning: Couldn't upload: {_local_file_name(_failed.dest)}"
+                    )
             if _mirror_notes:
                 await _post_rendered("\n".join(_mirror_notes))
             if _mirror_options:

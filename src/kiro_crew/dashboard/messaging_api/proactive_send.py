@@ -981,7 +981,7 @@ async def _deliver_send_message_fallback(
     channel_text = text
     if target_session and job_name:
         safe_name = redact(job_name)
-        title = f"⏰ {safe_name}"
+        title = f"{safe_name}"
         text += "\n\n_(session closed — delivered as notification)_"
     # Only an attested, non-app caller's key names the publishing crewmate
     # (``attributable_session_key``); a bare TCP or app-token header does not.

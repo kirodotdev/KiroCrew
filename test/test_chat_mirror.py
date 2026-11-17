@@ -1054,7 +1054,7 @@ class TestMirrorReminder:
 
         transport.send_message.assert_awaited_once_with(
             "356163505868767244",
-            "🔗 Session linked from dashboard — continuing here.",
+            "Session linked from dashboard — continuing here.",
             thread_id=None,
         )
 

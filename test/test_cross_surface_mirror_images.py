@@ -98,7 +98,7 @@ async def test_a_channel_with_no_picture_send_names_the_picture(tmp_path, monkey
 
     tp.send_outbound_image.assert_not_awaited()
     (sent,) = _sent(tp)
-    assert str(work) not in sent and "🖼 chart.png" in sent
+    assert str(work) not in sent and "Image: chart.png" in sent
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_a_restricted_session_sends_no_file_and_names_the_picture(tmp_path
 
     tp.send_outbound_image.assert_not_awaited()
     (sent,) = _sent(tp)
-    assert str(work) not in sent and "🖼 chart.png" in sent
+    assert str(work) not in sent and "Image: chart.png" in sent
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_a_refused_reference_is_named_with_its_reason(tmp_path, monkeypatc
     tp.send_outbound_image.assert_not_awaited()
     answer, note = _sent(tp)
     assert str(tmp_path) not in answer + note
-    assert "🖼 elsewhere.png" in answer and note.startswith("⚠ elsewhere.png not sent")
+    assert "Image: elsewhere.png" in answer and note.startswith("Warning: elsewhere.png not sent")
 
 
 @pytest.mark.asyncio
@@ -140,7 +140,7 @@ async def test_a_failed_upload_is_named_not_pathed(tmp_path, monkeypatch):
     await _deliver_cross_surface_reply(state, "dashboard:c1", f"![c]({work / 'chart.png'})")
 
     (note,) = _sent(tp)
-    assert note == "⚠ Couldn't upload: chart.png"
+    assert note == "Warning: Couldn't upload: chart.png"
 
 
 def test_the_echo_names_every_dashboard_attachment_instead_of_its_path() -> None:
@@ -153,8 +153,8 @@ def test_the_echo_names_every_dashboard_attachment_instead_of_its_path() -> None
     echo = _name_local_attachments(message, files)
 
     assert uploads not in echo and "ab" * 16 not in echo
-    assert "🖼 Screenshot.png" in echo
-    assert all(f"📎 quarterly deck {n}.pptx" in echo for n in (1, 2, 3))
+    assert "Image: Screenshot.png" in echo
+    assert all(f"File: quarterly deck {n}.pptx" in echo for n in (1, 2, 3))
 
 
 @pytest.mark.asyncio
@@ -163,7 +163,7 @@ async def test_both_echo_legs_read_the_turns_own_files() -> None:
 
     echo = await _mirror_echo_text(turn, "[attached_file 1] /up/deck.pptx")
 
-    assert echo == "📎 deck.pptx"
+    assert echo == "File: deck.pptx"
 
 
 def test_a_marker_with_a_non_ascii_digit_is_left_as_typed() -> None:
