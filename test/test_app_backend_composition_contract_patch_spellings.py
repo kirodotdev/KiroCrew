@@ -874,13 +874,14 @@ class TestPatchSpellings:
         # backend module for the rest of the run, and a later test fails far from
         # here. The scan must find exactly the allowlisted premise case, so the
         # allowlist can neither hide a second site nor outlive the one it names.
-        hits = [
-            (path.relative_to(_REPO_ROOT).as_posix(), hit)
-            for path, text in _patch_sources()
-            for hit in _create_true_patches_of_forwarded_names(
-                text, _module_name(path), is_package=_is_package(path)
-            )
-        ]
+        with source_corpus.untraced():
+            hits = [
+                (path.relative_to(_REPO_ROOT).as_posix(), hit)
+                for path, text in _patch_sources()
+                for hit in _create_true_patches_of_forwarded_names(
+                    text, _module_name(path), is_package=_is_package(path)
+                )
+            ]
         found = {(path, hit.function) for path, hit in hits}
         # One hit exactly: the premise case holds a single patch, so a second site
         # added inside the same function is not hidden by the allowlist.

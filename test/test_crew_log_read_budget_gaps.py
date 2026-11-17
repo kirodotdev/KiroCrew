@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+import source_corpus
 from crew_log_core_helpers import _split_into_segments
 
 from kiro_crew import crew_log as lg
@@ -280,16 +281,17 @@ def _whole_unit_read(call: ast.Call) -> bool:
 
 def _whole_unit_callers() -> "Counter[str]":
     found: "Counter[str]" = Counter()
-    for path in sorted(SRC.rglob("*.py")):
-        rel = path.relative_to(SRC).as_posix()
-        if rel == "crew_log/store_handle.py" or "/_vendor/" in f"/{rel}":
-            continue
-        source = path.read_text(encoding="utf-8")
-        if not any(name in source for name in ("page(", "iter_from", ".get(")):
-            continue
-        for node in ast.walk(ast.parse(source)):
-            if isinstance(node, ast.Call) and _whole_unit_read(node):
-                found[rel] += 1
+    with source_corpus.untraced():
+        for path in sorted(SRC.rglob("*.py")):
+            rel = path.relative_to(SRC).as_posix()
+            if rel == "crew_log/store_handle.py" or "/_vendor/" in f"/{rel}":
+                continue
+            source = path.read_text(encoding="utf-8")
+            if not any(name in source for name in ("page(", "iter_from", ".get(")):
+                continue
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.Call) and _whole_unit_read(node):
+                    found[rel] += 1
     return found
 
 
