@@ -3608,7 +3608,8 @@ Consequences, and they are the point:
 
 The schema is the source of truth: a key needs a restart exactly when
 `requires_restart()` over `SCHEMA_REGISTRY` says so. Regenerated from that call:
-`agent.approval_mode`, `agent.kas_bundle`, `agent.kas_persist_mcp_sign_in`,
+`agent.approval_mode`, `agent.kas_bundle`, `agent.kas_api_key_sign_in`,
+`agent.kas_persist_mcp_sign_in`,
 `agent.native_skill_projection`, `agent.jail`, `agent.dangerously_skip_permissions`,
 `agent.task_dispatch_window`, `agent.task_store_journal_mode`,
 `agent.admit_wait_secs`, `agent.start_collect_timeout_secs`,

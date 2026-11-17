@@ -306,6 +306,19 @@ class TestCrewSigninReady:
             assert await kiro_readiness.kas_crew_signin_ready(None) is False
 
     @pytest.mark.asyncio
+    async def test_the_api_key_opt_in_is_ready_with_an_empty_vault(self):
+        """``agent.kas_api_key_sign_in``: the engine signs in with the key, not the vault."""
+        current = AsyncMock(side_effect=NotAuthenticated("none"))
+        with (
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=True),
+            patch("kiro_crew.auth.bridge.api_key_sign_in_applies", return_value=True),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            assert await kiro_readiness.kas_crew_signin_ready(None) is True
+        current.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_off_the_bundle_route_the_vault_is_not_read(self):
         current = AsyncMock(return_value=object())
         with (
@@ -432,6 +445,149 @@ class TestLiveRouteSignin:
         current.assert_not_called()
 
 
+_APPLIES = "kiro_crew.auth.bridge.api_key_sign_in_applies"
+
+
+class TestLiveKeySignIn:
+    """A live bundle process signs in as its launch planned, whatever the setting says now."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("keyed", "expect"),
+        [(False, False), (True, True), (None, True)],
+        ids=["kept-vault-process", "kept-keyed-process", "no-live-process"],
+    )
+    async def test_a_rerun_that_may_keep_the_live_process_honours_its_launch(self, keyed, expect):
+        """A rewind with sub-agents (*live_route* None) may keep the live process: the
+        setting judges the cold start, and a kept vault-owned process needs the vault."""
+        current = AsyncMock(side_effect=NotAuthenticated("none"))
+        with (
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=True),
+            patch(_APPLIES, return_value=True),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            ready = await kiro_readiness.kas_crew_signin_ready(_MEMBER_KEY, None, live_keyed=keyed)
+        assert ready is expect
+        assert current.await_count == (0 if expect else 1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("host_auth", "applies", "passes"),
+        [(False, False, True), (True, True, False)],
+        ids=["keyed-process-setting-off", "vault-process-setting-on"],
+    )
+    async def test_regenerate_is_judged_by_the_live_launch(self, host_auth, applies, passes):
+        request = _request(_signed_out_service())
+        request.app["state"].sessions = _live_sessions(
+            "kas", engine_bundle=True, host_auth=host_auth
+        )
+        current = AsyncMock(side_effect=NotAuthenticated("none"))
+        with (
+            patch.object(kiro_readiness, "_stored_sign_in_registered", return_value=False),
+            patch.object(kiro_readiness, "_machine_configured", return_value=False),
+            patch.object(kiro_readiness, "live_kiro_identity", AsyncMock(return_value="fp")),
+            patch.object(kiro_readiness, "spawned_under", return_value=True),
+            patch(_APPLIES, return_value=applies),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            resp = await kiro_readiness.reject_if_kiro_unverified(
+                request, harness_turn=True, session_key=_MEMBER_KEY
+            )
+        if passes:
+            assert resp is None
+            current.assert_not_called()
+        else:
+            assert resp is not None and resp.status == 503
+            assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
+            current.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("alive", "spared", "passes"),
+        [(True, True, True), (True, False, False), (False, True, False)],
+        ids=["kept", "retired-by-the-identity-sweep", "exited"],
+    )
+    async def test_a_keyed_process_the_turn_will_not_keep_is_judged_as_its_cold_start(
+        self, alive, spared, passes
+    ):
+        """Its replacement cold-starts, so the setting, now off, decides the key."""
+        request = _request(_signed_out_service())
+        sessions = _live_sessions("kas", engine_bundle=True, host_auth=False)
+        sessions.is_provider_alive = AsyncMock(return_value=alive)
+        request.app["state"].sessions = sessions
+        current = AsyncMock(side_effect=NotAuthenticated("none"))
+        with (
+            patch.object(kiro_readiness, "_stored_sign_in_registered", return_value=False),
+            patch.object(kiro_readiness, "_machine_configured", return_value=False),
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=True),
+            patch.object(
+                kiro_readiness, "live_kiro_identity", AsyncMock(return_value="fp")
+            ) as identity,
+            patch.object(kiro_readiness, "spawned_under", return_value=spared) as under,
+            patch(_APPLIES, return_value=False) as applies,
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            resp = await kiro_readiness.reject_if_kiro_unverified(
+                request, harness_turn=True, session_key=_MEMBER_KEY
+            )
+        if passes:
+            assert resp is None
+        else:
+            assert resp is not None and resp.status == 503
+            assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
+        assert applies.called is not passes
+        if alive:
+            under.assert_called_once_with(sessions.get_provider(_MEMBER_KEY), "fp")
+            identity.assert_awaited_once_with(request, fresh=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("alive", "live", "dropped", "spared", "passes"),
+        [
+            (False, "fp", False, False, True),
+            (True, "fp", True, False, True),
+            (True, "fp", False, False, False),
+            (True, "", True, False, False),
+            (True, "fp", True, True, False),
+        ],
+        ids=["exited", "sign-in-gone", "kept", "identity-unreadable", "spared-by-the-sweep"],
+    )
+    async def test_a_vault_process_the_turn_will_not_keep_is_judged_as_its_cold_start(
+        self, alive, live, dropped, spared, passes
+    ):
+        """After ``kirocrew kas logout`` the vault is empty: a replaced vault-owned process
+        cold-starts keyed; a kept one, or one not provably replaced, needs the vault."""
+        request = _request(_signed_out_service())
+        sessions = _live_sessions("kas", engine_bundle=True, host_auth=True)
+        sessions.is_provider_alive = AsyncMock(return_value=alive)
+        request.app["state"].sessions = sessions
+        current = AsyncMock(side_effect=NotAuthenticated("none"))
+        with (
+            patch.object(kiro_readiness, "_stored_sign_in_registered", return_value=False),
+            patch.object(kiro_readiness, "_machine_configured", return_value=False),
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=True),
+            patch.object(kiro_readiness, "live_kiro_identity", AsyncMock(return_value=live)),
+            patch.object(kiro_readiness, "identity_component_dropped", return_value=dropped),
+            patch.object(kiro_readiness, "spawned_under", return_value=spared),
+            patch(_APPLIES, return_value=True),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            resp = await kiro_readiness.reject_if_kiro_unverified(
+                request, harness_turn=True, session_key=_MEMBER_KEY
+            )
+        if passes:
+            assert resp is None
+            current.assert_not_called()
+        else:
+            assert resp is not None and resp.status == 503
+            assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
+            current.assert_awaited_once()
+
+
 class TestDiscardingRerun:
     """A rerun that discards the live session is judged on the configured route."""
 
@@ -496,7 +652,7 @@ class TestDiscardingRerun:
     async def test_a_rerun_that_may_keep_a_live_bundle_process_still_needs_the_bundle_default(self):
         """Keeping the bundle process is fine, but the discard path cold-starts on the configured route."""
         request = _request(_signed_out_service())
-        request.app["state"].sessions = _live_sessions("kas", engine_bundle=True)
+        request.app["state"].sessions = _live_sessions("kas", engine_bundle=True, host_auth=True)
         current = AsyncMock(return_value=object())
         with (
             patch(_LOAD, return_value=_config(default="", member_backend="")),
@@ -534,7 +690,7 @@ class TestGate:
         vr.assert_not_called()
         # The session the turn runs on is what the sign-in check judges; with no
         # live session for it, the cold-start route decides (live route None).
-        ready.assert_awaited_once_with(_MEMBER_KEY, None, config=None)
+        ready.assert_awaited_once_with(_MEMBER_KEY, None, config=None, live_keyed=None)
 
     @pytest.mark.asyncio
     async def test_harness_turn_without_crew_signin_falls_back_to_kiro_cli(self):

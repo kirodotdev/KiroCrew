@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
@@ -40,8 +41,10 @@ from kiro_crew.kiro_prerequisite import (
     KiroPrerequisiteService,
     _combine_identity_fingerprints,
     _identity_components,
+    identity_component_dropped,
     identity_stamp_mismatch,
     spawn_identity_of,
+    spawned_under,
 )
 
 if TYPE_CHECKING:
@@ -367,6 +370,31 @@ def live_machine_auth(state: object, session_key: str | None) -> object:
         return None
 
 
+def live_key_sign_in(state: object, session_key: str | None) -> bool | None:
+    """How the LIVE session's process on Crew's KAS engine bundle signs in, as its launch
+    planned: True when the launch handed it ``KIRO_API_KEY`` (``agent.kas_api_key_sign_in``:
+    ``AcpRuntime._kas_host_auth`` False with no machine mode), False when Crew's vault
+    answers its credential callback, None for no live bundle process, a machine-mode one,
+    or one this cannot read. Reads only in-memory state. Never raises."""
+    try:
+        sessions = getattr(state, "sessions", None)
+        if sessions is None or session_key is None:
+            return None
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+        runtime = _provider_runtime(sessions.get_provider(session_key))
+        if (
+            getattr(runtime, "acp_backend", None) == ACP_BACKEND_KAS
+            and getattr(runtime, "_kas_engine_bundle", False) is True
+            and getattr(runtime, "_kas_machine_auth", None) is None
+        ):
+            return getattr(runtime, "_kas_host_auth", None) is False
+        return None
+    except Exception as exc:  # noqa: BLE001 - unreadable reads as no live bundle process
+        logger.debug("Kiro readiness: live sign-in plan unreadable (%s)", type(exc).__name__)
+        return None
+
+
 def live_turn_route(state: object, session_key: str | None) -> bool | None:
     """Whether the LIVE session on *session_key* is served by Crew's sign-in.
 
@@ -422,7 +450,11 @@ def live_turn_route(state: object, session_key: str | None) -> bool | None:
 
 
 async def kas_crew_signin_ready(
-    session_key: str | None, live_route: bool | None = None, *, config: object = None
+    session_key: str | None,
+    live_route: bool | None = None,
+    *,
+    config: object = None,
+    live_keyed: bool | None = None,
 ) -> bool:
     """True when the turn on *session_key* needs no kiro-cli and Crew's sign-in can serve it.
 
@@ -441,8 +473,14 @@ async def kas_crew_signin_ready(
     and refreshes it under the identity's lock, the same call that answers the
     engine's ``_kiro/auth/getAccessToken``. A rejected or unattemptable refresh,
     or no stored identity, answers False, so a destructive rerun is still
-    refused before history is rewritten. Fresh on every call: there is no latch
-    to go stale. Never raises.
+    refused before history is rewritten -- unless the engine signs in with
+    ``KIRO_API_KEY`` instead (``agent.kas_api_key_sign_in``). A cold start reads
+    that from the setting (:func:`kiro_crew.auth.bridge.api_key_sign_in_applies`);
+    a live process the turn keeps from its own launch, *live_keyed*
+    (:func:`live_key_sign_in`; ``None`` for one of either owner the turn replaces),
+    which also binds a live process a rerun may keep (*live_route* ``None``):
+    ``False`` there needs the vault. Fresh on every call: there is no latch to go
+    stale. Never raises.
     """
     from kiro_crew import workload_identity
 
@@ -462,9 +500,17 @@ async def kas_crew_signin_ready(
     try:
         # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must
         # not load on the handlers' import path (see kiro_crew.acp.kas_host_auth).
-        from kiro_crew.auth.bridge import default_token_store
+        from kiro_crew.auth.bridge import api_key_sign_in_applies, default_token_store
         from kiro_crew.auth.provider import KasAuthProvider
 
+        if live_route or live_keyed is False:
+            # A live process signs in as its launch planned, whatever the setting is now.
+            keyed = live_keyed is True
+        else:
+            keyed = await asyncio.to_thread(api_key_sign_in_applies, os.environ)
+        if keyed:
+            # The engine signs in with KIRO_API_KEY itself.
+            return True
         await KasAuthProvider(default_token_store(), allow_env_api_key=False).current()
     except Exception as exc:  # noqa: BLE001 - an unusable sign-in is not ready
         # Type only: a refresh error's message can carry response bytes.
@@ -601,6 +647,7 @@ async def kas_turn_verdict(
     may_replace: bool = True,
     live_dead: Callable[[], Awaitable[bool]] | None = None,
     live_machine: object = None,
+    live_keyed: bool | None = None,
 ) -> tuple[str, str]:
     """Who authorizes the turn on *session_key*, and whether it may start, with the
     text a refusal answers (``""`` for the other verdicts).
@@ -646,7 +693,7 @@ async def kas_turn_verdict(
             )
             if verdict is not None:
                 return verdict
-    if await kas_crew_signin_ready(session_key, live_route, config=config):
+    if await kas_crew_signin_ready(session_key, live_route, config=config, live_keyed=live_keyed):
         return KAS_TURN_READY, ""
     return KAS_TURN_NOT_KAS_ROUTE, ""
 
@@ -789,19 +836,20 @@ def _service(request: web.Request) -> object:
     return service
 
 
-async def live_kiro_identity(request: web.Request) -> str:
+async def live_kiro_identity(request: web.Request, *, fresh: bool = False) -> str:
     """The signed-in account's identity fingerprint, or ``""`` when it cannot be read.
 
     :meth:`KiroPrerequisiteService.current_identity_fingerprint` with its short
-    cache: a local read of the stable claims in kiro-cli's store and Crew's vault,
-    no spawn and no API call, so a poll may ask it every time. Token refreshes and
-    chat traffic do not move it; a sign-in to another account does. Never raises.
+    cache (*fresh* reads past it, as the turn's identity sweep does): a local read of
+    the stable claims in kiro-cli's store and Crew's vault, no spawn and no API call,
+    so a poll may ask it every time. Token refreshes and chat traffic do not move it;
+    a sign-in to another account does. Never raises.
     """
     reader = getattr(_service(request), "current_identity_fingerprint", None)
     if reader is None:
         return ""
     try:
-        return str(await reader() or "")
+        return str(await (reader(allow_cached=False) if fresh else reader()) or "")
     except Exception:  # noqa: BLE001 - an unreadable identity is "unknown", never an error
         logger.debug("Kiro identity fingerprint read failed", exc_info=True)
         return ""
@@ -835,6 +883,32 @@ async def providers_for_live_account(request: web.Request, providers: list) -> l
     """
     live = await live_kiro_identity(request)
     return [p for p in providers if not identity_stamp_mismatch(spawn_identity_of(p), live)]
+
+
+async def _live_process_serves_turn(
+    request: web.Request, state: object, session_key: str | None, keyed: bool
+) -> bool:
+    """Whether the live bundle process runs the turn, or is replaced by a cold start.
+
+    An exited one never does. A *keyed* one does only when the turn's identity sweep
+    spares it (:func:`spawned_under`, on the same fresh read); a vault-owned one unless
+    a sign-in its own stamp names is gone from a readable identity (a ``kirocrew kas
+    logout``) and the sweep does not spare it. Each owner's unknown falls to its own
+    refusing side: a keyed process to its cold start, a vault one to the vault. Never
+    raises."""
+    try:
+        if await _live_provider_dead(state, session_key):
+            return False
+        sessions = getattr(state, "sessions", None)
+        provider = None if sessions is None else sessions.get_provider(session_key)
+        live = await live_kiro_identity(request, fresh=True)
+        if keyed:
+            return spawned_under(provider, live)
+        dropped = bool(live) and identity_component_dropped(spawn_identity_of(provider), live)
+        return not dropped or spawned_under(provider, live)
+    except Exception as exc:  # noqa: BLE001 - unknown is judged on its refusing side
+        logger.debug("Kiro readiness: live process unreadable (%s)", type(exc).__name__)
+        return not keyed
 
 
 async def reject_if_kiro_unverified(
@@ -910,17 +984,27 @@ async def reject_if_kiro_unverified(
     (``swap_conversation``), and which path runs is decided later, under the
     slot lock. Both routes must then serve the turn, so a live process Crew's
     sign-in does not serve keeps the kiro-cli gate, and otherwise the configured route is
-    judged.
+    judged together with the sign-in the live process was launched with
+    (:func:`live_key_sign_in`). A live bundle process the turn will not keep (exited,
+    or retired by the identity sweep on a key or sign-in change) is judged as its
+    cold start.
     """
 
     state = request.app.get("state")
     live_route = None
     live_backend = None
     live_machine = None
+    live_keyed = None
     if turn_reuses_session or may_keep_live_process:
         live_route = live_turn_route(state, session_key)
         live_backend = live_turn_backend(state, session_key)
         live_machine = live_machine_auth(state, session_key)
+        live_keyed = live_key_sign_in(state, session_key)
+        if live_keyed is not None and not await _live_process_serves_turn(
+            request, state, session_key, live_keyed
+        ):
+            # Replaced by a cold start, so the configuration names its route and key.
+            live_route = live_backend = live_keyed = None
     if not turn_reuses_session and live_route:
         live_route = None
     # The configuration the provider factory allocates the turn's session from.
@@ -935,6 +1019,7 @@ async def reject_if_kiro_unverified(
             may_replace=not turn_reuses_session or may_keep_live_process,
             live_dead=lambda: _live_provider_dead(state, session_key),
             live_machine=live_machine,
+            live_keyed=live_keyed,
         )
         if verdict == KAS_TURN_READY:
             _clear_refusal_warning()

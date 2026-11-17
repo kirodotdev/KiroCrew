@@ -629,6 +629,7 @@ def _doctor_agent_auth() -> None:
     vault_owns = False
     vault_detail: str | None = None
     vault_probed = False
+    key_signs_in = False
 
     for backend in backends:
         try:
@@ -668,15 +669,18 @@ def _doctor_agent_auth() -> None:
                     # degrades to the kiro-cli branch below rather than losing the
                     # row.
                     from kiro_crew.auth.bridge import (
+                        api_key_sign_in_applies,
                         describe_vault_identity,
                         vault_holds_identity,
                     )
 
                     vault_owns = vault_holds_identity()
                     vault_detail = describe_vault_identity()
+                    key_signs_in = api_key_sign_in_applies(os.environ)
                 except Exception:
                     vault_owns = False
                     vault_detail = None
+                    key_signs_in = False
             if vault_owns:
                 # Ownership and health are separate facts: the vault still owns the
                 # next spawn when the issuer has REJECTED its refresh token, because
@@ -705,6 +709,10 @@ def _doctor_agent_auth() -> None:
                         f"{source} is also present and may be a different account "
                         "(the kiro-cli row reports it); the relay uses the vault."
                     )
+                continue
+            if backend == kas_backend and kas_bundle_route and key_signs_in:
+                # agent.kas_api_key_sign_in: the engine signs in with the key itself.
+                print(f"  {label.ljust(13)}✅ KIRO_API_KEY (agent.kas_api_key_sign_in)")
                 continue
             if backend == kas_backend and kas_bundle_route:
                 # Nothing usable in the vault and no fallback owner: the engine's

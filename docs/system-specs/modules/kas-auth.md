@@ -31,9 +31,25 @@
 > prefers an environment key over the callback (`KasHarness.apply_spawn_env`,
 > `cli_owned_auth`). On the relay route kiro-cli remains the ACP service either way.
 > On the bundle route (`agent.kas_bundle`, [acp-client.md](acp-client.md) § KAS bundle
-> route) Crew spawns its own installed engine and is the auth owner unconditionally:
-> the callback always reaches Crew, and there is no `--auth-method cli` to fall back
-> to.
+> route) Crew spawns its own installed engine and is the auth owner: the callback
+> reaches Crew, and there is no `--auth-method cli` to fall back to. The one
+> exception is the operator's opt-in `agent.kas_api_key_sign_in` (default off,
+> `restart=True`): when it is on, KAS machine mode is off (`agent.kas_auth` `machine`
+> under the `crew_client` preview wins: the engine reads its token file and the key
+> is stripped), the vault holds no identity and `KIRO_API_KEY` is
+> set in the gateway's environment or the data home's `.env`
+> (`auth.bridge.api_key_sign_in_applies`), the bundle plan carries `host_auth=False`.
+> The launch then hands the engine the key exactly as it hands a cli-owned relay,
+> the engine signs in with it itself (it prefers an environment key over the
+> callback), Crew answers no credential callback for that process, and the
+> identity sweep counts the key (`receives_kiro_cli_api_key`), so a key change or a
+> later Kiro sign-in retires the process. A stored sign-in still wins, even an
+> expired one, and with the setting off an ambient key keeps being stripped. `kirocrew doctor` names the key as
+> the auth owner then, and the turn-starting readiness gate
+> (`kiro_readiness.kas_crew_signin_ready`) accepts it, from the setting for a cold
+> start and from that process's own launch for a live session the turn keeps; `kirocrew kas whoami`, the
+> dashboard's sign-in card, model picker and usage still report no sign-in. The agent's own commands can read the key on that route,
+> as on the kiro backend.
 >
 > **Choosing KAS means Kiro Crew's own sign-in** (decision
 > [2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from kiro_crew.auth.provider import KasAuthProvider
@@ -103,6 +104,40 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     if chosen.problem is not None:
         log("%s", chosen.problem)
     return True
+
+
+def api_key_sign_in_applies(environ: Mapping[str, str]) -> bool:
+    """True when a spawn of Crew's own engine bundle signs in with ``KIRO_API_KEY``.
+
+    All four must hold: the operator turned ``agent.kas_api_key_sign_in`` on, KAS
+    machine mode is off (``kas_machine.configured_machine_auth``; it wins, as the
+    spawn strips the key there), the vault holds no identity
+    (:func:`vault_holds_identity`; a stored sign-in wins, as in
+    :class:`KasAuthProvider`), and the key is set in *environ* or the data home's
+    ``.env`` -- where ``config.loader.inject_kiro_cli_api_key`` reads it at launch.
+    The bundle route then plans the process cli-owned, so the key is handed to the
+    engine and the identity sweep counts it. Also read by ``kirocrew doctor``.
+    Blocking file IO -- call off the loop. Never raises: a failed read is ``False``,
+    which keeps the vault-only spawn.
+    """
+    try:
+        from kiro_crew.agent_sdk.kas_machine import configured_machine_auth
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.loader_credentials import (
+            CRED_KIRO_API_KEY,
+            read_env_file_credential,
+        )
+
+        if (
+            not KiroCrewConfig.load().agent.kas_api_key_sign_in
+            or configured_machine_auth() is not None
+            or vault_holds_identity()
+        ):
+            return False
+        return bool(environ.get(CRED_KIRO_API_KEY) or read_env_file_credential(CRED_KIRO_API_KEY))
+    except Exception as exc:  # noqa: BLE001 - this probe must never fail a spawn
+        logger.warning("KAS opt-in sign-in check failed (%s)", type(exc).__name__)
+        return False
 
 
 #: The stored-identity fields that name WHICH account the vault is signed in as.

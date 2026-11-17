@@ -476,6 +476,25 @@ class TestDoctorKasBundle:
         assert "not signed in" in out
         assert issues == []
 
+    def test_the_api_key_opt_in_names_the_key_as_the_auth_owner(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """``agent.kas_api_key_sign_in`` with an empty vault: the engine signs in with
+        the key, so the vault's "not signed in" warning would send a headless host
+        to a sign-in it does not need."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, "0.66.33")
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr("kiro_crew.auth.bridge.api_key_sign_in_applies", lambda environ: True)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "auth owner:  KIRO_API_KEY (agent.kas_api_key_sign_in" in out
+        assert "Kiro Crew vault" not in out
+        assert "not signed in" not in out
+        assert issues == []
+
     def test_the_pinned_engine_reports_the_block_written_from_the_engine_gate(
         self, monkeypatch, capsys, tmp_path
     ):
@@ -702,6 +721,14 @@ class TestDoctorAgentAuthOnTheBundleRoute:
         assert "Sign in with `kirocrew kas login`" in out
         assert "could not check" not in out
         assert "kiro-cli login" not in out
+
+    def test_the_api_key_opt_in_is_the_signed_in_row(self, monkeypatch, capsys):
+        """``agent.kas_api_key_sign_in`` with an empty vault: no browser sign-in remedy."""
+        monkeypatch.setattr("kiro_crew.auth.bridge.api_key_sign_in_applies", lambda environ: True)
+        out = self._run(monkeypatch, capsys, vault_holds=False)
+        assert "✅ KIRO_API_KEY (agent.kas_api_key_sign_in)" in out
+        assert "not signed in" not in out
+        assert "kirocrew kas login" not in out
 
     def test_a_signed_in_vault_mentions_no_second_store(self, monkeypatch, capsys):
         detail = "social/Google, expires in 42m, refresh token present -> usable"

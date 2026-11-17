@@ -327,8 +327,9 @@ class AgentConfig:
             "'kirocrew kas install' laid down under the data home (engines/kas/) "
             "with its own Node runtime, instead of reaching the engine through "
             "kiro-cli's ACP relay. kiro-cli is not needed on this route, and the "
-            "engine always takes its credential from Kiro Crew's own sign-in "
-            "(the dashboard's Sign in), never from kiro-cli's store. With nothing "
+            "engine takes its credential from Kiro Crew's own sign-in (the "
+            "dashboard's Sign in), never from kiro-cli's store, unless "
+            "agent.kas_api_key_sign_in hands it KIRO_API_KEY. With nothing "
             "installed the gateway installs the pinned engine at the first spawn. "
             "With false, KAS still takes this route when kiro-cli's relay cannot "
             "run on the host (no kiro-cli, or one that is not signed in). "
@@ -342,6 +343,26 @@ class AgentConfig:
             "is the same for every build.",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
+            restart=True,
+        ),
+    )
+    kas_api_key_sign_in: bool = field(
+        default=False,
+        metadata=_meta(
+            "KAS: sign in with KIRO_API_KEY on Kiro Crew's own engine",
+            "When true, Kiro Crew's own engine bundle (see agent.kas_bundle) signs in "
+            "with KIRO_API_KEY when Kiro Crew's own sign-in holds no identity: the "
+            "key set in the gateway's environment or in the data home's .env is "
+            "handed to the engine, as kiro-cli's relay is handed it. For hosts that "
+            "cannot finish a browser sign-in, such as CI and test machines. A "
+            "stored Kiro Crew sign-in, even an expired one, still wins over the key "
+            "(remove it with 'kirocrew kas logout'), and with false a key in the "
+            "environment has no effect on this route. The agent's own commands can "
+            "read the key on this route, as on the 'kiro' backend. kirocrew doctor "
+            "names the key as the sign-in in use; 'kirocrew kas whoami', the "
+            "dashboard's sign-in card, model picker and credit usage still report "
+            "no sign-in.",
+            # A running KAS process keeps the environment it started with.
             restart=True,
         ),
     )

@@ -5,7 +5,8 @@ KAS engine: the bundle, the relay's help text, the spec permissions it needs and
 builtin tool vocabulary it was measured against. On the bundle route
 (``agent.kas_bundle`` on) :func:`_report_kas_bundle` reports Crew's own installed
 engine instead -- its version against the release pin, the ``install.json`` entry
-points, the spawn argv and the vault as the only auth owner -- and asks nothing of
+points, the spawn argv and the auth owner (the vault, or ``KIRO_API_KEY`` under
+``agent.kas_api_key_sign_in``) -- and asks nothing of
 kiro-cli. The ACP names these rows read stay imported by ``kiro_crew.cli_doctor``, so
 this module imports no ``kiro_crew.acp`` module. New KAS rows go here.
 
@@ -15,6 +16,7 @@ see :mod:`kiro_crew.cli_doctor_parts`.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -131,8 +133,10 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     The route never runs kiro-cli, so a missing kiro-cli is not a problem here,
     and reporting one would send the operator to install a binary nothing will
     use. The one place an installed kiro-cli still matters is the auto-approve
-    row: it reads the same spec files. Crew is the auth owner unconditionally, so
-    the vault row is the only credential row.
+    row: it reads the same spec files. Crew is the auth owner, so the vault row is
+    the only credential row -- unless ``agent.kas_api_key_sign_in`` hands the
+    engine ``KIRO_API_KEY`` (``auth.bridge.api_key_sign_in_applies``), which the
+    owner row then names instead.
     """
     from kiro_crew.agent_sdk import backend_install, kas_bundle
 
@@ -217,15 +221,25 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     print(f"  engine:      {installed.acp_server}")
     print(f"  node:        {installed.node_bin}")
     print(f"  spawn:       {' '.join(kas_bundle.bundle_spawn_argv(installed))}")
-    print("  auth owner:  Kiro Crew vault (the only owner on this route)")
     try:
-        from kiro_crew.auth.bridge import describe_vault_identity, vault_holds_identity
+        from kiro_crew.auth.bridge import (
+            api_key_sign_in_applies,
+            describe_vault_identity,
+            vault_holds_identity,
+        )
 
+        key_signs_in = api_key_sign_in_applies(os.environ)
         signed_in = vault_holds_identity()
         identity_line = describe_vault_identity()
     except Exception:
+        key_signs_in = False
         signed_in = False
         identity_line = None
+    if key_signs_in:
+        print("  auth owner:  KIRO_API_KEY (agent.kas_api_key_sign_in; no Kiro Crew sign-in)")
+        _report_kas_bundle_spec_permissions(installed.version, issues)
+        return
+    print("  auth owner:  Kiro Crew vault (the only owner on this route)")
     if identity_line:
         print(f"  crew vault:  {identity_line}")
     # Ownership and health are separate facts: vault_holds_identity reads only
