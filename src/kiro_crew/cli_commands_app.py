@@ -221,6 +221,30 @@ def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     print(message)
 
 
+def _audit_file_only_toggle(
+    operation: str, app_name: str, *, host_exec: str, error: str | None = None
+) -> None:
+    """Write the ``app_enable``/``app_disable`` row the dashboard route writes for the same action.
+
+    ``error`` None records ``completed``, naming the host-exec grant state the
+    manager has just verified: ``enable_app`` fails when it could not mint the
+    grant, and ``disable_app`` fails when the grant is still present. Any other
+    value records ``failed`` with that error.
+    """
+    if error is None:
+        outcome, resources = "completed", f"app={app_name} host_exec={host_exec}"
+    else:
+        outcome, resources = "failed", f"app={app_name}"
+    sel().log_api_access(
+        caller="cli",
+        source="cli",
+        operation=operation,
+        outcome=outcome,
+        resources=resources,
+        error=error or "",
+    )
+
+
 def _register_unrecorded_builtin(app_name: str) -> None:
     """Write the shipped builtins' records when *app_name* is one that has none yet.
 
@@ -716,19 +740,27 @@ def _handle_app(args: argparse.Namespace) -> None:
         _register_unrecorded_builtin(args.name)
         result = enable_app(args.name)
         if result.ok:
-            reg = register_app(args.name)
-            _print_file_only_app_result(args.name, enabled=True)
-            if reg.agents:
-                print(f"   Agents registered: {len(reg.agents)}")
-            if reg.skills:
-                print(f"   Skills registered: {len(reg.skills)}")
-            _register_app_crons_to_scheduler(args.name)
+            # The row follows the registrations, as the dashboard route's does.
+            try:
+                reg = register_app(args.name)
+                _print_file_only_app_result(args.name, enabled=True)
+                if reg.agents:
+                    print(f"   Agents registered: {len(reg.agents)}")
+                if reg.skills:
+                    print(f"   Skills registered: {len(reg.skills)}")
+                _register_app_crons_to_scheduler(args.name)
+            except Exception as exc:
+                _audit_file_only_toggle("app_enable", args.name, host_exec="", error=str(exc) or "")
+                raise
+            _audit_file_only_toggle("app_enable", args.name, host_exec="granted")
             _warn_hooks_need_restart(args.name)
-        elif getattr(result, "error_code", "") == _SESSION_APPROVAL_CONSENT_REQUIRED:
-            _refuse_session_approval_from_cli(args.name)
         else:
-            print(f"❌ {result.error}", file=sys.stderr)
-            sys.exit(1)
+            _audit_file_only_toggle("app_enable", args.name, host_exec="", error=result.error or "")
+            if getattr(result, "error_code", "") == _SESSION_APPROVAL_CONSENT_REQUIRED:
+                _refuse_session_approval_from_cli(args.name)
+            else:
+                print(f"❌ {result.error}", file=sys.stderr)
+                sys.exit(1)
 
     elif action == "update":
         source = getattr(args, "source", None)
@@ -795,6 +827,14 @@ def _handle_app(args: argparse.Namespace) -> None:
         # silent re-registration nobody sees.
         result = disable_app(args.name)
         deregistered = _deregister_or_report(args.name)
+        # The row follows the teardown, as the dashboard route's does.
+        if not result.ok:
+            audit_error: str | None = result.error or ""
+        elif not deregistered:
+            audit_error = "some of its resources could not be removed"
+        else:
+            audit_error = None
+        _audit_file_only_toggle("app_disable", args.name, host_exec="revoked", error=audit_error)
         if not result.ok:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
