@@ -266,6 +266,7 @@ from kiro_crew.dashboard.chat_turn.stream_chunks import (
     _on_text_chunk,
     _on_thinking_chunk,
     _release_held_text,
+    _settle_echo_hold,
 )
 from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
@@ -1243,6 +1244,7 @@ async def _run_chat(
             elif event.kind == EVENT_THINKING_CHUNK:
                 await _on_thinking_chunk(turn, event)
             elif event.kind == EVENT_TOOL_CALL:
+                await _settle_echo_hold(turn)
                 await _release_held_text(turn, before_tool=True)
                 await _on_tool_call(turn, event)
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
@@ -1301,10 +1303,13 @@ async def _run_chat(
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 await _on_subagent_activity(turn, event)
             elif event.kind == EVENT_COMPLETE:
+                await _settle_echo_hold(turn)
                 _flow = await _on_complete(turn, event)
                 if _flow is _Flow.BREAK:
                     break
 
+        # A stream that ended with no terminal event still ends the segment.
+        await _settle_echo_hold(turn)
         _flow = await _turn_stop_recovery(turn)
         if _flow is _Flow.END:
             return
