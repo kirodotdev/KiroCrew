@@ -6463,7 +6463,8 @@
       "sign_out_or_switch": "설정에서 로그아웃 또는 계정 전환",
       "sign_out_link_config_unreadable": "설정을 불러오지 못해 로그아웃 링크를 표시할 수 없습니다.",
       "switch_in_settings": "설정에서 계정 전환",
-      "bots_sign_in_in_settings": "설정에서 Bot용 Kiro 로그인"
+      "bots_sign_in_in_settings": "설정에서 Bot용 Kiro 로그인",
+      "kiro_account_in_settings": "설정의 Kiro 계정"
     },
     "artifactChatPanel": {
       "agent_chat": "에이전트 채팅",
@@ -7782,7 +7783,7 @@
       "loopback_fell_back": "로그인 결과가 이 컴퓨터로 직접 돌아오지 못해 대신 코드를 표시합니다.",
       "cancel_unsettled": "로그인을 취소할 수 없습니다. 로그인이 아직 진행 중이니 같은 항목을 다시 눌러 재시도하세요.",
       "pending_cancel_unsettled": "로그인했지만 여기서 시작한 로그인을 취소할 수 없습니다. 시간이 초과될 때까지 열려 있습니다.",
-      "card_intro": "Kiro Agent 백엔드에서만 사용합니다. 해당 에이전트는 이 Kiro 계정으로 실행됩니다. Kiro CLI는 자체 kiro-cli 로그인을 계속 사용하므로 여기서 로그인해도 바뀌지 않습니다.",
+      "card_intro": "Kiro Agent와 다른 Kiro 기능은 어떤 에이전트 하네스를 사용하든 이 Kiro 계정으로 실행됩니다. Kiro CLI는 자체 kiro-cli 로그인을 유지하므로 여기서 로그인해도 바뀌지 않습니다.",
       "previous_sign_in_not_removed": "로그인했지만 이전 로그인을 제거할 수 없음",
       "previous_sign_in_not_removed_body": "새 계정은 저장되었지만 전환하기 전의 계정이 여전히 남아 있고 우선 적용됩니다. 그 계정에서 로그아웃한 뒤 여기 표시된 로그인을 확인하세요."
     },
@@ -11030,6 +11031,9 @@
       "expired_detail_bots": "다시 로그인할 때까지 Bot을 실행할 수 없습니다. 저장된 로그인이 만료되어 갱신할 수 없습니다.",
       "refused_detail_bots": "이 로그인이 만료되면 Bot이 멈춥니다. 계속 실행하려면 다시 로그인하세요.",
       "refused_expired_detail_bots": "다시 로그인할 때까지 Bot을 실행할 수 없습니다. 이 로그인은 이미 만료되었습니다.",
+      "expired_detail_account": "다시 로그인할 때까지 Kiro 계정을 사용하는 기능이 작동하지 않습니다. 저장된 로그인이 만료되었으며 갱신할 수 없습니다.",
+      "refused_detail_account": "이 로그인이 만료되면 Kiro 계정을 사용하는 기능이 멈춥니다. 계속 작동하게 하려면 다시 로그인하세요.",
+      "refused_expired_detail_account": "다시 로그인할 때까지 Kiro 계정을 사용하는 기능이 작동하지 않습니다. 이 로그인은 이미 만료되었습니다.",
       "status_unavailable_detail": "로그인 설정을 열어 Kiro 로그인을 확인하거나, 에이전트에게 살펴봐 달라고 요청하세요.",
       "config_unavailable": "대시보드 설정을 읽을 수 없습니다",
       "config_unavailable_detail": "페이지를 새로고침해 다시 시도하거나 에이전트에게 확인을 요청하세요.",
@@ -13268,7 +13272,7 @@
         "code_channel_worktree_not_ready": "이 코드 채널의 worktree가 아직 준비되지 않아 메시지를 실행하지 않았습니다. 잠시 후 다시 보내세요.",
         "remote_crew_read_only": "이 채팅은 원격 크루에서 실행되어 이제 읽기 전용입니다. 계속하려면 크루의 자체 세션을 여세요.",
         "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요.",
-        "kas_signed_out": "Kiro에 로그인되어 있지 않습니다. 설정 → 에이전트 하네스 → Kiro Agent → Kiro 로그인에서 로그인한 다음 메시지를 다시 보내세요.",
+        "kas_signed_out": "Kiro에 로그인되어 있지 않습니다. 설정 → Kiro 계정에서 로그인한 다음 메시지를 다시 보내세요.",
         "kas_signed_out_sign_in_below": "Kiro에 로그인되어 있지 않습니다. 아래에서 로그인한 다음 메시지를 다시 보내세요.",
         "windows_spawn_blocked": "Windows에서 에이전트 프로그램({{binary}})을 시작하지 못했습니다. 이 컴퓨터의 AppLocker, EDR 제품 또는 그룹 정책이 차단했을 가능성이 높습니다. IT 관리자에게 이 파일을 허용해 달라고 요청한 다음 새 채팅을 시작하세요.",
         "tools_not_ready": "기본 제공 도구가 제때 준비되지 않아 에이전트를 시작하지 못했습니다. 메시지는 그대로 남아 있습니다. 잠시 후 다시 시도하세요. 계속 발생하면 자세한 내용은 게이트웨이 로그에 있습니다.",
@@ -15319,6 +15323,9 @@
         "install_check_failed_can_still_switch": "이 컴퓨터에 설치되어 있는지 확인할 수 없습니다. 그래도 전환할 수 있습니다. 설치되어 있지 않으면 세션이 시작될 때 알려 줍니다.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "이 컴퓨터에 설치된 kiro-cli를 kiro-cli 자체 로그인으로 사용합니다.",
+        "kiro_account_not_signed_in": "로그인되어 있지 않음",
+        "kiro_account_signed_in_as": "{{name}}(으)로 로그인됨",
         "kiro_row_runs_on_kas": "Kiro CLI는 이제 Kiro Agent에서 실행됩니다. 새 세션은 이미 Kiro Agent를 사용하므로 여기서 전환할 것이 없습니다.",
         "kiro_runs_on_kas": "Kiro CLI는 이제 Kiro Agent에서 실행되므로 새 세션은 이미 이를 사용합니다. Kiro Agent를 설정으로 저장할까요?",
         "kiro_runs_on_kas_save": "Kiro Agent를 내 설정으로 저장",
@@ -15598,7 +15605,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",
-        "toggle_description": "이 {{productName}} 릴리스에서 테스트한 KAS 엔진 버전을 Kiro CLI 대신 사용합니다. 이 기기뿐 아니라 이 {{productName}}의 모든 새 세션에 적용됩니다. 설정 → 에이전트 하네스의 Kiro 계정으로 로그인합니다. {{productName}}을(를) 다시 시작하면 적용됩니다.",
+        "toggle_description": "이 {{productName}} 릴리스에서 테스트한 KAS 엔진 버전을 Kiro CLI 대신 사용합니다. 이 기기뿐 아니라 이 {{productName}}의 모든 새 세션에 적용됩니다. 설정 → Kiro 계정에서 로그인합니다. {{productName}}을(를) 다시 시작하면 적용됩니다.",
         "installed": "KAS 엔진 {{version}}(직접 설치함)",
         "installed_bundled": "KAS 엔진 {{version}}(앱에 포함)",
         "off_note": "꺼짐: KAS는 설치된 Kiro CLI를 사용합니다. 켜짐: 이 릴리스에 포함된 엔진을 사용합니다.",
@@ -22373,6 +22380,11 @@
       "connections": {
         "label": "연결",
         "description": "공식 서비스를 연결하고 OAuth 앱을 설정합니다"
+      },
+      "kiroAccount": {
+        "description": "Kiro에 로그인하거나 계정을 전환하거나 로그아웃하세요",
+        "go_to": "Kiro 계정으로 이동",
+        "label": "Kiro 계정"
       }
     },
     "secrets": {

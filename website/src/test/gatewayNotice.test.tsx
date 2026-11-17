@@ -734,6 +734,7 @@ describe('the KAS signed-out row', () => {
   })
 
   it.each([
+    'Settings → Kiro account',
     'Settings → Agent Harness → Kiro Agent → Kiro sign-in',
     'Settings → Agent Harness → Kiro sign-in',
   ])('recognises the current "send your message again" ending on a token-less row naming %s, as the side panel writes it', card => {

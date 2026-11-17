@@ -6275,7 +6275,8 @@
       "sign_out_or_switch": "In den Einstellungen abmelden oder Konto wechseln",
       "sign_out_link_config_unreadable": "Einstellungen konnten nicht geladen werden, daher kann der Abmelde-Link nicht angezeigt werden.",
       "switch_in_settings": "In den Einstellungen Konto wechseln",
-      "bots_sign_in_in_settings": "Kiro-Anmeldung für Bots in den Einstellungen"
+      "bots_sign_in_in_settings": "Kiro-Anmeldung für Bots in den Einstellungen",
+      "kiro_account_in_settings": "Kiro-Konto in den Einstellungen"
     },
     "agentDropdownList": {
       "active_in_this_session": "In dieser Sitzung aktiv",
@@ -7991,7 +7992,7 @@
       "loopback_fell_back": "Die Anmeldung konnte nicht direkt auf diesen Computer zurückkommen, deshalb gibt es stattdessen einen Code.",
       "cancel_unsettled": "Die Anmeldung konnte nicht abgebrochen werden. Sie läuft noch – wähle dieselbe Option erneut, um es noch einmal zu versuchen.",
       "pending_cancel_unsettled": "Angemeldet, aber die hier gestartete Anmeldung konnte nicht abgebrochen werden. Sie bleibt offen, bis sie abläuft.",
-      "card_intro": "Wird nur vom Backend Kiro Agent verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
+      "card_intro": "Kiro Agent und andere Kiro-Funktionen laufen mit diesem Kiro-Konto, egal welchen Agent-Harness du nutzt. Kiro CLI behält seine eigene kiro-cli-Anmeldung, daher ändert eine Anmeldung hier sie nicht.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
       "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
     },
@@ -11288,6 +11289,9 @@
       "expired_detail_bots": "Bots können erst wieder laufen, wenn du dich erneut anmeldest. Die gespeicherte Anmeldung ist abgelaufen und kann nicht erneuert werden.",
       "refused_detail_bots": "Bots hören auf zu laufen, sobald diese Anmeldung abläuft. Melde dich erneut an, damit sie weiterlaufen.",
       "refused_expired_detail_bots": "Bots können erst wieder laufen, wenn du dich erneut anmeldest. Diese Anmeldung ist bereits abgelaufen.",
+      "expired_detail_account": "Funktionen, die dein Kiro-Konto nutzen, funktionieren erst wieder, wenn du dich erneut anmeldest. Die gespeicherte Anmeldung ist abgelaufen und kann nicht erneuert werden.",
+      "refused_detail_account": "Funktionen, die dein Kiro-Konto nutzen, hören auf zu funktionieren, sobald diese Anmeldung abläuft. Melde dich erneut an, damit sie weiter funktionieren.",
+      "refused_expired_detail_account": "Funktionen, die dein Kiro-Konto nutzen, funktionieren erst wieder, wenn du dich erneut anmeldest. Diese Anmeldung ist bereits abgelaufen.",
       "status_unavailable_detail": "Öffne die Anmeldeeinstellungen, um deine Kiro-Anmeldung zu prüfen, oder bitte den Agenten, sich das anzusehen.",
       "config_unavailable": "Die Dashboard-Einstellungen konnten nicht gelesen werden",
       "config_unavailable_detail": "Lade die Seite neu, um es erneut zu versuchen, oder bitte den Agenten, sich das anzusehen.",
@@ -13590,7 +13594,7 @@
         "code_channel_worktree_not_ready": "Der Worktree dieses Code-Kanals ist noch nicht bereit, deshalb wurde die Nachricht nicht ausgeführt. Sende sie gleich noch einmal.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
         "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren.",
-        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Agent-Harness → Kiro Agent → Kiro-Anmeldung an und sende dann deine Nachricht erneut.",
+        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Kiro-Konto an und sende dann deine Nachricht erneut.",
         "kas_signed_out_sign_in_below": "Nicht bei Kiro angemeldet. Melde dich unten an und sende dann deine Nachricht erneut.",
         "windows_spawn_blocked": "Windows hat das Agent-Programm ({{binary}}) nicht gestartet. Wahrscheinlich hat AppLocker, ein EDR-Produkt oder eine Gruppenrichtlinie auf diesem Computer es blockiert. Bitte deinen IT-Administrator, die Datei zuzulassen, und starte dann einen neuen Chat.",
         "tools_not_ready": "Der Agent konnte nicht starten, weil seine integrierten Tools nicht rechtzeitig bereit waren. Deine Nachricht ist noch da. Versuch es gleich noch einmal. Wenn das wieder passiert, stehen die Details im Gateway-Protokoll.",
@@ -15727,6 +15731,9 @@
         "install_check_failed_can_still_switch": "Es konnte nicht geprüft werden, ob dies auf diesem Rechner installiert ist. Du kannst trotzdem darauf umschalten. Fehlt es, sagt die Sitzung es beim Start.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Nutzt das auf diesem Rechner installierte kiro-cli, mit der eigenen Anmeldung von kiro-cli.",
+        "kiro_account_not_signed_in": "Nicht angemeldet",
+        "kiro_account_signed_in_as": "Angemeldet als {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI läuft jetzt auf Kiro Agent. Neue Sitzungen nutzen Kiro Agent bereits, daher gibt es hier nichts umzuschalten.",
         "kiro_runs_on_kas": "Kiro CLI läuft jetzt auf Kiro Agent, daher nutzen neue Sitzungen es bereits. Kiro Agent als deine Einstellung speichern?",
         "kiro_runs_on_kas_save": "Kiro Agent als meine Einstellung speichern",
@@ -16007,7 +16014,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",
-        "toggle_description": "Nutzt die KAS-Engine-Version, mit der diese {{productName}}-Version getestet wurde, statt der Kiro CLI. Gilt für jede neue Sitzung in diesem {{productName}}, nicht nur auf diesem Gerät. Meldet sich mit deinem Kiro-Konto aus Einstellungen → Agent-Harness an. Gilt, sobald {{productName}} neu startet.",
+        "toggle_description": "Nutzt die KAS-Engine-Version, mit der diese {{productName}}-Version getestet wurde, statt der Kiro CLI. Gilt für jede neue Sitzung in diesem {{productName}}, nicht nur auf diesem Gerät. Meldet sich mit deinem Kiro-Konto aus Einstellungen → Kiro-Konto an. Gilt, sobald {{productName}} neu startet.",
         "installed": "KAS-Engine {{version}} (selbst installiert)",
         "installed_bundled": "KAS-Engine {{version}} (in der App enthalten)",
         "off_note": "Aus: KAS nutzt deine Kiro-CLI-Installation. Ein: KAS nutzt die Engine, die mit dieser Version kommt.",
@@ -22934,6 +22941,11 @@
       "connections": {
         "label": "Verbindungen",
         "description": "Offizielle Dienste verbinden und ihre OAuth-Apps einrichten"
+      },
+      "kiroAccount": {
+        "description": "Bei Kiro anmelden, Konto wechseln oder abmelden",
+        "go_to": "Zum Kiro-Konto",
+        "label": "Kiro-Konto"
       }
     },
     "secrets": {

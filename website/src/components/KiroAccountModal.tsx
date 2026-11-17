@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { AlertCircle, AlertTriangle, ArrowRight, Coins, ExternalLink, Eye, EyeOff, Gift, Info, Loader2, RefreshCw, UserRound } from 'lucide-react'
 
 import { api } from '../api/client'
@@ -10,15 +9,16 @@ import { accountProviderLabel, providerLabelFromWire } from './kasProviderLabel'
 import { forecastCreditRunOut } from '../api/creditForecast'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 import { getAdapter } from '../providers/registry'
-import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { KIRO_SIGN_IN_BACKEND } from '../pages/developer/kiroSignInLink'
+import { useOpenKiroSignIn } from '../pages/developer/useOpenKiroSignIn'
 import { configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
+import { useKiroSignInOffered } from '../pages/developer/useKiroSignInOffered'
 import { failedWithNoData } from '../api/queryState'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
-import { useGuardedLeave } from './NavigationLeaveGuard'
 import Modal from './Modal'
 
 // The usage view model is owned by `api/client.ts` next to the wire payload it
@@ -478,9 +478,10 @@ const KIROCREW_CONFIG_QUERY = ['kirocrewConfig'] as const
  * reuses its answer rather than refetching it under the pill. `onKas` is true
  * only for a LOADED config where something runs on KAS (`kasInUse`), Bots
  * included; `mainOnKas` only when the main harness is that KAS, so its agents
- * run as Crew's own Kiro sign-in (the card in Settings > Agent Harness) and that
- * sign-in, never a kiro-cli login, is the account this popup names.
- * `signInQuery` reads that sign-in under the key the card's flow polls
+ * run as Crew's own Kiro sign-in (the card in Settings > Kiro account) and that
+ * sign-in, never a kiro-cli login, is the account this popup names. `offered`:
+ * the build offers that sign-in, which other features use whichever harness
+ * runs. `signInQuery` reads that sign-in under the key the card's flow polls
  * (`KasLoginGate`); `crewSignInStored` is true when it says one is stored,
  * usable or not.
  */
@@ -493,13 +494,14 @@ function useKasHarness() {
   const cfg = cfgQuery.data
   const onKas = cfg !== undefined && kasInUse(cfg)
   const mainOnKas = cfg !== undefined && onKas && configuredAcpBackend(cfg) === KIRO_SIGN_IN_BACKEND
+  const offered = useKiroSignInOffered() === true
   const signInQuery = useQuery<KasLoginStatus>({
     queryKey: ['kas-login'],
     queryFn: api.kasLoginStatus,
-    enabled: onKas,
+    enabled: onKas || offered,
     refetchOnMount: false,
   })
-  return { cfgQuery, onKas, mainOnKas, signInQuery, crewSignInStored: signInQuery.data?.authenticated === true }
+  return { cfgQuery, onKas, mainOnKas, offered, signInQuery, crewSignInStored: signInQuery.data?.authenticated === true }
 }
 
 function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () => void }) {
@@ -747,30 +749,30 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
 /**
  * The way from this popup to Sign out and Switch account. This popup is where
  * people look for account actions, but the actions live on the Kiro sign-in
- * card in Settings > Agent Harness, so this links there instead of carrying a
- * second copy of the sign-in flow. The link opens the card's KAS row and rings
- * it, the same deep link the chat's "Sign in to Kiro" row uses. The label names
+ * card in Settings > Kiro account, so this links there instead of carrying a
+ * second copy of the sign-in flow. The link rings the card, the same deep link
+ * the chat's "Sign in to Kiro" row uses. The label names
  * Settings and the icon is an arrow: pressing it moves, it signs nothing out.
  *
- * Shown only on a LOADED config where something runs on KAS (`kasInUse`). That
- * card signs out Crew's own Kiro sign-in, which is the account this popup names
- * only when the main harness is KAS; on kiro-cli the popup names the kiro-cli
- * login, which the card cannot touch, so a link there would promise a sign-out
- * that does not happen. So where only Bots run on KAS the label names the Bots'
- * sign-in instead. On KAS with Crew's sign-in empty the same holds for sign-out,
+ * Shown on a LOADED config where something runs on KAS (`kasInUse`) or the
+ * build offers Kiro sign-in. That card signs out Crew's own Kiro sign-in, which
+ * is the account this popup names only when the main harness is KAS; on kiro-cli
+ * the popup names the kiro-cli login, which the card cannot touch, so a link
+ * there would promise a sign-out that does not happen. So where only Bots run on
+ * KAS the label names the Bots' sign-in instead, and where nothing does it names
+ * only the Kiro account page. On KAS with Crew's sign-in empty the same holds for sign-out,
  * so the label then offers only the switch, which that card's sign-in does
  * perform. With no usable sign-in at all (`signin-required`) the label offers
  * the sign-in itself. A failed config read says so here rather than dropping
  * the link silently.
  */
 function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: KiroAccountUsage }) {
-  const navigate = useNavigate()
-  const leave = useGuardedLeave()
+  const openKiroSignIn = useOpenKiroSignIn()
   // Crew's sign-in stored: the card can sign that account out or switch it. Not
   // stored (or not yet known): the popup names kiro-cli's login, which the card
   // cannot sign out, but signing in there DOES switch the account agents run as
   // -- so the label promises only the switch.
-  const { cfgQuery, onKas, mainOnKas, crewSignInStored } = useKasHarness()
+  const { cfgQuery, onKas, mainOnKas, offered, crewSignInStored } = useKasHarness()
   if (cfgQuery.data === undefined) {
     // `config-unreadable` already carries this failure in the usage box above.
     if (!failedWithNoData(cfgQuery) || usage === 'config-unreadable') return null
@@ -784,20 +786,19 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
       />
     )
   }
-  if (!onKas) return null
+  if (!onKas && !offered) return null
   return (
     <button
       type="button"
       // Through the page's leave guard: a refused leave (an unsaved draft the
       // user keeps) leaves both the popup and the route as they are.
-      onClick={() => leave(() => {
-        onClose()
-        navigate(KIRO_SIGN_IN_PATH)
-      }, KIRO_SIGN_IN_PATH)}
+      onClick={() => openKiroSignIn(onClose)}
       className="inline-flex cursor-pointer items-center gap-1 text-[12px] text-accent hover:underline focus-ring-accent"
       data-testid="kiro-account-sign-in-settings"
     >
-      {i18nT(!mainOnKas
+      {i18nT(!onKas
+        ? 'components.kiroAccountModal.kiro_account_in_settings'
+        : !mainOnKas
         ? 'components.kiroAccountModal.bots_sign_in_in_settings'
         : needsSignIn(usage)
           ? 'components.kiroAccountModal.sign_in_in_settings'

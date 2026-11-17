@@ -14,7 +14,7 @@
  *                                         only: no agent hand-off
  *   02 refused, light, schedule page   -> ErrorNotice under its own title
  *   03 healthy, dark                   -> no notice
- *   04 click "Open sign-in settings"   -> lands on Settings > Agent Harness,
+ *   04 click "Open sign-in settings"   -> lands on Settings > Kiro account,
  *                                         where the notice is not shown
  *   05/06 phone width (390px)          -> the full notice, text and button
  *   07 status read fails (HTTP 500)    -> ErrorNotice with the agent hand-off
@@ -107,8 +107,8 @@ async function main() {
         await json(route, { running: false, has_more: false, total: 1, queue: [], messages: [{ role: 'user', ts: Date.now() / 1000 - 300, content: 'hello' }] })
         return true
       }
-      // Settings > Agent Harness, where the click lands: one KAS row, trimmed to
-      // what the picker reads, so the ringed sign-in card renders.
+      // Settings > Kiro account, where the click lands: a schema that offers KAS,
+      // so the tab and its ringed sign-in card render.
       if (path === '/api/acp-backends') { await json(route, { backends: [KAS_ROW] }); return true }
       if (path === '/api/config/schema') {
         await json(route, { entries: [{ path: 'agent.acp_backend', type: 'enum', enumValues: ['', 'kas'] }] })
@@ -158,11 +158,11 @@ async function main() {
     }
     if (click && got) {
       await notice.getByTestId('kiro-sign-in-notice-open').click()
-      await page.waitForURL(/\/settings\/agent/, { timeout: 10_000 }).catch(() => {})
+      await page.waitForURL(/\/settings\/kiro-account/, { timeout: 10_000 }).catch(() => {})
       row.landedOn = new URL(page.url()).pathname + new URL(page.url()).search
       await page.waitForTimeout(1500)
       row.noticeOnCardPage = await notice.count()
-      row.ok = row.ok && row.landedOn.startsWith('/settings/agent') && row.landedOn.includes('kiro-sign-in') && row.noticeOnCardPage === 0
+      row.ok = row.ok && row.landedOn.startsWith('/settings/kiro-account') && row.landedOn.includes('kiro-sign-in') && row.noticeOnCardPage === 0
       if (!VERIFY_ONLY) {
         await page.screenshot({ path: `${OUT}/${name}-landed.png` })
         console.log('wrote', `${OUT}/${name}-landed.png`)

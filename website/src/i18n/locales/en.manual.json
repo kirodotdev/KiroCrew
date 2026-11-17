@@ -1985,7 +1985,8 @@
       "sign_out_or_switch": "Sign out or switch account in Settings",
       "sign_out_link_config_unreadable": "Could not load settings, so the sign-out link can’t be shown.",
       "switch_in_settings": "Switch account in Settings",
-      "bots_sign_in_in_settings": "Kiro sign-in for bots in Settings"
+      "bots_sign_in_in_settings": "Kiro sign-in for bots in Settings",
+      "kiro_account_in_settings": "Kiro account in Settings"
     },
     "agentImportFlow": {
       "choose_sources": "Choose sources",
@@ -2962,7 +2963,7 @@
       "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead.",
       "cancel_unsettled": "Couldn’t cancel the sign-in. It is still active — press the same option again to retry.",
       "pending_cancel_unsettled": "You’re signed in, but the sign-in you started here couldn’t be cancelled. It stays open until it times out.",
-      "card_intro": "Used only by the Kiro Agent backend: its agents run as this Kiro account. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
+      "card_intro": "Kiro Agent and other Kiro features run as this Kiro account, whichever agent harness you use. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
       "previous_sign_in_not_removed": "Signed in, but the previous sign-in could not be removed",
       "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here."
     },
@@ -5004,6 +5005,9 @@
       "expired_detail_bots": "Bots cannot run until you sign in again. The stored sign-in expired and cannot be renewed.",
       "refused_detail_bots": "Bots will stop when this sign-in expires. Sign in again to keep them running.",
       "refused_expired_detail_bots": "Bots cannot run until you sign in again. This sign-in has already expired.",
+      "expired_detail_account": "Features that use your Kiro account cannot work until you sign in again. The stored sign-in expired and cannot be renewed.",
+      "refused_detail_account": "Features that use your Kiro account will stop when this sign-in expires. Sign in again to keep them working.",
+      "refused_expired_detail_account": "Features that use your Kiro account cannot work until you sign in again. This sign-in has already expired.",
       "status_unavailable_detail": "Open sign-in settings to check your Kiro sign-in, or ask the agent to look into it.",
       "config_unavailable": "Could not read the dashboard settings",
       "config_unavailable_detail": "Reload the page to try again, or ask the agent to look into it.",
@@ -10981,7 +10985,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "Run KAS on {{productName}}'s own engine",
-        "toggle_description": "Uses the KAS engine version this {{productName}} release was tested with, instead of the Kiro CLI. Applies to every new session on this {{productName}}, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when {{productName}} restarts.",
+        "toggle_description": "Uses the KAS engine version this {{productName}} release was tested with, instead of the Kiro CLI. Applies to every new session on this {{productName}}, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when {{productName}} restarts.",
         "installed": "KAS engine {{version}} (installed by you)",
         "installed_bundled": "KAS engine {{version}} (included with the app)",
         "off_note": "Off: KAS uses your Kiro CLI install. On: it uses the engine this release ships with.",
@@ -11289,6 +11293,11 @@
       "imports": {
         "description": "Bring data from another AI agent, and back up or restore {{productName}} configuration",
         "label": "Import / Export"
+      },
+      "kiroAccount": {
+        "description": "Sign in to Kiro, switch account or sign out",
+        "go_to": "Go to Kiro account",
+        "label": "Kiro account"
       },
       "instances": {
         "description": "Manage remote crews over SSH or AWS Session Manager; switch between them from the top header",

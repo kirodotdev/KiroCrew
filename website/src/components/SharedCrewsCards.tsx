@@ -17,7 +17,8 @@
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Users } from 'lucide-react'
+import { useInRouterContext } from 'react-router-dom'
+import { ArrowRight, ExternalLink, Users } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
@@ -26,14 +27,41 @@ import { useAppDispatch } from '../store'
 import { Btn, Card } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
+import { KIRO_SIGN_IN_TARGET } from '../pages/developer/kiroSignInLink'
+import { SettingsLink } from './SettingsLink'
 
 /** The AWS Management Console home. A reviewer call: no Kiro or Amazon Q
  *  Developer console link exists in the codebase to reuse. */
 const AWS_CONSOLE_URL = 'https://console.aws.amazon.com/'
 
+/** A refusal that says the person is signed out: the way to sign in. */
+function signedOut(code: string | undefined): boolean {
+  return (code || '').toUpperCase() === 'SIGNED_OUT'
+}
+
+/** The way from a signed-out refusal to the Kiro account tab, where the sign-in is. */
+function KiroAccountLink() {
+  const inRouter = useInRouterContext()
+  if (!inRouter) return null
+  return (
+    <SettingsLink
+      {...KIRO_SIGN_IN_TARGET}
+      data-testid="shared-crews-kiro-account-link"
+      className="inline-flex items-center gap-1 text-[13px] text-accent hover:underline focus-ring-accent"
+    >
+      {i18nT('settings.tabs.kiroAccount.go_to')}
+      <ArrowRight className="lucide-inline" aria-hidden="true" />
+    </SettingsLink>
+  )
+}
+
+/** A row's notice: the text it shows, and the refusal code behind it when an
+ *  open was refused (none for a seen-state save that failed). */
+interface RowRefusal { text: string; code?: string }
+
 function SharedCrewRow({ crew, refusal, onOpen }: {
   crew: RelayCrewEntry
-  refusal: string | undefined
+  refusal: RowRefusal | undefined
   onOpen: (endpointId: string) => void
 }) {
   const { t } = useTranslation()
@@ -66,8 +94,9 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
       {refusal && (
         // askAgent on: this tab's only unsaved inputs (the add-crew and edit-crew
         // forms) live in the store, so the hand-off's navigation loses nothing.
-        <ErrorNotice variant="inline" message={refusal} className="px-2 pb-1" testId="shared-crew-refusal" askAgent />
+        <ErrorNotice variant="inline" message={refusal.text} className="px-2 pb-1" testId="shared-crew-refusal" askAgent />
       )}
+      {signedOut(refusal?.code) && <div className="px-2 pb-1"><KiroAccountLink /></div>}
     </li>
   )
 }
@@ -85,7 +114,7 @@ function sharedListRefusalText(code: string | undefined): string {
 export default function SharedCrewsCards() {
   const { t } = useTranslation()
   const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
-  const [refusals, setRefusals] = useState<Record<string, string>>({})
+  const [refusals, setRefusals] = useState<Record<string, RowRefusal>>({})
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const onOpen = useCallback((endpointId: string) => {
@@ -96,13 +125,13 @@ export default function SharedCrewsCards() {
     const name = crews.find(c => c.endpointId === endpointId)?.name ?? ''
     void openRelayCrewTab(endpointId, name, dispatch).then(res => {
       if (!res.ok) {
-        setRefusals(prev => ({ ...prev, [endpointId]: relayRefusalText(res.error) }))
+        setRefusals(prev => ({ ...prev, [endpointId]: { text: relayRefusalText(res.error), code: res.error } }))
         return
       }
       // Opened, so it is seen, as an Open from the switcher records it.
       void recordRelayCrewsSeen([endpointId]).then(({ saved, failed }) => {
         void clearRelayCrewsUnseen(queryClient, saved)
-        if (failed) setRefusals(prev => ({ ...prev, [endpointId]: i18nT('components.relayCrews.seen_not_saved') }))
+        if (failed) setRefusals(prev => ({ ...prev, [endpointId]: { text: i18nT('components.relayCrews.seen_not_saved') } }))
       })
     })
   }, [crews, dispatch, queryClient])
@@ -120,6 +149,7 @@ export default function SharedCrewsCards() {
           <div className="py-1 flex flex-wrap items-center gap-3">
             {/* askAgent on: a list read failed, and this tab's drafts live in the store. */}
             <ErrorNotice variant="inline" impact="partial" message={sharedListRefusalText(refusal.code)} testId="shared-crews-refusal" askAgent />
+            {signedOut(refusal.code) && <KiroAccountLink />}
             {relayRetryable(refusal.code) && (
               <Btn onClick={retry} disabled={retrying} data-testid="shared-crews-retry">
                 {t('components.relayCrews.try_again')}

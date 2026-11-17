@@ -1,6 +1,6 @@
 /**
  * The one verdict on whether the stored Kiro sign-in still works, shared by the
- * sign-in card (Settings > Agent Harness) and the app-level sign-in notice so the
+ * sign-in card (Settings > Kiro account) and the app-level sign-in notice so the
  * two cannot disagree. A pure predicate over the token-free `/api/kas-login`
  * status, kept out of the card's module so the always-mounted notice does not
  * pull the card's component graph (the OIDC chooser) into its chunk.

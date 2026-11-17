@@ -1,8 +1,8 @@
 /**
  * AgentBackendTab: what the open detail shows for a harness.
  *
- * The capability card and its MCP half, the standing caveats, the Kiro sign-in card
- * in the KAS detail, and a backend id the panel has never heard of. The list, the
+ * The capability card and its MCP half, the standing caveats, the Kiro account
+ * status line in the KAS detail, and a backend id the panel has never heard of. The list, the
  * switch, the status strip and Check again are pinned in AgentBackendTab.test.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -38,14 +38,12 @@ vi.mock('../components/settingRef/useConfigSchema', () => ({
   useConfigSchema: () => schemaMock(),
 }))
 
-// The card under the switch is a sentinel: its own behaviour (status query,
-// chooser, sign-out) is pinned in KiroSignInCard.test.tsx, and the real card
-// would need the kas-login API this file does not mock. Unlike the real card it
-// renders unconditionally, so its absence in a test can only be the tab's gate.
-vi.mock('../pages/developer/KiroSignInCard', () => ({
-  KiroSignInCard: ({ compact }: { compact?: boolean }) => (
-    <div data-testid="kiro-sign-in-card" data-compact={compact ? 'true' : 'false'} />
-  ),
+// The Kiro account line in the KAS detail is a sentinel: its own behaviour is
+// pinned in KiroAccountStatusLine.test.tsx, and the real line would need the
+// kas-login API this file does not mock. It renders unconditionally, so its
+// absence in a test can only be the tab's gate.
+vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
+  KiroAccountStatusLine: () => <div data-testid="kiro-account-status-line" />,
 }))
 
 // Same sentinel treatment for the engine card under it: its behaviour is pinned in
@@ -933,56 +931,53 @@ describe('AgentBackendTab standing caveats', () => {
 })
 
 describe('AgentBackendTab kiro sign-in', () => {
-  it('renders the Kiro sign-in inside the KAS detail, compact, while KAS is on offer', async () => {
-    // The identity it stores is used by the KAS relay alone, so it lives in the one
-    // row whose harness uses it -- and in the in-detail form, not a card inside the
-    // detail's own bordered panel.
+  it('shows the Kiro account line inside the KAS detail while KAS is on offer', async () => {
+    // The card itself is on Settings > Kiro account; the row that runs as the
+    // sign-in says whether it is stored and links there.
     wrap()
     await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
-    // Kiro CLI's detail is open: no sign-in there.
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    // Kiro CLI's detail is open: no line there.
+    expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
     highlight('Kiro Agent')
-    const signIn = screen.getByTestId('kiro-sign-in-card')
-    expect(detail().contains(signIn)).toBe(true)
-    expect(signIn).toHaveAttribute('data-compact', 'true')
+    expect(detail().contains(screen.getByTestId('kiro-account-status-line'))).toBe(true)
     // And not on the other harness that could be looked at next.
     highlight('Claude Code')
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
   })
 
   it('keeps the KAS engine card off the harness row; it lives in Feature Previews', async () => {
     // The route is in shadow testing, so its switch is not in plain view of every
-    // KAS user: the KAS detail shows the sign-in and no engine card.
+    // KAS user: the KAS detail shows the account line and no engine card.
     wrap()
     await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     highlight('Kiro Agent')
-    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-account-status-line')).toBeInTheDocument()
     expect(screen.queryByTestId('kas-bundle-card')).toBeNull()
   })
 
-  it('renders no sign-in card when this deployment cannot select KAS', async () => {
+  it('renders no account line when this deployment cannot select KAS', async () => {
     // On a build or policy that hides that option there is nothing to sign in for.
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude']))
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     expect(screen.queryByRole('radio', { name: 'Kiro Agent' })).toBeNull()
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
     expect(screen.queryByTestId('kas-bundle-card')).toBeNull()
     highlight('Claude Code')
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
   })
 
-  it('opens on KAS with the sign-in while KAS is the saved backend, even if it reads as unselectable', async () => {
+  it('opens on KAS with the account line while KAS is the saved backend, even if it reads as unselectable', async () => {
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
     await waitFor(() => expect(row('Kiro Agent')).toHaveAttribute('aria-current', 'true'))
     expect(row('Kiro Agent')).toBeChecked()
-    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-account-status-line')).toBeInTheDocument()
   })
 
-  it('offers no sign-in card for an agent it only lists', async () => {
-    // The sign-in gate reads the OFFERED set, not the listed one. A KAS row that
+  it('offers no account line for an agent it only lists', async () => {
+    // The line's gate reads the OFFERED set, not the listed one. A KAS row that
     // exists only to explain itself must not draw a sign-in for an option nobody can
     // pick.
     acpBackendsMock.mockResolvedValue({
@@ -999,14 +994,11 @@ describe('AgentBackendTab kiro sign-in', () => {
     await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     highlight('Kiro Agent')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
   })
 
-  it("opens the KAS detail when the URL carries the chat's sign-in highlight", async () => {
-    // The chat's "Sign in to Kiro" link is `/settings/agent?highlight=key:kiro-sign-in`.
-    // The Settings highlight hook waits for the anchor and rings it, but the anchor
-    // lives inside the KAS detail -- so the tab has to open that detail for the link
-    // to land on anything.
+  it('leaves the detail on the running backend for any highlight, the sign-in one included', async () => {
+    // The sign-in card has a tab of its own, so its highlight opens nothing here.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={qc}>
@@ -1015,31 +1007,9 @@ describe('AgentBackendTab kiro sign-in', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    await waitFor(() => expect(row('Kiro Agent')).toBeChecked())
-    expect(row('Kiro CLI')).not.toBeChecked()
-    // Kiro CLI is still the one running: opening a detail switched nothing.
-    expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true')
-    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
-    expect(patchConfigMock).not.toHaveBeenCalled()
-    // Once open, the reader is free to look elsewhere: the link does not drag them
-    // back while the parameter is still in the URL.
-    highlight('Claude Code')
-    expect(row('Claude Code')).toBeChecked()
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
-  })
-
-  it('leaves the detail on the running backend for any other highlight', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={['/settings/agent?highlight=key%3Asomething-else']}>
-          <AgentBackendTab />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    )
     await waitFor(() => expect(row('Kiro CLI')).toBeChecked())
     expect(row('Kiro Agent')).not.toBeChecked()
-    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
   })
 })
 

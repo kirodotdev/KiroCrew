@@ -6463,7 +6463,8 @@
       "sign_out_or_switch": "設定でサインアウト・アカウント切り替え",
       "sign_out_link_config_unreadable": "設定を読み込めなかったため、サインアウトのリンクを表示できません。",
       "switch_in_settings": "設定でアカウント切り替え",
-      "bots_sign_in_in_settings": "設定で Bot の Kiro サインイン"
+      "bots_sign_in_in_settings": "設定で Bot の Kiro サインイン",
+      "kiro_account_in_settings": "設定の Kiro アカウント"
     },
     "artifactChatPanel": {
       "agent_chat": "エージェントチャット",
@@ -7782,7 +7783,7 @@
       "loopback_fell_back": "サインインの結果がこのコンピューターに直接戻れなかったため、代わりにコードを表示しています。",
       "cancel_unsettled": "サインインをキャンセルできませんでした。サインインはまだ有効です。同じ項目をもう一度押して再試行してください。",
       "pending_cancel_unsettled": "サインインしましたが、ここで開始したサインインをキャンセルできませんでした。タイムアウトするまで開いたままになります。",
-      "card_intro": "Kiro Agent バックエンドのみが使用します。そのエージェントはこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
+      "card_intro": "Kiro Agent やその他の Kiro の機能は、どのエージェントハーネスを使っていてもこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
       "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
     },
@@ -11030,6 +11031,9 @@
       "expired_detail_bots": "再度サインインするまで、Bot は動作できません。保存されたサインインは失効しており、更新できません。",
       "refused_detail_bots": "このサインインが失効すると、Bot は停止します。動作を続けるには再度サインインしてください。",
       "refused_expired_detail_bots": "再度サインインするまで、Bot は動作できません。このサインインはすでに失効しています。",
+      "expired_detail_account": "再度サインインするまで、Kiro アカウントを使う機能は動作しません。保存されたサインインは失効しており、更新できません。",
+      "refused_detail_account": "このサインインが失効すると、Kiro アカウントを使う機能は停止します。動作を続けるには再度サインインしてください。",
+      "refused_expired_detail_account": "再度サインインするまで、Kiro アカウントを使う機能は動作しません。このサインインはすでに失効しています。",
       "status_unavailable_detail": "サインイン設定を開いて Kiro のサインインを確認するか、エージェントに調べるよう依頼してください。",
       "config_unavailable": "ダッシュボードの設定を読み込めませんでした",
       "config_unavailable_detail": "ページを再読み込みしてもう一度お試しいただくか、エージェントに調査を依頼してください。",
@@ -13268,7 +13272,7 @@
         "code_channel_worktree_not_ready": "このコードチャンネルの worktree はまだ準備できていないため、メッセージは実行されませんでした。少し待ってからもう一度送信してください。",
         "remote_crew_read_only": "このチャットはリモートのクルーで実行されたため、現在は読み取り専用です。続けるにはクルー自身のセッションを開いてください。",
         "archive_failed_turn_cancelled": "実行中のターンをキャンセルした後、このタブのアーカイブに失敗しました。タブは残っていますが、そのターンは完了していません — 続けるにはメッセージをもう一度送信してください。",
-        "kas_signed_out": "Kiro にサインインしていません。「設定 → エージェントハーネス → Kiro Agent → Kiro サインイン」でサインインしてから、メッセージをもう一度送信してください。",
+        "kas_signed_out": "Kiro にサインインしていません。「設定 → Kiro アカウント」でサインインしてから、メッセージをもう一度送信してください。",
         "kas_signed_out_sign_in_below": "Kiro にサインインしていません。下のボタンでサインインしてから、メッセージをもう一度送信してください。",
         "windows_spawn_blocked": "Windows がエージェントプログラム（{{binary}}）を起動できませんでした。このコンピューターの AppLocker、EDR 製品、またはグループポリシーがブロックした可能性があります。IT 管理者にこのファイルの許可を依頼してから、新しいチャットを開始してください。",
         "tools_not_ready": "組み込みツールの準備が間に合わなかったため、エージェントを開始できませんでした。メッセージはそのまま残っています。少し待ってからもう一度お試しください。繰り返し発生する場合は、詳細がゲートウェイのログにあります。",
@@ -15319,6 +15323,9 @@
         "install_check_failed_can_still_switch": "このマシンにインストールされているか確認できませんでした。それでも切り替えられます。未インストールなら、セッション開始時に知らせます。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "このマシンにインストールされた kiro-cli を、kiro-cli 自身のサインインで使用します。",
+        "kiro_account_not_signed_in": "サインインしていません",
+        "kiro_account_signed_in_as": "{{name}} としてサインイン中",
         "kiro_row_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作します。新しいセッションはすでに Kiro Agent を使っているため、ここで切り替えるものはありません。",
         "kiro_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作するため、新しいセッションはすでにそれを使っています。Kiro Agent を設定として保存しますか？",
         "kiro_runs_on_kas_save": "Kiro Agent を自分の設定として保存",
@@ -15598,7 +15605,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
-        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを、Kiro CLI の代わりに使います。このデバイスだけでなく、この {{productName}} のすべての新しいセッションに適用されます。設定 → エージェントハーネスの Kiro アカウントでサインインします。{{productName}} の再起動後に反映されます。",
+        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを、Kiro CLI の代わりに使います。このデバイスだけでなく、この {{productName}} のすべての新しいセッションに適用されます。設定 → Kiro アカウントでサインインします。{{productName}} の再起動後に反映されます。",
         "installed": "KAS エンジン {{version}}（自分でインストール）",
         "installed_bundled": "KAS エンジン {{version}}（アプリに同梱）",
         "off_note": "オフ：KAS はインストール済みの Kiro CLI を使います。オン：このリリースに同梱のエンジンを使います。",
@@ -22373,6 +22380,11 @@
       "connections": {
         "label": "接続",
         "description": "公式サービスを接続して OAuth アプリを設定"
+      },
+      "kiroAccount": {
+        "description": "Kiro へのサインイン、アカウントの切り替え、サインアウト",
+        "go_to": "Kiro アカウントへ移動",
+        "label": "Kiro アカウント"
       }
     },
     "secrets": {

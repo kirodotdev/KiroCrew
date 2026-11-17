@@ -30,6 +30,14 @@ vi.mock('../api/client', async importOriginal => {
   }
 })
 
+// Whether the build offers Kiro sign-in (`useKiroSignInOffered`): unanswered by
+// default, as before the schema read lands.
+const signInOffered = vi.hoisted(() => ({ value: undefined as boolean | undefined, error: null as Error | null }))
+vi.mock('../pages/developer/useKiroSignInOffered', () => ({
+  useKiroSignInOffered: () => signInOffered.value,
+  useKiroSignInOfferedQuery: () => ({ offered: signInOffered.value, error: signInOffered.error }),
+}))
+
 const kasLoginStatus = vi.mocked(api.kasLoginStatus)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 
@@ -82,6 +90,8 @@ function NavigationVeto({ guard }: { guard: () => boolean }) {
 const settle = () => act(async () => { await Promise.resolve() })
 
 beforeEach(() => {
+  signInOffered.value = undefined
+  signInOffered.error = null
   navigate.mockReset()
   kasLoginStatus.mockReset()
   kirocrewConfig.mockReset()
@@ -370,10 +380,10 @@ describe('KiroSignInNotice', () => {
     expect(await findNotice()).toBeInTheDocument()
   })
 
-  it('is absent on Settings > Agent Harness, where the sign-in card itself shows the state', async () => {
+  it('is absent on Settings > Kiro account, where the sign-in card itself shows the state', async () => {
     backend('kas')
     kasLoginStatus.mockResolvedValue(REFUSED)
-    renderWithProviders(<KiroSignInNotice />, { route: '/settings/agent?highlight=key%3Akiro-sign-in' })
+    renderWithProviders(<KiroSignInNotice />, { route: '/settings/kiro-account?highlight=key%3Akiro-sign-in' })
     await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
     await settle()
     expect(refused()).not.toBeInTheDocument()
@@ -402,7 +412,8 @@ describe('KiroSignInNotice', () => {
   it.each([
     ['kiro-cli', 'kiro'],
     ['Claude', 'claude'],
-  ])('never reads the sign-in on the %s backend, where it concerns no agent', async (_name, id) => {
+  ])('never reads the sign-in on the %s backend of a build that offers no Kiro sign-in', async (_name, id) => {
+    signInOffered.value = false
     backend(id)
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
@@ -438,7 +449,65 @@ describe('KiroSignInNotice', () => {
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
   })
 
+  it.each(['kiro', 'claude'])('shows a STORED lapsed sign-in on the %s backend of a build that offers Kiro sign-in, naming the account features', async id => {
+    signInOffered.value = true
+    backend(id)
+    kasLoginStatus.mockResolvedValue(EXPIRED)
+    renderWithProviders(<KiroSignInNotice />)
+    const el = await findNotice()
+    expect(el).toHaveTextContent('Features that use your Kiro account cannot work until you sign in again')
+    expect(el).not.toHaveTextContent(/Agents|Bots/)
+    // The main agent runs on another credential, so its hand-off still works.
+    expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('never asks someone who never signed in, off KAS: no stored sign-in, no notice', async () => {
+    signInOffered.value = true
+    backend('claude')
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    renderWithProviders(<KiroSignInNotice />)
+    await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
+    await settle()
+    expect(notice()).not.toBeInTheDocument()
+    expect(refused()).not.toBeInTheDocument()
+  })
+
+  it('reports a failed status read off KAS too, as an error with its way to the card', async () => {
+    signInOffered.value = true
+    backend('claude')
+    kasLoginStatus.mockRejectedValue(new Error('token_store_failed: the sign-in store could not be read'))
+    renderWithProviders(<KiroSignInNotice />)
+    const el = await findFailure()
+    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+  })
+
+  it('says so off KAS when the settings schema read fails, instead of leaving the sign-in unchecked', async () => {
+    signInOffered.error = new Error('Config schema fetch failed: 500')
+    backend('claude')
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    renderWithProviders(<KiroSignInNotice />, { store })
+    const el = await screen.findByTestId('kiro-sign-in-schema-error', {}, chain())
+    expect(el).toHaveTextContent('Could not read the dashboard settings')
+    expect(kasLoginStatus).not.toHaveBeenCalled()
+    fireEvent.click(within(el).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('kiro-sign-in-schema-error')).not.toBeInTheDocument()
+  })
+
+  it('leaves a failed schema read alone on KAS, where the status read runs anyway', async () => {
+    signInOffered.error = new Error('Config schema fetch failed: 500')
+    backend('kas')
+    kasLoginStatus.mockResolvedValue(HEALTHY)
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    renderWithProviders(<KiroSignInNotice />, { store })
+    await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
+    await settle()
+    expect(screen.queryByTestId('kiro-sign-in-schema-error')).not.toBeInTheDocument()
+  })
+
   it('never reads the sign-in on a KAS-named backend the gateway says nothing runs on', async () => {
+    signInOffered.value = false
     kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' }, kas_in_use: false } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)

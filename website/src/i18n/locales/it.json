@@ -6445,7 +6445,8 @@
       "sign_out_or_switch": "Esci o cambia account nelle Impostazioni",
       "sign_out_link_config_unreadable": "Impossibile caricare le impostazioni, quindi il link per uscire non può essere mostrato.",
       "switch_in_settings": "Cambia account nelle Impostazioni",
-      "bots_sign_in_in_settings": "Accesso a Kiro per i Bot nelle Impostazioni"
+      "bots_sign_in_in_settings": "Accesso a Kiro per i Bot nelle Impostazioni",
+      "kiro_account_in_settings": "Account Kiro nelle Impostazioni"
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
@@ -8200,7 +8201,7 @@
       "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice.",
       "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare.",
       "pending_cancel_unsettled": "Accesso effettuato, ma non è stato possibile annullare l’accesso avviato qui. Resta aperto fino alla scadenza.",
-      "card_intro": "Usato solo dal backend Kiro Agent: i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
+      "card_intro": "Kiro Agent e le altre funzioni di Kiro funzionano con questo account Kiro, qualunque harness dell’agente tu usi. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo cambia.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
       "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
     },
@@ -11546,6 +11547,9 @@
       "expired_detail_bots": "I Bot non possono essere eseguiti finché non accedi di nuovo. L’accesso salvato è scaduto e non può essere rinnovato.",
       "refused_detail_bots": "I Bot si fermeranno alla scadenza di questo accesso. Accedi di nuovo perché continuino a funzionare.",
       "refused_expired_detail_bots": "I Bot non possono essere eseguiti finché non accedi di nuovo. Questo accesso è già scaduto.",
+      "expired_detail_account": "Le funzioni che usano il tuo account Kiro non possono funzionare finché non accedi di nuovo. L’accesso salvato è scaduto e non può essere rinnovato.",
+      "refused_detail_account": "Le funzioni che usano il tuo account Kiro si fermeranno alla scadenza di questo accesso. Accedi di nuovo perché continuino a funzionare.",
+      "refused_expired_detail_account": "Le funzioni che usano il tuo account Kiro non possono funzionare finché non accedi di nuovo. Questo accesso è già scaduto.",
       "status_unavailable_detail": "Apri le impostazioni di accesso per controllare il tuo accesso a Kiro, oppure chiedi all’agente di verificare.",
       "config_unavailable": "Impossibile leggere le impostazioni della dashboard",
       "config_unavailable_detail": "Ricarica la pagina per riprovare, oppure chiedi all’agente di verificare.",
@@ -13912,7 +13916,7 @@
         "code_channel_worktree_not_ready": "Il worktree di questo canale di codice non è ancora pronto, quindi il messaggio non è stato eseguito. Invialo di nuovo tra un momento.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
         "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare.",
-        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Harness dell’agente → Kiro Agent → Accesso a Kiro, poi invia di nuovo il messaggio.",
+        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Account Kiro, poi invia di nuovo il messaggio.",
         "kas_signed_out_sign_in_below": "Non hai effettuato l’accesso a Kiro. Accedi qui sotto, poi invia di nuovo il messaggio.",
         "windows_spawn_blocked": "Windows non è riuscito ad avviare il programma dell’agente ({{binary}}). Probabilmente l’ha bloccato AppLocker, un prodotto EDR o un criterio di gruppo su questo computer. Chiedi all’amministratore IT di consentire quel file, poi avvia una nuova chat.",
         "tools_not_ready": "L’agente non è riuscito ad avviarsi perché i suoi strumenti integrati non erano pronti in tempo. Il tuo messaggio è ancora qui. Riprova tra un momento. Se continua a succedere, il log del gateway contiene i dettagli.",
@@ -16135,6 +16139,9 @@
         "install_check_failed_can_still_switch": "Non è stato possibile verificare se è installato su questa macchina. Puoi comunque passare a questo agente. Se non è installato, la sessione lo segnala all'avvio.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Usa il kiro-cli installato su questo computer, con l’accesso proprio di kiro-cli.",
+        "kiro_account_not_signed_in": "Accesso non effettuato",
+        "kiro_account_signed_in_as": "Accesso effettuato come {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI ora gira su Kiro Agent. Le nuove sessioni usano già Kiro Agent, quindi qui non resta nulla da cambiare.",
         "kiro_runs_on_kas": "Kiro CLI ora gira su Kiro Agent, quindi le nuove sessioni lo usano già. Salvare Kiro Agent come tua impostazione?",
         "kiro_runs_on_kas_save": "Salva Kiro Agent come mia impostazione",
@@ -16416,7 +16423,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",
-        "toggle_description": "Usa la versione del motore KAS testata con questa versione di {{productName}}, al posto della Kiro CLI. Vale per ogni nuova sessione di questo {{productName}}, non solo per questo dispositivo. Accede con il tuo account Kiro da Impostazioni → Harness dell’agente. Ha effetto quando {{productName}} si riavvia.",
+        "toggle_description": "Usa la versione del motore KAS testata con questa versione di {{productName}}, al posto della Kiro CLI. Vale per ogni nuova sessione di questo {{productName}}, non solo per questo dispositivo. Accede con il tuo account Kiro da Impostazioni → Account Kiro. Ha effetto quando {{productName}} si riavvia.",
         "installed": "Motore KAS {{version}} (installato da te)",
         "installed_bundled": "Motore KAS {{version}} (incluso nell'applicazione)",
         "off_note": "Disattivato: KAS usa la tua installazione della Kiro CLI. Attivato: usa il motore incluso in questa versione.",
@@ -23495,6 +23502,11 @@
       "connections": {
         "label": "Connessioni",
         "description": "Connetti servizi ufficiali e configura le loro app OAuth"
+      },
+      "kiroAccount": {
+        "description": "Accedi a Kiro, cambia account o esci",
+        "go_to": "Vai ad Account Kiro",
+        "label": "Account Kiro"
       }
     },
     "secrets": {

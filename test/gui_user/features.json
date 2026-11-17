@@ -2537,7 +2537,7 @@
         "seed": "memory-populated",
         "members": [],
         "feature_flags": [],
-        "notes": "DRILL_VIEWS in OverviewPage.tsx; TunnelStatus appears on the hero. The Kiro sign-in card does not: it lives on Settings > Agent Harness."
+        "notes": "DRILL_VIEWS in OverviewPage.tsx; TunnelStatus appears on the hero. The Kiro sign-in card does not: it lives on Settings > Kiro account."
       },
       "runnable": "smoke",
       "estimated_steps": 3,
@@ -5549,25 +5549,25 @@
     {
       "id": "kas-auth-sign-in-card-signed-out",
       "feature": "auth",
-      "title": "Kiro sign-in card on Settings > Agent Harness (signed-out state)",
+      "title": "Kiro sign-in card on Settings > Kiro account (signed-out state)",
       "user_story": "As an operator, I want to see whether Kiro Crew holds a Kiro identity and how to sign in, so that I can fix a session that cannot start.",
-      "start_url": "/settings/agent",
-      "entry_path": "Settings > Agent Harness > scroll below the backend switch to the 'Kiro sign-in' card (deep link /settings/agent?highlight=key:kiro-sign-in)",
+      "start_url": "/settings/kiro-account",
+      "entry_path": "Settings > Kiro account > the 'Kiro sign-in' card (deep link /settings/kiro-account?highlight=key:kiro-sign-in)",
       "preconditions": {
         "seed": "minimal",
         "members": [
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "No vault identity on the seeded home; KasLoginGate is not mounted at app root, the card embeds the same views. KiroSignInCard (pages/developer) mounts only inside the KAS row's detail on Agent Harness (AgentBackendTab.tsx), and only while KAS is an offered backend, so the seeded host must offer KAS. Settings > Overview carries only a one-line pointer (while KAS is the selected backend) and the card is not in Settings search. The shipped scenario auth-sign-in-card-signed-out drives the same card."
+        "notes": "No vault identity on the seeded home; KasLoginGate is not mounted at app root, the card embeds the same views. KiroSignInCard (pages/developer) mounts on its own Settings > Kiro account tab (SettingsPage.tsx) on any harness, while the build offers KAS as a backend, so the seeded host must offer KAS. The Kiro Agent row on Agent Harness carries a one-line status and a link to that tab. The shipped scenario auth-sign-in-card-signed-out drives the same card."
       },
       "runnable": "smoke",
       "estimated_steps": 2,
-      "rationale": "Newly merged UI. The card reads a local kas-login status and renders deterministically on a fresh home with no network; two actions (open Agent Harness, assert card copy/CTA). Completing the sign-in itself (the embedded KAS login) needs a real external identity and is out of scope; the scenario asserts the card's states, not a finished login.",
+      "rationale": "Newly merged UI. The card reads a local kas-login status and renders deterministically on a fresh home with no network; two actions (open Kiro account, assert card copy/CTA). Completing the sign-in itself (the embedded KAS login) needs a real external identity and is out of scope; the scenario asserts the card's states, not a finished login.",
       "source": [
         "docs/feature-map/README.md",
         "docs/system-specs/modules/kas-auth.md",
-        "website/src/pages/developer/AgentBackendTab.tsx",
+        "website/src/pages/SettingsPage.tsx",
         "website/src/pages/developer/KiroSignInCard.tsx",
         "website/src/pages/developer/kiroSignInLink.ts"
       ],
@@ -5998,7 +5998,7 @@
         "seed": "rich",
         "members": [],
         "feature_flags": [],
-        "notes": "The Kiro sign-in card is not on Overview, it lives on Settings > Agent Harness (Overview shows a one-line pointer only while KAS is the selected backend). | Segment-less /settings resolves to the default tab; rail groups Preferences and System are rendered by SidePanelLayout."
+        "notes": "The Kiro sign-in card is not on Overview, it lives on Settings > Kiro account. | Segment-less /settings resolves to the default tab; rail groups Preferences and System are rendered by SidePanelLayout."
       },
       "runnable": "smoke",
       "estimated_steps": 2,

@@ -4393,7 +4393,8 @@ may overlap, and `sessions` excludes `composer`. `settings` is split: its listin
 names one `settings.<tab>` sub-area per Settings tab (`sub_areas`, with the
 localized tab label and a count) and lists only what no sub-area holds. An area
 may name `related` areas (Settings and Customize; Connections and Settings,
-whose Agent Harness tab holds the model sign-in; Shell and Sessions, whose chat
+whose Agent Harness tab holds the model provider sign-in and whose Kiro account
+tab holds the Kiro sign-in; Shell and Sessions, whose chat
 side panel holds the built-in browser).
 
 Each entry is compact: `id`, `label` (or `description` for a live-data label),

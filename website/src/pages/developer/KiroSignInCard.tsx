@@ -2,13 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
-import { isAccountOnly, parseKiroUsagePayload } from '../../api/kiroUsage'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
-import { configuredAcpBackend, type AcpBackendConfig } from '../../api/acpBackend'
-import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
+import { useSignedInAccount } from './kiroSignedInAccount'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Card, CardTitle } from '../../components/ui'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
@@ -27,37 +25,6 @@ import {
 // Same cache key the embedded flow reads status under (KasLoginGate.QUERY_KEY):
 // a sign-out here must invalidate the flow's query, not a private copy of it.
 const STATUS_QUERY_KEY = ['kas-login'] as const
-
-/**
- * Who the stored sign-in belongs to (email, else account name), read from the
- * top bar's `['kiro-usage']` reading -- the vault stores no e-mail, so that
- * whoami-backed reading is the only place a name exists. That reading names the
- * vault account only while the saved main harness is KAS (the gateway's
- * `_vault_owns_usage_sync`); on any other harness it names kiro-cli's login,
- * which this card's Sign out does not touch, so no name is shown then, nor
- * before the config has loaded. `enabled: false`: the top bar owns both reads,
- * this only observes them. `hidden`: an e-mail follows the account popup's hide
- * toggle (hidden by default), so a shared screen does not show it here either;
- * an account name is never hidden.
- */
-function useSignedInAccount(): { name: string; hidden: boolean; isEmail: boolean } {
-  const { data } = useQuery({
-    queryKey: ['kiro-usage'],
-    queryFn: () => api.sessionsUsage().then(parseKiroUsagePayload),
-    enabled: false,
-  })
-  const { data: cfg } = useQuery<AcpBackendConfig>({
-    queryKey: ['kirocrewConfig'],
-    queryFn: () => api.kirocrewConfig(),
-    enabled: false,
-  })
-  const [emailHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
-  const none = { name: '', hidden: false, isEmail: false }
-  if (cfg === undefined || configuredAcpBackend(cfg) !== KIRO_SIGN_IN_BACKEND) return none
-  if (typeof data !== 'object' || data === null || isAccountOnly(data)) return none
-  if (data.email) return { name: data.email, hidden: emailHidden, isEmail: true }
-  return { ...none, name: data.account || '' }
-}
 
 /**
  * The account after the provider, as ` · <name>`. A hidden e-mail is blurred like
@@ -211,47 +178,24 @@ function SignedInSummary({
 }
 
 /**
- * Settings > Agent Harness card for signing in to Kiro Crew's OWN Kiro identity
- * -- the one the gateway hands to agent processes (KAS relay) so they run as the
- * user without depending on `kiro-cli login`. Wraps the sign-in flow
- * `KasLoginGate` carries in its embedded chrome, and adds the two things a card
- * needs that a gate does not: a signed-in summary (provider, expiry,
- * renewability -- never a token) with sign-out, and an explicit "sign-in
- * expired" state that asks the user to sign in again instead of quietly falling
- * back to kiro-cli's login.
+ * Settings > Kiro account card for signing in to Kiro Crew's OWN Kiro identity
+ * -- the one the gateway hands to agent processes (KAS relay) and to the other
+ * services that run as the user's Kiro account, without depending on
+ * `kiro-cli login`. Wraps the sign-in flow `KasLoginGate` carries in its
+ * embedded chrome, and adds the two things a card needs that a gate does not: a
+ * signed-in summary (provider, expiry, renewability -- never a token) with
+ * sign-out, and an explicit "sign-in expired" state that asks the user to sign
+ * in again instead of quietly falling back to kiro-cli's login.
  *
- * Rendered by `AgentBackendTab` INSIDE the KAS row's detail, and only while KAS
- * is a backend that switch offers: the stored identity is consumed by the KAS
- * relay alone, so on a build or policy that cannot select KAS there is nothing
- * to sign in for, and on a row that is not KAS it would be a sign-in for an
- * agent that never uses it. That is also why it is NOT on Settings > Overview
- * (its former home): a sign-in chooser on the landing page read as a required
- * step to every user. People look for sign-out and account switching in the
- * account popup and in Settings search, so both link HERE instead of carrying a
- * second copy of the flow: the Kiro account popup's "Sign out or switch account"
- * and the search entry (`KIRO_SIGN_IN_SETTING_ID`), which waits on the
- * `data-setting-id` this card carries.
- *
- * `compact` is that in-detail form: a fold with a small heading rather than
- * a `Card` with a `CardTitle`, because the detail it sits in is already the
- * bordered panel and a card inside it would be a box inside a box. The anchor
- * (`data-setting-key`) and the test id are the same in both forms, so the
- * chat's deep link rings whichever one is on screen.
- *
- * The compact form FOLDS: a `<details>` that is open while the person still has
- * to sign in (signed out, lapsed, or the status read failed) and closed to its
- * heading plus "Signed in with …" once a usable sign-in is stored, so a done step
- * stops taking the page. Closed while the first answer is in flight, so a signed-in
- * page never flashes the chooser open. A sign-in that lapses later re-opens it. A
- * toggle by the person wins over that default; `openRequest` (bumped by the chat's
- * sign-in deep link) opens it whatever they last chose, once: the card reports it
- * handled so a later remount does not force it open again.
+ * Rendered by SettingsPage on its own tab while the build offers Kiro sign-in
+ * (`useKiroSignInOffered`), whichever harness is selected. People look for
+ * sign-out and account switching in the account popup and in Settings search,
+ * so both link HERE instead of carrying a second copy of the flow: the Kiro
+ * account popup's "Sign out or switch account" and the search entry
+ * (`KIRO_SIGN_IN_SETTING_ID`), which waits on the `data-setting-id` this card
+ * carries.
  */
-export function KiroSignInCard({
-  compact = false,
-  openRequest = 0,
-  onOpenRequestHandled,
-}: { compact?: boolean; openRequest?: number; onOpenRequestHandled?: () => void } = {}) {
+export function KiroSignInCard() {
   const title = i18nT('pages.developer.kiroSignInCard.title')
   // Set after a successful sign-out, so the "applies to agent processes started
   // from now on" note shows at the moment the change was made. Held HERE, above
@@ -261,13 +205,12 @@ export function KiroSignInCard({
   const [signedOutNote, setSignedOutNote] = useState(false)
   // Observe the flow's status (same cache key, no extra fetch: the flow owns the
   // polling) so the note clears when a credential is stored again.
-  const { data: observed, isError: statusFailed } = useQuery({
+  const { data: observed } = useQuery({
     queryKey: STATUS_QUERY_KEY,
     queryFn: api.kasLoginStatus,
     enabled: false,
   })
   const authenticated = observed?.authenticated === true
-  const account = useSignedInAccount()
   // Which stored sign-in sessions run as, read apart from the status above so a
   // slow answer never holds the card's first paint back. Re-read whenever a
   // sign-in lands or leaves: both change which account that is.
@@ -283,37 +226,6 @@ export function KiroSignInCard({
     }
     lastAuthenticated.current = authenticated
   }, [authenticated, observed, queryClient])
-  // The compact fold: `null` follows the sign-in state, a boolean is the person's toggle.
-  const signedIn = authenticated && observed !== undefined && !signInLapsed(observed)
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  // Set at the FIRST answer and only ever re-opened after that: signing in from the
-  // open fold must not snap it shut under the person's pointer, but a sign-in that
-  // lapses or is signed out elsewhere must not hide behind a closed heading.
-  const [autoOpen, setAutoOpen] = useState<boolean | null>(null)
-  const wasSignedIn = useRef(false)
-  useEffect(() => {
-    // A failed first read opens it and keeps it open once a retry answers.
-    if (observed === undefined && statusFailed && autoOpen === null) setAutoOpen(true)
-    else if (observed !== undefined && autoOpen === null) setAutoOpen(!signedIn)
-    // Every signed-in -> not-signed-in change re-opens it, whatever the person last chose.
-    if (wasSignedIn.current && !signedIn && observed !== undefined) {
-      setAutoOpen(true)
-      setUserOpen(null)
-    }
-    wasSignedIn.current = signedIn
-  }, [observed, autoOpen, signedIn, statusFailed])
-  const handled = useRef(onOpenRequestHandled)
-  handled.current = onOpenRequestHandled
-  useEffect(() => {
-    if (openRequest > 0) {
-      setUserOpen(true)
-      handled.current?.()
-    }
-  }, [openRequest])
-  // A failed status read is not an answer to fold on: its error and retry are inside.
-  // Two different accounts open the fold too: a closed heading reading "Signed in"
-  // would hide that sessions are not running as the kiro-cli account.
-  const open = userOpen ?? (notice === 'two_accounts' ? true : (autoOpen ?? statusFailed))
   const body = (
     <>
       {signedOutNote ? (
@@ -365,52 +277,6 @@ export function KiroSignInCard({
       />
     </>
   )
-  if (compact) {
-    return (
-      <details
-        open={open}
-        aria-label={title}
-        // `onToggle` also fires for the `open` prop's own changes; recording only a
-        // value that differs keeps the default in charge until the person clicks.
-        onToggle={e => {
-          const next = e.currentTarget.open
-          if (next !== open) setUserOpen(next)
-        }}
-        className="border-t border-border pt-3"
-        data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
-        data-setting-id={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
-        data-setting-label={i18nT('pages.developer.kiroSignInCard.search_label')}
-        data-testid="kiro-sign-in-card"
-      >
-        {/* Block, not flex: a flex summary loses the native disclosure triangle,
-            the one cue that the heading toggles. The heading inside keeps the
-            heading-navigation stop the section form had. */}
-        <summary className="cursor-pointer text-[13px] text-text-strong focus-ring">
-          <h3 className="m-0 inline text-[13px] font-semibold">
-            <KeyRound className="lucide-inline mr-1.5" aria-hidden="true" />
-            {title}
-          </h3>
-          {/* Closed only: the open body states the same sign-in itself. */}
-          {!open && signedIn && observed && (
-            <span data-testid="kiro-sign-in-fold-state" className="ml-1.5 font-normal text-muted">
-              {'· '}
-              {i18nT('pages.developer.kiroSignInCard.signed_in_with', {
-                provider: providerLabelFromWire(observed.provider),
-              })}
-              {account.hidden ? null : <AccountName {...account} />}
-            </span>
-          )}
-          {!open && !signedIn && notice === 'using_kiro_cli' && (
-            <span data-testid="kiro-sign-in-fold-state" className="ml-1.5 font-normal text-muted">
-              {'· '}
-              {i18nT('pages.developer.kiroSignInCard.using_kiro_cli_title')}
-            </span>
-          )}
-        </summary>
-        <div className="mt-2">{body}</div>
-      </details>
-    )
-  }
   return (
     <Card
       data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}

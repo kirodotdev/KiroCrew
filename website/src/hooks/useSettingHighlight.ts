@@ -65,6 +65,8 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
   // The engine-memory switch is labelled by the product name, Kiro Memory.
   'agent.orchestrator-memory': 'agent.kiro-memory',
+  // The Kiro sign-in card left the Agent Harness tab for a Kiro account tab.
+  'agent.kiro-sign-in': 'kiro-account.kiro-sign-in',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
@@ -144,12 +146,12 @@ export const SETTINGS_TURN_TIME_LIMIT_KEY = 'agent.chat_turn_timeout_secs'
 export const SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT = `key:${SETTINGS_TURN_TIME_LIMIT_KEY}`
 
 /**
- * `data-setting-key` anchor of the Kiro sign-in card on Settings → Agent
- * Harness, the target of the chat error row's "Sign in to Kiro" link
+ * `data-setting-key` anchor of the Kiro sign-in card on Settings → Kiro
+ * account, the target of the chat error row's "Sign in to Kiro" link
  * (`KIRO_SIGN_IN_PATH` in `pages/developer/kiroSignInLink.ts`). A pseudo key,
  * not a config path: nothing reads it as a setting. Declared HERE, beside the
  * other deep-link ids, because the hook has to know it: the card mounts LATE
- * (its pane renders it only after the Agent Harness tab's config read), so
+ * (its tab loads it as a lazy chunk), so
  * the probe waits for this anchor the way it waits for a declared UI identity
  * instead of stripping it as unknown on the first tick. Every other `key:`
  * value with no registry entry and no element is still stripped at once, so
@@ -164,8 +166,8 @@ export const DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR = 'default-crewmate'
  *  (`KiroCrewCfgTab`), keyed on the config path it writes. Settings → Session
  *  Environments links here when the strict tier withholds git logins. */
 export const AGENT_SANDBOX_HIGHLIGHT_ANCHOR = 'agent.sandbox'
-/** Anchors whose card mounts AFTER its page: the sign-in card waits on the
- *  backend probe, the Default crewmate and Sandbox rows on the config query. A
+/** Anchors whose card mounts AFTER its page: the sign-in card waits on its
+ *  lazy chunk, the Default crewmate and Sandbox rows on the config query. A
  *  `key:` link to one of these waits for the element instead of stripping the param. */
 const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([
   KIRO_SIGN_IN_HIGHLIGHT_ANCHOR,
