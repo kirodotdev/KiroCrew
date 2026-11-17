@@ -61,6 +61,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    RECORDED_ALWAYS_ONLY,
     AcpEvent,
     JsonRpcMessage,
     rejection_reason_meta,
@@ -431,13 +432,19 @@ def _bridged_servers(client: AcpClient) -> tuple[str, ...]:
 def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
     """*resolved_id*, or the once id when it would answer allow-always.
 
-    The frame's own once id, or the canonical one when the frame recorded
-    allow-always in that slot too.
+    The answer is always an id the frame offered, when it offered a one-call
+    allow: a harness reads an id it never offered as a refusal, and KAS words
+    that refusal as "The user rejected this tool call." A frame with a single
+    allow option records it in both slots (KAS offers no allow-always on an
+    explicit ``ask`` rule, which is how every Crew-owned Connection call is
+    asked), and a one-call allow there is the answer. A frame that offered
+    allow-always alone, or recorded nothing, is answered with the canonical once
+    id, never with its allow-always.
     """
     if resolved_id not in (OPTION_ALLOW_ALWAYS, offered.get("always")):
         return resolved_id
     once = offered.get("once")
-    return once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+    return OPTION_ALLOW_ONCE if not once or offered.get(RECORDED_ALWAYS_ONLY) else once
 
 
 def _restore_withdrawn(

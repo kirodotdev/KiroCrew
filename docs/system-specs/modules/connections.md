@@ -1455,7 +1455,10 @@ Connect, so such a session is bridged only once Crew already holds the pair
 (`crew_oauth.holds_grant`); a warm-pool process is projected with no session key,
 so chats skip the pool while they would be bridged (`bypass_crew_oauth_bridge`). The proxy re-checks the flag alone
 (`crew_oauth.custody_on`). An allow-always answer on a bridged tool goes to the
-harness as allow-once, since the proxy refuses a call no approval was minted for. The agent spec keeps the provider's client
+harness as allow-once, since the proxy refuses a call no approval was minted for. The answer is always an option id
+the frame offered: KAS asks a bridged call through an explicit `ask` rule, which offers no allow-always, so its one
+allow id (`accept`) is sent; an id the frame never offered reads to KAS as a refusal (`once_for_always`). A frame that
+offered allow-always alone is answered with the canonical allow-once instead (`RECORDED_ALWAYS_ONLY`). The agent spec keeps the provider's client
 secret unless chats run on KAS or no kiro-cli session can start
 (`crew_oauth.strips_spec_secret`). goose names the server in
 `_meta.goose.toolCall`, and its `rawInput` is the arguments it sends. DeepSeek

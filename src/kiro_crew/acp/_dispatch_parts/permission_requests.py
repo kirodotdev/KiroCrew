@@ -46,6 +46,7 @@ from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
+    RECORDED_ALWAYS_ONLY,
     AcpEvent,
     JsonRpcMessage,
 )
@@ -873,6 +874,8 @@ def build_permission_event(
         if any_allow is not None:
             recorded["once"] = kind_to_id.get("allow_once") or any_allow
             recorded["always"] = kind_to_id.get("allow_always") or any_allow
+            if "allow_once" not in kind_to_id:
+                recorded[RECORDED_ALWAYS_ONLY] = "1"
         if any_reject is not None:
             recorded["reject"] = any_reject
 
