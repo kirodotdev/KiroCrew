@@ -1,0 +1,2 @@
++1298
+git_write: the git write classifier the dashboard approval ladder asks before a trust, YOLO or pattern grant approves a shell call (hooks.confirm_git_writes), with its per-subcommand option allow-lists, a scan that asks on any shell expansion in a command that names git, the positive shape a git-free command's expansions must fit to keep its approval, and a per-call work budget with kept answers so nested eval / sh -c bodies are read once each. A new confirm classifier, not a deny tier: no existing floor or pattern changed.

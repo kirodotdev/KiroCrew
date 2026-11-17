@@ -187,6 +187,30 @@ def _linked_trust_grantable(session_key: str, request_id: str | int) -> bool:
     return False
 
 
+def _linked_git_confirm(session_key: str, request_id: str | int) -> bool:
+    """Whether the dashboard card behind a linked approval is a git-confirm card.
+
+    A raise reads as one, so the prompt keeps Approve / Reject only; the click
+    handler (``approval_picker.handle_trust_call``) refuses a Trust on such a card
+    whatever the prompt showed.
+    """
+    try:
+        from kiro_crew.dashboard.git_confirm_card import is_git_confirm_card
+
+        return any(
+            is_git_confirm_card(getattr(slot, "messages", None), str(request_id))
+            for slot in _linked_slots_for(session_key)
+        )
+    except Exception:
+        logger.warning(
+            "Could not read the linked card (session=%s req=%s); withholding Trust",
+            session_key,
+            request_id,
+            exc_info=True,
+        )
+        return True
+
+
 def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager | None) -> bool:
     """Grant durable session Trust for a linked slot. True only on a REAL grant.
 
@@ -261,6 +285,7 @@ async def post_linked_approval(
     slot_key: str = "",
     future: asyncio.Future[str] | None = None,
     channel_trust: bool = False,
+    git_confirm: bool = False,
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
@@ -275,7 +300,9 @@ async def post_linked_approval(
     ``channel_trust`` (a Slack Code channel's own session) adds a secondary
     "Trust this channel" button, answered by
     :mod:`kiro_crew.slack.code_channels.approval_picker` with that module's
-    owner gates; this function grants nothing for it.
+    owner gates; this function grants nothing for it. A git-confirm card
+    (*git_confirm*, or the owning slot's card says so) keeps the Code channel's
+    escaping but shows no Trust button: it is answered once (Approve or Reject).
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
@@ -317,12 +344,15 @@ async def post_linked_approval(
         mcp_identity_trusted=mcp_identity_trusted,
     )
     trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
+    # hooks.confirm_git_writes: a git-confirm card is answered once, so no Trust button.
+    git_confirm = git_confirm or _linked_git_confirm(session_key, request_id)
     # _build_approval_blocks is typed for AcpEvent but only reads the
     # attributes the shim provides.
     blocks = _build_approval_blocks(
         event,  # type: ignore[arg-type]
-        is_dm=trust_grantable,
+        is_dm=trust_grantable and not git_confirm,
         channel_trust=channel_trust and not trust_grantable,
+        trust_button=not git_confirm,
     )
     try:
         approval_ts = await slack.post_blocks(
@@ -367,7 +397,12 @@ def mcp_identity_text(server: str, tool: str) -> str:
 
 
 def _build_approval_blocks(
-    event: LLMEvent, is_dm: bool = True, source: str = "", *, channel_trust: bool = False
+    event: LLMEvent,
+    is_dm: bool = True,
+    source: str = "",
+    *,
+    channel_trust: bool = False,
+    trust_button: bool = True,
 ) -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
@@ -380,6 +415,9 @@ def _build_approval_blocks(
         channel_trust: A Slack Code channel's own session: adds a secondary
             "Trust this channel" button between Approve and Reject (Approve
             stays the one primary button).
+        trust_button: False on a Code channel card that takes no Trust (a
+            git-confirm card): the card keeps the channel's escaping and shows
+            Approve and Reject only.
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
@@ -417,7 +455,7 @@ def _build_approval_blocks(
                 "value": req_value,
             },
         )
-    elif channel_trust:
+    elif channel_trust and trust_button:
         from kiro_crew.slack.code_channels.approval_picker import (
             TRUST_CALL_ACTION_ID,
             TRUST_CALL_CONFIRM,
@@ -537,7 +575,7 @@ def _resolve_linked_click(
     action_id: str,
     user_id: str,
     sessions: SessionManager | None,
-) -> str:
+) -> str | None:
     """Resolve a click on a linked dashboard slot's prompt; return the action it took.
 
     The dashboard's ``_on_permission_prompt`` (chat_turn/permission_prompt.py) owns the ACP
@@ -545,8 +583,29 @@ def _resolve_linked_click(
     ``state.resolve_slot_approval`` on the entry's own slot, and never calls ``approve_tool`` /
     ``reject_tool``: that would answer the JSON-RPC request twice. Anything that isn't an explicit
     reject approves THIS call; a Trust click additionally widens the session, and only
-    a widening that actually took counts as an approval.
+    a widening that actually took counts as an approval. A Trust click on a git-confirm
+    card (``hooks.confirm_git_writes``) settles nothing and returns ``None``: the
+    card stays open for Approve or Reject.
     """
+    slot = (getattr(_dashboard_state, "_slots", None) or {}).get(linked_entry.slot_key)
+    if action_id == _ACTION_TRUST and slot is not None:
+        from kiro_crew.dashboard.git_confirm_card import git_confirm_refuses
+
+        if git_confirm_refuses(
+            getattr(slot, "messages", None),
+            str(linked_entry.request_id),
+            "trust",
+            from_app=False,
+        ):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.interactive.trust_linked",
+                outcome="denied",
+                source="slack",
+                resources=linked_entry.session_key,
+                error="git_confirm_allow_once_only",
+            )
+            return None
     approved = action_id != _ACTION_REJECT
     trusted = False
     if action_id == _ACTION_TRUST and not trust_permitted():
@@ -580,7 +639,6 @@ def _resolve_linked_click(
             error="" if trusted else "trust_grant_unavailable",
         )
     resolved = False
-    slot = (getattr(_dashboard_state, "_slots", None) or {}).get(linked_entry.slot_key)
     if _dashboard_state is not None and slot is not None:
         try:
             resolved = bool(
