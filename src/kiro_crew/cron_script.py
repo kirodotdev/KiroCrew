@@ -839,6 +839,14 @@ def _probe_one_form(shell: str, brace_off: bool) -> bool:
     return result
 
 
+def _trim_blank_edges(text: str) -> str:
+    """*text* without its leading and trailing blank lines; inner lines are kept."""
+    lines = text.rstrip().splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 def _no_command_shell_message() -> str:
     """The refusal a command cron gets when ``_resolve_command_shell`` finds nothing.
 
@@ -1043,20 +1051,30 @@ def run_command_sandboxed(
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:
-            output = f"⚠️ Exit code {proc.returncode}\n\n{output}"
-            if stderr_out:
-                # A command that dies hard leaves its diagnosis last: report the
-                # stderr tail, not the head, so a chatty startup warning can't
-                # displace the terminal error. Redact the complete stderr BEFORE
-                # truncating: slicing first could cut off a credential's
-                # detectable prefix (e.g. the scheme of a token-bearing URL),
-                # letting the raw secret tail through redaction.
-                output += f"\n\nstderr:\n{redact(stderr_out.rstrip())[-1000:]}"
-        return {
-            "status": "ok" if proc.returncode == 0 else "error",
-            "output": output,
-            "exit_code": proc.returncode,
-        }
+            stdout_text = _trim_blank_edges(output)
+            # A command that dies hard leaves its diagnosis last: report the
+            # stderr tail, not the head, so a chatty startup warning can't
+            # displace the terminal error. Redact the complete stderr BEFORE
+            # truncating: slicing first could cut off a credential's
+            # detectable prefix (e.g. the scheme of a token-bearing URL),
+            # letting the raw secret tail through redaction.
+            stderr_text = (
+                _trim_blank_edges(redact(stderr_out.rstrip())[-1000:]) if stderr_out else ""
+            )
+            # An empty stream is left out, so a stderr-only failure does not
+            # read as a run of empty lines.
+            sections = [f"⚠️ Exit code {proc.returncode}", stdout_text]
+            if stderr_text:
+                sections.append(f"stderr:\n{stderr_text}")
+            # The streams also travel apart, for the failure alert's layout.
+            return {
+                "status": "error",
+                "output": "\n\n".join(s for s in sections if s),
+                "exit_code": proc.returncode,
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+            }
+        return {"status": "ok", "output": output, "exit_code": 0}
     except SandboxUnavailableError as exc:
         return {
             "status": "error",
