@@ -393,7 +393,13 @@ def test_handshake_params_come_from_the_shared_constants() -> None:
     assert isinstance(PROTOCOL_VERSION_KAS, int)
     assert KAS_CLIENT_CAPABILITIES == {
         **ACP_CLIENT_CAPABILITIES,
-        "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
+        "_meta": {
+            "kiro": {
+                "settings": {"codeIntelligence": {"enabled": True}},
+                "openExternalUrl": True,
+                "userInput": True,
+            }
+        },
     }
 
 
