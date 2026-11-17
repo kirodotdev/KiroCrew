@@ -33,6 +33,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.slot_queue_repository import (
     ATTACHMENT_META_KEYS,
     RESTORED_QUEUE_KEY,
+    is_held_queue_entry,
     refused_durable_ids,
     warn_if_not_durable,
 )
@@ -1760,6 +1761,11 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     # continue_slot_turn that checks RESTORED_QUEUE_KEY.
     if item.get(RESTORED_QUEUE_KEY):
         view.setdefault("meta", {})["restored"] = True
+    # Whether the entry waits for a person (``is_held_queue_entry``): restored
+    # provenance alone is not that state, since a restored card the person chose
+    # or the startup drain accepted is sent without another action.
+    if is_held_queue_entry(item):
+        view.setdefault("meta", {})["held"] = True
     edit_rev = item.get("edit_rev")
     if isinstance(edit_rev, int) and not isinstance(edit_rev, bool):
         view["editRev"] = edit_rev

@@ -9266,6 +9266,7 @@
       "save_edit": "Salvar edição",
       "send_now": "Enviar agora",
       "wont_survive_a_restart": "não sobreviverá a uma reinicialização",
+      "restored_held": "Restaurado após uma reinicialização. Não será enviado sozinho.",
       "sub_agent_results_ready_many": "{{count}} resultados de subagente prontos — serão processados após o turno atual",
       "sub_agent_results_ready_one": "{{count}} resultado de subagente pronto — será processado após o turno atual",
       "sub_agent_results_ready_other": "{{count}} resultados de subagente prontos — serão processados após o turno atual",

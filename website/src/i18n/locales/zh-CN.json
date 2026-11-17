@@ -8816,6 +8816,7 @@
       "save_edit": "保存修改",
       "send_now": "立即发送",
       "wont_survive_a_restart": "重启后会丢失",
+      "restored_held": "重启后已恢复。不会自动发送。",
       "sub_agent_results_ready_other": "{{count}} 个子代理结果已就绪，将在当前轮次结束后处理",
       "queued_count_other": "{{count}} 条已排队"
     },
