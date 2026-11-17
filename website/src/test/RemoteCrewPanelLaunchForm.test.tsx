@@ -4,7 +4,7 @@
  * same settings, and the checklist says when it answers for other values than
  * the ones typed.
  */
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
@@ -83,6 +83,7 @@ const RUNNING_JOB = {
 const DONE_JOB = { ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc123456789def0' }
 const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
 const STALE = 'The profile or Region changed since this check. Re-check to update.'
+const PRICE_NOTE = 'Prices are us-east-1 on-demand rates; other Regions may differ.'
 const RETRY = 'Fix the problem shown below, or change the Subnet ID above, then choose Launch to try again.'
 const CHECK_CREWS = 'The launch did not finish. Check Your crews before launching again.'
 const CREW_LISTED = 'The launch did not finish. Its crew is listed in Your crews, where you can fix or delete it.'
@@ -297,6 +298,21 @@ describe('RemoteCrewPanel launch form', () => {
     await u.type(screen.getByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
     expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled()
     expect(api.cloudLaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('prices each size card like the CLI and says when the Region is not the priced one', async () => {
+    const u = userEvent.setup()
+    await openSetup(u)
+    const card = await screen.findByRole('button', { name: 'Development · arm64' })
+    // The flag is typed into a terminal, so it renders verbatim in a <code> element.
+    expect(within(card).getByText('--size balanced').tagName).toBe('CODE')
+    expect(card).toHaveAccessibleDescription('~$0.33/hr · ~$235/mo if left running (approx)')
+    expect(screen.queryByText(PRICE_NOTE)).toBeNull()
+
+    const region = screen.getByRole('textbox', { name: 'Region' })
+    await u.clear(region)
+    await u.type(region, 'sa-east-1')
+    expect(screen.getByText(PRICE_NOTE)).toBeInTheDocument()
   })
 
   it('names the missing region in the check line instead of leaving a gap', async () => {
