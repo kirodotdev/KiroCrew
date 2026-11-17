@@ -258,11 +258,18 @@ class TestPidfileIdentity:
         path = tmp_path / "app_backends.pids.json"
         monkeypatch.setattr(bmod, "_pidfile_path", lambda: path)
         monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"st-{pid}")
+        monkeypatch.setattr(bmod, "_gateway_secret_identity", lambda: "sid")
         assert bmod._record_app_pid("r-app", 42, 9162, "tok") == "st-42"
         assert bmod._record_app_pid("s-app", 43, 9163) == "st-43"
         assert json.loads(path.read_text(encoding="utf-8")) == {
-            "r-app": {"pid": 42, "start_time": "st-42", "port": 9162, "spawn_instance": "tok"},
-            "s-app": {"pid": 43, "start_time": "st-43", "port": 9163},
+            "r-app": {
+                "pid": 42,
+                "start_time": "st-42",
+                "port": 9162,
+                "spawn_instance": "tok",
+                "secret_id": "sid",
+            },
+            "s-app": {"pid": 43, "start_time": "st-43", "port": 9163, "secret_id": "sid"},
         }
 
 

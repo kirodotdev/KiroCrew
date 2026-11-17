@@ -735,6 +735,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _resolved_kiro_agents_targets,
         _resolves_to,
         _sandbox_policy,
+        app_backend_mac_key_mask_targets,
         app_backend_visible_targets,
         app_declared_mask_targets,
         app_declared_readonly_targets,
