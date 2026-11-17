@@ -1016,6 +1016,9 @@ async def _wait_managed_mcp(
         if left:
             report = handle.mcp_session_report()
             report.left_to_turn, report.left_omitted = left, more
+        # KAS 0.66.117 and later send the ``model`` select after ``session/new``;
+        # read it and run the served-default check on it before any prompt.
+        await handle.settle_kas_model_select()
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.

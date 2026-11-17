@@ -128,7 +128,19 @@ not yet read is looked for again at the following turn; a `set_model` that lands
 first ends the wait, since the session runs that model.
 
 KAS sends no `models` object; its list is only the `configOptions` `model`
-select, and it defaults a new session to `auto`. The pooled check asks that select
+select, and it defaults a new session to `auto`. From engine 0.66.117 the
+`session/new` answer carries no `model` select: the engine sends it in a
+`config_option_update` about 0.3 s later. A config option update is read by one
+reader, `absorb_config_options`, on the live stream and in the start path's
+notification drain; on KAS it runs `store_config_options` (served ids, served
+model, engine catalog). After its drain, KAS's managed-MCP start step
+(`_wait_managed_mcp`, a step the Kiro path does not take) calls
+`settle_kas_model_select`: on an engine known to send the select late
+(`kas_engine_features.engine_sends_model_select_late`: the bundle route at 0.66.117
+or later; the relay route's engine version is unknown), while the select is still
+missing, it keeps draining (at most `_KAS_SELECT_WAIT_SECS`, 2 s) until the select
+is in, then runs the pooled check below on it, whether the drain or this wait read
+it, before any prompt. The pooled check asks that select
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,

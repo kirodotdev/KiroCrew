@@ -20,7 +20,7 @@ from kiro_crew.acp.session_handle import (
     model_select_envelope,
     models_from_config_options,
 )
-from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO, JsonRpcMessage
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "acp_frames" / "kas" / "session.jsonl"
 
@@ -270,3 +270,97 @@ def test_kiro_does_not_judge_pins_against_the_raw_select() -> None:
     handle = _make_handle(ACP_BACKEND_KIRO)
     handle.store_session_config(_kas_session_new(["auto", "claude-haiku-4.5"], "auto"))
     assert handle._kas_served_ids == []
+
+
+# ── From engine 0.66.117 the select comes after session/new ──
+
+
+def _late_select(values: list[str], current: str) -> JsonRpcMessage:
+    """The ``config_option_update`` that carries the select after ``session/new``."""
+    options = _kas_session_new(values, current)["configOptions"]
+    update = {"sessionUpdate": "config_option_update", "configOptions": options}
+    return JsonRpcMessage(
+        method="session/update", params={"sessionId": "sess-kas", "update": update}
+    )
+
+
+def _late_engine_handle() -> AcpSessionHandle:
+    """A bundle-route KAS handle on an engine that sends the select late."""
+    handle = _make_handle()
+    handle.kas_bundle_engine_version = "0.66.117"
+    return _stored(handle, {"sessionId": "sess-kas", "configOptions": []})
+
+
+def test_a_select_drained_at_start_is_read_and_judged_before_any_prompt() -> None:
+    """The start path's settle step reads the late select off the queue and judges it."""
+    handle = _late_engine_handle()
+    handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
+    handle._queue.put_nowait(_late_select(["claude-sonnet-4.5"], "auto"))
+
+    asyncio.run(handle.settle_kas_model_select())
+
+    assert handle._kas_served_ids == ["claude-sonnet-4.5"]
+    handle.set_config_option.assert_awaited_once()  # type: ignore[attr-defined]
+    assert handle.served_model == "claude-sonnet-4.5"
+    assert handle._queue.empty()
+
+
+def test_a_late_select_that_lists_auto_moves_nothing() -> None:
+    handle = _late_engine_handle()
+    handle._queue.put_nowait(_late_select(["auto", "claude-sonnet-4.5"], "auto"))
+    asyncio.run(handle.settle_kas_model_select())
+    handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
+    assert handle.served_model == "auto"
+
+
+def test_a_select_that_never_comes_ends_the_wait_at_its_bound(monkeypatch) -> None:
+    from kiro_crew.acp import session_handle_model_selection as selection
+
+    # The bound under test, shrunk: no select ever arrives, so the wait runs out.
+    monkeypatch.setattr(selection, "_KAS_SELECT_WAIT_SECS", 0.2)  # flake-ok: bound under test
+    handle = _late_engine_handle()
+    # Bounded by the round count, not a clock: two empty drain rounds, then out.
+    asyncio.run(handle.settle_kas_model_select())
+    handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
+    assert handle._kas_served_ids == []
+
+
+def test_settle_reads_nothing_once_the_answer_carried_the_select() -> None:
+    handle = _stored(_make_handle(), _kas_session_new(["auto"], "auto"))
+    queued = _late_select(["claude-sonnet-4.5"], "auto")
+    handle._queue.put_nowait(queued)
+    asyncio.run(handle.settle_kas_model_select())
+    assert handle._queue.get_nowait() is queued
+
+
+def test_settle_is_a_no_op_off_kas() -> None:
+    handle = _make_handle(ACP_BACKEND_KIRO)
+    queued = _late_select(["claude-sonnet-4.5"], "auto")
+    handle._queue.put_nowait(queued)
+    asyncio.run(handle.settle_kas_model_select())
+    assert handle._queue.get_nowait() is queued
+
+
+def test_settle_does_not_wait_on_an_engine_that_answers_with_the_select() -> None:
+    """The relay route (no known version) and an older bundle engine are not held."""
+    for version in ("", "0.66.104"):
+        handle = _make_handle()
+        handle.kas_bundle_engine_version = version
+        _stored(handle, {"sessionId": "sess-kas", "configOptions": []})
+        queued = _late_select(["claude-sonnet-4.5"], "auto")
+        handle._queue.put_nowait(queued)
+        asyncio.run(handle.settle_kas_model_select())
+        assert handle._queue.get_nowait() is queued
+
+
+def test_a_select_the_start_drain_already_read_is_still_judged() -> None:
+    """The drain fills the served ids before settle runs; settle still runs the check."""
+    handle = _late_engine_handle()
+    handle._apply_init_notification(_late_select(["claude-sonnet-4.5"], "auto"), "update")
+    assert handle._kas_served_ids == ["claude-sonnet-4.5"]
+    handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
+
+    asyncio.run(handle.settle_kas_model_select())
+
+    handle.set_config_option.assert_awaited_once()  # type: ignore[attr-defined]
+    assert handle.served_model == "claude-sonnet-4.5"

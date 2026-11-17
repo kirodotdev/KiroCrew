@@ -19,7 +19,12 @@ import pytest
 
 from kiro_crew import model_registry
 from kiro_crew.acp.session_handle import AcpSessionHandle
-from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    JsonRpcMessage,
+)
 from kiro_crew.agent_sdk import kas_model_catalog as catalog
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "acp_frames" / "kas" / "bundle-session-live.jsonl"
@@ -58,6 +63,19 @@ def _bundle_session_new() -> dict:
     raise AssertionError("the bundle fixture has no session/new response")
 
 
+def _bundle_model_select() -> dict:
+    """The ``configOptions`` of the update that carries the engine's ``model`` select.
+
+    From 0.66.117 the ``session/new`` answer has no ``model`` select; the engine
+    sends it in a ``config_option_update`` right after.
+    """
+    for line in _FIXTURE.read_text(encoding="utf-8").splitlines():
+        update = (json.loads(line).get("params") or {}).get("update") or {}
+        if update.get("sessionUpdate") == "config_option_update":
+            return {"configOptions": update["configOptions"]}
+    raise AssertionError("the bundle fixture has no config_option_update")
+
+
 def _option(value: str, *, meta: dict | None = None, name: str = "", description: str = ""):
     option: dict = {"value": value, "name": name or value, "description": description}
     if meta is not None:
@@ -86,11 +104,14 @@ class TestTheMeasurement:
         resp = _bundle_session_new()
         assert "models" not in resp
         assert "availableModels" not in resp
-        rows = catalog.catalog_rows_from_session(resp)
+        assert catalog.catalog_rows_from_session(resp) == []
+        select = _bundle_model_select()
+        assert "models" not in select
+        rows = catalog.catalog_rows_from_session(select)
         assert [r["model_name"] for r in rows] == ["auto"]
 
     def test_the_select_carries_a_price_and_no_window(self):
-        (row,) = catalog.catalog_rows_from_session(_bundle_session_new())
+        (row,) = catalog.catalog_rows_from_session(_bundle_model_select())
         assert row["rate_multiplier"] == 1.0
         # The routing entry's name comes from the model service, not the engine
         # bundle: the 0.66.103 capture read `auto`, the 0.66.104 one `Auto`.
@@ -230,7 +251,7 @@ class TestRecording:
         rt = MagicMock()
         rt.acp_backend = ACP_BACKEND_KAS
         handle = AcpSessionHandle("s1", asyncio.Queue(), rt)
-        _stamped(handle).store_session_config(_bundle_session_new())
+        _stamped(handle).store_session_config(_bundle_model_select())
         assert [r["model_name"] for r in _recorded() or []] == ["auto"]
         assert handle.available_models == []
 
@@ -240,6 +261,37 @@ class TestRecording:
         handle = AcpSessionHandle("s1", asyncio.Queue(), rt)
         _stamped(handle).store_session_config(_select([_option("gpt-x")]))
         assert _recorded() is None
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ACP_BACKEND_CODEX])
+    def test_a_model_select_that_arrives_in_config_option_update_is_read(self, backend):
+        """KAS 0.66.117 answers ``session/new`` with no ``model`` select and sends it
+        about 0.3 s later in a ``config_option_update``: the catalog and the served
+        model come from that frame. Another backend's update still records nothing."""
+        rt = MagicMock()
+        rt.acp_backend = backend
+        rt.pid = None
+        rt.is_alive = MagicMock(return_value=True)
+        handle = _stamped(AcpSessionHandle("s1", asyncio.Queue(), rt))
+        no_select = {
+            "sessionId": "s1",
+            "configOptions": [
+                {"id": "mode", "type": "select", "currentValue": "vibe", "options": []}
+            ],
+        }
+        handle.store_session_config(no_select)
+        assert _recorded() is None
+        update = {
+            "sessionUpdate": "config_option_update",
+            **_select([_option("auto"), _option("m-1")]),
+        }
+        handle._handle_update(JsonRpcMessage(method="session/update", params={"update": update}))
+        assert any(o.get("id") == "model" for o in handle._config_options)
+        if backend == ACP_BACKEND_KAS:
+            assert [r["model_name"] for r in _recorded() or []] == ["auto", "m-1"]
+            assert handle.served_model == "auto"
+            assert handle.available_models == []
+        else:
+            assert _recorded() is None
 
 
 class TestTheVaultIdentity:
@@ -281,7 +333,7 @@ class TestTheVaultIdentity:
         rt.acp_backend = ACP_BACKEND_KAS
         handle = AcpSessionHandle("s1", asyncio.Queue(), rt)
         assert handle.request_vault_identity == ""
-        handle.store_session_config(_bundle_session_new())
+        handle.store_session_config(_bundle_model_select())
         assert catalog._recorded is None
 
     def test_a_long_lived_runtime_records_for_the_account_of_each_request(self):
@@ -290,11 +342,11 @@ class TestTheVaultIdentity:
         rt = MagicMock()
         rt.acp_backend = ACP_BACKEND_KAS
         _stamped(AcpSessionHandle("s1", asyncio.Queue(), rt)).store_session_config(
-            _bundle_session_new()
+            _bundle_model_select()
         )
         after = AcpSessionHandle("s2", asyncio.Queue(), rt)
         after.request_vault_identity = "fingerprint-of-account-b"
-        after.store_session_config(_bundle_session_new())
+        after.store_session_config(_bundle_model_select())
         assert _recorded() is None
         rows = catalog.recorded_catalog_snapshot("fingerprint-of-account-b")
         assert [r["model_name"] for r in rows or []] == ["auto"]
