@@ -705,6 +705,40 @@ async def test_mint_refuses_slack_while_crew_is_not_doing_the_sign_in(home, monk
 
 
 @pytest.mark.asyncio
+async def test_saving_the_slack_app_forgets_the_owner_grant_the_card_takes_over(home):
+    """Once the app is configured the card owns the owner's ``slack`` entry, not ``Slack``.
+
+    The grant Crew held for that entry under the owner key goes, its client too. A
+    letter-case variant at the card's url keeps its own sign-in, so its grant stays.
+    A client id alone configures nothing, so the card still yields and both stay.
+    """
+    from kiro_crew.connections import crew_oauth, crew_oauth_dcr
+
+    url = "https://mcp.slack.com/mcp"
+    servers = {name: {"url": url} for name in ("slack", "Slack")}
+    (home / "config.json").write_text(
+        json.dumps({"connections": {"owner_mcp_servers": servers}}), encoding="utf-8"
+    )
+    issued = crew_oauth_dcr.Client(
+        "c", None, 0.0, "none", "http://localhost:48106/callback", "", url, "", "", None, False
+    )
+    taken, kept = crew_oauth.custom_key("slack", url), crew_oauth.custom_key("Slack", url)
+    for key in (taken, kept):
+        crew_oauth_dcr.keep_client(key, issued, crew_oauth.Tokens("at", "rt", None, ""))
+    store = crew_oauth.TokenStore()
+    client = await _client()
+    try:
+        assert (await client.put(f"{BASE}/slack", json={"client_id": "123.456"})).status == 200
+        assert store.present(taken)
+        assert (await client.put(f"{BASE}/slack", json={"client_secret": SECRET})).status == 200
+    finally:
+        await client.close()
+
+    assert not store.present(taken) and crew_oauth_dcr.ClientStore().read(taken)[0] is None
+    assert store.present(kept) and crew_oauth_dcr.ClientStore().read(kept)[0] is not None
+
+
+@pytest.mark.asyncio
 async def test_a_failed_projection_refresh_is_reported_not_hidden(home, monkeypatch):
     """The record commits (the vault is the source of truth and reverting it would
     keep the retired credential authoritative), but the response says the agent
