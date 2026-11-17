@@ -5360,11 +5360,11 @@ and the manual-handling state an unbounded tree lands in, are owned by
 
 `AcpClient._kill_process` keeps the same reaped-root window **on POSIX**, and
 there it is known and
-deferred, not closed here. The client holds no spawn of its own and therefore no
-`KIROCREW_SPAWN_INSTANCE`, so the vouched group path refuses for it by
-construction; reaching its tree needs the client to mint and carry an
-incarnation token at spawn time, which is a change to the client's own spawn
-path. What it has instead is the descendant snapshot it takes at spawn, which
+deferred, not closed here. The client now mints its `process_instance` before
+launch and writes it to the child as `KIROCREW_SPAWN_INSTANCE`, which is the
+spawn-path half of reaching its tree; `_kill_process` does not yet pass that
+token to the vouched group path, so the path still refuses for a client root
+and the window stays open until it does. What it has instead is the descendant snapshot it takes at spawn, which
 covers every client root that dies after its first scan; the uncovered case is a
 client root that dies before it, and the cost there is the same bounded leak the
 orphan sweep reports. On Windows the client needs neither the token nor the scan:
@@ -5942,9 +5942,19 @@ writes anything to the agent's stdin:
 with `_CLIENT_SCOPE_UNIT_PREFIX`), and keeps the unit systemd received in
 `_scope_unit`. The prefix is not the runtime's, so the readers of `kirocrew-rt-*`
 scopes (`session_scope_reap.kept_scopes`, `containment.populated_scopes`) do not
-count a client process. The token is the client's `process_instance`. The client
-does not write it to the child's environment, so a client child keeps the
-`KIROCREW_SPAWN_INSTANCE` it inherited. Both `initialize` sites call
+count a client process. The token is the client's `process_instance`, and the
+client writes it to the child's environment as `KIROCREW_SPAWN_INSTANCE` (with
+`KIROCREW_SPAWN_HOME`) through `LaunchRequest.env_after_marker`, as the runtime
+does. A client child therefore carries its own client's token, not one it
+inherited. That is what lets `runtime_reconcile`'s live-owner condition anchor a
+harness an agent starts from a client session's shell tool to the recorded client
+root; without it the harness read as unowned and was reclaimed while the session
+was still serving (#38809). A client can run under a runtime-stamped parent (a
+`kirocrew chat` started from an agent's shell builds its providers in that
+process), but replacing the inherited token removes nothing the outer runtime's
+teardown reached: the client spawn is `start_new_session=True` on POSIX, so its
+children lead their own process group, and the vouched group path signals only
+members of the runtime's own group. Both `initialize` sites call
 `_admit_scope` before they write the request: `_initialize_session` and the
 entitlement probe's `_entitlement_probe_answer`. The client's window is
 `_INIT_TIMEOUT` (240 s) with the same 30 s reserve, so admission can use 210 s
