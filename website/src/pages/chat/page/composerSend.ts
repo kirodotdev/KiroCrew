@@ -550,6 +550,23 @@ export function useComposerSend({
         if (draft) { setFileDraft(fileDrafts.current, uiSlot, draft.filter(p => !sent.has(p))); saveDrafts() }
       }
     }
+    if (!isolated && challengeOrigin) {
+      // A channel challenge link seeds its prompt into the composer (and the
+      // prefill hand-off) for the window before connect, then auto-sends it as
+      // optionText, which skips the full clear above. Take back only the seed:
+      // text the person changed meanwhile is not the seed and stays. The
+      // slot-restore effect may have queued the seed's fill in this same commit,
+      // so the live check runs as an updater, after that fill. A failed send
+      // hands the text back through `restoreSentTurn`, like a typed send. This
+      // runs beside the staged-file prune above, not instead of it: a link that
+      // reopens a session sends that session's staged files too.
+      if (composerMountedRef.current && composerSlotRef.current === uiSlot) setInput(prev => (prev.trim() === raw ? '' : prev))
+      if (uiSlot && (drafts.current[uiSlot] ?? '').trim() === raw) { delete drafts.current[uiSlot]; saveDrafts() }
+      try {
+        const seed = JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? 'null') as { slotKey?: unknown; prompt?: unknown } | null
+        if (seed && seed.slotKey === uiSlot && typeof seed.prompt === 'string' && seed.prompt.trim() === raw) sessionStorage.removeItem(PREFILL_STORAGE_KEY)
+      } catch { /* sessionStorage unavailable or the seed unreadable */ }
+    }
     // Target the slot the user is actually looking at (uiSlot, from the ref),
     // not the stale closure `activeSlot`. See the uiSlot note above.
     let slot = targetSlot ?? uiSlot
