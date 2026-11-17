@@ -12360,6 +12360,7 @@
     "preview_desc": "People tab, invites and shared sessions",
     "preview_env_on": "On via environment",
     "preview_restart_notice": "Restart the gateway to apply",
+    "preview_restart_hint": "Takes effect after a restart",
     "preview_restart": "Restart gateway",
     "preview_restarting": "Restarting…",
     "preview_load_failed": "Could not read the Shared Crew setting.",

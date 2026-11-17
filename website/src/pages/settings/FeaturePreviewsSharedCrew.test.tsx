@@ -93,6 +93,7 @@ describe('Shared Crew preview card', () => {
     read.mockResolvedValue(setting({ enabled: true, active: false, restart_required: false }))
     mount()
     expect(await screen.findByTestId('shared-crew-preview-restart')).toHaveTextContent('Restart the gateway to apply')
+    expect(screen.getByTestId('shared-crew-preview-restart-hint')).toBeInTheDocument()
   })
 
   it('a matching stored choice and running state asks for nothing', async () => {
@@ -100,6 +101,13 @@ describe('Shared Crew preview card', () => {
     mount()
     await toggle()
     expect(screen.queryByTestId('shared-crew-preview-restart')).toBeNull()
+    // No warn-coloured "Restart" badge either: with nothing pending, the row says
+    // only, in muted text, that a change applies at the next restart.
+    expect(screen.queryByText('Restart')).toBeNull()
+    const hint = screen.getByTestId('shared-crew-preview-restart-hint')
+    expect(hint).toHaveTextContent('Takes effect after a restart')
+    expect(hint).toHaveClass('text-muted')
+    expect(screen.getByRole('switch', { name: 'Shared Crew' }).getAttribute('aria-describedby')).toContain('shared-crew-preview-restart-hint')
   })
 
   it('shows a failed refresh over the last preview answer and keeps the switch', async () => {
