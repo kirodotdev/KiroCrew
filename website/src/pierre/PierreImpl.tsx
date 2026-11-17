@@ -563,10 +563,11 @@ function getWorkerPoolLifecycle(themes: ThemesType): WorkerPoolLifecycle {
 const workersSupported = typeof window !== 'undefined' && typeof Worker !== 'undefined'
 
 /** The Shiki pair for the active installed theme pack: its `codeTheme`, mode
- *  by mode, over `PIERRE_THEMES`. */
+ *  by mode, over `PIERRE_THEMES`. Keyed on the PAINTED theme, so a pack's pair
+ *  gives way to `PIERRE_THEMES` while the Contrast setting paints High Contrast. */
 export function usePierreThemes(): ThemesType {
   const ctx = useOptionalTheme()
-  const slug = ctx?.colorTheme.startsWith('custom-') ? ctx.colorTheme.slice('custom-'.length) : undefined
+  const slug = ctx?.paintedTheme.startsWith('custom-') ? ctx.paintedTheme.slice('custom-'.length) : undefined
   const codeTheme = slug === undefined ? undefined : ctx?.customThemeDataMap.get(slug)?.assets?.codeTheme
   const dark = codeTheme?.dark
   const light = codeTheme?.light

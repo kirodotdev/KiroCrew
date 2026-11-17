@@ -145,8 +145,8 @@ async function failPoolToUnavailable() {
 }
 
 /** The active installed pack `odp`, carrying the given `codeTheme`. */
-function packWithCodeTheme(codeTheme: { dark?: string; light?: string }) {
-  return { colorTheme: 'custom-odp', customThemeDataMap: new Map([['odp', { assets: { codeTheme } }]]) }
+function packWithCodeTheme(codeTheme: { dark?: string; light?: string }, paintedTheme = 'custom-odp') {
+  return { colorTheme: 'custom-odp', paintedTheme, customThemeDataMap: new Map([['odp', { assets: { codeTheme } }]]) }
 }
 
 describe('a theme pack code scheme', () => {
@@ -165,6 +165,21 @@ describe('a theme pack code scheme', () => {
     })
     expect(state.managers[0].setRenderOptions).toHaveBeenCalledOnce()
     expect(state.managers[0].setRenderOptions).toHaveBeenCalledWith({ theme: { dark: 'dracula', light: 'one-light' } })
+  })
+
+  it('keeps the built-in pair while High Contrast is painted, and returns to the pack pair after', async () => {
+    state.theme = packWithCodeTheme({ dark: 'one-dark-pro', light: 'one-light' }, 'highcontrast')
+    const { module, view } = await startPool()
+    const builtIn = { dark: 'pierre-dark', light: 'pierre-light' }
+    expect(state.poolCalls[0].highlighterOptions.theme).toEqual(builtIn)
+    expect((state.componentProps.at(-1)?.options as { theme?: unknown }).theme).toEqual(builtIn)
+
+    state.theme = packWithCodeTheme({ dark: 'one-dark-pro', light: 'one-light' })
+    await act(async () => {
+      view.rerender(<module.PierreCodeImpl file={FILE} />)
+      await Promise.resolve()
+    })
+    expect(state.managers[0].setRenderOptions).toHaveBeenCalledWith({ theme: { dark: 'one-dark-pro', light: 'one-light' } })
   })
 
   it('starts the next generation on the applied pair when a re-theme fails', async () => {

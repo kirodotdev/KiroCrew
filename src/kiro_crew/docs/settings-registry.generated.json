@@ -1537,6 +1537,13 @@
       "configKey": "dashboard.terminal.completion.enabled"
     },
     {
+      "id": "display.contrast",
+      "label": "Contrast",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.contrast",
+      "hint": "Normal keeps your chosen theme. Follow system paints the High Contrast theme while your operating system asks for more contrast. Always high uses it all the time. Your chosen theme comes back when you switch it off."
+    },
+    {
       "id": "display.copy-on-select",
       "label": "Copy on select",
       "tab": "display",

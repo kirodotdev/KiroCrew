@@ -2631,6 +2631,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.completion.enabled"
   },
   {
+    "id": "display.contrast",
+    "label": "Contrast",
+    "labelKey": "pages.settings.displayPanel.contrast",
+    "hint": "Normal keeps your chosen theme. Follow system paints the High Contrast theme while your operating system asks for more contrast. Always high uses it all the time. Your chosen theme comes back when you switch it off.",
+    "tab": "display",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.copy-on-select",
     "label": "Copy on select",
     "labelKey": "pages.settings.displayPanel.terminal_copy_on_select",

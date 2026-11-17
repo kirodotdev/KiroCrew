@@ -35,6 +35,7 @@ function setL2Theme() {
   mockTheme = {
     theme: 'dark',
     colorTheme: `custom-${slug}`,
+    paintedTheme: `custom-${slug}`,
     customThemeDataMap: map,
     setColorTheme,
   }
