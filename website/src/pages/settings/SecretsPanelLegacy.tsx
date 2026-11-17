@@ -22,6 +22,7 @@ import { i18nT } from '../../i18n/t'
 import { Link } from 'react-router-dom'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
+import { SecretsOwnerOnlyNotice, useSecretsOwnerOnly } from './secretsOwnerOnly'
 
 /**
  * The three secrets requests go through `api/client.ts`, not a local `fetch`.
@@ -295,6 +296,7 @@ export function SecretsPanelLegacy() {
     queryKey: ['secrets'],
     queryFn: () => api.secretsList(),
   })
+  const ownerOnly = useSecretsOwnerOnly(listError)
 
   const setMutation = useMutation({
     mutationFn: (params: { name: string; value: string }) =>
@@ -383,6 +385,17 @@ export function SecretsPanelLegacy() {
     if (deleteMutation.isPending) return
     deleteMutation.reset()
     setDeleteConfirm(name)
+  }
+
+  if (ownerOnly) {
+    return (
+      <SettingsSection title={i18nT('settings.secrets.title')}>
+        <SettingsCard>
+          <p className="text-sm text-muted mb-5">{i18nT('settings.secrets.description')}</p>
+          <SecretsOwnerOnlyNotice held={ownerOnly} error={listError} />
+        </SettingsCard>
+      </SettingsSection>
+    )
   }
 
   return (

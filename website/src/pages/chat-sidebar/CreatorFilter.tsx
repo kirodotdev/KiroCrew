@@ -13,6 +13,7 @@
  *  (`showsTeamAttribution`), never on a personal Crew or one that cannot
  *  attribute sessions. A Crew whose mode cannot be read
  *  shows the error where the control would be, and no bylines. */
+import { isRelayHostOffline } from '../../utils/relayHostOffline'
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Users } from 'lucide-react'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -116,7 +117,8 @@ export function CreatorFilterBar({ value, onChange }: { value: CreatorFilterValu
     { query: caps, testId: 'creator-filter-capabilities-error', fallback: i18nT('sharedCrew.session_state_failed'), enabled: true },
     { query: modeQuery, testId: 'creator-filter-mode-error-notice', fallback: i18nT('sharedCrew.mode_failed'), enabled: attributes },
     { query: people, testId: 'creator-filter-people-error', fallback: i18nT('sharedCrew.people_failed'), enabled: attributes },
-  ].filter(({ enabled }, i) => enabled && failed[i])
+  // The relay's host-offline answer is the offline cover's to say; the read runs again on reconnect.
+  ].filter(({ enabled, query }, i) => enabled && failed[i] && !isRelayHostOffline(query.error))
   const team = showsTeamAttribution({ previewOn, attributes, mode: listMode(modeQuery.data, caps.capabilities, people.data), joined: someoneJoined(people.data?.people) })
   return (
     <>
@@ -214,7 +216,7 @@ export function CreatorFilteredSessions({ creator, q, connected, onOpen, onClear
           <Skeleton className="h-10" /><Skeleton className="h-10" /><Skeleton className="h-10" />
         </div>
       )}
-      {page.isError && (
+      {page.isError && !isRelayHostOffline(page.error) && (
         <ErrorNotice
           message={page.error instanceof Error ? page.error.message : i18nT('sharedCrew.sessions_failed')}
           variant="inline"

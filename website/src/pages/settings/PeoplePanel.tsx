@@ -31,7 +31,7 @@ import { PeopleList, PersonalWaiting, ShareHero, useCanInvite, useOwnerRead } fr
 import { InviteEntry } from './TailscaleInvites'
 import { avatarUrl } from '../../api/sharedCrewInvites'
 import { effectiveMode } from '../../api/sharedCrewMode'
-import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
+import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -117,6 +117,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   const pointer = membershipPointer(capabilities.membership_link)
   const canInvite = useCanInvite()
   const ownerRead = useOwnerRead()
+  const { notOwner } = useViewerIsNotOwner()
   // Someone other than the viewer already connected: sharing works, whatever the
   // setup paths say (Tailscale Serve set up by hand, for one).
   const othersSeen = (data?.people ?? []).some(row => !row.is_viewer)
@@ -156,7 +157,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   const adapters = modeData?.adapters ?? capabilities.setup_paths ?? {}
   const rows = data?.people ?? []
   const viewerOwns = ownerRead || rows.some(row => row.is_viewer && row.is_owner)
-  const hero = <ShareHero direct={capabilities.tailnet_direct} tailscale={adapters.tailscale} people={rows} canInvite={canInvite} />
+  const hero = <ShareHero direct={capabilities.tailnet_direct} tailscale={adapters.tailscale} people={rows} canInvite={canInvite} viewerOwns={!notOwner} />
   if (!data || !capabilityUsable(capabilities.attribution)) {
     const unnamed = attributionReason === 'platform_unprovable' || attributionReason === 'daemon_same_user'
     return (
@@ -184,7 +185,7 @@ function PeopleContent({ capabilities, data, modeData }: {
         people={data.people}
         usageAvailable={usageAvailable}
         notes={[
-          !usageAvailable && i18nT('sharedCrew.usage_unavailable'),
+          !usageAvailable && !data.usage_off && i18nT('sharedCrew.usage_unavailable'),
           attributionReason === 'daemon_not_found' && i18nT('sharedCrew.people_daemon_not_found'),
         ].filter((n): n is string => !!n)}
         footer={pointer === 'console' && (

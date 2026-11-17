@@ -1,3 +1,4 @@
+import { isRelayHostOffline } from '../utils/relayHostOffline'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -66,7 +67,7 @@ export default function KasEngineNotice() {
   if (!kas) return null
   // A read that failed because the gateway was down (a restart): the offline
   // state already says so, and nothing about the engine is known to be wrong.
-  if (outageFailure) return null
+  if (outageFailure || isRelayHostOffline(statusQuery.error)) return null
   // A failed status read, with or without an earlier answer cached: the lines
   // below would be stale, so this says the read failed instead.
   if (statusQuery.isError) {

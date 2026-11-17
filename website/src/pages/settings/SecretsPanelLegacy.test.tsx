@@ -852,7 +852,7 @@ describe('SecretsPanel custom secrets card', () => {
     // The authorize step names its prerequisites: a member chat, the opt-in
     // @kirocrew-secrets grant, and where to run the command.
     const authorize = screen.getByText(
-      /To let an agent in a member chat call one approved API with a secret, grant the agent @kirocrew-secrets, then run the command below in a shell or on the Terminal page\./,
+      /To let an agent in a member chat call one approved API with a secret, grant the agent @kirocrew-secrets, then run the command below in a shell on the computer running the Crew\./,
     )
     expect(SECRETS_SERVER_GRANT).toBe('@kirocrew-secrets')
     // The command is a literal the owner types, so it renders verbatim from

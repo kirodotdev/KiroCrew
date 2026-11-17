@@ -248,12 +248,13 @@ describe('TeamCrewsGroup', () => {
     const pinned = new Date('2026-01-01T12:00:00Z')
     vi.setSystemTime(pinned)
     const seen = Math.floor(pinned.getTime() / 1000) - 300
+    const recent = Math.floor(pinned.getTime() / 1000) - 60
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
       crews: [
         crew({ endpointId: 'ep-1', name: 'Up', lastSeenAt: seen }),
         crew({
           endpointId: 'ep-2', name: 'Late', presence: 'HEARTBEAT_LATE',
-          relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: seen,
+          relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: recent,
         }),
         crew({ endpointId: 'ep-3', name: 'Tunnel down', relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: null }),
         crew({
@@ -262,6 +263,11 @@ describe('TeamCrewsGroup', () => {
         }),
         crew({ endpointId: 'ep-5', name: 'New', presence: 'NEVER_CONNECTED', relayConnectionStatus: 'NOT_CONNECTED' }),
         crew({ endpointId: 'ep-6', name: 'Odd', presence: 'UNKNOWN', relayConnectionStatus: 'UNKNOWN' }),
+        // Presence still says late, but no renewal for five minutes: the host stopped.
+        crew({
+          endpointId: 'ep-7', name: 'Stopped', presence: 'HEARTBEAT_LATE',
+          relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: seen,
+        }),
       ],
     })
     mount()
@@ -271,11 +277,12 @@ describe('TeamCrewsGroup', () => {
     const ago = `last seen ${timeAgo(seen)}`
     expect(status).toEqual([
       'Personal · online',
-      `Personal · reconnecting · ${ago}`,
+      `Personal · reconnecting · last seen ${timeAgo(recent)}`,
       'Personal · reconnecting',
       `Personal · offline · ${ago}`,
       'Personal · offline',
       'Personal · offline',
+      `Personal · offline · ${ago}`,
     ])
   })
 
@@ -414,6 +421,27 @@ describe('TeamCrewsGroup', () => {
     expect((await screen.findByTestId('relay-crews-list-refusal')).textContent)
       .toContain('Sign in to Kiro to see your Team Crews.')
     expect(screen.queryByTestId('relay-crew-row')).toBeNull()
+    // Signing in is the fix, so it comes first; the agent hand-off stays after it
+    // for a backend that does not run on the Kiro sign-in.
+    const items = screen.getAllByRole('menuitem').map(i => i.textContent ?? '')
+    expect(screen.getByTestId('relay-crews-list-sign-in').textContent).toContain('Sign in to Kiro')
+    expect(screen.getByTestId('relay-crews-list-sign-in').getAttribute('aria-describedby')).toBe('relay-crews-list-refusal')
+    const signIn = items.findIndex(t => t.includes('Sign in to Kiro'))
+    const handoff = items.findIndex(t => /ask the agent/i.test(t))
+    expect(signIn).toBeGreaterThan(-1)
+    expect(handoff).toBeGreaterThan(signIn)
+  })
+
+  it('keeps the agent hand-off for a refusal signing in does not fix', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
+      new ApiError(403, 'denied', JSON.stringify({ error: 'denied', code: 'ACCESS_DENIED' })),
+    )
+    mount()
+    await openGroup(userEvent.setup())
+    await screen.findByTestId('relay-crews-list-refusal')
+    expect(screen.queryByTestId('relay-crews-list-sign-in')).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /ask the agent/i })).toBeTruthy()
   })
 
   it('shows a load failure, not an Open failure, when the list read fails with no known code', async () => {

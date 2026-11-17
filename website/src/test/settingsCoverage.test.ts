@@ -91,6 +91,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes); no setting and no control writes a config path',
   'PeopleAdvanced.tsx': 'the owner-only Advanced section of the People tab, which shows only under the Shared Crew preview; its controls write dashboard.shared_crew.* paths, but a search hit would deep-link to a tab that is hidden unless the preview is on, so they stay out of settings search',
   'SecretUsage.tsx': "the Secrets item pane's read-only Used by card and the delete confirmation's in-use line; it lists where an item is used and holds no setting",
+  'secretsOwnerOnly.tsx': "the hook and the one notice both Secrets panels show in place of the vault when it is held (a teammate, or a relay caller); one StatusNotice, no setting and no control writes a config path",
   'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
   'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',

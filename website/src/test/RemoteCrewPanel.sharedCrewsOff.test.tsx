@@ -3,6 +3,7 @@
  * Crews card does not depend on that switch, because relay Crews open over the
  * relay rather than an SSH/SSM tunnel. It shows under the "off" card when the
  * relay viewer list is available, and keeps its own hidden rule otherwise.
+ * A teammate gets an owner-only notice in place of the "off" card's switch.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, screen, waitFor, cleanup } from '@testing-library/react'
@@ -60,5 +61,21 @@ describe('RemoteCrewPanel with remote crew management off', () => {
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
     await waitFor(() => expect(crews).toHaveBeenCalled())
     expect(screen.queryByTestId('shared-crews-card')).not.toBeInTheDocument()
+  })
+
+  it('gives a teammate an owner-only notice instead of the switch, and keeps the Shared Crews card', async () => {
+    managementOff()
+    vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(false)
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(async () => ({ ok: true })) }
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
+      crews: [{
+        endpointId: 'ep-1', name: 'Platform team', crewType: 'TEAM', presence: 'CONNECTED',
+        relayConnectionStatus: 'CONNECTED', crewUrl: 'https://ep-1.relay.example',
+      }],
+    })
+    renderWithProviders(<RemoteCrewPanel />)
+    expect(await screen.findByTestId('remote-crews-owner-only')).toHaveTextContent("Only the Crew's owner can manage remote crews.")
+    expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
+    expect(await screen.findByTestId('shared-crews-card')).toBeInTheDocument()
   })
 })

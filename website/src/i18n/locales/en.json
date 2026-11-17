@@ -57,7 +57,8 @@
     "updating_kirocrew": "Updating {{productName}}…",
     "v": "v",
     "what_s_new": "What's new",
-    "you_re_on_the_latest_version": "You're on the latest version"
+    "you_re_on_the_latest_version": "You're on the latest version",
+    "terminal_owner_only": "Only the Crew's owner can use the Terminal."
   },
   "appSdk": {
     "chatSession": {
@@ -5075,7 +5076,8 @@
       "opens_own_window": "Opens in its own window",
       "new_crew": "New",
       "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
-      "open_crew_failed": "Couldn't open {{name}}."
+      "open_crew_failed": "Couldn't open {{name}}.",
+      "sign_in": "Sign in to Kiro"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -6658,6 +6660,11 @@
     },
     "useMoveSlotToFolder": {
       "move_refused": "The session was not moved."
+    },
+    "useSessionActions": {
+      "close_confirm": {
+        "reason_other_starter": "{{name}} started this chat. Closing it closes it for everyone in this Crew."
+      }
     }
   },
   "pages": {
@@ -7896,7 +7903,8 @@
       "type_to_filter": "Type to filter…",
       "what_can_i_do_for_you": "What can I do for you?",
       "jump_to_new_one": "{{count}} new · Jump to latest",
-      "jump_to_new_other": "{{count}} new · Jump to latest"
+      "jump_to_new_other": "{{count}} new · Jump to latest",
+      "session_closed_elsewhere": "This chat was closed outside this window."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -10649,7 +10657,9 @@
       "channelsPanel": {
         "channels": "Messaging Channels",
         "chat_channels": "Chat channels",
-        "off_by_admin": "Off by admin"
+        "off_by_admin": "Off by admin",
+        "not_set_up": "Not set up",
+        "owner_only": "Only the Crew's owner can connect or change channels."
       },
       "chatPanel": {
         "about_you": "About You",
@@ -10857,7 +10867,8 @@
         "retry": "Retry",
         "screen_recording": "Screen Recording",
         "screenshot_width": "Screenshot width",
-        "show_cursor_motion": "Show cursor motion"
+        "show_cursor_motion": "Show cursor motion",
+        "linux_unsupported": "Computer Use isn't available on Linux in this release."
       },
       "developerPanel": {
         "developer_tools": "Developer Tools",
@@ -11017,7 +11028,8 @@
         "warm_cap_tune_with_one": "Up to {{count}} remote crew stays warm (live tunnel) at once; the rest reconnect on demand. Tune with <setting/>.",
         "warm_cap_tune_with_other": "Up to {{count}} remote crews stay warm (live tunnel) at once; the rest reconnect on demand. Tune with <setting/>.",
         "remote_port_value": "· remote port {{port}}",
-        "filled_in_from_a_link": "Filled in from a link. Check that the SSH host is a machine you use, then add it."
+        "filled_in_from_a_link": "Filled in from a link. Check that the SSH host is a machine you use, then add it.",
+        "owner_only": "Only the Crew's owner can manage remote crews."
       },
       "notificationsPanel": {
         "app": "app",
@@ -11374,7 +11386,8 @@
         "recheck": "Check again",
         "language": "Language",
         "language_for_spoken_replies": "Language for spoken replies",
-        "language_provider_default": "Provider default"
+        "language_provider_default": "Provider default",
+        "no_engine_teammate": "The Crew's computer has no built-in speech engine. Pick another provider, or ask the Crew's owner to install one."
       },
       "webexPanel": {
         "access": "Access",
@@ -11433,7 +11446,9 @@
         "turn_off_disconnects": "Turning it off disconnects your other devices within a few seconds.",
         "turn_off_needs_terminal": "To turn it back on later, run <command/> in a terminal on the machine running {{productName}}, then restart {{productName}}.",
         "turn_off_failed": "Couldn't turn Remote Control off",
-        "load_failed": "Couldn't read the Remote Control setting"
+        "load_failed": "Couldn't read the Remote Control setting",
+        "on_teammate": "Remote Control is on. People with access can reach this Crew through the Kiro relay.",
+        "owner_only": "Only the Crew's owner can turn Remote Control off."
       },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
@@ -12139,7 +12154,9 @@
       "use_in_tool_title": "Use in a tool",
       "use_in_tool_tip": "Paste this into a tool’s settings, such as an MCP server’s environment. The tool gets the value when it runs; the value itself never appears there.",
       "advanced_title": "Advanced",
-      "api_call_label": "API call"
+      "api_call_label": "API call",
+      "owner_only": "Only the Crew's owner can see or change secrets.",
+      "relay_unavailable": "Secrets can be seen and changed only on the Crew's computer, not through Remote Control."
     }
   },
   "uiLocations": {
@@ -12396,7 +12413,8 @@
     "first_share_laptop_no_keep_awake": "This computer is a laptop. When it sleeps, they lose access until it wakes.",
     "direct_link_note": "Anyone allowed by Tailscale access rules can open this link.",
     "raised_by": "Raised by {{name}}",
-    "take_over_keeps_draft": "Take over to type. {{name}}'s draft stays with them."
+    "take_over_keeps_draft": "Take over to type. {{name}}'s draft stays with them.",
+    "hero_shared_team": "Shared with your team"
   },
   "shell": {
     "nav": {

@@ -97,7 +97,7 @@ import KiroAccountModal from './components/KiroAccountModal'
 import { i18nT } from './i18n/t'
 import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -398,6 +398,7 @@ const MainRoutes = memo(function MainRoutes() {
           so this one arm serves /aws-control and /aws-control/usage alike —
           an app carries sub-segments for its own path navigation, same
           shape as /settings/<tab>. */}
+      <Route path="/terminal" element={<TerminalRoute />} />
       <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
       <Route path="*" element={<ChatRedirect />} />
     </Routes>

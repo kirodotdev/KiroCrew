@@ -62,6 +62,8 @@ let listManagedError = false
 let listUsage: Record<string, Array<{ kind: string; name: string; key: string }>> = {}
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
+/** What `/api/auth/me` says about the viewer: undefined reads as "unknown". */
+let ownerOk: boolean | undefined
 
 /**
  * Fill a partial `Response` literal out to the shape the transport reads.
@@ -144,6 +146,7 @@ function recordCall(input: RequestInfo | URL, init?: RequestInit): FetchCall {
 function installFetch() {
   return stubFetch((input, init) => {
     const { url, method } = recordCall(input, init)
+    if (method === 'GET' && url === '/api/auth/me') return Promise.resolve(okJson({ owner_ok: ownerOk }))
     if (method === 'GET' && url === '/api/secrets') {
       if (listShouldFail) return Promise.reject(new Error('boom'))
       return Promise.resolve(okJson(listBody()))
@@ -196,6 +199,7 @@ async function openAdd(user: ReturnType<typeof userEvent.setup>) {
 }
 
 beforeEach(() => {
+  ownerOk = undefined
   previewSaved = Promise.resolve()
   calls = []
   listNames = []
@@ -931,5 +935,16 @@ describe('SecretsPanel on an expired session', () => {
     expect(await screen.findByText(/owner authorization required/)).toBeInTheDocument()
     expect(banner()).toBeNull()
     expect(isAuthBannerShown()).toBe(false)
+  })
+})
+
+describe('SecretsPanel — a teammate', () => {
+  it('shows one owner-only notice instead of the vault and its Add row', async () => {
+    ownerOk = false
+    listNames = ['GITHUB_TOKEN']
+    mount()
+    expect(await screen.findByTestId('secrets-owner-only')).toHaveTextContent("Only the Crew's owner can see or change secrets.")
+    expect(screen.queryByText('GITHUB_TOKEN')).toBeNull()
+    expect(screen.queryByText(/Add secret/)).toBeNull()
   })
 })

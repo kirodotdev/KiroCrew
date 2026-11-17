@@ -326,7 +326,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "{{release}} 릴리스 노트는 아직 게시되지 않았습니다. 대신 {{shown}}의 릴리스 노트를 표시합니다.",
     "titlebar_menu_disabled_footer": "일부 항목은 여기에서 사용할 수 없습니다. 표시된 바로 가기는 계속 사용할 수 있습니다.",
-    "titlebar_menu_refused_notice": "‘{{item}}’이(가) 실행되지 않았습니다. 이 명령은 지금 여기에서 사용할 수 없습니다."
+    "titlebar_menu_refused_notice": "‘{{item}}’이(가) 실행되지 않았습니다. 이 명령은 지금 여기에서 사용할 수 없습니다.",
+    "relay_remote_control_off": "이 Crew의 원격 액세스가 꺼져 있습니다",
+    "relay_remote_control_off_detail": "Crew 소유자가 원격 액세스를 껐습니다. 소유자만 Crew의 컴퓨터에서 다시 켤 수 있습니다.",
+    "relay_remote_control_off_waits": "다시 켜지면 이 페이지가 자동으로 다시 연결됩니다.",
+    "terminal_owner_only": "터미널은 Crew 소유자만 사용할 수 있습니다."
   },
   "appSdk": {
     "chatSession": {
@@ -7542,7 +7546,8 @@
       "opens_own_window": "별도 창에서 열립니다",
       "new_crew": "새 항목",
       "seen_not_saved": "확인한 것으로 저장하지 못했습니다. 다시 새 항목으로 표시됩니다.",
-      "open_crew_failed": "{{name}}을(를) 열 수 없습니다."
+      "open_crew_failed": "{{name}}을(를) 열 수 없습니다.",
+      "sign_in": "Kiro에 로그인"
     },
     "instancesViewport": {
       "connecting": "연결 중…",
@@ -11384,7 +11389,8 @@
         "reason_work": "아직 진행 중인 작업이 있습니다. 닫으면 그 작업이 중지됩니다.",
         "reason_setting": "실행 중인 것은 없습니다. 설정에서 ‘{{setting}}’이(가) 켜져 있어서 확인합니다.",
         "actions": "대화와 메시지 입력란의 초안은 유지되며 나중에 세션을 다시 열 수 있습니다.",
-        "confirm": "세션 닫기"
+        "confirm": "세션 닫기",
+        "reason_other_starter": "{{name}} 님이 시작한 채팅입니다. 닫으면 이 Crew의 모든 사람에게서 닫힙니다."
       },
       "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
       "duplicate_unreachable": "이 세션을 복제할 수 없습니다. {{productName}}에 연결할 수 없습니다. 연결을 확인한 뒤 다시 시도하세요.",
@@ -14209,7 +14215,8 @@
       "comments_sent_other": "{{count}}개의 댓글이 전송되었습니다",
       "your_crewmate": "Bot",
       "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로",
-      "could_not_repair_images": "이미지를 복구하지 못했습니다"
+      "could_not_repair_images": "이미지를 복구하지 못했습니다",
+      "session_closed_elsewhere": "이 채팅은 이 창 밖에서 닫혔습니다."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -18798,7 +18805,9 @@
         "needs_setup": "설정 필요",
         "not_connected": "연결되지 않음",
         "off_by_admin": "관리자가 해제함",
-        "status_unavailable": "상태를 확인할 수 없음"
+        "status_unavailable": "상태를 확인할 수 없음",
+        "not_set_up": "설정되지 않음",
+        "owner_only": "채널은 Crew 소유자만 연결하거나 변경할 수 있습니다."
       },
       "chatPanel": {
         "advanced": "고급",
@@ -19190,7 +19199,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Windows에서는 키 입력이 키보드 포커스를 가져가고 좌표 클릭이 실제 커서를 움직입니다. 이 플랫폼에는 앱별 입력 경로가 없습니다.",
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json의 앱 목록을 읽을 수 없어 여기에는 비어 있는 상태로 표시됩니다. 파일이 유효한 JSON이 될 때까지 에이전트는 이 목록에 의존하는 모든 작업을 거부합니다.",
         "your_chat_sessions_were_restarted_so_this_takes": "채팅 세션이 다시 시작되어 이 변경이 즉시 적용됩니다 — Kiro는 세션마다 도구 목록을 한 번만 읽으므로 열려 있던 채팅은 그렇지 않으면 변경을 반영하지 못합니다. 메시지는 그대로 남아 있으며, 에이전트는 다음 메시지에서 컨텍스트를 다시 읽습니다.",
-        "your_chat_sessions_were_restarted": "채팅 세션을 다시 시작했습니다. 메시지는 그대로 남아 있습니다."
+        "your_chat_sessions_were_restarted": "채팅 세션을 다시 시작했습니다. 메시지는 그대로 남아 있습니다.",
+        "linux_unsupported": "이 릴리스에서는 Linux에서 Computer Use를 사용할 수 없습니다."
       },
       "crewmatesSection": {
         "reply_threads": "Bot 채팅 메시지의 답글 스레드",
@@ -19586,7 +19596,8 @@
         "remote_port_ttl": "· 리모트 포트 {{port}} · ttl {{ttl}}",
         "warm_cap_tune_with_other": "최대 {{count}}개의 원격 크루가 동시에 웜 상태(활성 터널)로 유지되고, 나머지는 필요할 때 다시 연결합니다. <setting/>에서 조정할 수 있습니다.",
         "remote_port_value": "· 리모트 포트 {{port}}",
-        "filled_in_from_a_link": "링크에서 입력되었습니다. SSH 호스트가 사용 중인 머신인지 확인한 다음 추가하세요."
+        "filled_in_from_a_link": "링크에서 입력되었습니다. SSH 호스트가 사용 중인 머신인지 확인한 다음 추가하세요.",
+        "owner_only": "원격 크루는 Crew 소유자만 관리할 수 있습니다."
       },
       "privacyPanel": {
         "recordMetricsLabel": "메트릭 기록",
@@ -20728,7 +20739,8 @@
         "recheck": "다시 확인",
         "language": "언어",
         "language_for_spoken_replies": "음성으로 읽어 주는 답변의 언어",
-        "language_provider_default": "제공자 기본값"
+        "language_provider_default": "제공자 기본값",
+        "no_engine_teammate": "Crew의 컴퓨터에 기본 음성 엔진이 없습니다. 다른 제공자를 선택하거나 Crew 소유자에게 설치를 요청하세요."
       },
       "weComPanel": {
         "allow_all_bypass_note": "모두 허용이 켜져 있어 위의 userid 목록은 무시됩니다. 다시 되돌릴 때를 위해 그대로 보관됩니다.",
@@ -20926,7 +20938,9 @@
         "turn_off_disconnects": "끄면 다른 기기의 연결이 몇 초 안에 끊어집니다.",
         "turn_off_needs_terminal": "나중에 다시 켜려면 {{productName}}이(가) 실행 중인 머신의 터미널에서 <command/>을(를) 실행한 뒤 {{productName}}을(를) 다시 시작하세요.",
         "turn_off_failed": "원격 제어를 끄지 못했습니다",
-        "load_failed": "원격 제어 설정을 읽지 못했습니다"
+        "load_failed": "원격 제어 설정을 읽지 못했습니다",
+        "on_teammate": "원격 제어가 켜져 있습니다. 액세스 권한이 있는 사람은 Kiro 릴레이를 통해 이 Crew에 접속할 수 있습니다.",
+        "owner_only": "원격 제어는 Crew 소유자만 끌 수 있습니다."
       },
       "remoteCrewPanel": {
         "added_by_you": "내가 추가함",
@@ -22207,7 +22221,11 @@
     "envOverrideWithSettingRef": "<settingRef/>이(가) 이 환경에 설정되어 있어 하트비트가 꺼져 있습니다. 여기에서 텔레메트리를 관리하려면 해제하세요.",
     "localDataBodyOn": "사용 및 컨텍스트 기록. 성능 메트릭이 지금 이 기기에 기록되고 있습니다.",
     "localDataBodyOff": "사용 및 컨텍스트 기록. 성능 메트릭이 지금 이 기기에 기록되고 있지 않습니다.",
-    "doNotTrackCaption": "DO_NOT_TRACK=1을 설정하면 성능 메트릭과 하트비트가 꺼집니다."
+    "doNotTrackCaption": "DO_NOT_TRACK=1을 설정하면 성능 메트릭과 하트비트가 꺼집니다.",
+    "localDataTitleShared": "Crew의 컴퓨터에 보관",
+    "localDataBodyShared": "사용 및 컨텍스트 기록. 성능 메트릭은 기본적으로 Crew의 컴퓨터에 기록됩니다. 지금 켜져 있는지는 설정 > 개인정보 보호의 '메트릭 기록' 스위치에서 확인할 수 있습니다.",
+    "localDataBodyOnShared": "사용 및 컨텍스트 기록. 성능 메트릭이 지금 Crew의 컴퓨터에 기록되고 있습니다.",
+    "localDataBodyOffShared": "사용 및 컨텍스트 기록. 성능 메트릭이 지금 Crew의 컴퓨터에 기록되고 있지 않습니다."
   },
   "settings": {
     "advanced": {
@@ -22374,7 +22392,7 @@
       "wakatime_api_key_description": "WakaTime이 활성화된 경우 코딩 활동 동기화를 인증합니다.",
       "custom_title": "사용자 지정 보안 비밀",
       "custom_description": "MCP 서버와 .env 설정용 암호화된 키입니다. secret://YOUR_KEY로 참조하며, 값은 채팅에 표시되지 않습니다.",
-      "custom_authorize": "멤버 채팅의 에이전트가 보안 비밀로 승인된 API 하나를 호출하게 하려면 에이전트에 {{server}} 권한을 부여한 다음, 셸이나 터미널 페이지에서 아래 명령을 실행하세요.",
+      "custom_authorize": "멤버 채팅의 에이전트가 보안 비밀로 승인된 API 하나를 호출하게 하려면 에이전트에 {{server}} 권한을 부여한 다음, Crew가 실행 중인 컴퓨터의 셸에서 아래 명령을 실행하세요.",
       "custom_empty": "아직 저장된 사용자 지정 보안 비밀이 없습니다. 하나를 추가하면 MCP 서버에서 secret://YOUR_KEY로 참조할 수 있습니다.",
       "managed_config_error": "$KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)을 읽을 수 없어 일부 자동 자격 증명이 숨겨졌습니다.",
       "managed_name_hint": "여기에 저장하면 자동 자격 증명 섹션의 {{name}} 항목이 업데이트됩니다. — {{productName}}",
@@ -22455,7 +22473,9 @@
       "use_in_tool_title": "도구에서 사용",
       "use_in_tool_tip": "이 값을 MCP 서버 환경 같은 도구 설정에 붙여 넣으세요. 도구는 실행될 때 값을 받으며, 값 자체는 그곳에 나타나지 않습니다.",
       "advanced_title": "고급",
-      "api_call_label": "API 호출"
+      "api_call_label": "API 호출",
+      "owner_only": "보안 비밀은 Crew 소유자만 보거나 변경할 수 있습니다.",
+      "relay_unavailable": "시크릿은 Crew의 컴퓨터에서만 보고 바꿀 수 있으며 Remote Control로는 할 수 없습니다."
     }
   },
   "store": {
@@ -23510,7 +23530,8 @@
     "preview_save_failed": "공유 Crew 설정을 저장하지 못했습니다.",
     "preview_restart_failed": "게이트웨이를 다시 시작하지 못했습니다.",
     "raised_by": "{{name}} 님이 요청함",
-    "take_over_keeps_draft": "넘겨받아 입력하세요. {{name}} 님의 초안은 그대로 유지됩니다."
+    "take_over_keeps_draft": "넘겨받아 입력하세요. {{name}} 님의 초안은 그대로 유지됩니다.",
+    "hero_shared_team": "팀과 공유 중"
   },
   "milestone": {
     "chats_opened": {

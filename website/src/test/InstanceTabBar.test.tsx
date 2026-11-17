@@ -567,6 +567,19 @@ describe('InstanceTabBar', () => {
     expect(msg.className).not.toMatch(/break-all/)
   })
 
+  it("stays quiet when the relay answers that the Crew's host is offline", async () => {
+    // The relay window's reconnecting cover says it; the bar must not add the
+    // relay's raw sentence in red beside the crew pill.
+    const offline = Object.assign(new Error('The Crew is not connected to the relay.'), {
+      status: 503, body: '{"reason":"crew_not_connected","message":"The Crew is not connected to the relay."}',
+    })
+    vi.mocked(api.listInstances).mockRejectedValue(offline)
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 0))
+    expect(screen.queryByTestId('instance-tab-bar-list-error')).toBeNull()
+  })
+
   it('marks the list-failure notice so the desktop top bar gives it only spare room', async () => {
     // The desktop top bar's identity ladder measures the group's content width.
     // The notice (up to 320px) would raise that width and collapse the rest of

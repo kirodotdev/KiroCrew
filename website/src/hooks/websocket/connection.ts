@@ -7,7 +7,7 @@ import type { OfflineCause } from '../../store/dashboardSlice'
 import { markGatewayDisconnected } from './gatewayConnectivity'
 import { chunkScopeCapability } from '../../lib/chunkScopeCapability'
 import { jittered, provedHealthy } from '../../utils/reconnectBackoff'
-import { QUIET_RECONNECT_GRACE_MS, classifyClose, isQuietClose, type SocketCloseKind } from './relayClose'
+import { CLOSE_CREW_NOT_CONNECTED, QUIET_RECONNECT_GRACE_MS, classifyClose, isQuietClose, nextOfflineCause, type SocketCloseKind } from './relayClose'
 
 /** The fold-watch capability this bundle declares on `/api/ws` (see
  *  `foldWatch.ts`). A wire token, not copy. */
@@ -43,6 +43,11 @@ function settleBackoff(openedAtRef: MutableRefObject<number>, reconnectRef: Muta
   return false
 }
 
+/** How long a socket opened after a host-silent close may stay without a frame
+ *  before it counts as the same outage: the gateway's connect snapshot is the
+ *  first frame and arrives at once from a host that answers. */
+export const HOST_FIRST_FRAME_MS = 15_000
+
 export interface SocketConnection {
   wsRef: MutableRefObject<WebSocket | null>
   /** Set by the first successful open for the life of the hook: every later
@@ -76,6 +81,21 @@ export interface SocketConnection {
    *  forward, unless the last socket opened and dropped before it proved
    *  healthy. */
   forceReconnect(releaseVoice: () => void, reconnect: () => void): void
+  /** The live socket through the relay went silent (the Crew's host stopped
+   *  answering while the relay keeps the socket open): drop it as a host-gone
+   *  close (`CLOSE_CREW_NOT_CONNECTED`), so
+   *  the dashboard goes offline with its calm reconnecting view and the usual
+   *  backoff brings it back. A no-op unless a socket is OPEN. */
+  noteHostSilent(dispatch: AppDispatch, releaseVoice: () => void, reconnect: () => void): void
+  /** True while the open socket follows a host-silent or Remote Control off
+   *  close and has not yet carried a frame: the relay accepts the upgrade
+   *  without the host, so only
+   *  a frame proves the host answers again. The catch-up holds "connected"
+   *  until then. */
+  awaitsFirstFrame(): boolean
+  /** A frame arrived on the live socket: true when it ended that wait, so the
+   *  caller marks the dashboard connected. */
+  noteFrame(): boolean
   /** Send `payload` on the live socket; dropped while it is not OPEN. */
   sendIfOpen(payload: object): void
   isClosing(): boolean
@@ -106,6 +126,11 @@ export function useSocketConnection(): SocketConnection {
   const wasConnectedRef = useRef(false)
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const logCbRef = useRef<LogCallback>(null)
+  // After a host-silent close: the next socket is not proof until it carries a
+  // frame; `hostSilentCtxRef` keeps what a repeated drop needs.
+  const awaitingFrameRef = useRef(false)
+  const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const hostSilentCtxRef = useRef<{ dispatch: AppDispatch; releaseVoice: () => void; reconnect: () => void } | null>(null)
 
   return useMemo<SocketConnection>(() => ({
     wsRef,
@@ -142,7 +167,19 @@ export function useSocketConnection(): SocketConnection {
     noteOpen() {
       openedAtRef.current = Date.now()
       endQuiet(quietRef)
-      causeRef.current = undefined
+      // While a frame is awaited the open proves nothing, so the outage's
+      // reason stays until `noteFrame`.
+      if (!awaitingFrameRef.current) {
+        causeRef.current = undefined
+        return
+      }
+      clearTimeout(firstFrameTimerRef.current)
+      const ws = wsRef.current
+      firstFrameTimerRef.current = setTimeout(() => {
+        const ctx = hostSilentCtxRef.current
+        if (!ctx || wsRef.current !== ws || !awaitingFrameRef.current) return
+        this.noteHostSilent(ctx.dispatch, ctx.releaseVoice, ctx.reconnect)
+      }, HOST_FIRST_FRAME_MS)
     },
     handleClose(ws, dispatch, releaseVoice, reconnect, code) {
       // Stale WS (e.g. from StrictMode cleanup) — ignore entirely.
@@ -174,10 +211,14 @@ export function useSocketConnection(): SocketConnection {
         return
       }
 
-      causeRef.current = failedQuiet?.kind === 'token_renewal' ? 'session_ended'
-        : kind === 'refused' ? 'refused'
-          : causeRef.current
+      causeRef.current = nextOfflineCause(causeRef.current, kind, code, failedQuiet?.kind === 'token_renewal')
       markGatewayDisconnected(dispatch, causeRef.current)
+      // Remote Control off: the relay accepts the next upgrade and closes it
+      // 4404, so only a frame from the host ends this outage and its reason.
+      if (causeRef.current === 'remote_off') {
+        awaitingFrameRef.current = true
+        hostSilentCtxRef.current = { dispatch, releaseVoice, reconnect }
+      }
 
       if (closingRef.current) return
       releaseVoice()
@@ -239,6 +280,26 @@ export function useSocketConnection(): SocketConnection {
       }
       wsRef.current = null
       reconnectTimerRef.current = setTimeout(reconnect, 0)
+    },
+    noteHostSilent(dispatch, releaseVoice, reconnect) {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN || closingRef.current) return
+      awaitingFrameRef.current = true
+      hostSilentCtxRef.current = { dispatch, releaseVoice, reconnect }
+      ws.onclose = null
+      ws.onerror = null
+      this.handleClose(ws, dispatch, releaseVoice, reconnect, CLOSE_CREW_NOT_CONNECTED)
+      try { ws.close() } catch { /* ignore */ }
+    },
+    awaitsFirstFrame() {
+      return awaitingFrameRef.current
+    },
+    noteFrame() {
+      if (!awaitingFrameRef.current) return false
+      awaitingFrameRef.current = false
+      causeRef.current = undefined
+      clearTimeout(firstFrameTimerRef.current)
+      return true
     },
     sendIfOpen(payload) {
       const ws = wsRef.current

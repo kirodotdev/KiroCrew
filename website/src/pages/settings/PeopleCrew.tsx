@@ -33,7 +33,14 @@ export { useCanInvite, useOwnerRead }
 /** At most this many faces in the "here now" stack; the count says the rest. */
 const STACK_MAX = 4
 
+/** The owner's row before anyone names them carries only this machine's name (a
+ *  hostname such as an EC2 private DNS name), which reads as a stranger. */
+function ownerKnownOnlyByMachine(row: PeopleRow): boolean {
+  return !!row.is_owner && !row.member?.alias && !row.principal.display.login && !!principalName(row.principal)
+}
+
 function displayName(row: PeopleRow): string {
+  if (ownerKnownOnlyByMachine(row)) return i18nT('sharedCrew.crew_owner')
   return row.member?.alias || principalName(row.principal) || i18nT('sharedCrew.unattributed')
 }
 
@@ -60,11 +67,14 @@ function HereDot({ label }: { label: string }) {
 /** The connect card. `canInvite` is true only for the owner (the invite read
  *  answered): the owner gets the Invite… entry and the invite message, a
  *  teammate only the Crew link. */
-export function ShareHero({ direct, tailscale, people, canInvite }: {
+export function ShareHero({ direct, tailscale, people, canInvite, viewerOwns = true }: {
   direct: TailnetDirect | undefined
   tailscale: SetupPathCapability | undefined
   people: PeopleRow[]
   canInvite: boolean
+  /** False for a teammate: Tailscale setup is the owner's, and a teammate is
+   *  already in through some path, so they see the Crew as shared instead. */
+  viewerOwns?: boolean
 }) {
   const [copied, setCopied] = useState<boolean | null>(null)
   const active = tailnetDirectActive(direct)
@@ -82,10 +92,10 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
     <div className="rounded-lg border border-border bg-card p-4 animate-rise">
       <div className="flex flex-col gap-3 min-w-0" data-testid="share-hero">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          {active ? (
+          {active || !viewerOwns ? (
             <span className="inline-flex items-center gap-2 text-sm font-semibold text-text-strong" data-testid="share-hero-state">
-              <HereDot label={i18nT('sharedCrew.hero_shared')} />
-              {i18nT('sharedCrew.hero_shared')}
+              <HereDot label={i18nT(active ? 'sharedCrew.hero_shared' : 'sharedCrew.hero_shared_team')} />
+              {i18nT(active ? 'sharedCrew.hero_shared' : 'sharedCrew.hero_shared_team')}
             </span>
           ) : (
             <span className="inline-flex items-center gap-2 text-sm font-semibold text-text-strong" data-testid="share-hero-state">
@@ -193,7 +203,8 @@ function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit 
   onEdit: (row: PeopleRow) => void
 }) {
   const name = displayName(row)
-  const login = row.principal.display.login
+  // The machine name stays as the detail line when it is all the owner row has.
+  const login = ownerKnownOnlyByMachine(row) ? principalName(row.principal) : row.principal.display.login
   const activity = activityText(row, usageAvailable)
   const showLogin = !!login && login !== name
   // Tailscale lets an invite be accepted from any account: say so when the
@@ -217,7 +228,7 @@ function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit 
             ? <Badge variant="muted">{i18nT('sharedCrew.you_owner')}</Badge>
             : row.is_viewer
               ? <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>
-              : row.is_owner && <Badge variant="muted">{i18nT('sharedCrew.crew_owner')}</Badge>}
+              : row.is_owner && !ownerKnownOnlyByMachine(row) && <Badge variant="muted">{i18nT('sharedCrew.crew_owner')}</Badge>}
           {row.principal.kind === 'machine' && <Badge variant="muted">{i18nT('sharedCrew.kind_machine')}</Badge>}
         </div>
         {(showLogin || activity) && (

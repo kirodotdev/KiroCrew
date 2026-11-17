@@ -326,7 +326,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。",
     "titlebar_menu_disabled_footer": "部分项目在此处不可用。显示的快捷键仍然有效。",
-    "titlebar_menu_refused_notice": "“{{item}}”未执行。此命令目前在此处不可用。"
+    "titlebar_menu_refused_notice": "“{{item}}”未执行。此命令目前在此处不可用。",
+    "relay_remote_control_off": "此 Crew 的远程访问已关闭",
+    "relay_remote_control_off_detail": "Crew 的所有者关闭了远程访问。只有所有者能在 Crew 所在的电脑上重新开启。",
+    "relay_remote_control_off_waits": "重新开启后，此页面会自动重新连接。",
+    "terminal_owner_only": "只有 Crew 所有者可以使用终端。"
   },
   "appSdk": {
     "chatSession": {
@@ -7542,7 +7546,8 @@
       "opens_own_window": "在单独的窗口中打开",
       "new_crew": "新",
       "seen_not_saved": "无法保存你已查看的状态，它会再次显示为新的。",
-      "open_crew_failed": "无法打开 {{name}}。"
+      "open_crew_failed": "无法打开 {{name}}。",
+      "sign_in": "登录 Kiro"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
@@ -11384,7 +11389,8 @@
         "reason_work": "它仍有工作在运行。关闭会停止这些工作。",
         "reason_setting": "它没有正在运行的内容。之所以询问，是因为设置中开启了“{{setting}}”。",
         "actions": "对话和消息框中的草稿都会保留，之后可以重新打开会话。",
-        "confirm": "关闭会话"
+        "confirm": "关闭会话",
+        "reason_other_starter": "这个聊天是 {{name}} 发起的。关闭后，这个 Crew 里的所有人都看不到它了。"
       },
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "duplicate_unreachable": "无法复制此会话。无法连接到 {{productName}}。请检查网络连接后重试。",
@@ -14209,7 +14215,8 @@
       "comments_sent_other": "{{count}} 条评论已发送",
       "your_crewmate": "你的 Bot",
       "jump_to_new_other": "{{count}} 条新 · 跳到最新",
-      "could_not_repair_images": "无法修复图片"
+      "could_not_repair_images": "无法修复图片",
+      "session_closed_elsewhere": "此聊天已在此窗口之外关闭。"
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -18798,7 +18805,9 @@
         "needs_setup": "需要设置",
         "not_connected": "未连接",
         "off_by_admin": "管理员已关闭",
-        "status_unavailable": "状态不可用"
+        "status_unavailable": "状态不可用",
+        "not_set_up": "未设置",
+        "owner_only": "只有 Crew 所有者可以连接或更改渠道。"
       },
       "chatPanel": {
         "advanced": "高级",
@@ -19190,7 +19199,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "在 Windows 上，按键会夺取你的键盘焦点，坐标点击会移动真实光标——这个平台没有面向单个应用的输入通道。",
         "the_app_lists_in_computer_use_json_could_not_be": "无法读取 computer_use.json 中的应用列表，因此这里显示为空。在该文件成为有效 JSON 之前，代理仍会拒绝所有依赖这些列表的操作。",
         "your_chat_sessions_were_restarted_so_this_takes": "你的聊天会话已重启，所以改动立即生效 — Kiro 每个会话只读取一次工具列表，否则已经打开的聊天不会拾取到改动。你的消息都还在；代理会在你下一条消息时重新读取上下文。",
-        "your_chat_sessions_were_restarted": "你的聊天会话已重启。你的消息仍然保留。"
+        "your_chat_sessions_were_restarted": "你的聊天会话已重启。你的消息仍然保留。",
+        "linux_unsupported": "此版本中 Computer Use 不支持 Linux。"
       },
       "crewmatesSection": {
         "reply_threads": "Bot 对话消息的回复话题",
@@ -19586,7 +19596,8 @@
         "remote_port_ttl": "· 远程端口 {{port}} · ttl {{ttl}}",
         "warm_cap_tune_with_other": "最多 {{count}} 个远程 Crew 可同时保持预热（活动隧道）；其余按需重连。可通过 <setting/> 调整。",
         "remote_port_value": "· 远程端口 {{port}}",
-        "filled_in_from_a_link": "已根据链接填写。请确认 SSH 主机是你在用的机器，然后再添加。"
+        "filled_in_from_a_link": "已根据链接填写。请确认 SSH 主机是你在用的机器，然后再添加。",
+        "owner_only": "只有 Crew 所有者可以管理远程团队。"
       },
       "notificationsPanel": {
         "deliver_floor_all": "所有优先级",
@@ -20728,7 +20739,8 @@
         "recheck": "重新检出",
         "language": "语言",
         "language_for_spoken_replies": "朗读回复的语言",
-        "language_provider_default": "提供方默认"
+        "language_provider_default": "提供方默认",
+        "no_engine_teammate": "这个 Crew 的计算机没有内置语音引擎。请选择其他提供方，或请 Crew 所有者安装一个。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "已开启全部允许：上方的 userid 列表不再生效。它会保留下来，方便你切换回去。",
@@ -20926,7 +20938,9 @@
         "turn_off_disconnects": "关闭后，你的其他设备会在几秒内断开连接。",
         "turn_off_needs_terminal": "以后如需重新开启，请在运行 {{productName}} 的那台机器的终端中运行 <command/>，然后重启 {{productName}}。",
         "turn_off_failed": "无法关闭远程控制",
-        "load_failed": "无法读取远程控制设置"
+        "load_failed": "无法读取远程控制设置",
+        "on_teammate": "远程控制已开启。有访问权限的人可以通过 Kiro 中继访问这个 Crew。",
+        "owner_only": "只有 Crew 所有者可以关闭远程控制。"
       },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
@@ -22207,7 +22221,11 @@
     "envOverrideWithSettingRef": "心跳已关闭，因为 <settingRef/> 在此环境中已设置。取消设置以在此处管理遥测。",
     "localDataBodyOn": "使用记录和上下文记录。性能指标当前正在本设备上记录。",
     "localDataBodyOff": "使用记录和上下文记录。性能指标当前未在本设备上记录。",
-    "doNotTrackCaption": "设置 DO_NOT_TRACK=1 会关闭性能指标和心跳。"
+    "doNotTrackCaption": "设置 DO_NOT_TRACK=1 会关闭性能指标和心跳。",
+    "localDataTitleShared": "保留在这个 Crew 的计算机上",
+    "localDataBodyShared": "使用记录和上下文记录。性能指标默认记录在这个 Crew 的计算机上。“设置 > 隐私”中的“记录指标”开关显示它们当前是否开启。",
+    "localDataBodyOnShared": "使用记录和上下文记录。性能指标当前正在这个 Crew 的计算机上记录。",
+    "localDataBodyOffShared": "使用记录和上下文记录。性能指标当前未在这个 Crew 的计算机上记录。"
   },
   "settings": {
     "advanced": {
@@ -22374,7 +22392,7 @@
       "wakatime_api_key_description": "启用 WakaTime 时用于编码活动同步的身份验证。",
       "custom_title": "自定义密钥",
       "custom_description": "用于 MCP 服务器和 .env 设置的加密密钥。以 secret://YOUR_KEY 引用；其值绝不会在聊天中显示。",
-      "custom_authorize": "若要让成员聊天中的智能体使用密钥调用一个已批准的 API，请为该智能体授予 {{server}}，然后在 shell 或终端页面中运行下方命令。",
+      "custom_authorize": "若要让成员聊天中的智能体使用密钥调用一个已批准的 API，请为该智能体授予 {{server}}，然后在 Crew 所在计算机上打开 shell 运行下方命令。",
       "custom_empty": "尚未存储任何自定义密钥。添加一个即可从 MCP 服务器以 secret://YOUR_KEY 引用它。",
       "managed_config_error": "无法读取 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json），因此部分自动凭证已隐藏。",
       "managed_name_hint": "在此保存会更新自动凭证部分中的 {{name}}。 — {{productName}}",
@@ -22455,7 +22473,9 @@
       "use_in_tool_title": "在工具中使用",
       "use_in_tool_tip": "把它粘贴到工具的设置里，例如 MCP 服务器的环境变量。工具运行时才拿到值，值本身不会出现在那里。",
       "advanced_title": "高级",
-      "api_call_label": "API 调用"
+      "api_call_label": "API 调用",
+      "owner_only": "只有 Crew 所有者可以查看或更改密钥。",
+      "relay_unavailable": "只能在 Crew 所在的电脑上查看和更改密钥，无法通过 Remote Control 操作。"
     }
   },
   "store": {
@@ -23510,7 +23530,8 @@
     "preview_save_failed": "无法保存共享 Crew 设置。",
     "preview_restart_failed": "无法重启网关。",
     "raised_by": "由 {{name}} 发起",
-    "take_over_keeps_draft": "接手后即可输入。{{name}} 的草稿会保留。"
+    "take_over_keeps_draft": "接手后即可输入。{{name}} 的草稿会保留。",
+    "hero_shared_team": "已与你的团队共享"
   },
   "milestones": {
     "getting_started_result": "第一个完成的成果",

@@ -34,6 +34,7 @@ import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessio
 import { sessionShortNameFrom, shortNameMatches, type ShortNameMatch } from '../../utils/sessionKeys'
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
+import { closedOutsideHere, sharedCrewInUse, slotLineage } from './closedOutsideHere'
 import { useLaunchedDraftDiscard } from './useLaunchedDraftDiscard'
 import { PENDING_OPEN_LEASE_MS, resumeStillOpening } from '../../store/chatSlice'
 import { isUntitledSession } from '../../utils/sessionDisplayTitle'
@@ -1311,10 +1312,10 @@ export function useChatPageSessionController({
   const switchInFlightKey = useAppSelector(s => (s.chat.slotSwitchRequestId !== null ? s.chat.slotSwitchTarget : null))
   useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && switchInFlightKey !== activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A popout's chat the server removed (its `removed` patch) is dropped even
-  // when it was the only slot, so the auto-select effect below can show the
-  // closed-session notice instead of staying bound to a removed chat.
-  const activeSlotRemoved = useAppSelector(s => !!(popout && activeSlot && s.dashboard.durablyRemoved?.[activeSlot]))
+  // A chat the server removed (its `removed` patch) is dropped even when it was
+  // the only slot, so the auto-select effect below can show the closed-session
+  // notice instead of staying bound to a removed chat.
+  const activeSlotRemoved = useAppSelector(s => !!(activeSlot && s.dashboard.durablyRemoved?.[activeSlot]))
   // Clear activeSlot when it belongs to a different mode (page switch)
   useEffect(() => {
     if (activeSlot && (slots.length > 0 || activeSlotRemoved) && !filteredSlots.find(s => s.key === activeSlot)) {
@@ -1328,6 +1329,9 @@ export function useChatPageSessionController({
   const hadActiveSlotRef = useRef(false)
   // The last chat THIS window showed. A popout is bound to it.
   const lastShownSlotRef = useRef<string | null>(null)
+  // The chats it was dispatched from (conductor, crew root, parent), so closing
+  // a conductor here counts its workers' closes as this window's own.
+  const lastShownLineageRef = useRef<readonly string[]>([])
   // This window's own recency stack (activeSlot is never in it). The stored
   // key is shared by every tab and popout of the origin, so it cannot say
   // what this window was doing.
@@ -1379,6 +1383,8 @@ export function useChatPageSessionController({
     if (activeSlot) {
       hadActiveSlotRef.current = true
       lastShownSlotRef.current = activeSlot
+      const shown = filteredSlots.find(s => s.key === activeSlot)
+      if (shown) lastShownLineageRef.current = slotLineage(shown)
       slotHintRef.current = null
       closedHereRef.current = null
       setOwnChatClosedElsewhere(null)
@@ -1408,6 +1414,15 @@ export function useChatPageSessionController({
         const confirmed = closedHereRef.current !== bound && !!durablyRemoved?.[bound]
         setOwnChatClosedElsewhere(confirmed ? bound : null)
       }
+      return
+    }
+    // In a Crew other people use, a tab whose chat was closed outside it stays
+    // put and says so, rather than opening a chat nobody here picked. A
+    // personal Crew, and this window's own close (a conductor's workers
+    // included), keep the usual landing.
+    if (!popout && hadActiveSlotRef.current && sharedCrewInUse(queryClient)
+      && closedOutsideHere(lastShownSlotRef.current, listed, closingSlotsRef.current, closedHereRef, durablyRemoved, lastShownLineageRef.current)) {
+      setOwnChatClosedElsewhere(lastShownSlotRef.current)
       return
     }
     if (!bound && (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current)) return
@@ -1447,7 +1462,7 @@ export function useChatPageSessionController({
       // which leaves a create or fork the user started free to open.
       dispatch(createSlot({ mode, automatic: true, crewModeDefault: true }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved, lockSettled])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved, lockSettled, queryClient])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a

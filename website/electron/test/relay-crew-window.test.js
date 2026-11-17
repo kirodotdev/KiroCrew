@@ -508,6 +508,72 @@ test("window: a main-frame load the relay answers 5xx or that fails is reported 
   w.handle.close();
 });
 
+test("window: a reload the page's service worker answers with the relay's 503 is reported once", () => {
+  // The worker's own fetch never reaches the network hook as a main frame, so
+  // only did-navigate sees the status the document was served with.
+  const w = openWithClock();
+  const wc = w.crewView.webContents;
+  wc.emit("did-start-navigation", {}, `${ORIGIN}/chat`, false, true);
+  wc.emit("did-navigate", {}, `${ORIGIN}/chat`, 503);
+  assert.strictEqual(w.unreachable.length, 1);
+  assert.strictEqual(w.handle.showsError(), true, "opening it again reloads");
+  w.handle.close();
+
+  // Seen by both: one notice.
+  const both = openWithClock();
+  both.crewView.webContents.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  both.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  both.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(both.unreachable.length, 1, "a load the hook already reported is not reported again");
+  both.handle.close();
+
+  // The other order: did-navigate commits before the hook sees the body end.
+  const navFirst = openWithClock();
+  navFirst.crewView.webContents.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  navFirst.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  navFirst.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  assert.strictEqual(navFirst.unreachable.length, 1, "did-navigate first, then the hook: one notice");
+  navFirst.handle.close();
+
+  // The notice's own about:blank load does not start a new report, so the
+  // 503 document's did-navigate after it is the same load.
+  const viaNotice = openWithClock();
+  const wcn = viaNotice.crewView.webContents;
+  viaNotice.handle.onUnreachable(() => {
+    viaNotice.handle.showNotice({ title: "t", body: "", check: "Check again", close: "Close window" });
+    wcn.emit("did-start-navigation", {}, "about:blank", false, true);
+  });
+  wcn.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  viaNotice.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  wcn.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(viaNotice.unreachable.length, 1, "a notice raised by the first report is not raised again");
+  // A same-document navigation does not start a new load either.
+  wcn.emit("did-start-navigation", {}, `${ORIGIN}/#x`, true, true);
+  wcn.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(viaNotice.unreachable.length, 1);
+  viaNotice.handle.close();
+
+  // Another origin, or a healthy page, reports nothing.
+  const ok = openWithClock();
+  ok.crewView.webContents.emit("did-navigate", {}, "https://elsewhere.example.test/", 503);
+  ok.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 200);
+  assert.deepStrictEqual(ok.unreachable, []);
+  assert.strictEqual(ok.handle.showsError(), false);
+  ok.handle.close();
+});
+
+test("window: a page the relay answered 4xx reads as an error until the Crew loads again", () => {
+  const w = openWithClock();
+  w.completed("/", 403, "mainFrame");
+  assert.deepStrictEqual(w.unreachable, [], "a 4xx is not an outage");
+  assert.strictEqual(w.handle.showsError(), true);
+  w.handle.reload();
+  assert.strictEqual(w.handle.showsError(), false, "a reload starts the page over");
+  w.completed("/", 200, "mainFrame");
+  assert.strictEqual(w.handle.showsError(), false);
+  w.handle.close();
+});
+
 test("window: a notice unloads the Crew's page and shows a local, locked-down view", () => {
   const w = openWithClock();
   const text = { title: "Example Crew is currently unavailable", body: "", check: "Check again", close: "Close window" };

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab, resumeFromHistory, setAgentSwitchNotice } from '../store/chatSlice'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { cachedViewerIds } from './sharedCrew/cachedViewer'
 import { askAppConfirm } from '../lib/appConfirm'
 import { forgetClosedSessionRef, hasRecentlyClosedSession, isClosedSessionOpenIn, rememberClosedSession, restoreClosedSession, takeRecentlyClosedSession, trackClosedSessionClose, waitForClosedSession } from '../lib/recentlyClosedSessions'
 import type { ClosedSessionRef } from '../lib/recentlyClosedSessions'
@@ -1091,6 +1092,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
           const ask = closeConfirmPrompt(appStore.getState(), activeSlot, {
             settingOn: loadChatConfig().confirmCloseSession,
             checkBusy: modChord,
+            viewerIds: cachedViewerIds(),
           })
           // The slot captured here is the one the chord closed, even if the
           // user switches sessions while the dialog is open.

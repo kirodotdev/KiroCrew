@@ -341,7 +341,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "Die Versionshinweise für {{release}} sind noch nicht veröffentlicht. Stattdessen werden die Hinweise zu {{shown}} angezeigt.",
     "titlebar_menu_disabled_footer": "Einige Einträge sind hier nicht verfügbar. Die angezeigten Tastenkürzel funktionieren weiterhin.",
-    "titlebar_menu_refused_notice": "„{{item}}“ wurde nicht ausgeführt. Dieser Befehl ist hier derzeit nicht verfügbar."
+    "titlebar_menu_refused_notice": "„{{item}}“ wurde nicht ausgeführt. Dieser Befehl ist hier derzeit nicht verfügbar.",
+    "relay_remote_control_off": "Der Fernzugriff auf diese Crew ist ausgeschaltet",
+    "relay_remote_control_off_detail": "Der Besitzer der Crew hat den Fernzugriff ausgeschaltet. Nur er kann ihn wieder einschalten, am Computer der Crew.",
+    "relay_remote_control_off_waits": "Diese Seite verbindet sich von selbst neu, sobald er wieder eingeschaltet ist.",
+    "terminal_owner_only": "Nur der Besitzer der Crew kann das Terminal nutzen."
   },
   "appSdk": {
     "chatSession": {
@@ -7750,7 +7754,8 @@
       "opens_own_window": "Öffnet sich in einem eigenen Fenster",
       "new_crew": "Neu",
       "seen_not_saved": "Konnte nicht speichern, dass du das gesehen hast. Es wird wieder als neu angezeigt.",
-      "open_crew_failed": "{{name}} konnte nicht geöffnet werden."
+      "open_crew_failed": "{{name}} konnte nicht geöffnet werden.",
+      "sign_in": "Bei Kiro anmelden"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -11644,7 +11649,8 @@
         "reason_work": "In ihr läuft noch Arbeit. Schließen stoppt diese Arbeit.",
         "reason_setting": "In ihr läuft nichts. Du wirst gefragt, weil „{{setting}}“ in den Einstellungen aktiviert ist.",
         "actions": "Die Unterhaltung und der Entwurf in deinem Eingabefeld bleiben erhalten, und du kannst die Sitzung später wieder öffnen.",
-        "confirm": "Sitzung schließen"
+        "confirm": "Sitzung schließen",
+        "reason_other_starter": "{{name}} hat diesen Chat begonnen. Wenn du ihn schließt, ist er für alle in dieser Crew geschlossen."
       },
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Durchlauf oder das Gateway ist nicht erreichbar; versuche es erneut, wenn die Sitzung inaktiv ist.",
       "duplicate_unreachable": "Diese Sitzung konnte nicht dupliziert werden. {{productName}} ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
@@ -14551,7 +14557,8 @@
       "your_crewmate": "Dein Bot",
       "jump_to_new_one": "{{count}} neue · Zum Ende",
       "jump_to_new_other": "{{count}} neue · Zum Ende",
-      "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
+      "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
+      "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -19309,7 +19316,9 @@
         "needs_setup": "Einrichtung nötig",
         "not_connected": "Nicht verbunden",
         "off_by_admin": "Vom Administrator deaktiviert",
-        "status_unavailable": "Status nicht verfügbar"
+        "status_unavailable": "Status nicht verfügbar",
+        "not_set_up": "Nicht eingerichtet",
+        "owner_only": "Nur der Besitzer der Crew kann Kanäle verbinden oder ändern."
       },
       "chatPanel": {
         "advanced": "Erweitert",
@@ -19705,7 +19714,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Unter Windows übernehmen Tastenanschläge Ihren Tastaturfokus und Koordinatenklicks bewegen Ihren echten Mauszeiger — auf dieser Plattform gibt es keinen App-spezifischen Eingabeweg.",
         "the_app_lists_in_computer_use_json_could_not_be": "Die App-Listen in computer_use.json konnten nicht gelesen werden, daher werden sie hier leer angezeigt. Der Agent verweigert weiterhin jede Aktion, die von ihnen abhängt, bis die Datei gültiges JSON ist.",
         "your_chat_sessions_were_restarted_so_this_takes": "Deine Chat-Sitzungen wurden neu gestartet, damit dies sofort wirkt — Kiro liest seine Werkzeugliste einmal pro Sitzung, ein offener Chat hätte sie sonst nicht übernommen. Deine Nachrichten sind weiterhin da; der Agent liest seinen Kontext bei deiner nächsten Nachricht erneut.",
-        "your_chat_sessions_were_restarted": "Deine Chat-Sitzungen wurden neu gestartet. Deine Nachrichten sind noch da."
+        "your_chat_sessions_were_restarted": "Deine Chat-Sitzungen wurden neu gestartet. Deine Nachrichten sind noch da.",
+        "linux_unsupported": "Computer Use ist in dieser Version unter Linux nicht verfügbar."
       },
       "crewmatesSection": {
         "reply_threads": "Antwort-Threads auf Nachrichten im Chat eines Bot",
@@ -20102,7 +20112,8 @@
         "warm_cap_tune_with_one": "Bis zu {{count}} Remote-Crew bleibt gleichzeitig warm (aktiver Tunnel); die übrigen verbinden sich bei Bedarf neu. Anpassen mit <setting/>.",
         "warm_cap_tune_with_other": "Bis zu {{count}} Remote-Crews bleiben gleichzeitig warm (aktiver Tunnel); die übrigen verbinden sich bei Bedarf neu. Anpassen mit <setting/>.",
         "remote_port_value": "· Remote-Port {{port}}",
-        "filled_in_from_a_link": "Aus einem Link ausgefüllt. Prüfe, ob der SSH-Host ein Rechner ist, den du nutzt, und füge die Crew dann hinzu."
+        "filled_in_from_a_link": "Aus einem Link ausgefüllt. Prüfe, ob der SSH-Host ein Rechner ist, den du nutzt, und füge die Crew dann hinzu.",
+        "owner_only": "Nur der Besitzer der Crew kann entfernte Crews verwalten."
       },
       "notificationsPanel": {
         "deliver_floor_all": "Jede Priorität",
@@ -21261,7 +21272,8 @@
         "recheck": "Erneut prüfen",
         "language": "Sprache",
         "language_for_spoken_replies": "Sprache für gesprochene Antworten",
-        "language_provider_default": "Standard des Anbieters"
+        "language_provider_default": "Standard des Anbieters",
+        "no_engine_teammate": "Der Computer der Crew hat keine integrierte Sprachausgabe. Wähle einen anderen Anbieter oder bitte den Besitzer der Crew, eine zu installieren."
       },
       "weComPanel": {
         "allow_all_bypass_note": "„Alle erlauben“ ist aktiv: Die Liste der userids oben wird übergangen. Die Liste bleibt erhalten, falls du zurückwechselst.",
@@ -21459,7 +21471,9 @@
         "turn_off_disconnects": "Beim Ausschalten werden deine anderen Geräte innerhalb weniger Sekunden getrennt.",
         "turn_off_needs_terminal": "Um sie später wieder einzuschalten, führe <command/> in einem Terminal auf dem Rechner aus, der {{productName}} ausführt, und starte {{productName}} dann neu.",
         "turn_off_failed": "Die Fernsteuerung konnte nicht ausgeschaltet werden",
-        "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden"
+        "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden",
+        "on_teammate": "Die Fernsteuerung ist an. Personen mit Zugriff erreichen diese Crew über das Kiro-Relay.",
+        "owner_only": "Nur der Besitzer der Crew kann die Fernsteuerung ausschalten."
       },
       "remoteCrewPanel": {
         "added_by_you": "Von dir hinzugefügt",
@@ -22768,7 +22782,11 @@
     "envOverrideWithSettingRef": "Der Heartbeat ist deaktiviert, weil <settingRef/> in dieser Umgebung gesetzt ist. Entferne die Variable, um Telemetrie hier zu verwalten.",
     "localDataBodyOn": "Nutzungs- und Kontextdaten. Leistungsmetriken werden gerade auf diesem Gerät aufgezeichnet.",
     "localDataBodyOff": "Nutzungs- und Kontextdaten. Leistungsmetriken werden auf diesem Gerät gerade nicht aufgezeichnet.",
-    "doNotTrackCaption": "DO_NOT_TRACK=1 schaltet Leistungsmetriken und das Lebenszeichen aus."
+    "doNotTrackCaption": "DO_NOT_TRACK=1 schaltet Leistungsmetriken und das Lebenszeichen aus.",
+    "localDataTitleShared": "Bleibt auf dem Computer der Crew",
+    "localDataBodyShared": "Nutzungs- und Kontextdaten. Leistungsmetriken werden standardmäßig auf dem Computer der Crew aufgezeichnet. Der Schalter „Metriken aufzeichnen“ unter Einstellungen > Datenschutz zeigt, ob sie gerade aktiviert sind.",
+    "localDataBodyOnShared": "Nutzungs- und Kontextdaten. Leistungsmetriken werden gerade auf dem Computer der Crew aufgezeichnet.",
+    "localDataBodyOffShared": "Nutzungs- und Kontextdaten. Leistungsmetriken werden auf dem Computer der Crew gerade nicht aufgezeichnet."
   },
   "settings": {
     "advanced": {
@@ -22935,7 +22953,7 @@
       "wakatime_api_key_description": "Authentifiziert die Synchronisierung der Programmieraktivität, wenn WakaTime aktiviert ist.",
       "custom_title": "Benutzerdefinierte Geheimnisse",
       "custom_description": "Verschlüsselte Schlüssel für MCP-Server und .env-Einstellungen. Referenziere einen als secret://YOUR_KEY; der Wert wird nie im Chat angezeigt.",
-      "custom_authorize": "Damit ein Agent in einem Mitglieder-Chat eine freigegebene API mit einem Geheimnis aufrufen kann, gewähre dem Agenten {{server}} und führe dann den folgenden Befehl in einer Shell oder auf der Terminal-Seite aus.",
+      "custom_authorize": "Damit ein Agent in einem Mitglieder-Chat eine freigegebene API mit einem Geheimnis aufrufen kann, gewähre dem Agenten {{server}} und führe dann den folgenden Befehl in einer Shell auf dem Computer aus, auf dem die Crew läuft.",
       "custom_empty": "Noch keine benutzerdefinierten Geheimnisse gespeichert. Fügen Sie eines hinzu, um es von einem MCP-Server aus als secret://YOUR_KEY zu referenzieren.",
       "managed_config_error": "Einige automatisch verwendeten Anmeldedaten sind ausgeblendet, weil $KIROCREW_HOME/config.json (Standard: ~/.kiro/crew/config.json) nicht gelesen werden konnte.",
       "managed_name_hint": "Beim Speichern hier wird {{name}} im Bereich für automatische Anmeldedaten aktualisiert. — {{productName}}",
@@ -23016,7 +23034,9 @@
       "use_in_tool_title": "In einem Tool verwenden",
       "use_in_tool_tip": "Füge dies in die Einstellungen eines Tools ein, etwa in die Umgebung eines MCP-Servers. Das Tool erhält den Wert beim Ausführen; der Wert selbst erscheint dort nie.",
       "advanced_title": "Erweitert",
-      "api_call_label": "API-Aufruf"
+      "api_call_label": "API-Aufruf",
+      "owner_only": "Nur der Besitzer der Crew kann Geheimnisse sehen oder ändern.",
+      "relay_unavailable": "Secrets lassen sich nur auf dem Computer der Crew ansehen und ändern, nicht über Remote Control."
     }
   },
   "store": {
@@ -24074,7 +24094,8 @@
     "preview_save_failed": "Die Einstellung für die geteilte Crew konnte nicht gespeichert werden.",
     "preview_restart_failed": "Das Gateway konnte nicht neu gestartet werden.",
     "raised_by": "Ausgelöst von {{name}}",
-    "take_over_keeps_draft": "Übernehmen, um zu tippen. Der Entwurf von {{name}} bleibt erhalten."
+    "take_over_keeps_draft": "Übernehmen, um zu tippen. Der Entwurf von {{name}} bleibt erhalten.",
+    "hero_shared_team": "Mit deinem Team geteilt"
   },
   "milestone": {
     "widgets": {

@@ -277,6 +277,25 @@ test("opening a Crew whose renewal stopped mints again and reloads, and a refusa
   assertNoSecrets([...s.logs]);
 });
 
+test("opening a Crew whose window shows the relay's error page reloads it, and a healthy one is only focused", async () => {
+  const s = setup();
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  const w = s.win.opened[0];
+  let reloads = 0;
+  let error = true;
+  w.reload = () => { reloads += 1; };
+  w.showsError = () => error;
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.equal(reloads, 1, "a window left on the relay's answer loads the Crew again");
+  assert.equal(w.focused, 1);
+  assert.equal(s.requests.length, 1, "renewal still runs, so no second mint");
+  error = false;
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.equal(reloads, 1, "a window on the Crew is only raised");
+  assert.equal(w.focused, 2);
+  assert.ok(s.logs.some((l) => l.includes("reloaded")));
+});
+
 test("a restart whose window closes mid-mint stops the new renewal, and a second click mints once", async () => {
   const made = [];
   const createRenewal = ({ mint, holder }) => {

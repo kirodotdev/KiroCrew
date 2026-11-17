@@ -35,7 +35,7 @@ import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { clearCachedModels } from '../providers/adapters/acp'
-import { closeRelayCrews } from '../hooks/useRelayViewerCrews'
+import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from '../hooks/useRelayViewerCrews'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
 import { i18nT } from '../i18n/t'
@@ -1004,6 +1004,8 @@ function KasLoginFlow({
     void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
     // A switch can keep every status field unchanged while replacing the account.
     void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
+    // Team Crews are listed for the account: the new one's list, not the old one's.
+    void queryClient.resetQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
   }, [queryClient])
 
   const authorized = pollQuery.data?.status === 'authorized'
