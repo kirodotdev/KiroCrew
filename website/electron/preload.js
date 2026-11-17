@@ -8,6 +8,13 @@ let navigateReadySent = false;
 // channels `assertLocalDashboard` refuses are then withheld, not exposed.
 // Asked of the shell on every load; only an explicit `false` exposes them.
 const REMOTE_GATEWAY = ipcRenderer.sendSync("dashboard:is-remote-gateway") !== false;
+// macOS Natural scrolling as main last reported it (scroll-touch.js): true,
+// false, or null until it says. Cached here so the page can read it
+// synchronously on the first wheel of a swipe.
+let naturalScrolling = null;
+ipcRenderer.on("scroll-direction", (_e, value) => {
+  if (typeof value === "boolean") naturalScrolling = value;
+});
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -184,6 +191,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("scroll-touch", handler);
     return () => ipcRenderer.removeListener("scroll-touch", handler);
   },
+  // macOS Natural scrolling: true on, false off, null not known yet. A wheel's
+  // deltaX flips sign with it, so the swipe reader needs it to follow the
+  // fingers (see scroll-touch.js).
+  getNaturalScrolling: () => naturalScrolling,
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.

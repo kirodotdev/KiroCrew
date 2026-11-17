@@ -9,7 +9,7 @@ const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice")
 const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
-const { armScrollTouch } = require("./scroll-touch");
+const { armScrollTouch, readNaturalScrolling } = require("./scroll-touch");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const {
   createCloseHandler,
@@ -374,9 +374,12 @@ function createWindowLifecycle(options) {
     });
     // The trackpad's real finger-down / finger-up, so a two-finger drag in the
     // dashboard releases on the lift-off instead of a guessed gap (macOS only).
+    // It also tells the page the Natural scrolling setting, which decides
+    // which way the fingers moved for a given wheel sign.
     armScrollTouch(view.webContents, {
       platform,
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+      readNatural: () => readNaturalScrolling(systemPreferences),
     });
 
     // Teardown order is load-bearing: no embedded view may outlive the page it

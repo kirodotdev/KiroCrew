@@ -46,6 +46,20 @@ export function asScrollTouchPhase(v: unknown): ScrollTouchPhase | null {
 }
 
 /**
+ * macOS Natural scrolling as the desktop app's shell reports it
+ * (electron/scroll-touch.js): `true` on, `false` off, `null` when this page
+ * cannot know (a browser tab, an embedded pane, an older shell, not macOS).
+ */
+export function shellNaturalScrolling(): boolean | null {
+  try {
+    const v = typeof window !== 'undefined' ? window.electronAPI?.getNaturalScrolling?.() : undefined
+    return typeof v === 'boolean' ? v : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * The preload bridge alone, no relay. What the HOST uses to forward phases to a
  * pane: a host is top-level, so it must never take the postMessage path.
  */

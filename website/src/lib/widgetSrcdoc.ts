@@ -413,27 +413,36 @@ const FRAME_TOUCH_RELAY_BODY = `(function(){
  * path, so one inside a shadow root (a web component) counts, not just its host.
  * Whether a scroller has room is the host's own rule (`room`, a copy of
  * lib/trackpadGesture `hasScrollRoomX`), right-to-left scrollers included. Every other run is posted, event by event, as
- * `{type: 'mc-frame-wheel', dx, dy, mode, t}`, where `t` is when the wheel
+ * `{type: 'mc-frame-wheel', dx, dy, mode, t, inv}`, where `t` is when the wheel
  * happened, as `performance.timeOrigin + timeStamp` (epoch ms): the host's
  * own receive time would squeeze a burst queued behind a stall into a few
- * ms, and read slow fingers as a flick. A leftward-scrolling event of such
- * a run (`deltaX < 0`, the fingers moving right) is also cancelled here: the
- * host can drive only its panel's close from this frame, which is that
- * direction, and a parent cannot cancel the browser's history swipe for a
- * wheel that landed in a frame.
+ * ms, and read slow fingers as a flick. `inv` is the wheel's own
+ * `webkitDirectionInvertedFromDevice` (WebKit only, else null), which the host
+ * needs to read the raw `dx` as the fingers. An event of such a run whose
+ * fingers move right is also cancelled here: the host can drive only its
+ * panel's close from this frame, which is that direction, and a parent cannot
+ * cancel the browser's history swipe for a wheel that landed in a frame. With
+ * Natural scrolling on that is `deltaX < 0`, with it off `deltaX > 0`
+ * (`sign`, a copy of lib/trackpadGesture `fingerSign`).
  *
  * Disarmed until the host says it is listening: the frame posts
  * `{type: 'mc-frame-wheel-hello'}` when it starts, and relays (and cancels)
- * only after the parent answers `{type: 'mc-frame-wheel-armed', on: true}`. The
+ * only after the parent answers `{type: 'mc-frame-wheel-armed', on: true}`,
+ * which also carries `natural`, the desktop shell's Natural scrolling (or
+ * null) for a wheel that does not say. The
  * host sends `on: false` when its swipe stops listening (a phone-width window,
  * a creation surface), so the frame then leaves every wheel to the browser
  * instead of cancelling a run nobody will act on. Only the parent may arm it. */
 const FRAME_WHEEL_RELAY_BODY = `(function(){
-  var armed=false;
+  var armed=false,natural=null;
   window.addEventListener('message',function(e){
     var d=e.data;
-    if(e.source===parent&&d&&d.type==='mc-frame-wheel-armed')armed=d.on===true;
+    if(e.source===parent&&d&&d.type==='mc-frame-wheel-armed'){armed=d.on===true;natural=typeof d.natural==='boolean'?d.natural:null;}
   });
+  function sign(inv){
+    var on=typeof inv==='boolean'?inv:natural;
+    return on===false?-1:1;
+  }
   parent.postMessage({type:'mc-frame-wheel-hello'},'*');
   function room(sl,m,rtl,dx){
     if(m<=1)return false;
@@ -464,8 +473,9 @@ const FRAME_WHEEL_RELAY_BODY = `(function(){
       else axis=Math.abs(dx)>Math.abs(dy)&&!scrolls(e,dx)?'x':'own';
     }
     if(axis!=='x'||e.ctrlKey)return;
-    parent.postMessage({type:'mc-frame-wheel',dx:dx,dy:dy,mode:e.deltaMode,t:performance.timeOrigin+e.timeStamp},'*');
-    if(dx<0&&Math.abs(dx)>Math.abs(dy))e.preventDefault();
+    var inv=typeof e.webkitDirectionInvertedFromDevice==='boolean'?e.webkitDirectionInvertedFromDevice:null;
+    parent.postMessage({type:'mc-frame-wheel',dx:dx,dy:dy,mode:e.deltaMode,t:performance.timeOrigin+e.timeStamp,inv:inv},'*');
+    if(sign(inv)*dx<0&&Math.abs(dx)>Math.abs(dy))e.preventDefault();
   },{passive:false,capture:true});
 })();`
 
