@@ -11113,6 +11113,7 @@
       "result_cancelled": "Abgelehnt: {{title}}",
       "result_expired": "Abgelaufen: {{title}}",
       "result_failed": "Nicht übernommen: {{title}}",
+      "result_moved": "Unten erneut angezeigt: {{title}}",
       "result_partial": "Teilweise erledigt: {{title}}",
       "result_undone": "Wiederhergestellt: {{title}}",
       "retry": "Erneut versuchen",

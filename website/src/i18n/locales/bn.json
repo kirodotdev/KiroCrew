@@ -11113,6 +11113,7 @@
       "result_cancelled": "প্রত্যাখ্যাত: {{title}}",
       "result_expired": "মেয়াদ শেষ: {{title}}",
       "result_failed": "প্রয়োগ হয়নি: {{title}}",
+      "result_moved": "নিচে আবার দেখানো হয়েছে: {{title}}",
       "result_partial": "আংশিক হয়েছে: {{title}}",
       "result_undone": "আগের অবস্থায় ফেরানো হয়েছে: {{title}}",
       "retry": "আবার চেষ্টা করো",

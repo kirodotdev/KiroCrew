@@ -11370,6 +11370,7 @@
       "result_cancelled": "Refusé : {{title}}",
       "result_expired": "Expiré : {{title}}",
       "result_failed": "Non appliqué : {{title}}",
+      "result_moved": "Affiché à nouveau plus bas : {{title}}",
       "result_partial": "Terminé en partie : {{title}}",
       "result_undone": "Restauré : {{title}}",
       "retry": "Réessayer",

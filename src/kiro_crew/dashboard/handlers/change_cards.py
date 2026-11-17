@@ -665,6 +665,8 @@ async def propose_for_caller(
     except (CardError, catalog.CardCatalogError) as exc:
         if undo_claim is not None:
             await undo_claim()
+        if isinstance(exc, CardError) and exc.code == "duplicate_card":
+            exc = await _show_waiting_card_again(request, slot_key, kind, params, exc)
         return _refusal(exc)
     store = _store(request)
     try:
@@ -683,6 +685,31 @@ async def propose_for_caller(
     delivered = await _broadcast(request.app["state"], public)
     _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
     return web.json_response({**public, "delivered_clients": delivered})
+
+
+async def _show_waiting_card_again(
+    request: web.Request, slot_key: str, kind: str, params: dict[str, Any], exc: CardError
+) -> CardError:
+    """Draw the pending card a repeated proposal names again at the end of the chat.
+
+    The repeat is still refused; its text says where the card now is only once the
+    row was written. A card being applied stays where it is.
+    """
+    store = _store(request)
+    same = store.open_duplicate(slot_key, kind, params)
+    if same is None or same["status"] != cards.STATUS_PENDING:
+        return exc
+    public = store.public(same)
+    state = request.app["state"]
+    await chat_cards.load_conversation_window(state, public)
+    if not chat_cards.record_change_shown_again(state, public):
+        return exc
+    return CardError(
+        409,
+        "duplicate_card",
+        f"the same change is already on card {same['id']}, waiting for the person: "
+        "it is shown again at the end of the chat",
+    )
 
 
 async def api_cards_agent_status(request: web.Request) -> web.Response:

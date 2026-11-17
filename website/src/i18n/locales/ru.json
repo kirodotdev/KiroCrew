@@ -11627,6 +11627,7 @@
       "result_cancelled": "Отклонено: {{title}}",
       "result_expired": "Истекло: {{title}}",
       "result_failed": "Не применено: {{title}}",
+      "result_moved": "Показано ещё раз ниже: {{title}}",
       "result_partial": "Частично готово: {{title}}",
       "result_undone": "Восстановлено: {{title}}",
       "retry": "Повторить",

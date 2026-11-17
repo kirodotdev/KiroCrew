@@ -13,8 +13,10 @@
  *
  * When the store no longer holds the card (finished more than a day ago, or
  * dismissed), the row's recorded status is drawn as a one-line result with no
- * actions. The transcript is agent-writable, so a row is only ever matched to
- * a card of THIS slot; a row naming another slot draws its record line only.
+ * actions. A repeated proposal of a pending card appends its row again at the end
+ * of the chat; every earlier row of that card then draws "Shown again below". The
+ * transcript is agent-writable, so a row is only ever matched to a card of THIS
+ * slot; a row naming another slot draws its record line only.
  *
  * A third surface, `self`, is a change the crewmate made to its own record
  * (`update_self`): already applied, so it draws as one quiet line with an Undo
@@ -28,7 +30,7 @@
 import type { ChatMessage } from '../types'
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
-import { CheckCircle2, AlertTriangle, RotateCcw, X, Clock } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, RotateCcw, X, Clock, ArrowDown } from 'lucide-react'
 import { CARD_FINISHED_STATUSES, type CardStatus } from '../api/cards'
 import { useQuery } from '@tanstack/react-query'
 import { membersRosterQuery } from '../api/membersQuery'
@@ -116,21 +118,33 @@ export function readCardRef(m: Pick<ChatMessage, 'role' | 'meta'>): CardRef | nu
   return { surface, id, slot: str(c.slot, 256), kind: str(c.kind, 64), title: str(c.title), status: str(c.status, 32), ...(reason ? { reason } : {}) }
 }
 
-/** A finished (or forgotten) change card, from the row's own record. */
-export function CardRecordLine({ card }: { card: CardRef }) {
+/** Whether a later row of *messages* draws the same change card again (a repeated proposal). */
+export function changeCardShownAgainBelow(m: ChatMessage, messages: readonly ChatMessage[], index: number): boolean {
+  const ref = readCardRef(m)
+  if (ref?.surface !== 'change') return false
+  return messages.slice(index + 1).some(later => {
+    const next = readCardRef(later)
+    return next?.surface === 'change' && next.id === ref.id
+  })
+}
+
+/** A finished (or forgotten) change card, from the row's own record; or, when
+ *  *moved*, the place a card was first drawn before a repeat drew it again below. */
+export function CardRecordLine({ card, moved = false }: { card: CardRef; moved?: boolean }) {
   const corners = useCardCorners()
   const finished = CARD_FINISHED_STATUSES.has(card.status as CardStatus)
   // A recorded proposal the store no longer holds never finished: it lapsed.
-  const status = finished ? card.status : 'expired'
+  const status = moved ? 'moved' : finished ? card.status : 'expired'
   const title = card.title || card.kind
-  const text = status === 'applied' ? i18nT('components.changeCards.result_applied', { title })
+  const text = status === 'moved' ? i18nT('components.changeCards.result_moved', { title })
+    : status === 'applied' ? i18nT('components.changeCards.result_applied', { title })
     : status === 'partial' ? i18nT('components.changeCards.result_partial', { title })
     : status === 'undone' ? i18nT('components.changeCards.result_undone', { title })
     : status === 'cancelled' ? i18nT('components.changeCards.result_cancelled', { title })
     : status === 'failed' ? i18nT('components.changeCards.result_failed', { title })
     : i18nT('components.changeCards.result_expired', { title })
   const Icon = status === 'applied' ? CheckCircle2 : status === 'partial' || status === 'failed' ? AlertTriangle
-    : status === 'undone' ? RotateCcw : status === 'cancelled' ? X : Clock
+    : status === 'undone' ? RotateCcw : status === 'cancelled' ? X : status === 'moved' ? ArrowDown : Clock
   const tone = status === 'applied' ? 'text-ok' : status === 'partial' || status === 'failed' ? 'text-warn' : 'text-muted'
   const muted = status !== 'applied' && status !== 'partial'
   return (
@@ -193,7 +207,7 @@ function ChangeCardRow({ card, slot }: { card: CardRef; slot: string | null }) {
   return <CardRecordLine card={card} />
 }
 
-export default function ConversationCard({ message, slot }: { message: ChatMessage; slot?: string | null }) {
+export default function ConversationCard({ message, slot, shownAgainBelow = false }: { message: ChatMessage; slot?: string | null; shownAgainBelow?: boolean }) {
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   const here = slot ?? activeSlot ?? null
   const self = readSelfChangeRef(message)
@@ -216,8 +230,10 @@ export default function ConversationCard({ message, slot }: { message: ChatMessa
   if (!card) return null
   return (
     <div className="min-w-0" data-testid="conversation-card" data-card-surface={card.surface} data-card-id={card.id}>
+      {/* Not one animated element: the two places are separate rows of a virtualised
+          transcript, and the first is usually scrolled out of view. */}
       {card.surface === 'change'
-        ? <ChangeCardRow card={card} slot={here} />
+        ? shownAgainBelow ? <CardRecordLine card={card} moved /> : <ChangeCardRow card={card} slot={here} />
         : <GuideOfferCard guideId={card.id} slotKey={here} recordedStatus={card.status} recordedReason={card.reason ?? null} />}
     </div>
   )
