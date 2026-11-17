@@ -235,6 +235,7 @@ DECLARED_SITES = frozenset(
         ("skills_candidate_tree.py", "_candidate_has_symlink"),
         ("skills_discovery.py", "_iter_skill_files.probe"),
         ("snapshot_archive.py", "_copytree_safe._ignore_unsafe"),
+        ("snapshot_build.py", "_build_snapshot"),
         ("snapshot_build.py", "_estimate_selected_bytes"),
         ("snapshot_components.py", "safe_tree_root"),
         ("snapshot_merge.py", "_copy_tree_no_overwrite._is_link"),
