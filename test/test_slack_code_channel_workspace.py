@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from slack_code_channels_helpers import store_channel_binding
+from slack_code_workspace_repo import build_repo_template
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
@@ -87,27 +89,29 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
+@pytest.fixture(scope="session")
+def _repo_template(tmp_path_factory) -> Path:
+    """The ``repo`` layout built once per session; ``repo`` copies it for each test.
+
+    Building it costs ~11 ``git`` spawns, which on a Windows runner made up most of
+    this file's setup time. Session scope is safe because the template is never
+    handed to a test, only copied from.
+    """
+    base = tmp_path_factory.mktemp("code-channel-repo")
+    build_repo_template(base)
+    return base
+
+
 @pytest.fixture
-def repo(tmp_path) -> Path:
-    """A repo on ``main`` with an ``origin`` remote, so ``origin/HEAD`` resolves."""
-    remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    root = tmp_path / "proj"
-    root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
-        _git("config", key, value, cwd=root)
-    (root / "README.md").write_text("hello\n", newline="\n")
-    (root / "pkg").mkdir()
-    (root / "pkg" / "mod.py").write_text("x = 1\n", newline="\n")
-    _git("add", ".", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
-    _git("remote", "add", "origin", "https://user:s3cret@github.com/acme/widgets.git", cwd=root)
-    # Push through a local URL, then keep the https form as the configured URL.
-    _git("push", "-q", str(remote), "main:main", cwd=root)
-    _git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
-    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
-    return root
+def repo(tmp_path, _repo_template) -> Path:
+    """A repo on ``main`` with an ``origin`` remote, so ``origin/HEAD`` resolves.
+
+    Its bare remote sits beside it at ``tmp_path / "remote.git"``. Neither copy
+    names an absolute path, so nothing needs rewriting after the copy.
+    """
+    shutil.copytree(_repo_template / "remote.git", tmp_path / "remote.git")
+    shutil.copytree(_repo_template / "proj", tmp_path / "proj")
+    return tmp_path / "proj"
 
 
 @dataclass
