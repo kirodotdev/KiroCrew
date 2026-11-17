@@ -57,6 +57,7 @@ from kiro_crew.mcp_gateway.mate_overlays import (
     rewrite_mate_overlays,
     with_conductor_source,
 )
+from kiro_crew.mcp_gateway.overlay_prune import prune_stale_json
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
 from kiro_crew.mcp_gateway.rewriter_env import (
     _collect_target_env,
@@ -381,23 +382,9 @@ def _cached_rewrite_result(
     # spec changes the fingerprint (its file leaves the stat set) and takes the
     # full path, but a foreign file in the overlay tree does not, and must
     # still be swept.
-    for stale in overlay_dir.glob("*.json"):
-        if stale.name not in overlay_sigs:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-    for stale in mate_dir.glob("*.json"):
-        if stale.name not in mate_sigs:
-            with contextlib.suppress(OSError):
-                stale.unlink()
-    if env_dir.is_dir():
-        for stale in env_dir.glob("*.json"):
-            if stale.name not in sidecar_sigs:
-                try:
-                    stale.unlink()
-                except OSError:
-                    pass
+    prune_stale_json(overlay_dir, overlay_sigs.__contains__)
+    prune_stale_json(mate_dir, mate_sigs.__contains__)
+    prune_stale_json(env_dir, sidecar_sigs.__contains__)
 
     # Reconstruct the result from the just-validated OVERLAYS rather than
     # trusting a payload stored in the fingerprint. The overlays are the
@@ -1222,12 +1209,7 @@ def rewrite_agents(
     # non-dict) stay OUT of the keep-set: their pass is cacheable, and the
     # cached-path prune keys on the stored outputs, so keeping them here
     # would let two boots over identical inputs disagree.
-    for stale in overlay_dir.glob("*.json"):
-        if stale.name not in written and stale.name not in transient_keep:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
+    prune_stale_json(overlay_dir, lambda name: name in written or name in transient_keep)
 
     # Every overlay that SURVIVES the prune must have its target mappings
     # published, or a kept overlay's stub resolves through the bare
@@ -1264,13 +1246,8 @@ def rewrite_agents(
     # gateway's lifetime. Skip the sidecar prune on such a pass: it is
     # already uncacheable, so the next boot re-enumerates and sweeps.
     env_dir = env_sidecar_dir_for_stubs(stubs_dir)
-    if env_dir.is_dir() and not (notes.source_read_failed or overlay_write_failed):
-        for stale in env_dir.glob("*.json"):
-            if stale.name not in written_sidecars.names:
-                try:
-                    stale.unlink()
-                except OSError:
-                    pass
+    if not (notes.source_read_failed or overlay_write_failed):
+        prune_stale_json(env_dir, written_sidecars.names.__contains__)
 
     total_wrapped = sum(results.values())
 
