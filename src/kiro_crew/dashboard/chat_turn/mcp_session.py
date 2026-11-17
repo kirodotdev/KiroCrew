@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         _is_safe_oauth_url,
         append_and_surface,
         capabilities_of,
+        effective_session_key,
         get_visible_providers,
         kirocrew_managed_names,
         logger,
@@ -376,6 +377,82 @@ def _notice_mcp_sign_in_needed(
         )
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("Failed to show the MCP sign-in notice", exc_info=True)
+
+
+#: ``meta.kind`` of the row that tells a chat a changed server waits for a new session.
+MCP_RESTART_TO_LOAD_KIND = "mcp_restart_to_load"
+
+
+def _mcp_restart_to_load_notice(names: list[str]) -> str:
+    """The row's text naming the changed servers *names* this session will not load."""
+    if len(names) == 1:
+        return (
+            f"⚠ The MCP server {names[0]} was added or changed after this chat's session "
+            "started, and this session cannot load it. Start a new chat to use it."
+        )
+    return (
+        f"⚠ The MCP servers {', '.join(names)} were added or changed after this chat's "
+        "session started, and this session cannot load them. Start a new chat to use them."
+    )
+
+
+def notice_mcp_restart_to_load(state: "DashboardState", names: list[str]) -> int:
+    """Tell each running chat whose session cannot load an MCP config change about it.
+
+    A config write that rewrites the agent spec reaches a running session only on
+    a backend that applies it live: kiro-cli watches its agent file, KAS takes a
+    re-sent projection, Strands relaunches (``kiro_crew.mcp_hot_reload``). Any
+    other session keeps the server set it started with, so each such session's
+    report lists *names* in ``restart_to_load`` and its chat gets one notice row
+    naming them. Nothing is restarted. A server already listed is not told again.
+
+    Returns how many sessions were marked. Best-effort: a write already landed,
+    so a slot that cannot be read is skipped rather than failing the request.
+    """
+    from kiro_crew.mcp_hot_reload import (
+        provider_hot_reloads,
+        provider_reinjects_mcp,
+        provider_relaunches_for_mcp,
+    )
+
+    slots = getattr(state, "_slots", None)
+    if not names or not isinstance(slots, dict):
+        return 0
+    seen: set[int] = set()
+    marked = 0
+    for slot in list(slots.values()):
+        try:
+            provider = state.sessions.get_provider(effective_session_key(slot))
+            if provider is None or id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            if (
+                provider_hot_reloads(provider)
+                or provider_reinjects_mcp(provider)
+                or provider_relaunches_for_mcp(provider)
+            ):
+                continue
+            report = _session_mcp_report(provider)
+            if report is None:
+                continue
+            fresh = list(report.mark_restart_to_load(names))
+            # Published even when nothing was admitted: a name past the bound
+            # still moves the report's omitted count.
+            _publish_session_mcp_report(state, slot, provider)
+            if not fresh:
+                continue
+            marked += 1
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _mcp_restart_to_load_notice(fresh),
+                "msg msg-warn",
+                meta={"kind": MCP_RESTART_TO_LOAD_KIND, "servers": fresh},
+            )
+        except Exception:  # noqa: BLE001 - an informational row must never fail a write
+            logger.debug("Failed to mark a session restart_to_load", exc_info=True)
+    return marked
 
 
 def _record_session_mcp_event(

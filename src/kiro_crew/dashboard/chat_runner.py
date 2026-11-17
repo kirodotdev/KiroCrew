@@ -178,6 +178,7 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     _on_mcp_oauth_request,
     _on_mcp_server_init_failure,
     _on_mcp_server_initialized,
+    notice_mcp_restart_to_load,
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _clear_fallback_sticky_state,
