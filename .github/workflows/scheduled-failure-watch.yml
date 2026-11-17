@@ -94,6 +94,7 @@ on:
       - "OTA Update Test (macOS)"
       - "PR Merge-Conflict Label"
       - "PR Readiness Self-Heal Sweep"
+      - "Production Dependency Vulnerability Gate"
       - "Ship Report"
     types: [completed]
     # MUST equal the repository default branch, and a rename that misses this

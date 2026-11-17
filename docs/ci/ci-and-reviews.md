@@ -3117,7 +3117,10 @@ run came from a `code-review.yml` that still hears `edited`, so it counts.
   failing the build. Time-boxed exceptions live in
   `.vulnerability-exceptions.json`, and a registry stall or connection fault is
   retried inside one shared time budget before it fails (see the
-  transient-failure contract in the security spec).
+  transient-failure contract in the security spec). The same workflow also runs
+  on its own every day at 22:00 UTC, eight hours before the nightly, as an early
+  warning: a red run there files a `scheduled-failure` issue (see
+  [A new advisory](#a-new-advisory-upgrade-if-a-fix-ships-otherwise-add-a-dated-exception)).
 - **`pr-hygiene`** (`pr-hygiene.yml`) enforces a Conventional-Commits PR title (it
   becomes the squash-merge message), at most two commits (`git rev-list --count <= 2`), and a
   `## Pattern harvest` section on `fix`/`revert` PRs containing either
@@ -5457,10 +5460,28 @@ The command contacts npm's registry/advisory service. Unit tests mock the subpro
 cover malformed output, operational failures, report resolution, schema constraints, expiry, and
 exact-match exception behavior without network access.
 
-### A new advisory: land Dependabot's bump with a maintainer push
+### A new advisory: upgrade if a fix ships, otherwise add a dated exception
 
 An advisory published against a version main already pins turns the gate red on the next nightly,
-although no pull request changed anything. Dependabot usually opens the bump the same day, but a run
+although no pull request changed anything. To see it before the nightly does,
+`dependency-vulnerability.yml` also runs on a `schedule:` at 22:00 UTC (14:00 PST, 15:00 PDT),
+eight hours ahead of the 06:00 UTC nightly. That run gates nothing. When it is red,
+`scheduled-failure-watch.yml` opens or bumps the issue titled
+`Production Dependency Vulnerability Gate scheduled run is failing`, labelled `scheduled-failure`.
+Clear it the same day, by one of two routes:
+
+| The advisory has | Do this |
+|---|---|
+| A patched version | Upgrade to it: take Dependabot's bump (below), or bump the lockfile or an `overrides` entry yourself. |
+| No patched version | Add an entry to `.vulnerability-exceptions.json` with an `expires` date at most 30 days ahead, an `owner`, and a `reason` naming the mitigation. Remove it once a fix ships. |
+
+Never skip the gate or widen an exception beyond its package, advisory and lockfile.
+A run that fails on a registry stall rather than a finding needs no change; the next run
+retries it.
+
+#### Landing Dependabot's bump with a maintainer push
+
+Dependabot usually opens the bump the same day, but a run
 Dependabot triggers gets the Dependabot secret set, which holds neither `KIRO_RELEASE_GATE_ROLE_ARN`
 nor `KIRO_RELEASE_GATE_BUCKET`. The Internal Content Scan then reaches no verdict ("This run has no
 credentials for the ruleset") and the pull request cannot go green on its own.
