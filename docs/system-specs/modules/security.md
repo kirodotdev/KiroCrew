@@ -398,7 +398,9 @@ writer encodes once (`atomic_write.text_bytes`, CRLF on Windows) and hands `atom
 same bytes it endorses, so the copy equals the file on every platform. A snapshot restore or
 import Replace (`snapshot_restore._backup_and_copy`, and a merge that restores a missing
 `config.json`) installs those files by copy, so it endorses the archive bytes it installed
-(`loosening_provenance.endorse_installed`, read from the source, never the destination); a
+(`loosening_provenance.endorse_installed`, read from the source, never the destination; the config
+loaders compare their normalized read, so a copy that differs from it only by a leading byte-order
+mark or CRLF line endings is the same file); a
 replace that fails puts the previous endorsed copies back with the previous files
 (`endorsements_restored_on_error`). Every reader goes through ONE helper,
 `loosening_provenance.reconciled_bytes`: where enforcement applies and a copy exists, a file

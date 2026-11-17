@@ -129,7 +129,10 @@ destination; the leaf is matched by resolved identity (`leaf_for`), so a symlink
 its logical name. `read_config_document` parses `reconcile(leaf, disk_bytes)`, and so does
 `read_config_for_update`, the read half of every read-modify-write: where the namespace sandbox
 seals these files, both serve the endorsed copy whenever the on-disk bytes differ, PER FILE and
-before the merge, so an unrelated save cannot re-endorse a tampered file. Under enforcement the
+before the merge, so an unrelated save cannot re-endorse a tampered file. They compare their
+normalized read (one leading byte-order mark dropped, universal newlines), and a copy equal to the
+file once normalized the same way is the same file, so a restored file saved with a byte-order mark
+or CRLF is not an outside edit. Under enforcement the
 store fails closed: a failed copy write keeps the previous copy and aborts the save before
 publishing, a failed publish restores the prior copy (when that restore fails too, the process
 keeps answering the prior copy while the file still holds the unpublished bytes, so the next
@@ -149,8 +152,7 @@ always a writer's published bytes, with one exception: the gateway's start endor
 protected file that has no copy yet (`adopt_unendorsed`), once, after the previous run's
 sessions are swept and before any session of the run, publishing the copy only while none
 exists (a hard link, so a save that endorses the file meanwhile keeps its own copy): only a
-regular file holding a JSON object stored as Kiro Crew writes one (no byte-order mark or carriage return, which the loaders'
-normalized read would never match). Any other file with no copy is not pending and is served as
+regular file holding a JSON object stored as Kiro Crew writes one (no byte-order mark or carriage return). Any other file with no copy is not pending and is served as
 written until the gateway's first save of it endorses it or a later start adopts it (the known
 limit for such a file is in
 [security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
