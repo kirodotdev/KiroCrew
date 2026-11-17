@@ -297,6 +297,31 @@ async def test_an_offline_install_leaves_the_host_supported(cfg, monkeypatch):
     assert body["host_unsupported"] == ""
 
 
+@pytest.mark.asyncio
+async def test_a_later_refusal_replaces_an_earlier_offline_error(cfg, monkeypatch):
+    """A dashboard install failed offline, then a spawn's install met the manifest's
+    missing build: status gives the host reason, not the stale offline advice."""
+
+    def offline(*a, **k):
+        raise kas_bundle.KasBundleError("could not fetch https://h.test/manifest.json")
+
+    monkeypatch.setattr(kas_bundle, "install_pinned", offline)
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    app = {"state": _FakeState()}
+    await handler.api_kas_bundle_install(_FakeRequest(app))
+    await app[handler._STATE_KEY]["task"]
+    reason = "KAS 0.66.33 publishes no engine build for win32-arm64"
+    snapshot = kas_bundle.engine_install_snapshot()
+    monkeypatch.setattr(
+        kas_bundle,
+        "engine_install_snapshot",
+        lambda: {**snapshot, "running": False, "error": reason, "host_unsupported": reason},
+    )
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(app)))
+    assert body["host_unsupported"] == reason
+    assert body["error"] == reason
+
+
 def test_the_routes_are_registered():
     from aiohttp import web
 

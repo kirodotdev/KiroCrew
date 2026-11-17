@@ -67,6 +67,12 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
         done, total = int(state.get("done") or 0), int(state.get("total") or 0)
     else:
         done, total = shared["done"], shared["total"]
+    host_unsupported = (
+        kas_bundle.host_unsupported_reason() or shared["host_unsupported"]
+        if installed is None
+        else ""
+    )
+    error = (str(state.get("error") or "") or shared["error"]) if installed is None else ""
     return {
         "enabled": bool(cfg.kas_bundle),
         "pinned_version": KAS_PIN_VERSION,
@@ -83,16 +89,14 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
         "installing": own or shared["running"],
         "progress": {"done": done, "total": total},
         # A failed install, this app's own or a spawn's, is reported until the
-        # engine is installed; once it is, no earlier failure is current.
-        "error": (str(state.get("error") or "") or shared["error"]) if installed is None else "",
+        # engine is installed; once it is, no earlier failure is current. When the
+        # host cannot run the engine, that reason is the error: an older failure
+        # (an offline install, say) would only give stale advice.
+        "error": (host_unsupported or error) if error else "",
         # Why this host cannot run the engine (glibc, OS or architecture, or no
         # build for it in the manifest the last install fetched), '' when it can:
         # every install here is refused, so the panel offers none.
-        "host_unsupported": (
-            kas_bundle.host_unsupported_reason() or shared["host_unsupported"]
-            if installed is None
-            else ""
-        ),
+        "host_unsupported": host_unsupported,
         # The route the last KAS spawn took (``acp/kas_route.py``), so the panel
         # can say when Crew's own engine was chosen because kiro-cli cannot run.
         # ``None`` before the first KAS spawn in this gateway.
