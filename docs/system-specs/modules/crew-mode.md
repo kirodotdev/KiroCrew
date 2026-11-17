@@ -1350,7 +1350,12 @@ the crew to a fresh `member-<slug>` workspace whose directory is
 `<data home>/workspace-member-<slug>`; a same-slug collision takes a numeric suffix.
 Naming a workspace is the explicit opt-in to share one, stored as given the way
 every create path always stored it (an undeclared name resolves to the base
-directory at use, per the fall-through above). `provision_member_workspace` records
+directory at use, per the fall-through above). An undeclared name other than
+`default` or the configured `default_workspace` is still stored, and the caller is
+told: `POST /api/agents` answers it, and a repeat of the same request, with
+`warnings: ["workspace '<name>' is not configured; the crew shares a fallback
+workspace directory"]`, the line `PUT /api/agents/{name}` answers and
+`kirocrew agent create` prints. `provision_member_workspace` records
 the allocation on the caller's config snapshot only; `persist_member_config(create=True,
 new_workspace=<name>)` publishes it in the SAME locked mutation as the record,
 re-checking the name and directory against the document under the lock
