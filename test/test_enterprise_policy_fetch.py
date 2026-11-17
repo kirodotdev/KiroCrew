@@ -252,7 +252,10 @@ class TestSuccess:
         ):
             assert governance.resolve(ceiling, None, scope, "").permitted, scope
         assert not governance.resolve(ceiling, None, "capabilities.app_dev_mode", "").permitted
-        assert not governance.resolve(ceiling, None, "capabilities.decisions", "").permitted
+        # RFC D13: decisions open, hosted Jev left off the list.
+        assert governance.resolve(ceiling, None, "capabilities.decisions", "").permitted
+        jev = governance.resolve(ceiling, None, "capabilities.decisions", "providers:jev")
+        assert not jev.permitted
 
 
 _DISABLED = json.dumps({"enterpriseManagementStatus": "DISABLED"}).encode()

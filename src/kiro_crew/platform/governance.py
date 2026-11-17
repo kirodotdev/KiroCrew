@@ -1269,6 +1269,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.platform.governance_parts.baseline import (  # noqa: F401
         _CAPABILITY_OFF,
+        _DECISION_PROVIDERS,
         _OFF,
         _OPEN,
         _PUBLISH_LISTS_OFF,
