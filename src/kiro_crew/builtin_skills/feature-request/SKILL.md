@@ -169,21 +169,83 @@ failed probe, means no labels. Steps 5 and 6 use this result.
 
 ### 4. Draft the Issue
 
-Compose a clean title and markdown body from the conversation. Structure:
+Compose a clean title and a body shaped like the repository's issue form, so an
+issue filed from this conversation reads the same as one filed on github.com.
+Each field of the form is one `###` heading, spelt exactly as the field's label
+in `.github/ISSUE_TEMPLATE/feature_request.yml` or `bug_report.yml`, in the
+form's order. Triage reads the answers under those headings (the bug form's
+Release channel and Platform pick labels), so never rename, merge or reorder
+them. A dropdown answer is one of the form's options, verbatim; an optional
+field with nothing to say gets `_No response_`. A red CI run or a flaky test
+uses `ci_failure.yml`'s labels the same way, and a docs fix `documentation.yml`'s.
+
+A feature request:
 
 ```markdown
-## What
+### Existing issues
 
-[One paragraph describing the feature/bug]
+- [x] I searched open issues and this is not already requested.
 
-## Why
+### Problem
 
-[A bug: what it breaks for the user. A feature request: the 5 Whys chain
-from step 2, each question and its answer in order, ending at the root need]
+[What the user is trying to do, and what stops them today]
 
-## Additional Context
+### Why does this matter? (5 Whys)
 
-[Any extra details, reproduction steps, environment info]
+[The 5 Whys chain from step 2, each question and its answer in order, ending
+at the root need]
+
+### Proposed behaviour
+
+[What should happen instead, and where the user would expect to find it]
+
+### Alternatives considered
+
+[Other approaches, or "None"]
+
+### Anything else
+
+[Mockups, prior art, related discussion]
+```
+
+A bug report:
+
+```markdown
+### Existing issues
+
+- [x] I searched open issues and this is not already reported.
+
+### KiroCrew version
+
+[The version the user runs, as the form's hint asks]
+
+### Release channel
+
+[Stable | Insider (prerelease) | Nightly | Not sure]
+
+### How is it installed?
+
+[Desktop app | Desktop app (deb) | Desktop app (rpm) | pip / pipx | Docker | From source | Not sure]
+
+### Platform
+
+[macOS | Windows | Linux | Not platform-specific]
+
+### What happened
+
+[What the user observed, and what they expected instead]
+
+### Steps to reproduce
+
+[Numbered steps from a known starting state]
+
+### Relevant log output
+
+[Log lines the form's hint asks for, redacted]
+
+### Anything else
+
+[Screenshots, related config, workarounds tried]
 ```
 
 Show the draft to the user for confirmation before submitting.
@@ -226,7 +288,7 @@ Rules:
 If the permission check in step 3 did not allow labels, or never ran, pass no
 `--label` flag at all and never tell the user labels will be attached. Tell them
 triage will label the issue. You may list the labels you would suggest in the
-body under Additional Context; put them in the draft before you show it, or show
+body under Anything else; put them in the draft before you show it, or show
 the changed draft again before submitting.
 
 Otherwise, collect the chosen names for the submit step below.

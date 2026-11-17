@@ -5263,11 +5263,20 @@ tell the agent to reason from first principles and ask "why?" one question at a
 time, each question built from the user's last answer, stopping once an answer
 names who hits it, what they are trying to get done and what it costs them
 (five at most), and finishing the chain before the duplicate search and the
-draft. The drafted Why section carries that question-and-answer chain.
+draft. The drafted "Why does this matter? (5 Whys)" section carries that
+question-and-answer chain.
 `.github/ISSUE_TEMPLATE/feature_request.yml` asks for the same chain in a
 required "Why does this matter? (5 Whys)" field, whose description names first
 principles so an agent filing through the form questions the request rather than
 restating it (#33078). Bug reports skip the chain.
+
+Both copies draft the issue body in the shape GitHub gives a form issue: one
+`###` heading per field of `feature_request.yml` or `bug_report.yml`, spelt as
+the field's label and in the form's order, because `gh issue create --body-file`
+skips the form and triage reads the answers by those headings. The same test
+file holds the skill's two draft blocks to the forms' field labels, and the
+fallback's two field lists to the same labels in order. `kirocrew-prepare-pr`
+sends its issue-first step through this skill's draft step.
 
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
