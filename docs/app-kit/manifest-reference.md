@@ -333,7 +333,7 @@ refused.
 | `agent_sequence` | string[] | Ordered agents to run |
 | `command` | string | Shell command executed without a model call; mutually exclusive with `script`. A present non-string value is rejected rather than treated as absent |
 | `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent. The path resolves against the app's own bundle, must stay inside it, must name a `.py` file, and is stored as an absolute path; re-enable the app after its bundle moves |
-| `env` | object | String environment variables passed to the job |
+| `env` | object | String environment variables passed to the job: its agent session, or a script or command child (`KIROCREW_*` and loader-injection keys such as `LD_PRELOAD` are dropped for script and command jobs) |
 | `persistent_session` | boolean | Default `true`; retain one agent session across runs |
 | `silent` | boolean | Default `false`; suppress automatic result delivery |
 | `folder` | string | Schedule-folder name. Installing, enabling or updating the app in a running gateway creates a missing folder; a name several folders share, registration during gateway startup, or a CLI enable leaves the job ungrouped |

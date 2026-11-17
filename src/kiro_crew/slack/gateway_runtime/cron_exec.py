@@ -157,6 +157,7 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             job.id,
             job.secret_env,
             job.secret_env_pin,
+            job.env,
             timeout=_claim_backstop(job, cmd_timeout),
         )
         if result.get("status") == "cancelled":
@@ -642,6 +643,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.thread_ts or "",
             ),
             self._live_internal_secret,
+            job.env,
             timeout=_claim_backstop(job, script_timeout),
         )
         status = result.get("status", "error")

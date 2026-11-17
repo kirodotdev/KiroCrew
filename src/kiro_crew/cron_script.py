@@ -43,6 +43,7 @@ from kiro_crew.cron_script_child_env import (
     _clean_cron_env,
     _default_temp_dir,
     _discard_unused_cron_scratch,
+    _overlay_job_env,
     _publish_script_session_token,
     _record_cron_scratch_owner,
     _resolve_dial_port,
@@ -112,6 +113,7 @@ def run_script_sandboxed(
     secret_env_pin: str = "",
     delivery: str = "",
     internal_secret_provider: Callable[[], str] | None = None,
+    job_env: dict[str, str] | None = None,
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
@@ -449,6 +451,7 @@ def run_script_sandboxed(
         # Build clean env: secrets (Slack tokens, owner id, internal secret)
         # are never inherited; the internal secret is passed via the 0600 file.
         clean_env = _clean_cron_env()
+        _overlay_job_env(clean_env, job_env)
         if cron_scratch is not None:
             # The whole temp triple, not only the keys the gateway carried, so
             # a child under a unit with no TMPDIR stops defaulting to /tmp.
@@ -899,6 +902,7 @@ def run_command_sandboxed(
     job_id: str | None = None,
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
+    job_env: dict[str, str] | None = None,
 ) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
@@ -978,6 +982,7 @@ def run_command_sandboxed(
         )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
+        _overlay_job_env(clean_env, job_env)
         if cron_scratch is not None:
             # The whole temp triple, not only the keys the gateway carried, so
             # a child under a unit with no TMPDIR stops defaulting to /tmp.

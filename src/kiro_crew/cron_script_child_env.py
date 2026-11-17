@@ -27,6 +27,7 @@ from typing import Callable
 from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.config.paths import data_home
+from kiro_crew.env import sanitize_spec_env
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import _AGENT_DENIED_ENV_KEYS, CANONICAL_TEMP_KEYS
 
@@ -86,6 +87,23 @@ def _clean_cron_env() -> dict[str, str]:
         for k in present:
             env[k] = temp_dir
     return env
+
+
+def _overlay_job_env(env: dict[str, str], job_env: dict[str, str] | None) -> None:
+    """Add a cron job's own ``env`` block to *env*, a :func:`_clean_cron_env` result.
+
+    ``job.env`` is untrusted input (an app manifest's ``crons[].env``), so it passes
+    :func:`kiro_crew.env.sanitize_spec_env` (loader-injection keys and the ``KIROCREW_``
+    namespace dropped) and then the cron deny set and the granted secret names, so the
+    child sees only what the block adds and the scrubs above still win. Callers set their
+    own keys (temp triple, session identity, secret file) AFTER this call.
+    """
+    if not job_env:
+        return
+    blocked = {k.upper() for k in (*_CRON_ENV_DENY, *_GRANTED_ENV_KEYS)}
+    env.update(
+        sanitize_spec_env((k, v) for k, v in job_env.items() if str(k).upper() not in blocked)
+    )
 
 
 def _allocate_cron_scratch(job_id: str | None) -> Path | None:
