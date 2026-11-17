@@ -58,6 +58,7 @@ from kiro_crew.dashboard.session_pulse_counter import (
     NEW_USER_SESSION_THRESHOLD,
     get_user_session_count,
 )
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,7 @@ async def api_feedback_submit(request: web.Request) -> web.Response:
                 _INGESTION_URL,
                 json=payload,
                 allow_redirects=False,
+                proxy=resolve_proxy(_INGESTION_URL),
                 timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SECONDS),
             ) as resp:
                 if 200 <= resp.status < 300:
@@ -382,6 +384,7 @@ async def api_feedback_eligible(request: web.Request) -> web.Response:
                     "locale": "en_US",
                 },
                 allow_redirects=False,
+                proxy=resolve_proxy(_PROMPT_URL),
                 timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SECONDS),
             ) as resp:
                 if resp.status != 200:
