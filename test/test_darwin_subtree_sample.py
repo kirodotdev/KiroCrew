@@ -34,7 +34,7 @@ def fake_darwin(monkeypatch):
         platform_compat, "_darwin_process_phys_footprint_bytes", lambda p: FOOTPRINT.get(p)
     )
     monkeypatch.setattr(platform_compat, "_darwin_process_cpu_nanos", lambda p: CPU_NANOS.get(p))
-    monkeypatch.setattr(platform_compat.os, "sysconf", lambda name: 100)
+    monkeypatch.setattr(platform_compat.os, "sysconf", lambda name: 100, raising=False)
 
 
 class TestDarwinSubtreeWalk:

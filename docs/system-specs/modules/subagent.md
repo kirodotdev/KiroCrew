@@ -237,7 +237,7 @@ so) and re-exported by `kiro_crew.subagent`, which stays the place to read and p
 | `DEFAULT_SPAWN_MIN_MEMORY_GB` | 2.0 | Default of `agent.spawn_min_memory_gb`, from `constants.DEFAULT_SPAWN_MIN_MEMORY_GB`: GiB that must remain available AFTER an admitted start. The one source for the dataclass default, the loader fallback, the gate's fallback and `check_memory_available`'s default |
 | `_UNLEARNED_DEDICATED_START_GB` | 1.0 | Dedicated start price for a cost bucket with no learned settled figure yet: the default `kirocrew` agent's measured first-session tree (kiro-cli 2.26.1, USS, its MCP roster included), rounded up. See *Memory guard* |
 | `_SETTLED_PROJECTION_CEILING_GB` | 2.0 | The most a learned settled figure may raise a dedicated start's price |
-| `_SETTLE_AFTER_SECS` | 120 | A row whose own session answered this long ago counts as settled where no sweep can measure it (macOS, Windows) |
+| `_SETTLE_AFTER_SECS` | 120 | A row whose own session answered this long ago counts as settled where no sweep can measure it (Windows) |
 | `_SHARED_START_SAVING_GB` | 0.35 | What a start that shares its parent's runtime does not launch (the kiro-cli process and its first-session warm-up, measured); a shared start is priced at the dedicated projection less this, never below `_SHARED_START_MIN_GB` (0.05). See *Memory guard* |
 | `_RSS_SAMPLES_TO_SETTLE` | 2 | Sweeps before a dedicated worker counts as settled and owes nothing |
 | `_DEDICATED_TOPUP_WAIT_SECS` | 60 | Longest a start admitted at the shared price waits for the floor before launching a dedicated process anyway (polls every `_DEDICATED_TOPUP_POLL_SECS`, 2 s) |
@@ -610,7 +610,8 @@ registers it stores that same price rather than computing a new one nobody
 tested; a retained claim keeps its price for as long as it holds its slot; any
 other unregistered slot is charged `subagent_cost_gb`. A live row owes its price
 IN FULL until it settles (`_row_settled`): two sweeps measured it, or, where
-nothing can measure it (macOS and Windows have no `/proc` subtree reading), its
+nothing can measure it (Windows has no subtree reading; macOS reads its tree
+through `libproc`, `platform_compat_metrics._darwin_subtree_sample`), its
 current process's own session answered `_SETTLE_AFTER_SECS` (two sweep
 intervals) ago on the monotonic clock (`_first_stream_mono`, tied to the
 process's `_rss_generation`, so a laptop's sleep or a respawn never settles a
@@ -636,7 +637,7 @@ all. **The prices are projections**, from those measured defaults until a bucket
 has learned its own settled size. A bucket lighter than the default agent (few or
 no MCP servers) is over-priced until it learns; an install that only ever runs
 shared starts never learns (shared runs are not captured), and neither does one
-on macOS or Windows (no subtree reading), so both stay at the measured defaults.
+on Windows (no subtree reading), so both stay at the measured defaults.
 Learning a per-session shared price is a follow-up, not part of this guard.
 
 **The learned settled size** is what a dedicated runtime holds once it is up. The

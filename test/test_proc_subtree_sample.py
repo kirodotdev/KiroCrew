@@ -37,13 +37,14 @@ from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 
 
 @pytest.fixture(autouse=True)
-def _proc_path(monkeypatch):
+def _proc_path(_floor_monkeypatch):
     """Pin the ``/proc`` path: every fake here describes ``/proc`` reads.
 
     On a Mac the walker takes its ``libproc`` branch instead, which these fakes
     never reach; that branch is covered in ``test_darwin_subtree_sample.py``.
+    The pin sits on the isolation floor, not on a test's own undo stack.
     """
-    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+    _floor_monkeypatch.setattr(platform_compat, "IS_MACOS", False)
 
 
 #: 1 root + 3 children, two of which match the caller's needles.
