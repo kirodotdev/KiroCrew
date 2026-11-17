@@ -67,6 +67,9 @@ report = {
 print("REPORT " + json.dumps(report), flush=True)
 """
 
+# Bound at import: the install tests stub ``subprocess.run`` on the shared module, and the
+# probe must still run for real.
+_REAL_RUN = subprocess.run
 _SECRET_VALUE = "gateway-internal-secret-value"
 _CONTROL_VALUE = "not-a-secret"
 
@@ -108,7 +111,7 @@ def _install_real_probe(
         wrapped, cleanup = real_wrap(probe, **kwargs)
         env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SANDBOX_ACTIVE"}
         try:
-            proc = subprocess.run(
+            proc = _REAL_RUN(
                 wrapped,
                 cwd=os.environ["KIROCREW_HOME"],
                 env=env,
