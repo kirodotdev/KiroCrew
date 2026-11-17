@@ -253,6 +253,21 @@ turn) that fails, is charged to the loop (see
 `gate._spend_ledger_wake_retry` buys one plain patrol turn on the next tick that
 reads the board, not the wake's text again.
 
+A tick reads event tails for open items only: a closed item never wakes again,
+and every observation the probe raises is `ResetsOn.NEVER`, so the epoch covers
+open items alone. `_read_board` serves the last read of a board again while
+`work_ledger.change_mark()` and the mtimes of the conductor folder and the items
+folder are unchanged and the read is younger than `_REUSE_MAX_AGE_SECS` (30
+minutes). The change mark covers writes in this process. Every store write is an
+atomic rename, which moves a folder mtime, so a write from another process is
+seen too. The age bound covers a file edited in place by hand. A read that began
+less than `_RACY_SECS` (2 s) after the folders last changed, or that could not read
+every item file or got an empty event tail for an open item, or listed no item, or
+joined a listing already in flight when it began, is not kept, and kept
+reads have the same budgets as the store listing memo (256 boards, 10,000 items). Staleness,
+liveness and undelivered reports are judged on every tick, served read or not.
+`test_work_ledger_watch_board_reads.py` pins it.
+
 A delivered work-ledger wake is a POINTER, not a copy of the board.
 `ledger_wake.wake_turn_text` prefixes the nudge with the kernel's structural briefs
 naming what moved (truncated at `MAX_WAKE_BRIEF_CHARS`, 4000) and then one
