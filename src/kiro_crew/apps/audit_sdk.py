@@ -26,6 +26,12 @@ reach ``sel()`` itself, and write whatever it likes. What this seam removes is t
 accidental misattribution; a deliberate one is already outside what an in-process
 API can prevent, and the boundary that would prevent it is process isolation.
 
+**Spawned backends.** Inside a spawned app backend ``sel()`` is the client for the
+gateway's ``_sel`` route (``apps/sel_client.py``): the backend holds no SEL key, and
+the gateway signs the row as ``app:<name>``. The operation must fit the route's
+charset (letters, digits and ``_ . -`` (``[A-Za-z0-9_.-]``), at most 64 characters); any other is refused with
+a warning and never rewritten, since a rewrite could hide a credential from redaction.
+
 **Best-effort.** ``record`` swallows a write failure: an audit sink that is full or
 unwritable must not take down the operation it only describes, and an app that let
 it raise would fail a user's publish because logging failed. A fail-closed variant
@@ -109,5 +115,9 @@ class AuditSDK:
             # line does reach `gateway.log`. A credential an app put in its verb
             # would persist there, in a file the SEL redaction never covers. The app
             # name is a manifest identifier and is safe to name; the app knows which
-            # of its own calls failed from the traceback.
-            logger.debug("app %s: audit emit failed", self._app_name, exc_info=True)
+            # of its own calls failed from its own flow, as no traceback is logged.
+            #
+            # Warning, not debug: in a spawned backend the key is hidden and the row goes
+            # through the gateway route, so a failure here is a lost audit row the
+            # operator must be able to see. No traceback: the line reaches the same log.
+            logger.warning("app %s: audit emit failed", self._app_name)

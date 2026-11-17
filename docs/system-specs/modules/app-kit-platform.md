@@ -9186,9 +9186,14 @@ confine, and an in-process app could call the private names anyway.
 `KIROCREW_APP_NAME`, which the gateway sets on every spawned backend, or for an
 explicit `app_name`. With neither it raises `LookupError` when the writer is built,
 so rows are never attributed to nobody, and `record` itself still never raises. The
-attribution is cooperative, as it is for `ctx.audit`. The SEL log is written
-cross-process under its chain lock (`sel_chain_lock`), so a spawned backend's row and
-the gateway's own interleave safely.
+attribution is cooperative, as it is for `ctx.audit`. A spawned backend does not
+hold the SEL key: `sel()` returns `apps/sel_client.py`, which posts the row to the
+gateway's `POST /api/apps/{name}/_sel` route with the app-scoped token, and the
+gateway signs and appends it as `app:<name>`. The operation must be
+`[A-Za-z0-9_.-]`, at most 64 characters; any other is refused with a warning and not
+written (never rewritten, which could hide a credential from redaction). The client
+sends through `loopback_urlopen`, so no system proxy is used. A failed send is logged at warning level
+(never debug) and the row is dropped after two retries; `record` still never raises.
 
 **Level.** `SDK_LEVEL` is `APP_SDK_LEVEL`; `BACKEND_SDK_LEVEL` is 7, the level that
 publishes the package. The adoption pin tool counts any non-test source naming the

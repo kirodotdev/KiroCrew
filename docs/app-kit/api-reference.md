@@ -1486,7 +1486,13 @@ ctx.audit.record("publish", "denied", resources=doc_id, error="no edit access")
 ```
 
 `record(operation, outcome, *, resources="", error="")` **never raises** — an audit
-sink that is unwritable must not fail the user's publish.
+sink that is unwritable must not fail the user's publish. A failed write is logged
+at warning level.
+
+In a spawned backend the row is sent to the gateway, which signs it as
+`app:<your-app>`; the backend never holds the signing key. Keep `operation` to
+letters, digits and `_ . -`, at most 64 characters (`publish`, `Doc.pull`): any other
+operation is refused with a warning and no row is written.
 
 `outcome` is a short verb you choose (`success`, `denied`, `error`, `completed`, …).
 It is not checked against a vocabulary — a spelling of your own is kept, because

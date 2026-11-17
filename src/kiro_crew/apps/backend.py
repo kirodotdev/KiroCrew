@@ -72,6 +72,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.sel import sel
+from kiro_crew.sel import sel_hmac_key_path as _sel_hmac_key_path
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # ``importlib.reload`` of this module re-executes it in its existing namespace, and the
@@ -859,9 +860,24 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # only; no app-specific env is set here. The host rules are
     # ``gateway_origin.loopback_gateway_origin``'s, shared with ``AppContext``.
     gateway_origin = _loopback_gateway_origin()
+    # The origin is only usable with the app token, and the gateway mints that only for an
+    # app that holds the owner-enable marker (``token_auth.validate_app_secret``). An app
+    # enabled before the marker existed has none, so its origin would lead every call to a
+    # 403: leave it out, the same dormancy as a non-loopback bind, and say so.
+    # circular import: host_exec_grants -> manager -> backend
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
+
+    _no_marker = bool(gateway_origin) and not host_exec_granted(app_name)
+    if _no_marker:
+        logger.warning(
+            "App %s has no owner-enable marker: omitting KIROCREW_GATEWAY_ORIGIN, so its "
+            "audit rows are written in-process and its SEL key stays readable",
+            app_name,
+        )
+        gateway_origin = ""
     if gateway_origin:
         env["KIROCREW_GATEWAY_ORIGIN"] = gateway_origin
-    else:
+    elif not _no_marker:
         bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
         # Dormancy is the DESIGNED outcome here, so the operator must be able
         # to see it: an app that declares notification channels but gets no
@@ -1256,7 +1272,27 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         _cache_target = str(policy_cache_dir())
         if not carveout_shadowed_by_foreign_mask(_cache_target):
             _visible = _visible + (_cache_target,)
-    sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
+    # The SEL MAC key is hidden from every app backend that can reach the gateway's
+    # ``_sel`` route, builtin or not: the tier leaves ``trust/`` readable for in-sandbox
+    # tools, and such a backend writes its audit rows through the route
+    # (``apps/sel_client.py``) instead. An OS mask, so a backend that clears its own spawn
+    # marker still cannot read the key. The condition is ``sel_client.from_env``'s: a
+    # backend with no origin (no valid bound port, or a gateway bound to a specific
+    # interface) or no secret has no route, so it keeps the real writer and the key rather
+    # than losing every audit row.
+    _sel_route = bool(env.get("KIROCREW_GATEWAY_ORIGIN") and env.get("KIROCREW_PROXY_SECRET"))
+    if not _sel_route:
+        logger.warning(
+            "App %s: no gateway route for audit rows (no origin or secret); "
+            "its SEL key stays readable",
+            app_name,
+        )
+    sandboxed_cmd, cleanup_path = wrap_argv(
+        cmd,
+        mode="standard",
+        extra_hidden_dirs=(str(_sel_hmac_key_path()),) if _sel_route else (),
+        extra_visible_dirs=_visible,
+    )
     # On Linux a non-null cleanup path is the namespace launcher script this process
     # generated, whose main() forks once: the Popen root waits for the server child.
     # IS_LINUX excludes the macOS seatbelt profile. A no-op wrap returns None, so an

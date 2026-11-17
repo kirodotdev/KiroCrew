@@ -132,8 +132,12 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   pins the union of the three dispositions equal to the crew-home half of
   `security.sensitive_home_dirs()`, so a new leaf cannot land in none of them — that
   pin, not a regex, is what keeps the ceiling un-disableable. One residual worth
-  carrying: `sel_hmac.key` is `VISIBLE`, so the SEL audit key has no OS fence; closing
-  that means moving its in-sandbox reader behind the gateway, never another matcher.
+  carrying: `sel_hmac.key` is `VISIBLE`, so the SEL audit key has no OS fence for the
+  agent tiers; closing that means moving its in-sandbox reader behind the gateway, never
+  another matcher. An app backend that has the gateway route (an origin and a secret)
+  is the first reader moved: its spawn masks the key and its rows go through `_sel`
+  (`apps/sel_client.py`). A backend without the route (no valid bound port, a gateway
+  bound to a specific interface, no secret, or no owner-enable marker, which the app token needs) keeps the key and a warning.
   An ENFORCED harness is the one exception — `tool_gate`'s credential mask keeps that
   leaf, and the other credential-bearing crew leaves, from a foreign child
   (`sandbox._CREW_CHILD_WITHHELD_LEAVES`), which is why the features whose

@@ -51,7 +51,7 @@ from contextlib import contextmanager  # noqa: F401
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone  # noqa: F401
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Literal, NamedTuple, overload  # noqa: F401
+from typing import IO, TYPE_CHECKING, Literal, NamedTuple, cast, overload  # noqa: F401
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat  # noqa: F401
@@ -1145,8 +1145,17 @@ def audit_sources() -> tuple[str, ...]:
 
 
 def sel() -> SecurityEventLog:
-    """Module-level accessor for the singleton SEL instance."""
-    return SecurityEventLog()
+    """Module-level accessor for the singleton SEL instance.
+
+    Inside a spawned app backend it is the client for the gateway's ``_sel`` route
+    instead: a backend holds no MAC key, and the gateway signs the row. That client
+    has ``log_api_access`` and ``log_tool_invocation`` only (both filed as api_access rows),
+    so the return type is a cast.
+    """
+    from kiro_crew.apps.sel_client import from_env
+
+    client = from_env()
+    return cast("SecurityEventLog", client) if client is not None else SecurityEventLog()
 
 
 async def warm_sel_singleton() -> None:
