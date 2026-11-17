@@ -13193,6 +13193,7 @@
         "ack_failed": "No se pudo guardar la confirmación. Inténtalo de nuevo.",
         "ack_job_gone": "Esta tarea ya no existe, así que no hay nada que confirmar. Puedes eliminar esta notificación.",
         "delete": "Eliminar",
+        "done": "Hecho",
         "delete_failed": "No se pudo eliminar esta notificación. Inténtalo de nuevo."
       },
       "errorCard": {

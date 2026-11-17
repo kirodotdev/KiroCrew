@@ -437,7 +437,10 @@ async def _deliver_script_result(
     """Deliver a script cron result to the originating session. Optionally remove the job."""
     delivered = False
     # `result_ts` names the stored result the note carries (`message` is it).
-    note_meta = {"job_id": job.id, "result_ts": job.last_result_ts}
+    note_meta: dict[str, str | float | bool] = {"job_id": job.id, "result_ts": job.last_result_ts}
+    # A one-shot has no future run to acknowledge: the dashboard offers Done.
+    if job.delete_after_run:
+        note_meta["one_shot"] = True
     try:
         if message and not job.silent and self.dashboard_state and job.session_key:
             slot_key = job.session_key.removeprefix("dashboard:")

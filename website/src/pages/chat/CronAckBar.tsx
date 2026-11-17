@@ -4,6 +4,7 @@ import { useAppDispatch } from '../../store'
 import { ackNotification, deleteNotification } from '../../store/notificationsSlice'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Btn } from '../../components/ui'
 import type { Notification } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -25,18 +26,19 @@ export default function CronAckBar({ notification, onDone }: { notification: Not
   // stays offered when a Delete fails too.
   const [jobGone, setJobGone] = useState(false)
   useEffect(() => { setAcked(!!notification.acked) }, [notification.acked])
+  const dismiss = async () => {
+    setFailure(null)
+    // Close only once the note is gone: a failed DELETE leaves it in place.
+    try {
+      await dispatch(deleteNotification(notification.ts)).unwrap()
+    } catch {
+      setFailure('delete')
+      return
+    }
+    onDone()
+  }
   const deleteButton = (
-    <button className="px-3 py-1.5 rounded-md text-[13px] text-danger hover:text-danger-text border border-border hover:border-danger/50 hover:bg-danger/10 transition-all cursor-pointer bg-transparent" onClick={async () => {
-      setFailure(null)
-      // Close only once the note is gone: a failed DELETE leaves it in place.
-      try {
-        await dispatch(deleteNotification(notification.ts)).unwrap()
-      } catch {
-        setFailure('delete')
-        return
-      }
-      onDone()
-    }}><Trash2 className="lucide-inline" /> {i18nT('pages.chat.cronAckBar.delete')}</button>
+    <button className="px-3 py-1.5 rounded-md text-[13px] text-danger hover:text-danger-text border border-border hover:border-danger/50 hover:bg-danger/10 transition-all cursor-pointer bg-transparent" onClick={dismiss}><Trash2 className="lucide-inline" /> {i18nT('pages.chat.cronAckBar.delete')}</button>
   )
   /* No hand-off: this bar renders inside NotificationDetailPanel, an OVERLAY
      over whatever page the reader was on, such as the /chat composer holding an
@@ -45,6 +47,18 @@ export default function CronAckBar({ notification, onDone }: { notification: Not
      discard the draft without asking. Each sentence names its own remedy
      (retry, or Delete when the job is gone). */
   const notice = <ErrorNotice variant="inline" message={failure ? failureCopy(failure) : null} />
+  // A one-shot reminder removed itself after this run, so there is no future
+  // run to acknowledge: Done dismisses the note and starts nothing, read or not.
+  if (notification.one_shot) {
+    return (
+      <div className="mt-4 pt-3 border-t border-border">
+        <div className="flex flex-col items-start gap-2">
+          <Btn primary onClick={dismiss}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.cronAckBar.done')}</Btn>
+          {notice}
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="mt-4 pt-3 border-t border-border">
       {acked ? (

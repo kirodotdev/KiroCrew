@@ -707,6 +707,25 @@ class TestCronCallbackDashboardChat:
         )
 
     @pytest.mark.usefixtures("_reset_surface_registry")
+    def test_one_shot_note_is_marked_one_shot(self) -> None:
+        """A one-shot reminder's note says so, so the dashboard offers Done."""
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _use_real_slots(gateway)
+        job = _make_job(
+            persistent_session=False,
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        _run_callback(gateway, job, stream_result="reminder")
+        gateway.dashboard_state.notify.assert_any_call(
+            "cron",
+            "Cron: test-job",
+            "reminder",
+            meta={"job_id": "j1", "result_ts": job.last_result_ts, "one_shot": True},
+        )
+
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_inject_fires_on_dedup_suppression(self) -> None:
         """Even when Slack dedup suppresses delivery, dashboard slot still gets updated."""
         gateway = _make_gateway()

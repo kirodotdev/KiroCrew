@@ -12629,6 +12629,7 @@
         "ack_failed": "无法保存此确认。请重试。",
         "ack_job_gone": "此任务已不存在，因此无需确认。你可以删除此通知。",
         "delete": "删除",
+        "done": "完成",
         "delete_failed": "无法删除此通知。请重试。"
       },
       "errorCard": {

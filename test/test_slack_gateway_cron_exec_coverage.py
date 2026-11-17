@@ -27,7 +27,7 @@ from slack_gateway_cron_exec_coverage_helpers import (
     _mock_dashboard_state,
 )
 
-from kiro_crew.cron import CronStoreBusy
+from kiro_crew.cron import CronSchedule, CronStoreBusy
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND
 from kiro_crew.slack import gateway as gw
@@ -977,6 +977,28 @@ class TestDeliverScriptResult:
         assert orch.dashboard_state.notify.call_args.kwargs["meta"] == {
             "job_id": job.id,
             "result_ts": job.last_result_ts,
+        }
+
+    @pytest.mark.asyncio
+    async def test_one_shot_script_note_is_marked_one_shot(self):
+        """A one-shot script reminder's note says so, so the dashboard offers Done."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(
+            script="probes.py:check",
+            session_key="dashboard:chat-gone",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        result = {"status": "report", "message": "reminder"}
+        with patch.object(gw, "rehydrate_slot_from_history_async", AsyncMock(return_value=None)):
+            async with _cron_cb(orch, script_result=result) as cb:
+                assert await cb(job) == "reminder"
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.kwargs["meta"] == {
+            "job_id": job.id,
+            "result_ts": job.last_result_ts,
+            "one_shot": True,
         }
 
     @pytest.mark.asyncio
