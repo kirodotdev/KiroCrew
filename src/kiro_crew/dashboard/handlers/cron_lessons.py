@@ -349,10 +349,13 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # category/length would be unbounded. Only schema-known keys are validated so
     # unrelated body fields don't trip unknown-field rejection.
     known = {f.name for f in LEARN_ADD_SCHEMA.fields}
+    fields = {k: v for k, v in body.items() if k in known}
+    # An edit keeps its row's stored category, so the listed one only labels the
+    # change notice and audit record; one outside the enum is clamped, not refused.
+    if body.get("replaces") is not None and "category" in fields:
+        fields["category"] = normalize_lesson_category(fields["category"], strict=True)
     try:
-        cleaned = validate_tool_args(
-            {k: v for k, v in body.items() if k in known}, LEARN_ADD_SCHEMA
-        )
+        cleaned = validate_tool_args(fields, LEARN_ADD_SCHEMA)
     except ValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     rule = cleaned["rule"]
