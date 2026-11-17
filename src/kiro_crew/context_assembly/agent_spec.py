@@ -79,8 +79,8 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
 #: workspace inherits its defaults (``acp/skill_projection_parts/preparation.py``):
 #: the project's steering and ``AGENTS.md``, when a project is bound. The global
 #: half is ``_GLOBAL_DEFAULT_RESOURCE``. A harness this load serves reads none of
-#: them from the spec. Codex reads ``AGENTS.md`` from its working directory, so
-#: the load leaves that file out there (``harness_reads_agents_md``).
+#: them from the spec. Codex, OpenCode and Pi read ``AGENTS.md`` from their working
+#: directory, so the load leaves that file out there (``harness_reads_agents_md``).
 _PROJECT_DEFAULT_RESOURCES = ("file://.kiro/steering/**/*.md", "file://AGENTS.md")
 
 

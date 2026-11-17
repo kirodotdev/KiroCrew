@@ -5,7 +5,7 @@ operator's toggles narrow them further; :func:`_build_context_scope_section` nam
 what a parent withheld. :func:`_render_folder_steering_section` is the one folder
 steering renderer, :func:`skill_parts` the one loader call, and
 :func:`steering_resources_part` the one steering-resources gate for a harness that
-reads no agent ``resources`` (Claude Code and Codex), that session start and
+reads no agent ``resources`` (Claude Code, Codex, OpenCode and Pi), that session start and
 post-compaction re-injection share.
 
 Three inclusion rules stay on :mod:`kiro_crew.context`: ``_skills_injection_plan``
@@ -214,14 +214,14 @@ def steering_resources_part(
     ``--agent`` (see acp/client_start.py ``_spawn``) and keeps them across its own
     compaction, so only a harness that does NOT read agent ``resources`` needs the
     explicit load: *provider_type*, the session's provider label, names one in
-    ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (Claude Code and Codex, a positive
-    membership). A custom agent loads its own prompt, a member chat (*essentials*
+    ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (Claude Code, Codex, OpenCode and Pi,
+    a positive membership). A custom agent loads its own prompt, a member chat (*essentials*
     non-empty) carries its steering inside the essentials envelope, and the
     ``project`` context group decides whether steering is in scope at all.
     *project* is the session's project: relative entries anchor there, as
     kiro-cli anchors them at its working directory, and it adds the project's
     steering and ``AGENTS.md`` that kiro-cli inherits. A harness that reads that
-    ``AGENTS.md`` itself from its working directory (Codex) does not get it from
+    ``AGENTS.md`` itself from its working directory (Codex, OpenCode, Pi) does not get it from
     this load. *steering_off* holds the resolved paths this chat switched off;
     only a Claude Code chat honours it, the one harness whose list offers the
     switch, and a chat with none takes exactly the old call.

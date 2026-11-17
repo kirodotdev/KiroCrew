@@ -55,7 +55,7 @@ def home(tmp_path, monkeypatch):
 
 def _verdict(**overrides):
     kwargs = dict(
-        provider_type="opencode",
+        provider_type="deepseek",
         native_steering=False,
         project=None,
         agent=None,
@@ -250,7 +250,7 @@ def test_a_folder_document_is_listed_once_as_delivered():
     rows = plan.chat_steering_plan(
         listed=listed,
         folder_documents=("~/.kiro/steering/style.md", "~/standards/own.md"),
-        provider_type="opencode",
+        provider_type="deepseek",
         native_steering=False,
         project=None,
         agent=None,
@@ -348,7 +348,7 @@ def test_a_tree_file_the_folder_cap_cuts_says_so():
         listed=listed,
         folder_documents=(),
         folder_cut=("~/.kiro/steering/style.md",),
-        provider_type="opencode",
+        provider_type="deepseek",
         native_steering=False,
         project=None,
         agent=None,
@@ -405,13 +405,18 @@ async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[in
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("backend", "reaches", "reason"),
-    [("codex", "yes", ""), ("opencode", "no", "harness_has_no_path")],
+    [
+        ("codex", "yes", ""),
+        ("opencode", "yes", ""),
+        ("pi", "yes", ""),
+        ("deepseek", "no", "harness_has_no_path"),
+    ],
 )
 async def test_a_cold_chat_lists_global_steering_as_its_harness_receives_it(
     home, monkeypatch, backend, reaches, reason
 ):
     """The route answers for a cold chat on the harness it would start on: Crew's
-    steering load reaches Codex, and OpenCode has no path for the trees."""
+    steering load reaches Codex, OpenCode and Pi, and DeepSeek has no path for the trees."""
     _config(monkeypatch, backend)
     status, data = await _get(_state(_ChatSlot("main")), "main")
     assert status == 200

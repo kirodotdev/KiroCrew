@@ -29,7 +29,7 @@ retype every conversation.
 Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
-directory. On the Claude Code and Codex backends, which do not read an agent
+directory. On the Claude Code, Codex, OpenCode and Pi backends, which do not read an agent
 spec's `resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
 `src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
@@ -89,7 +89,7 @@ Endpoints are plural nouns. Errors carry a stable `code` field.
 
 **On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
 delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
-Claude Code and Codex global-root load, apply one rule
+Claude Code, Codex, OpenCode and Pi global-root load, apply one rule
 (`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
 declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
 stripped from every document they deliver. What a mode causes on kiro-cli is the

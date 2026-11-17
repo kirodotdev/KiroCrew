@@ -191,7 +191,7 @@ def post_compaction_parts(
         )
     if _prefs:
         parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
-    # A harness that reads no agent ``resources`` (Claude Code, Codex) got the
+    # A harness that reads no agent ``resources`` (Claude Code, Codex, OpenCode, Pi) got the
     # agent config's steering resources as session-start prompt text, so the
     # compaction dropped them; kiro-cli keeps its natively loaded ``resources``,
     # so the gate is the session-start one.
