@@ -300,7 +300,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         publisher._retry_at[binding.channel_id] = 7.0
         return "deferred"
 
@@ -317,7 +317,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
 def test_the_publish_wrapper_rechecks_the_scope_before_anything_is_sent(monkeypatch):
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return "updated"
 
@@ -1011,7 +1011,7 @@ def test_the_retry_is_taken_even_when_the_publish_raises(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def boom(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def boom(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         publisher._retry_at[binding.channel_id] = 15.0
         raise RuntimeError("pin step blew up")
 
@@ -1633,7 +1633,7 @@ def test_a_stop_caught_by_the_publish_scope_check_keeps_the_board_owed(monkeypat
     monkeypatch.setattr(surface, "dashboard_state", lambda: None)
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         stopped[0] = True  # the person pressed Stop during the publisher's awaits
         if not admits():
             return "out_of_scope"
