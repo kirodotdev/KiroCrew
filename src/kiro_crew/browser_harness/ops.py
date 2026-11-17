@@ -690,7 +690,8 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
     return refusal(
         "redirect_refused",
         f"the page redirected to {url[:120]}, which is not a public http(s) URL or a "
-        "loopback origin the user listed; the tab was moved to about:blank",
+        "loopback origin the user listed (or, for an app's own session, not one of the "
+        "pages the app may browse); the tab was moved to about:blank",
     )
 
 

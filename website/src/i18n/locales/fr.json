@@ -12236,6 +12236,7 @@
       "grants_reconsent_link_full_url": "Adresses de lien complètes : les cartes de survol de l’app voient aussi la partie d’un lien après « ? » ou « # », qui peut contenir un code de connexion.",
       "grants_reconsent_message_actions": "Actions sur les messages : ce que les éléments de menu de l'app sur les messages du chat peuvent lire.",
       "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant.",
+      "grants_reconsent_browser_sites": "Sites de navigation : l'agent de l'application peut ouvrir, lire, saisir du texte et cliquer sur ces pages dans ton navigateur, connecté avec ton compte, sans demander à chaque fois.",
       "grants_reconsent_frame_sources": "Sites intégrés : permet aux pages de l'application d'afficher ces sites dans le tableau de bord.",
       "grants_reconsent_link_open_hosts": "Liens ouverts : permet à l'app d'ouvrir les liens vers ces sites quand tu cliques sur l'un d'eux dans un message du chat.",
       "grants_reconsent_link_open_full_url": "Adresses complètes des liens ouverts : l'app voit aussi la partie d'un lien après le point d'interrogation ou le dièse, qui peut contenir un code de connexion.",

@@ -11714,6 +11714,7 @@
       "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",
       "grants_reconsent_message_actions": "消息操作：应用在聊天消息上的菜单项能读取哪些内容。",
       "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。",
+      "grants_reconsent_browser_sites": "浏览网站：应用自带的智能体可以在你浏览器里用你登录的账号打开、阅读这些页面，并在上面输入和点击，不再每次询问。",
       "grants_reconsent_frame_sources": "嵌入的网站：允许应用的页面在仪表板内显示这些网站。",
       "grants_reconsent_link_open_hosts": "打开的链接：你在聊天消息中点击指向这些网站的链接时，允许应用打开它。",
       "grants_reconsent_link_open_full_url": "所打开链接的完整地址：应用还会看到链接中 ? 或 # 之后的部分，其中可能含有登录码。",

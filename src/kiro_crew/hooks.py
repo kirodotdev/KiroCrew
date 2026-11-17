@@ -1502,6 +1502,22 @@ for _gate_entry in ("judge", "on_tool_call"):
 del _gate_entry, _gate_body
 
 
+def _tier_app_browser_sites(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """An app's OWN dashboard slot calling the ``browser`` tool on its owner-approved sites.
+
+    The conditions live in :func:`kiro_crew.apps.browser_sites.gate_grants`, imported
+    when a call reaches this row, so no module of it is on an MCP listing's path. A grant
+    vouches for the caller, so ``classifier_only`` skips it like the other grant rows.
+    """
+    if facts.classifier_only:
+        return None
+    from kiro_crew.apps import browser_sites  # noqa: PLC0415 - off the listing path
+
+    if not browser_sites.gate_grants(facts):
+        return None
+    return ToolHookResult.auto_approve(identity_grant=True)
+
+
 # The tool gate, row by row, in the order ``HookManager.judge`` runs it. Built after
 # ``compose`` so each row holds the rebound tier function, which reads this module's
 # globals -- built before it, a row would keep the owner's original, and a patch of
@@ -1531,6 +1547,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("spec-denies", "deny_policy", _tier_spec_denies),
     GateTier("spec-unjudged-denies", "deny_policy", _tier_spec_unjudged_denies),
     GateTier("app-own-server", "grant", _tier_app_own_server),
+    GateTier("app-browser-sites", "grant", _tier_app_browser_sites),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),
     GateTier("batch-guard-grant", "grant", _tier_batch_guard_grant),

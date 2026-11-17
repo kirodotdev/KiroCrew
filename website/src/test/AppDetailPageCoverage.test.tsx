@@ -885,7 +885,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [],
+      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -952,6 +952,22 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(staged).not.toHaveTextContent('https://ok.example.com')
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ frameSources: ['https://new.example.com'] })))
+  })
+
+  it('lists the browsing sites an install held back, with what they allow, and approves them', async () => {
+    const sites = ['https://www.example.com/watch', 'https://video.example.org/v/*']
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], browserSites: sites } },
+      approvedGrants: { api: [], events: [] },
+      browserSitesGrant: { approved: [], staged: sites },
+    }))
+    renderDetail()
+    await loaded()
+    expect(screen.getByText(/the app's own agent can open, read, type and click on these pages/)).toBeInTheDocument()
+    const staged = screen.getByTestId('staged-browser-sites')
+    for (const site of sites) expect(staged).toHaveTextContent(site)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ browserSites: sites })))
   })
 
   it('lists a held-back session reach verb and approves only that verb', async () => {

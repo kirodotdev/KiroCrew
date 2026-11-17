@@ -11714,6 +11714,7 @@
       "grants_reconsent_link_full_url": "전체 링크 주소: 앱의 호버 카드가 링크에서 ? 또는 # 뒤의 부분도 봅니다. 이 부분에는 로그인 코드가 들어 있을 수 있습니다.",
       "grants_reconsent_message_actions": "메시지 작업: 채팅 메시지에 있는 앱 메뉴 항목이 읽을 수 있는 내용.",
       "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다.",
+      "grants_reconsent_browser_sites": "탐색 사이트: 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다.",
       "grants_reconsent_frame_sources": "삽입된 사이트: 앱 페이지가 대시보드 안에서 이 사이트들을 표시하도록 허용합니다.",
       "grants_reconsent_link_open_hosts": "여는 링크: 채팅 메시지에서 이 사이트로 가는 링크를 클릭하면 앱이 그 링크를 열 수 있습니다.",
       "grants_reconsent_link_open_full_url": "여는 링크의 전체 주소: 앱이 링크의 ? 또는 # 뒤 부분도 봅니다. 여기에 로그인 코드가 들어 있을 수 있습니다.",

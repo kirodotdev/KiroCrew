@@ -5435,6 +5435,7 @@
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",
       "grants_reconsent_message_actions": "Message actions: what the app's menu items on chat messages can read.",
       "grants_approved": "Approved: {{entries}}. The app can use them now.",
+      "grants_reconsent_browser_sites": "Browsing sites: the app's own agent can open, read, type and click on these pages in your browser, signed in as you, without asking each time.",
       "grants_reconsent_frame_sources": "Framed sites: lets the app's pages show these sites inside the dashboard.",
       "grants_reconsent_link_open_hosts": "Opened links: lets the app open links to these sites when you click one in a chat message.",
       "grants_reconsent_link_open_full_url": "Whole addresses of opened links: the app also sees the part of a link after ? or #, which can hold a sign-in code.",

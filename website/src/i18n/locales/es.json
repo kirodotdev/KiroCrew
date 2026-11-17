@@ -12236,6 +12236,7 @@
       "grants_reconsent_link_full_url": "Direcciones de enlace completas: las tarjetas de la app también ven la parte de un enlace tras ? o #, que puede contener un código de inicio de sesión.",
       "grants_reconsent_message_actions": "Acciones de mensaje: lo que pueden leer las opciones de menú de la app en los mensajes del chat.",
       "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos.",
+      "grants_reconsent_browser_sites": "Sitios de navegación: el agente propio de la aplicación puede abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez.",
       "grants_reconsent_frame_sources": "Sitios incrustados: permite que las páginas de la aplicación muestren estos sitios dentro del panel.",
       "grants_reconsent_link_open_hosts": "Enlaces abiertos: permite a la app abrir enlaces a estos sitios cuando haces clic en uno en un mensaje del chat.",
       "grants_reconsent_link_open_full_url": "Direcciones completas de los enlaces abiertos: la app también ve la parte de un enlace después de ? o #, que puede contener un código de inicio de sesión.",
