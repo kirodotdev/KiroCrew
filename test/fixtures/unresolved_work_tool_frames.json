@@ -105,5 +105,64 @@
     "toolCallId": "call_wr_1"
    }
   ]
+ },
+ "claude_code": {
+  "_meta": {
+   "backend": "claude",
+   "recorded": "live",
+   "date": "2026-11-17",
+   "agent_version": "0.94.0",
+   "note": "Recorded 2026-11-17 by Kiro Crew's in-product frame recorder (KIROCREW_ACP_RECORD_FRAMES) while an AcpClient(acp_backend='claude') session ran claude-agent-acp 0.94.0 (the Real Adapter lane's lockfile, test/real_adapters) against a loopback stub model that answered the first prompt with one tool call named work_report, a name claude does not offer. No provider credential. Only the session/update payloads for that call are kept, verbatim."
+  },
+  "updates": [
+   {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "work_report"
+     }
+    },
+    "content": [],
+    "kind": "other",
+    "name": "work_report",
+    "rawInput": {},
+    "sessionUpdate": "tool_call",
+    "status": "pending",
+    "title": "work_report",
+    "toolCallId": "toolu_wr_1"
+   },
+   {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "work_report"
+     }
+    },
+    "rawInput": {
+     "status": "progress",
+     "summary": "probe"
+    },
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_wr_1"
+   },
+   {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "work_report"
+     }
+    },
+    "content": [
+     {
+      "content": {
+       "text": "```\n<tool_use_error>Error: No such tool available: work_report</tool_use_error>\n```",
+       "type": "text"
+      },
+      "type": "content"
+     }
+    ],
+    "rawOutput": "<tool_use_error>Error: No such tool available: work_report</tool_use_error>",
+    "sessionUpdate": "tool_call_update",
+    "status": "failed",
+    "toolCallId": "toolu_wr_1"
+   }
+  ]
  }
 }
