@@ -540,17 +540,18 @@ def _setup_impl(
 def _builtin_cloud_lane_offered() -> bool:
     """Whether the composed platform offers the built-in ``aws_ec2`` lane.
 
-    Reads the list through ``dashboard/handlers_cloud.py::_provisioners`` itself,
-    the same read and degraded-seam fallback the Set-up tab is drawn from, so the
-    wizard and the tab cannot disagree about whether this deployment offers EC2.
+    Reads the list through ``platform.provisioner_listing``, the same read and
+    degraded-seam fallback the Set-up tab is drawn from, so the wizard and the
+    tab cannot disagree about whether this deployment offers EC2. Not through
+    ``dashboard/handlers_cloud.py``: importing that graph cold kept the terminal
+    silent for seconds before this prompt, and an Enter typed into the silence
+    answered the prompt before it was ever seen.
     ``PlatformCompositionError`` still propagates, per ``safe_context_call``.
     """
-    # Deferred: the dashboard handler module pulls in the cloud/dashboard graph,
-    # which only this last, optional wizard step needs.
-    from kiro_crew.dashboard.handlers_cloud import _provisioners
     from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
+    from kiro_crew.platform.provisioner_listing import offered_provisioners
 
-    return any(r.id == BUILTIN_PROVISIONER_ID for r in _provisioners())
+    return any(r.id == BUILTIN_PROVISIONER_ID for r in offered_provisioners())
 
 
 def _maybe_setup_cloud() -> None:
@@ -1156,10 +1157,13 @@ _CUSTOM_DOMAIN = "kirocrew.localhost"
 
 
 def _configured_port() -> int:
-    """Return the dashboard port using the same resolution as other CLI commands."""
-    from kiro_crew.cli_server import (
-        resolve_client_port,  # local import keeps cli_server (heavy import graph) out of cli_setup's import time
-    )
+    """Return the dashboard port using the same resolution as other CLI commands.
+
+    Read from ``port_resolution``, the chain's own light module, not from
+    ``cli_server``: importing that graph cold stalled the wizard's output for
+    seconds between the timezone answer and the next prompt.
+    """
+    from kiro_crew.port_resolution import resolve_client_port
 
     return resolve_client_port(None)
 

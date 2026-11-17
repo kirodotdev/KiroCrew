@@ -118,6 +118,14 @@ omit the policy.
 > `capabilities.remote_provisioners` row mirroring `capabilities.mobile_connect`
 > is the natural follow-up once a second lane exists to narrow on.
 >
+> The listing has one reader, `platform/provisioner_listing.py::offered_provisioners`:
+> the Set-up tab (`handlers_cloud._provisioners`) and `kirocrew setup`'s cloud
+> step both call it, so the two cannot disagree about whether the `aws_ec2` lane
+> is offered. A degraded seam read falls back to the built-in descriptor alone,
+> rows with a blank `id` or `kind` are dropped, and `PlatformCompositionError`
+> still propagates. It lives outside the dashboard handler module so the wizard
+> can read it mid-prompt without importing the aiohttp and cloud-engine graph.
+>
 > Contributor walkthrough: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md).
 
 > `external_access` note — three surfaces the core offers unconditionally, none of
