@@ -59,6 +59,13 @@ async def _retire_sessions_on_identity_change(
     block), which no sweep spares, so sweeping again would only cancel its
     sub-agents. Otherwise it does nothing.
 
+    The dashboard chat turn skips that repeat sweep too, for the same reason: under a
+    proven sign-out one sweep already covered, it still runs the stamp check below
+    (a no-op under an empty fingerprint) and then leaves every session alone, so a
+    send while signed out does not drain and cold-start each idle chat first.
+    Unlike an unattended caller, it still sweeps on every turn under an absence the
+    read did not prove; like one, it runs the first sweep of each new sign-out.
+
     Best-effort: a failure here must not fail the turn, which would be a worse
     outcome than the staleness it exists to correct.
 
@@ -114,6 +121,14 @@ async def _retire_sessions_on_identity_change(
         flag_stamp_mismatches = getattr(sessions, "flag_identity_stamp_mismatches", None)
         if flag_stamp_mismatches is not None:
             await flag_stamp_mismatches(live)
+        if (
+            not live
+            and absence_proven
+            and getattr(service, "identity_absence_already_swept", False)
+        ):
+            # A sign-out one sweep already covered: sweeping again on each send only
+            # drains and cold-starts sessions that hold no account (see the docstring).
+            return _IdentityCheckRead(live, read_gen)
         if not changed:
             # An INCOMPLETE sweep is its own trigger, independent of the baseline.
             # The baseline advances only on a complete sweep, so after an A->B
@@ -156,16 +171,17 @@ async def _retire_sessions_on_identity_change(
         # could not be read (relocated, unreadable, or signed out), and reconciling
         # it would make "cannot tell" the accepted steady state -- every later
         # account switch would then compare equal to "" and go undetected while
-        # children keep running. Leaving it unreconciled means each turn re-sweeps,
-        # which bounds how long a child can outlive the account it loaded to a
-        # single turn. That is a real cost on a host whose store is not readable,
-        # and it is the correct direction to pay it in: the replacement child reads
-        # whatever the store now holds even when we cannot fingerprint it.
+        # children keep running. Leaving it unreconciled means each turn re-sweeps
+        # (short of a proven sign-out a sweep already covered, above), which bounds
+        # how long a child can outlive the account it loaded to a single turn. That
+        # is a real cost on a host whose store is not readable, and it is the
+        # correct direction to pay it in: the replacement child reads whatever the
+        # store now holds even when we cannot fingerprint it.
         if complete and live:
             service.note_sessions_reconciled(live, observations_before=observed_gen)
         elif complete and absence_proven and absence_run is not None:
             # A sign-out is never reconciled, so record that a sweep finished this
-            # one: unattended callers then leave it alone (identity_absence_already_swept).
+            # one: later checks then leave it alone (identity_absence_already_swept).
             note_absence_swept = getattr(service, "note_absence_swept", None)
             if note_absence_swept is not None:
                 note_absence_swept(absence_run)
