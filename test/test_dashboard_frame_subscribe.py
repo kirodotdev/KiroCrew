@@ -20,14 +20,23 @@ has to prove first that it can see one.
 from __future__ import annotations
 
 import json
+import os
+import queue
 import shutil
+import signal
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from kiro_crew import dashboard_frame
+from kiro_crew.testing.wait import default_timeout
+
+# One ``node`` serves every case in this module, so the module stays on one worker.
+pytestmark = pytest.mark.xdist_group(name="node_child_frame_subscribe")
 
 #: The DOM the bootstrap actually touches, and nothing else.
 #:
@@ -70,6 +79,108 @@ def _island(read: dict[str, Any]) -> str:
     return json.dumps(read, ensure_ascii=False)
 
 
+#: Runs each case in a NEW ``vm`` context, so every case starts from empty globals as it
+#: did in its own process. ``"use strict"`` keeps the strict-mode semantics the module
+#: entry point gave. Only ``console`` is handed in; any other host global the bootstrap
+#: reaches is a ReferenceError, so a case cannot quietly depend on one.
+_DRIVER = r"""
+const vm = require('node:vm');
+const rl = require('node:readline').createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const req = JSON.parse(line);
+  const out = [];
+  const context = vm.createContext({ console: { log: (...a) => out.push(a.join(' ')) } });
+  let reply;
+  try {
+    vm.runInContext('"use strict";\n' + req.program, context, { timeout: req.timeout_ms });
+    reply = { id: req.id, ok: true, out };
+  } catch (err) {
+    reply = { id: req.id, ok: false, err: String((err && err.stack) || err), out };
+  }
+  process.stdout.write(JSON.stringify(reply) + '\n');
+});
+"""
+
+
+class _NodeChild:
+    """One ``node`` for the whole module; it keeps no state between cases."""
+
+    def __init__(self, node: str) -> None:
+        self._node = node
+        self._next_id = 0
+        self._start()
+
+    def _start(self) -> None:
+        kwargs: dict[str, Any] = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        self._proc = subprocess.Popen(
+            [self._node, "-e", _DRIVER],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            **kwargs,
+        )
+        self._lines: queue.Queue[str] = queue.Queue()
+        stdout = self._proc.stdout
+        threading.Thread(target=lambda: [self._lines.put(x) for x in stdout], daemon=True).start()
+
+    def run(self, program: str) -> list[Any]:
+        # Lost-run ceiling: half the test's timeout (``default_timeout``), so a hung case
+        # fails here by name. A case takes ~0.03 s once node is warm on a dev host.
+        ceiling = default_timeout()
+        self._next_id += 1
+        req = {"id": self._next_id, "program": program, "timeout_ms": int(ceiling * 500)}
+        assert self._proc.stdin is not None
+        self._proc.stdin.write(json.dumps(req) + "\n")
+        self._proc.stdin.flush()
+        try:
+            reply = json.loads(self._lines.get(timeout=ceiling))
+        except queue.Empty:
+            self.close()
+            self._start()  # the next case gets a child with no stale reply queued
+            raise AssertionError(f"node gave no verdict within {ceiling}s") from None
+        assert reply["id"] == self._next_id, reply
+        assert reply["ok"], reply["err"]
+        return list(json.loads(reply["out"][-1]))
+
+    def close(self) -> None:
+        proc = self._proc
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=10)
+
+
+_CHILD: _NodeChild | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _node_child():
+    """Start the module's one ``node`` and always reap it."""
+    global _CHILD
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - CI builds the website, so node is present
+        yield
+        return
+    _CHILD = _NodeChild(node)
+    try:
+        yield
+    finally:
+        _CHILD.close()
+        _CHILD = None
+
+
 def _run(bootstrap: str, read: dict[str, Any], page_js: str) -> list[Any]:
     """Run *bootstrap* then *page_js* over *read*; return what the page recorded.
 
@@ -77,8 +188,7 @@ def _run(bootstrap: str, read: dict[str, Any], page_js: str) -> list[Any]:
     and it pushes onto ``__calls``, so the assertion is about what the PAGE observed
     rather than about the bootstrap's internals.
     """
-    node = shutil.which("node")
-    if node is None:  # pragma: no cover - CI builds the website, so node is present
+    if _CHILD is None:  # pragma: no cover - CI builds the website, so node is present
         pytest.skip("node is needed to execute the frame bootstrap")
     program = "\n".join(
         (
@@ -90,17 +200,7 @@ def _run(bootstrap: str, read: dict[str, Any], page_js: str) -> list[Any]:
             "console.log(JSON.stringify(globalThis.__calls));",
         )
     )
-    # On stdin, not `-e`: Windows caps a command line at 32767 characters.
-    done = subprocess.run(
-        [node, "--input-type=module"],
-        input=program,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-    )
-    assert done.returncode == 0, done.stderr
-    return list(json.loads(done.stdout.strip().splitlines()[-1]))
+    return _CHILD.run(program)
 
 
 def _read(**over: Any) -> dict[str, Any]:
@@ -210,6 +310,44 @@ class TestSubscribeOnEveryPush:
             "__push({ fields: { boards: 5 }, agentic: [], seq: 2, stale: false, missing: [] });",
         )
         assert calls == [2]
+
+    def test_a_subscriber_added_during_a_push_hears_that_push_once(self) -> None:
+        """Delivery walks a COPY of the subscriber list, so a callback that subscribes
+        mid-push does not also reach the newcomer from the same loop.
+
+        The newcomer already heard the push from its own first-load call. A field the
+        push names missing is told on every delivery (there is no "unmoved" check for
+        it), so a loop over the live list would tell the newcomer twice.
+        """
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            "globalThis.__pushing = false;"
+            "window.kirocrew.subscribe('owner', () => {"
+            "  if (!__pushing || globalThis.__added) return;"
+            "  globalThis.__added = true;"
+            "  window.kirocrew.subscribe('boards', (v, _n, meta) => __calls.push([v, meta.missing]));"
+            "});"
+            "__pushing = true;"
+            "__push({ fields: { owner: 'nyx', boards: 2 }, agentic: [], seq: 2, stale: false,"
+            "         missing: ['boards'] });",
+        )
+        assert calls == [[2, True]]
+
+    def test_a_non_string_name_registers_nothing(self) -> None:
+        """``subscribe`` with a name that is not a string is refused: no callback, and
+        the page does not count as one a refill reaches.
+
+        JavaScript reads ``fields[5]`` as ``fields['5']``, so without the type check a
+        numeric name would quietly bind to a field of that spelling.
+        """
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(fields={"boards": 2, "5": 1}),
+            "const off = window.kirocrew.subscribe(5, (v) => __calls.push(v));"
+            f"__calls.push(typeof off, window[{json.dumps(dashboard_frame._REFILL_FLAG)}] === true);",
+        )
+        assert calls == ["function", False]
 
     def test_a_push_from_another_frame_calls_nothing_back(self) -> None:
         """The sender check the refill already applies, asserted through the new path.
