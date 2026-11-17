@@ -218,12 +218,13 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _rollback_promoted_avatar _live_avatar_file _sniff_image_ext _image_body_complete
         api_kirocrew_agent_avatar_upload
         """.split()),
+    "catalog_bounds": ("_bounded_catalog",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "1d2f5b6b10210205011f445d98f0eee05d1d88a2a0cf74a0afbc53e5cb3555b8"
+_BASE_SHAPE_DIGEST = "8104e8403486603e47543845b8ae9231eee4e64ac1cc19722204ea1ec07190b0"
 
 #: Definitions that stay in the facade file. The seams every owner reads; the
 #: config schema route; the model and picker reads with the crew model-pin checks,
@@ -246,7 +247,6 @@ _FACADE_DEFS = (
     "_wrap_list_models_argv",
     "_scoped_default",
     "_CatalogUnavailable",
-    "_bounded_catalog",
     "_CatalogCache",
     "_fetch_kiro_catalog",
     "_shared_catalog_fetch",
