@@ -1855,6 +1855,15 @@ Spawn flow (`subagent_manager/admission/gate.py`), first matching rung wins:
    the channel seam returns one without importing `kiro_crew.subagent`.
 6. **Otherwise**: rejected with `spawn rejected: no approval mechanism configured`.
 
+When the parent session's Bot holds a `subagent` limit its upgrade move could not
+carry (`mate_held_rules.held_spawn_limits`, given the parent's recorded Bot and its
+live agent, or for a queued spawn the agent it ran at accept time,
+`_parent_live_agent`), rungs 1-4 do not apply: the spawn asks on rung 5, or is rejected on
+rung 6. Rung 5's prompt alone runs inside `mate_held_rules.held_call`, so the
+callback's own auto-approve shortcuts do not answer it; the run it starts is not
+marked. `spawn_async` and the queue pump read that answer off the loop and hand it
+to the gate as `_parent_held_spawn`; a synchronous caller's gate reads it itself.
+
 **Channel-side approval delivery.** The single host-wide
 `on_spawn_approval` callback (built in `slack/gateway_runtime/subagent_wiring.py`) consults a
 channel-neutral delivery seam (`messaging/spawn_approval_delivery.py`) FIRST,
