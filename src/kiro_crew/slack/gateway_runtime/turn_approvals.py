@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         redact_for_display,
+        redact_log_via_context,
         safety_override,
         sel,
     )
@@ -95,6 +96,7 @@ def _interactive_approval(
     raise_when_unreachable: bool = False,
     requester: str = "",
     on_host_decision: Callable[[str, str], None] | None = None,
+    follows_approval_mode: bool = False,
 ) -> ToolApprovalCallback:
     """Return an approval callback that races dashboard vs Slack DM.
 
@@ -123,9 +125,25 @@ def _interactive_approval(
     on the dashboard alone. *cause* is a ``DENY_CAUSE_*`` code when one names the
     host's reason (an expired window), ``""`` otherwise. A dashboard-only wait that
     is cancelled raises to such a caller instead of answering ``False``.
+
+    ``follows_approval_mode`` makes the source answer as a channel turn does under
+    the gateway's approval mode (the CLI ``--approval`` flag, else config
+    ``agent.approval_mode``): under ``auto`` a call reaching this callback, which the
+    tool gate did not deny, is approved like an ``auto_approve_sources`` one. A call
+    under a held Bot limit, a low-fidelity child request and a host whose policy
+    denies ``trust`` still go to the prompt. The gateway sets it only for an app
+    turn whose session runs one of that app's own agents. Resolved when the
+    callback is made; the mode takes effect at restart, as it does for every channel.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
+    if follows_approval_mode:
+        # The channel dispatchers' own resolver, so the two cannot drift.
+        from kiro_crew.slack.events_queue import _configured_approval_mode
+
+        mode_auto = _configured_approval_mode(self) == "auto"
+    else:
+        mode_auto = False
     # A job name is user-authored. Folded to one visible line first, so a line
     # break or control character cannot draw a forged line (a fake "Approved")
     # on the card; then redacted and escaped once, because Slack parses entity
@@ -140,6 +158,15 @@ def _interactive_approval(
         )[0]
     )
     requester_md = f"From {requester_safe}" if requester_safe else ""
+
+    def _mode_auto_permitted() -> bool:
+        # Asked per call, as a cron job's ``auto`` is: a policy that denies
+        # ``trust`` sends the call to the prompt instead.
+        if not mode_auto:
+            return False
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        return session_mode_permitted("trust")
 
     async def _approve(event: LLMEvent, parent_session_key: str = "") -> bool:
         request_id = str(event.request_id)
@@ -251,6 +278,22 @@ def _interactive_approval(
                 )
                 return _by_host(False)
             logger.info("Auto-approving tool %s from source %s", event.title, source)
+            return _by_host(True)
+
+        # A source that follows the gateway's ``auto`` approval mode (an app
+        # turn on its own agent), as a channel turn does. A held call (it set
+        # ``_child_grant_eligible`` False above) or a low-fidelity child request
+        # falls through to the prompt below.
+        if _child_grant_eligible and _mode_auto_permitted():
+            try:
+                sel().log_api_access(
+                    caller="config:approval_mode=auto",
+                    operation=f"{source}.approval_mode_auto_approve",
+                    outcome="ok",
+                    resources=redact_log_via_context(event.title or ""),
+                )
+            except Exception:
+                logger.warning("SEL audit failed for approval-mode auto-approve", exc_info=True)
             return _by_host(True)
 
         # CLI --approval flag override (composable test mode).
