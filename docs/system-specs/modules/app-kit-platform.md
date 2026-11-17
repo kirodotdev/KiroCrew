@@ -9712,6 +9712,25 @@ uninstall drop the chat's resume pointer, which the follow-up has never done. Th
 prefix rule above is what keeps another app off those chats. Its own test pins the declaration to the
 follow-up's key derivation, both review agents, the folder name and the memory mode.
 
+**Adopted onto its own repository.** The wheel pins Code Review Sage
+(`apps/adoption-pins.json`, § 33) at `KiroCrewCaptain/kirocrew-app-code-review-sage`
+with `minAppSdkLevel` 10, the level of the `chatLaunch` declaration above, so a host
+whose record is builtin-owned swaps it in place onto that tree at a restart, enabled or
+not, keeping `data/` (its runs, results, reports, learnings, repositories and settings),
+`.app_secret`, the approved grants and `enabled`; the rail keeps `/code-review-sage` and
+the `ScanSearch` glyph, and the wheel copy's `version` is the pinned one (D12). The
+repository's `app.json` declares the same `permissions` (its own namespace,
+`/api/source/pull-request`, `network`, `storage` and this `chatLaunch`) and `skills` as
+the wheel copy, so E9 holds nothing back. Its review panel sends the same create through
+`useChatLauncher().createChat`, feature-detected on the launcher, with the same key,
+agent, title, folder and memory mode, and so with the `embed_app` every app launch
+carries; a follow-up the built-in opened is the person's chat under the same prefix and
+reopens through the same create. On a host without `createChat` the panel only
+continues a follow-up that already exists. The tree ships `.kiro/` at its root, because a
+reviewed record keeps the review worker's `.kiro/settings/` there, so the swap replaces
+it as an update does. A fix to the app lands in that repository first; a change to the
+wheel copy needs its `App repo:` line.
+
 Writers: `apps/chat_launch.py`, `apps/manifest_sections.py`,
 `apps/builtin_adoption_checks.py`, `apps/permissions.py`, `apps/official_catalog.py`,
 `apps/app_sdk_level.py`, `dashboard/app_chat_launch.py`,
