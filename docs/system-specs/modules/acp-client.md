@@ -1772,19 +1772,23 @@ refusal with cause `DENY_CAUSE_BATCH_READ_WRITE` rather than a bare
 turn's refusal recovery carries it. A consumer that writes its OWN audit row when
 `approve_tool` returns `False` (the dashboard chat path in
 `dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, the Slack
-ladder in `slack/handler_runtime/permission_ladder.py`) reads the kept reason
+ladder in `slack/handler_runtime/permission_ladder.py`, and the LLM-helpers
+transport in `llm_helpers_parts/tool_approval.py`) reads the kept reason
 back and maps it through `batch_guard.refusal_outcome`, so that row records
 `rejected_batch_guard` (with `mechanism=batch_write_guard`) when the guard
 refused and keeps `rejected_transport_floor` only when the security floor did.
+For the LLM-helpers transport the mechanism also reaches `stream_and_collect`'s
+`on_tool_gate`, so a cron run's verdict counts a guard refusal as unresolved,
+never as a security block: a call the guard deferred and the model retried does
+not produce the cron's "blocked by the security gate" line.
 `batch_guard.take_client_refusal(client, request_id)` is the one place the kept
 reason is asked of a client — the audit consumers and `tool_permission` all call
 it rather than repeat the getattr/take-once/string-check steps — and it takes the
-reason once, so each refused request reads it at exactly one site. Only the
-dashboard and Slack rows are routed this way. Every OTHER consumer that writes its
+reason once, so each refused request reads it at exactly one site. Only these
+rows are routed this way. Every OTHER consumer that writes its
 own row when `approve_tool` returns `False` still labels a batch-guard refusal
 `rejected_transport_floor`, the same as a security-floor one: the CLI
-(`cli_chat.py`), the LLM-helpers transport (`llm_helpers_parts/tool_approval.py`),
-the eval runner (`eval/runner.py`), the dashboard hooks handler
+(`cli_chat.py`), the eval runner (`eval/runner.py`), the dashboard hooks handler
 (`dashboard/handlers/hooks.py`), the channel and messaging transports
 (`channel.py`, `messaging/driver.py`) and the task planner (`task_planner.py`).
 The guard's own `source=batch_guard` row for the same `request_id` is still the
