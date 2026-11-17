@@ -1282,7 +1282,15 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # Shallow copies, so the off-loop render below reads a frozen entry while
     # the loop keeps editing the live one; the view helper does the redaction.
     # The two origin stamps ride along because the view reads them to decide
-    # whether an entry is shown as typed (`queue_entry_is_user_origin`).
+    # whether an entry is shown as typed (`queue_entry_is_user_origin`), and the
+    # three restore marks because it reads them for `restored` and `held`
+    # (`is_held_queue_entry`).
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_BOOT_ACCEPTED_KEY,
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+
     queue_snapshot = [
         {
             "id": q["id"],
@@ -1291,6 +1299,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             "meta": dict(q.get("meta") or {}),
             "_directive_user_origin": q.get("_directive_user_origin", False),
             "_directive_channel_origin": q.get("_directive_channel_origin", False),
+            RESTORED_QUEUE_KEY: q.get(RESTORED_QUEUE_KEY, False),
+            RESTORED_SEND_CHOSEN_KEY: q.get(RESTORED_SEND_CHOSEN_KEY, False),
+            RESTORED_BOOT_ACCEPTED_KEY: q.get(RESTORED_BOOT_ACCEPTED_KEY, False),
             **({"edit_rev": q["edit_rev"]} if isinstance(q.get("edit_rev"), int) else {}),
         }
         for q in slot._queue
