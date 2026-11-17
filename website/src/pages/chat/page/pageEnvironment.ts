@@ -174,7 +174,7 @@ export function useChatPageEnvironment({
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   // Unified view: unread keys for all chat-like slots.
   const surfaceUnreadSlots = useMemo(() => surfaceUnreadKeys(unreadSlots, personSlots), [unreadSlots, personSlots])
-  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  const catalogRefreshTrigger = useAppSelector(s => s.dashboard.catalogRefreshTrigger)
   const connected = useConnected()
   // Create-in-flight, so the flyout's New button can go inert exactly like the
   // sidebar's does instead of accepting a second click.
@@ -256,7 +256,7 @@ export function useChatPageEnvironment({
   const sidePanelAlwaysOpenKnown = appPanelCfg !== undefined
   return {
     dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
-    mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
+    mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, catalogRefreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
     autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary,
   }

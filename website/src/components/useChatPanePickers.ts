@@ -52,7 +52,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
   // in single chat) lands here too; a per-hook refresh would leave sibling pickers stale.
-  const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.refreshTrigger ?? 0)
+  const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.catalogRefreshTrigger ?? 0)
   // This pane takes no project prop, so read THIS slot's project from the store:
   // it scopes which project-local agents exist, so a project change must refetch.
   const paneProject = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey)?.project || undefined)

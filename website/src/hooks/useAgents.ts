@@ -74,6 +74,29 @@ const NO_CHOICES: KiroCrewAgent[] = []
 /** The workspace a template pick runs on until the config names another. */
 const DEFAULT_WORKSPACE = 'default'
 
+/** The catalog reads started in this task, by session key. Every pane's picker and the
+ *  page's own roster read the catalog on one refresh, each from its own effect, and
+ *  effects of one commit run in one task: a second reader of the same chat in that
+ *  task takes the first one's answer instead of sending the same request again. A read
+ *  started in a later task is a new read, so no change is ever answered from before it. */
+const readsThisTask = new Map<string, ReturnType<typeof api.agentCatalog>>()
+
+/** Test seam: forget the reads of the task a test ran in. */
+export function __resetCatalogReadsForTests(): void {
+  readsThisTask.clear()
+}
+
+function readCatalog(sessionKey?: string): ReturnType<typeof api.agentCatalog> {
+  const key = sessionKey ?? ''
+  let read = readsThisTask.get(key)
+  if (!read) {
+    read = api.agentCatalog(sessionKey)
+    readsThisTask.set(key, read)
+    setTimeout(() => readsThisTask.delete(key), 0)
+  }
+  return read
+}
+
 /** `next` unless it is structurally equal to `prev`, in which case `prev`. */
 function keepIfEqual(prev: KiroCrewAgent[], next: KiroCrewAgent[]): KiroCrewAgent[] {
   return jsonEqual(prev, next) ? prev : next
@@ -133,6 +156,11 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // a scope boundary.
   const lastKey = useRef<string | undefined>(undefined)
   const lastProject = useRef<string | undefined>(undefined)
+  // What the last effect run read on, so a run caused by the refresh counter alone can
+  // be told from a scope switch or a `reload`, and whether any read has landed yet.
+  const lastTrigger = useRef(refreshTrigger)
+  const lastReloadTick = useRef(reloadTick)
+  const loadedOnce = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -143,15 +171,23 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     // to avoid flicker. The scope is (slot, project) because re-pointing one
     // slot at another project makes the old project's agents just as stale as a
     // slot switch does.
-    if (lastKey.current !== sessionKey || lastProject.current !== projectDir) {
+    const scopeChanged = lastKey.current !== sessionKey || lastProject.current !== projectDir
+    // A refresh frame re-reads the catalog; nobody sees the answer while the tab is
+    // hidden, so the read waits for the tab to be shown (below). A scope switch, a
+    // `reload` and the first read of this tab never wait.
+    const counterOnly = !scopeChanged && refreshTrigger !== lastTrigger.current && reloadTick === lastReloadTick.current
+    lastTrigger.current = refreshTrigger
+    lastReloadTick.current = reloadTick
+    if (scopeChanged) {
       lastKey.current = sessionKey
       lastProject.current = projectDir
       setChoices(NO_CHOICES)
       // The previous scope's verdict says nothing about this one.
       setError(false)
     }
-    api.agentCatalog(sessionKey).then(d => {
+    const load = () => readCatalog(sessionKey).then(d => {
       if (cancelled) return
+      loadedOnce.current = true
       // Stamped here, once, so every picker that renders these rows shows the
       // same "Kiro Agent only" pill: the catalog was asked for THIS chat, so its
       // `session_backend` is the harness this chat runs.
@@ -181,6 +217,16 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // resolves visibly instead of leaving the caller pinned in "trying".
       setReloading(false)
     })
+    if (counterOnly && loadedOnce.current && typeof document !== 'undefined' && document.hidden) {
+      const onShown = () => {
+        if (document.hidden) return
+        document.removeEventListener('visibilitychange', onShown)
+        void load()
+      }
+      document.addEventListener('visibilitychange', onShown)
+      return () => { cancelled = true; document.removeEventListener('visibilitychange', onShown) }
+    }
+    void load()
     return () => { cancelled = true }
   }, [refreshTrigger, sessionKey, projectDir, reloadTick])
 

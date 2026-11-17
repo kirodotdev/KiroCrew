@@ -106,6 +106,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RESERVED_DEFAULT_MEMBER,
         _absence_is_confirmed,
         _as_epoch,
+        _build_roster,
         _live_slot_has_person_rows,
         _live_slot_has_rows,
         _logged_slugs,
@@ -169,8 +170,15 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.chat_utils import (  # noqa: F401
         effective_session_key,
     )
+    from kiro_crew.dashboard.conditional_get import (  # noqa: F401
+        conditional_json_response,
+    )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         require_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.handlers.crew_board_flight import (  # noqa: F401
+        BoardAnswer,
+        shared_board,
     )
     from kiro_crew.dashboard.slot_approval_seed import (  # noqa: F401
         seed_slot_approval,

@@ -24,7 +24,9 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import load_config_with_content_stamp
 from kiro_crew.dashboard import members_roster_goals
+from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
 from kiro_crew.dashboard.handlers.members_access import (
     _audit_owner_read,
     _member_name_is_addressable,
@@ -354,6 +356,23 @@ async def api_members(request: web.Request) -> web.Response:
         return owner_denied
     _audit_owner_read(request, "members.list.read")
     state: DashboardState | None = request.app.get("state")
+    # Single flight (see crew_board_flight): reads that arrive together share one build
+    # that started after each of them arrived; nothing is kept afterwards, so a read
+    # still sees every change made before it, `running` included. Every caller that
+    # reaches here is an owner and gets the same rows. The owner gate and the audit
+    # line above run once per request, shared build or not.
+    answer = await shared_board("members.roster", repr(id(state)), lambda: _build_roster(state))
+    if answer.status != 200:
+        return web.Response(body=answer.body, status=answer.status, content_type="application/json")
+    return await conditional_json_response(request, answer.body)
+
+
+async def _build_roster(state: DashboardState | None) -> BoardAnswer:
+    """One build of the roster answer.
+
+    Takes the gateway state, never the request: the build is shared and outlives the
+    caller that started it.
+    """
     # Loaded WITH the digest of the bytes it was parsed from. Every config-derived row
     # field below comes from this one load, and the per-row reconcile that writes them
     # into the member log runs several awaited reads later, so a save landing in
@@ -880,7 +899,9 @@ async def api_members(request: web.Request) -> web.Response:
     # scheduled run), as a messages app orders its conversations. Being listed
     # is `has_dm_message`: the thread holds a message.
 
-    return web.json_response({"members": rows})
+    return BoardAnswer(
+        200, bytes(web.json_response({"members": rows}).body or b"")  # type: ignore[arg-type]
+    )
 
 
 def _stamp_welcome_claimed(rows: list[dict]) -> None:

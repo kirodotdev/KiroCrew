@@ -147,7 +147,7 @@ const activateHandoffSlot = (dispatch: AppDispatch, key: string) => dispatch(swi
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const {
     dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
-    mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
+    mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, catalogRefreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
     autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary,
   } = useChatPageEnvironment({
@@ -222,7 +222,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     agentDropdown, setAgentDropdown, agentFilter, setAgentFilter, agentDropdownRef, agentInputRef, filteredAgents,
     effectiveModels, ownModelsQuery, ownModelsFailed,
   } = useSessionRosters({
-    activeSlot, activeSlotProject, refreshTrigger, dispatch,
+    activeSlot, activeSlotProject, catalogRefreshTrigger, dispatch,
     modelsBackend: selectionCapabilitiesQ.data?.models_backend,
   })
   const {
