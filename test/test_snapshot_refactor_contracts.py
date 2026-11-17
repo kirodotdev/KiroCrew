@@ -319,6 +319,8 @@ def test_the_restore_command_line_is_unchanged() -> None:
         ),
         (("--components",), "components", None, None, None, None, None, "_StoreAction"),
         (("--list-components",), "list_components", 0, True, False, None, None, "_StoreTrueAction"),
+        (("--include-crons",), "include_crons", 0, True, False, None, None, "_StoreTrueAction"),
+        (("--include-skills",), "include_skills", 0, True, False, None, None, "_StoreTrueAction"),
         (
             ("--allow-unpinned-staging",),
             "allow_unpinned",

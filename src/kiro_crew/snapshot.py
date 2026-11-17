@@ -919,16 +919,25 @@ def _is_gateway_running() -> bool:
 
 
 def _hold_back_executables(
-    snap: Path, mc: Path, components: list[str] | None, mode: str
+    snap: Path,
+    mc: Path,
+    components: list[str] | None,
+    mode: str,
+    *,
+    include_crons: bool = False,
+    include_skills: bool = False,
+    allow_unpinned: bool = False,
 ) -> dict[str, list[str]]:
     """Switch off, in the staged bundle, every cron and hook that would run a command.
 
-    Uses the dashboard import's own helpers, so both ways in apply one rule: a
-    command or script cron is restored paused (a command failing the ``cron_add``
-    vet is dropped), and a script hook is restored disabled. Message-only crons and
-    skill-only hooks run nothing and are left as they are. Returns the names, for
-    :func:`_report_held_back`, keyed ``dropped`` / ``paused`` / ``hooks``, plus
-    ``kept_crons``: the names a merge's destination already has.
+    Uses the dashboard import's own helpers, so both ways in apply one rule: every
+    cron is restored paused with the fields that widen it reset (a command failing the
+    ``cron_add`` vet is dropped), unless ``include_crons`` installs them as written,
+    when only a command or script cron is paused; and a script hook is restored
+    disabled. Skill-only hooks run nothing and are left as they are. On Replace, a live
+    skills folder with content is kept unless ``include_skills``. Returns the names, for
+    :func:`_report_held_back`, keyed ``dropped`` / ``paused`` / ``hooks`` / ``skills``,
+    plus ``kept_crons``: the names a merge's destination already has.
     """
     # Imported here: the portability family imports this module at load time.
     from kiro_crew import portability
@@ -936,12 +945,21 @@ def _hold_back_executables(
     _disable_imported_script_hooks = portability._disable_imported_script_hooks
     _sanitize_imported_crons = portability._sanitize_imported_crons
 
-    held: dict[str, list[str]] = {"dropped": [], "paused": [], "hooks": [], "kept_crons": []}
+    held: dict[str, list[str]] = {
+        "dropped": [],
+        "paused": [],
+        "hooks": [],
+        "kept_crons": [],
+        "skills": [],
+    }
+    if mode == "replace" and _want(components, "skills") and not include_skills:
+        if portability._hold_back_foreign_skills(snap, mc, allow_unpinned=allow_unpinned):
+            held["skills"] = ["skills"]
     if _want(components, "crons"):
         # The restore judges the store's shape itself (merge skips an unusable one,
         # replace validates it), so only the vet and the pause are applied here.
         held["dropped"], held["paused"] = _sanitize_imported_crons(
-            snap / "crons.json", drop_malformed=False
+            snap / "crons.json", drop_malformed=False, hold_all=not include_crons
         )
         if mode == "merge":
             # A merge skips a bundle job whose name the home already has, so those
@@ -974,7 +992,7 @@ def _cron_names(path: Path) -> set[str]:
     return {j["name"] for j in jobs if isinstance(j, dict) and isinstance(j.get("name"), str)}
 
 
-def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
+def _report_held_back(held: dict[str, list[str]], mc: Path, *, crons_picked: bool = False) -> None:
     """Name what the restore switched off or dropped, and how to turn it back on.
 
     A paused job is named only when it is in the live store after the restore and
@@ -992,10 +1010,24 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
         for name in held["dropped"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
     if held["paused"]:
-        print("⏸  Restored PAUSED: these cron jobs run a command or script:")
+        if crons_picked:
+            print("⏸  Restored PAUSED: these cron jobs run a command or script:")
+        else:
+            print(
+                "Restored PAUSED: these cron jobs do not come from this install. Their "
+                "approval mode, project folder, environment, channel, model and agent "
+                "order were reset:"
+            )
         for name in held["paused"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
         print("   Check each one, then resume it on the dashboard's Schedules page.")
+        if not crons_picked:
+            print("   To install them as written, restore with --include-crons.")
+    if held.get("skills"):
+        print(
+            "Kept your live skills: the bundle's skills are instructions that "
+            "do not come from this install. To use them instead, restore with --include-skills."
+        )
     if held["hooks"]:
         print("⏸  Restored DISABLED: these hooks run a shell command:")
         for name in held["hooks"]:
@@ -1065,6 +1097,8 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         )
         p.add_argument("--components")
         p.add_argument("--list-components", action="store_true")
+        p.add_argument("--include-crons", action="store_true")
+        p.add_argument("--include-skills", action="store_true")
         p.add_argument(
             "--allow-unpinned-staging",
             action="store_true",
@@ -1424,7 +1458,15 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # import applies. Done on the staged copy, after the source checks above have
         # judged the files as the archive carried them, and before either mode reads it.
         try:
-            held_back = _hold_back_executables(snap, mc, components, mode)
+            held_back = _hold_back_executables(
+                snap,
+                mc,
+                components,
+                mode,
+                include_crons=bool(getattr(args, "include_crons", False)),
+                include_skills=bool(getattr(args, "include_skills", False)),
+                allow_unpinned=allow_unpinned,
+            )
         except OSError as exc:
             # Only the staged copy was touched: live state is as it was.
             _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
@@ -1556,6 +1598,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     comp_str = ",".join(components) if components else "all"
     _audit("state_restored", f"mode={mode} components={comp_str} from={snap_path.name}")
 
-    _report_held_back(held_back, mc)
+    _report_held_back(held_back, mc, crons_picked=bool(getattr(args, "include_crons", False)))
     print("\n⚠️  Restart kirocrew gateway to pick up changes: kirocrew restart")
     return 0

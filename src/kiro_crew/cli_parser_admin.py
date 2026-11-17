@@ -119,6 +119,24 @@ def register_restore_parser(sub: _Commands) -> None:
         "--force", action="store_true", help="Restore even if gateway is running"
     )
     rest_parser.add_argument(
+        "--include-crons",
+        action="store_true",
+        help=(
+            "Install the bundle's cron jobs as written; a job that runs a command or script "
+            "is still restored paused. Without this every job is restored paused and "
+            "loses its approval mode, project folder, environment, channel, model and "
+            "agent order."
+        ),
+    )
+    rest_parser.add_argument(
+        "--include-skills",
+        action="store_true",
+        help=(
+            "In replace mode, install the bundle's skills over this install's live skills. "
+            "Without this a live skills folder is kept."
+        ),
+    )
+    rest_parser.add_argument(
         "--allow-unpinned-staging",
         action="store_true",
         dest="allow_unpinned",

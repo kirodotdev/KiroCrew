@@ -319,11 +319,19 @@ describe('PortabilityTab restoring browser settings', () => {
   })
 
   it('names the schedules restored paused and says the live skills were kept', async () => {
-    await importWith({ items: ['crons (merged)'], paused_crons: ['nightly', 'weekly'], skills_kept: true })
+    await importWith({ items: ['crons (merged)'], paused_crons: ['nightly', 'weekly'], paused_crons_reset: true, skills_kept: true })
 
     const lines = screen.getAllByTestId('portability-import-warning').map(line => line.textContent ?? '')
-    expect(lines.some(line => line.includes('nightly') && line.includes('weekly') && line.includes('paused'))).toBe(true)
+    expect(lines.some(line => line.includes('nightly') && line.includes('weekly') && line.includes('paused') && line.includes('reset'))).toBe(true)
     expect(lines.some(line => line.includes('kept its own skills'))).toBe(true)
+  })
+
+  it('does not claim a reset for schedules paused because they run a command', async () => {
+    await importWith({ items: ['crons (merged)'], paused_crons: ['nightly'] })
+
+    const lines = screen.getAllByTestId('portability-import-warning').map(line => line.textContent ?? '')
+    expect(lines.some(line => line.includes('nightly') && line.includes('command or script'))).toBe(true)
+    expect(lines.some(line => line.includes('reset'))).toBe(false)
   })
 
   it('shows a carried result once: a later mount starts empty', () => {
