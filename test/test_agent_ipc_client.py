@@ -396,8 +396,11 @@ def test_the_cron_server_redeems_a_pickup_at_startup(monkeypatch):
         agent_ipc_client, "redeem_at_startup", lambda port_fn: called.append(port_fn)
     )
     monkeypatch.setattr(mcp_cron, "run_mcp_stdio_loop", lambda *a, **k: None)
+    monkeypatch.setattr(_gateway_part, "_api_port", lambda: 48123)
     mcp_cron.run_mcp_server()
-    assert called == [_gateway_part._api_port]
+    assert len(called) == 1
+    # The port is resolved lazily, through the helper mcp_core dispatches with.
+    assert called[0]() == 48123
 
 
 def test_every_server_the_allowlist_names_redeems_at_startup():
@@ -410,10 +413,13 @@ def test_every_server_the_allowlist_names_redeems_at_startup():
 
     for name in sorted(ipc_pickup.PICKUP_SERVERS):
         module = importlib.import_module(mcp_discovery._MANAGED_SERVER_TOOL_MODULES[name])
+        # The redemption is the server's before-first-request hook, which the early
+        # answer path and the serve entry both run.
+        assert module.SERVER.before_first_request is not None, name
         entries = [n for n in ("run_mcp_server", "run_mcp_core_server") if hasattr(module, n)]
         assert len(entries) == 1, (name, entries)
         source = inspect.getsource(getattr(module, entries[0]))
-        assert "redeem_at_startup(" in source, name
+        assert "SERVER.before_first_request()" in source, name
 
 
 def test_no_capability_means_no_session_query(monkeypatch):

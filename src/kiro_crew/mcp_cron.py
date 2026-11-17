@@ -1452,15 +1452,10 @@ ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 def run_mcp_server() -> None:
     """Run MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
-    # Before the first request: an enforced harness's element carries a one-time
-    # pickup in place of the secret it withholds (agent_ipc_client). Every cron
-    # tool call with a resolvable identity is dispatched through mcp_core's
-    # ``_post`` request helper, so this server redeems on the gateway port that
-    # helper resolves.
-    from kiro_crew.agent_ipc_client import redeem_at_startup
-    from kiro_crew.mcp_core_parts import gateway as _gateway_part
-
-    redeem_at_startup(_gateway_part._api_port)
+    # Before the first request (a no-op when the server already answered its first
+    # two before importing this module): see ``mcp_cron_tool_list._redeem_pickup``.
+    if SERVER.before_first_request is not None:
+        SERVER.before_first_request()
     run_mcp_stdio_loop(
         SERVER.name, SERVER.version, _list_tools, _call_tool, **SERVER.loop_options()
     )
@@ -1563,6 +1558,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_cron_tool_list import (  # noqa: F401
         _ALERT_AFTER_DESCRIPTION,
         _AUTO_PAUSE_AFTER_DESCRIPTION,
+        _redeem_pickup,
     )
     from kiro_crew.mcp_cron_vet import (  # noqa: F401
         _CRON_FOLDER_ID_RE,
