@@ -1993,6 +1993,8 @@ measures, never above.
   on its own base, and both landing reds `main` on every platform: #36640 planted the
   example key and asserted it gone after #29423 had made the redactor keep it, and
   #37423 fixed the four test files by switching them to `github_classic()` (why: #37421).
+  `test/test_redaction_literal_ratchet.py` refuses a new `<AWS key ID literal> not in`
+  or `assertNotIn` site; its `_BASELINE` lists the older ones and only shrinks.
   Asserting an identifier SURVIVES is the case where an `AKIA…` literal belongs.
 
 - Tests SHOULD be fast (< 1s each)
