@@ -340,8 +340,14 @@ async def decompose(
         else:
             full_prompt = prompt
 
+        # Not a person's turn: a person-only directive is refused and audited;
+        # the JSON text is left as it is, so the refusal lives in its SEL row.
+        from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+        _refuse_person_only = person_only_directive_refuser(session_key, [])
         text = ""
         async for event in client.stream(full_prompt):
+            await _refuse_person_only(event)
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:
