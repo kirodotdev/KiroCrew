@@ -1016,6 +1016,16 @@ custom-rules:
         `test_boot_smoke.py`'s `_KNOWN_SECOND_BOOT_CHANGES` with its reason.
         The second-boot witness sees it only when the job lands late, so the
         PR that adds it usually passes and later PRs go red.
+      - A call that forwards its caller's own parameters by hand (`x=x`, usually a
+        re-entry such as `load_session(self, ..., channel_id=channel_id)`) and
+        leaves out one the callee also accepts. A keyword added to the callee later
+        is then dropped on that path; two green PRs shipped exactly this
+        (#37955 + #36872, fixed in #38108; `member_context` in #38105). When a diff
+        adds a parameter to a function, check every hand-spelled forwarding call
+        to it; when a diff adds such a call, expect every shared keyword passed or
+        a comment saying why not. `test/test_forwarding_calls_forward_every_keyword.py`
+        enforces the common shape; a new row in its `_ALLOWED_DROPS` needs a reason
+        that is true of the code.
 
       This rule is maintained by the pattern-harvest loop (fix PRs propose
       candidates in their "Pattern harvest" section; accepted ones land
