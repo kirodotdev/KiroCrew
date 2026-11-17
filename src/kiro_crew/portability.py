@@ -688,7 +688,8 @@ def apply_import_zip(
     Args:
         zip_path: Path to validated zip file.
         mode: "merge" (default, non-destructive) or "replace" (overwrites). Merge
-            never overwrites memory, crons, workspace files or skills, and installs
+            never overwrites memory, crons, workspace files or skills, holds back every
+            skill the archive carries (named in a ``skills (skipped: ...)`` item), and installs
             an archive settings document only where this install has none -- never
             the ``config.local.json`` overlay -- naming each it kept in
             ``settings_kept`` (see `_merge_settings`). Replace restores all four.
@@ -1058,17 +1059,23 @@ def apply_import_zip(
                     )
 
             if (snap / "skills").is_dir():
-                (mc / "skills").mkdir(parents=True, exist_ok=True)
-                # Skip skills/auto/ — those must go through SkillsLoader APIs
-                for item in (snap / "skills").iterdir():
-                    if item.name == "auto":
-                        continue
-                    target = mc / "skills" / item.name
-                    if item.is_dir() and not target.exists():
-                        shutil.copytree(str(item), str(target))
-                    elif item.is_file() and not target.exists():
-                        shutil.copy2(str(item), str(target))
-                summary["items"].append("skills (merged, auto/ skipped)")
+                # A skill carries instructions and scripts an agent runs, and a Merge
+                # has no pick for them: hold back every one this install lacks and
+                # name them. skills/auto/ goes through SkillsLoader APIs, never here.
+                # shortcut: all-or-nothing hold, no per-skill pick; add one when the
+                # import preview gets a skills pick.
+                held = sorted(
+                    item.name
+                    for item in (snap / "skills").iterdir()
+                    if item.name != "auto" and not (mc / "skills" / item.name).exists()
+                )
+                if held:
+                    shown = ", ".join(held[:20])
+                    if len(held) > 20:
+                        shown += f" +{len(held) - 20} more"
+                        summary["skills_held_more"] = len(held) - 20
+                    summary["skills_held"] = held[:20]
+                    summary["items"].append(f"skills (skipped: held back, not installed: {shown})")
 
         # Both modes, and add-only in both: Replace restores the components it
         # names, and chats are not one of them, so an archive -- with chats or

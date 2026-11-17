@@ -17474,6 +17474,7 @@
         "import_templates_missing": "Einige Crews nutzen eine Agent-Vorlage, die es auf diesem Rechner nicht gibt (Crew → Vorlage): {{crews}}. Kopiere die fehlenden Vorlagen nach ~/.kiro/agents, bevor du diese Crews nutzt.",
         "import_items_refused": "Einige Elemente konnten nicht importiert werden und blieben unverändert: {{names}}.",
         "import_settings_kept": "Diese Installation hat ihre eigenen {{files}} behalten. Um stattdessen die aus dem Archiv zu verwenden, stelle neben „Datei auswählen“ „Zusammenführen“ auf „Ersetzen“ um und importiere erneut. „Ersetzen“ sichert diese Installation zuerst und überschreibt dann ihre Einstellungen mit denen aus dem Archiv.",
+        "import_skills_held": "Nicht installierte Skills: {{names}}. „Zusammenführen“ installiert nie die Skills eines Archivs. „Ersetzen“ würde sie installieren, sichert aber zuerst diese Installation und tauscht dann die gesamte Installation (Gedächtnis, Crons, Arbeitsbereich und Skills) gegen die des Archivs aus.",
         "import_reloading_display_settings": "Import abgeschlossen – die Seite wird neu geladen, um deine Anzeigeeinstellungen zu übernehmen…",
         "import_complete_restart_gateway_one": "Import abgeschlossen ({{count}} Element). Um alle Änderungen zu übernehmen, starte das Gateway neu: Einstellungen → Über → Gateway neu starten.",
         "import_complete_restart_gateway_other": "Import abgeschlossen ({{count}} Elemente). Um alle Änderungen zu übernehmen, starte das Gateway neu: Einstellungen → Über → Gateway neu starten.",

@@ -17021,6 +17021,7 @@
         "import_templates_missing": "部分小队使用了这台机器上没有的 Agent 模板（小队 → 模板）：{{crews}}。使用这些小队前，请先把缺少的模板复制到 ~/.kiro/agents。",
         "import_items_refused": "部分项目无法导入，已保持不变：{{names}}。",
         "import_settings_kept": "此安装保留了自己的{{files}}。如需改用归档中的，请把“选择文件”旁的“合并”改为“替换”，然后重新导入。“替换”会先备份此安装，再用归档中的设置覆盖它的设置。",
+        "import_skills_held": "未安装的技能：{{names}}。“合并”从不安装归档中的技能。“替换”会安装它们，但会先备份，再把此安装的全部内容（记忆、定时任务、工作区和技能）换成归档中的。",
         "import_reloading_display_settings": "导入完成——正在重新加载以应用你的显示设置…",
         "import_complete_restart_gateway_other": "导入完成（{{count}} 项）。要应用全部更改，请重启网关：设置 → 关于 → 重启网关。",
         "settings_kept_name_config": "智能体和网关设置",

@@ -8458,6 +8458,7 @@
         "import_templates_missing": "Some crews use an agent template this machine doesn't have (crew → template): {{crews}}. Copy the missing templates into ~/.kiro/agents before you use these crews.",
         "import_items_refused": "Some items could not be imported and were left unchanged: {{names}}.",
         "import_settings_kept": "This install kept its own {{files}}. To use the archive's instead, change Merge to Replace next to Choose file, then import again. Replace backs up this install first, then overwrites its settings with the archive's.",
+        "import_skills_held": "Skills not installed: {{names}}. A Merge never installs an archive's skills. Replace would install them, but after a backup it swaps this whole install (memory, crons, workspace and skills) for the archive's.",
         "import_reloading_display_settings": "Import complete — reloading to apply your display settings…",
         "import_complete_restart_gateway_one": "Import complete ({{count}} item). To apply every change, restart the gateway: Settings → About → Restart gateway.",
         "import_complete_restart_gateway_other": "Import complete ({{count}} items). To apply every change, restart the gateway: Settings → About → Restart gateway.",

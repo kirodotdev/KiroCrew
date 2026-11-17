@@ -243,9 +243,10 @@ export function refusedItems(raw: unknown): { names: string[]; more: number } {
  * exists)"), a settings file a Merge left as this install's ("(kept this
  * install's; ...)", "memory_stores/<x> (kept the existing store; ...)"), the
  * overlay a Merge never installs ("config.local (not installed: ...)"), and an
- * archive copy with no storable entry ("ui-prefs (nothing to restore...)").
- * Anchored to the opening paren so "skills (merged, auto/ skipped)" -- an item
- * that WAS applied -- still counts.
+ * archive copy with no storable entry ("ui-prefs (nothing to restore...)"), and
+ * the skills a Merge held back ("skills (skipped: held back, not installed: ...)").
+ * Anchored to the opening paren so an item that WAS applied but mentions a skip
+ * inside its note still counts.
  */
 const NOT_APPLIED_ITEM = /\((?:skipped\b|kept\b|not installed\b|nothing to restore\b)/i
 
@@ -487,6 +488,12 @@ export default function PortabilityTab() {
         if (keptFiles.length) {
           warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: fmtList(keptFiles.map(settingsFileLabel)) }))
         }
+        // A Merge installs none of the archive's skills; say which it held back.
+        const heldSkills = distinctNames(summary.skills_held)
+        if (heldSkills.length) {
+          const heldMore = summaryCount(summary.skills_held_more) ?? 0
+          warnings.push(i18nT('pages.overview.portabilityTab.import_skills_held', { names: joinWithMore(heldSkills, heldMore) }))
+        }
         const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
         const chats = [...templateLines, ...chatImportLines(summary)]
         setImportWarnings(warnings)
@@ -722,7 +729,16 @@ export default function PortabilityTab() {
                     : `${i18nT('pages.overview.portabilityTab.workspace_files')} ${preview.contents.workspace_files}`}
               </div>
             )}
-            {preview.contents.skill_count != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.skills')} {preview.contents.skill_count}{skipped}</div>}
+            {preview.contents.skill_count != null && (
+              // A Merge never installs an archive's skills, so the row is marked
+              // not imported there, as memory-only marks every row outside memory.
+              <div className={memoryImport || effectiveMode === 'merge' ? 'text-muted' : undefined}>
+                {i18nT('pages.overview.portabilityTab.skills')} {preview.contents.skill_count}
+                {skipped ?? (effectiveMode === 'merge'
+                  ? <span data-testid="portability-preview-skills-held" className="text-muted"> {i18nT('pages.overview.portabilityTab.archive_item_skipped')}</span>
+                  : null)}
+              </div>
+            )}
             {preview.contents.plan_memory_files != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.plan_memory_files')} {preview.contents.plan_memory_files}{skipped}</div>}
             {preview.contents.session_count != null
               ? <div className={outside}>{i18nT('pages.overview.portabilityTab.chats_count', { chats: preview.contents.session_count })}{skipped}</div>
