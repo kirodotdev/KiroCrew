@@ -6821,7 +6821,7 @@ continuations -- so each arm re-reads for itself.
 |---|---|---|
 | L1 gateway-capacity (CONTINUATION, `_turn_ending_chain`) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | the counted `_infra_retries`; the ladder run is `forget`-ed, not recorded as recovered |
 | same-model transient 5xx (VERBATIM REPLAY) | suppress, `_stop_pressed()` **only** | all four per-turn budgets (`_transient_5xx_retries`, `_infra_retries`, `_fallback_candidate_idx`, `_fallback_walked`), byte-identical to the throttle-exhaustion drop arm |
-| post-token one-shot (CONTINUATION) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | nothing: `_posttoken_retry_used` is consumed BELOW the wait, so a dropped retry never spends the allowance |
+| post-token one-shot (CONTINUATION) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | nothing: `_posttoken_retry_used` is consumed BELOW the wait, so a dropped retry never spends the allowance; when the continue was a fallback candidate's (the walk moved the session after the one continue hit a capacity or throttle error), the walk state (`_fallback_candidate_idx`, `_fallback_walked`, `_fallback_walk_refused`, `_fallback_walk_server_error`) is reset on the drop, and the sticky `_active_fallback_model` stays |
 
 The replay arm's two exclusions are deliberate, not an omission. It runs on
 `not _turn_emitted`: no token and no tool call landed, so a mid-turn correction has
