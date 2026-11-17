@@ -1,12 +1,42 @@
 /**
- * instanceGate.js — the two decisions behind "can that instance host the pet".
+ * instanceGate.js — the decisions behind "can that instance host the pet".
  *
- * Pure, so both are testable without Electron or a tunnel (same split as
+ * Pure, so each is testable without Electron or a tunnel (same split as
  * instance-guard.js). The effects — the HTTP request and the 60s cache — stay in
  * main.js; only the judgement lives here.
  */
 
+const { hostOwnsAppWindows } = require("../app-window-host-rules");
 const { SELF_INSTANCE } = require("./machineStore");
+
+/** The installed name of the app this shell code serves. */
+const MOCHI_APP = "mochi";
+
+/**
+ * Whether the desktop window host, not this built-in pet, owns Mochi's windows on
+ * the gateway that answered *apps* (an array of `/api/apps` rows): its Mochi record
+ * declares a manifest `desktop` block (`hostOwnsAppWindows`). The built-in pet then
+ * stands down there, so the two never draw Mochi at once.
+ */
+function windowHostOwnsMochi(apps) {
+  return hostOwnsAppWindows(apps, MOCHI_APP) === true;
+}
+
+/**
+ * What this computer's `/api/apps` rows (*apps*, an array) say the built-in pet
+ * does here: "hosted" when the window host serves Mochi's record
+ * (`windowHostOwnsMochi`), on or off, so the pet stands down entirely; otherwise
+ * "enabled" or "disabled" from the record.
+ *
+ * @returns {"enabled" | "disabled" | "hosted"}
+ */
+function localMochiState(apps) {
+  const mochi = apps.find((a) => a && a.name === MOCHI_APP);
+  // The gateway answered and Mochi is not installed — a real answer.
+  if (!mochi) return "disabled";
+  if (windowHostOwnsMochi(apps)) return "hosted";
+  return mochi.enabled ? "enabled" : "disabled";
+}
 
 /**
  * Read `/api/apps` and answer whether Mochi is enabled.
@@ -21,10 +51,13 @@ const { SELF_INSTANCE } = require("./machineStore");
 function parseMochiEnabled(payload) {
   const apps = Array.isArray(payload) ? payload : payload && payload.apps;
   if (!Array.isArray(apps)) return null;
-  const mochi = apps.find((a) => a && a.name === "mochi");
+  const mochi = apps.find((a) => a && a.name === MOCHI_APP);
   // The gateway answered and Mochi is not among its apps — a real "no", not a
   // non-answer: it genuinely cannot host the pet.
   if (!mochi) return false;
+  // A record the window host serves ships its windows for the host, not the
+  // pages this pet loads: also a real "no", so the pet stays on this computer.
+  if (windowHostOwnsMochi(apps)) return false;
   return !!mochi.enabled;
 }
 
@@ -88,4 +121,11 @@ function hostDisabledMeansTeardown(shownInstanceId, remoteStillUsable) {
   return !remoteStillUsable;
 }
 
-module.exports = { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown };
+module.exports = {
+  MOCHI_APP,
+  hostDisabledMeansTeardown,
+  localMochiState,
+  parseMochiEnabled,
+  remoteEnabledState,
+  windowHostOwnsMochi,
+};

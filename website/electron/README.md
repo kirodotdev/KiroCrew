@@ -135,8 +135,9 @@ that is an app's own shell code (`{ app: true }`) hands its chords to the host s
 What the host keeps per app on this computer (the user's shortcut bindings) is `app-window-prefs.js`,
 in its own `app-window-prefs.json` store. It names no app and runs no app code, and a new app never
 gets a directory of its own here. `mochi/` and `crew-companion/` predate it and
-shrink as each moves onto it; `test/app-window-host-independence.test.js` holds
-both rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
+shrink as each moves onto it, and each stands down whenever its app's record is
+one the host serves (`hostOwnsAppWindows`); `test/app-window-host-independence.test.js`
+holds all three rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
 
 ## Install as macOS App
 

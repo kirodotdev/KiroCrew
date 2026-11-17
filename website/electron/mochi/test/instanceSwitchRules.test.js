@@ -227,6 +227,22 @@ test("teardown is decided AFTER the resolve, not before it", () => {
   );
 });
 
+test("a record the window host serves stands the whole pet down, a remote's included", () => {
+  // The host draws Mochi on this computer once its record declares a `desktop`
+  // block; the built-in pet keeping a remote alive beside it would draw it twice.
+  const probe = MAIN.slice(
+    MAIN.indexOf("async function mochiEnabledState("),
+    MAIN.indexOf("\n}", MAIN.indexOf("async function mochiEnabledState(")),
+  );
+  // What the probe answers is localMochiState's (instanceGate.test.js), hosted included.
+  const readAt = probe.indexOf("const state = localMochiState(apps);");
+  assert.ok(readAt !== -1 && probe.indexOf("resolve(state);", readAt) !== -1, "the probe must answer localMochiState");
+  assert.ok(
+    MAIN.includes('if (state === "hosted" || (state === "disabled" && hostDisabledMeansTeardown('),
+    "hosted must take the teardown without asking whether a remote is still usable",
+  );
+});
+
 test("a REFUSED accelerator is not persisted over the working one", () => {
   // Registration is the only availability test, so a rebind must bind before it
   // stores. Persisting first left the store holding a key the OS rejected: the
