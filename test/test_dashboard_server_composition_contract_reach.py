@@ -791,7 +791,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred
+    _deferred _deferred
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
@@ -879,7 +879,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred
+    _deferred _deferred
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm

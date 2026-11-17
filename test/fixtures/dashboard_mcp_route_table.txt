@@ -138,6 +138,7 @@ HEAD /api/chat/slots/{slot}/crew-workers/{worker}/recap api_crew_worker_recap
 GET /api/chat/slots/{slot}/crew-workers/{worker}/recap api_crew_worker_recap
 POST /api/chat/slots/{slot}/crew-workers/pause api_crew_pause
 POST /api/chat/slots/{slot}/crew-workers/resume api_crew_resume
+POST /api/chat/slots/{slot}/terminal-run api_slot_terminal_run
 HEAD /api/crons api_crons
 GET /api/crons api_crons
 POST /api/crons api_crons_create
