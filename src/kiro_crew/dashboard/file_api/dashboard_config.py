@@ -98,6 +98,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "side_panel_always_open",
             "side_panel_pin_summary",
             "folder_suggestions_enabled",
+            "folder_suggestions_auto_apply",
             "project_tags_enabled",
             "topic_tags_enabled",
             "session_card_source_links",
@@ -388,6 +389,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["folder_suggestions_enabled"] = val
+        if "folder_suggestions_auto_apply" in body:
+            val = body["folder_suggestions_auto_apply"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "folder_suggestions_auto_apply must be a boolean",
+                        "code": "invalid_folder_suggestions_auto_apply",
+                    },
+                    status=400,
+                )
+            updates["folder_suggestions_auto_apply"] = val
         for tags_key in ("project_tags_enabled", "topic_tags_enabled"):
             if tags_key not in body:
                 continue
@@ -779,6 +794,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
+            "folder_suggestions_auto_apply": cfg.dashboard.folder_suggestions_auto_apply,
             "project_tags_enabled": cfg.dashboard.project_tags_enabled,
             "topic_tags_enabled": cfg.dashboard.topic_tags_enabled,
             "model_picker_hidden_models": list(cfg.dashboard.model_picker_hidden_models),
