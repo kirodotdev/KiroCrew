@@ -351,9 +351,16 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // Absent in plain browsers and in the PWA; the dashboard hides the relay list
 // when the bridge is missing. `closeAll()` takes nothing and can only close
 // every relay Crew window, after this dashboard's Sign out or Switch account.
+// The pane calls show a Crew in this window instead, below the local top bar:
+// they carry the endpoint ID, the pane's rect with this page's viewport size,
+// or whether a local overlay covers the pane. Nothing calls them yet.
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
   closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
+  openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),
+  setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),
+  setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),
+  closePane: (endpointId) => ipcRenderer.invoke("relay-crew:pane-close", String(endpointId || "")),
 });
 
 // Native folder chooser for the project picker's "Open system folder picker"

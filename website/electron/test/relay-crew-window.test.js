@@ -728,23 +728,32 @@ test("pane: close takes its views off the window, clears the partition, runs onc
   assert.strictEqual(again.handle.isClosed(), true);
 });
 
-test("pane: nothing calls it yet, so the window stays the only way a Crew opens", () => {
+test("pane: only main's IPC opens it, and no dashboard code calls it yet, so the window stays the only way a Crew opens", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const callers = [];
-  const walk = (dir) => {
+  const walk = (dir, exts, needle, root) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!["node_modules", "test", "dist", "build"].includes(entry.name)) walk(full);
-      } else if (entry.name.endsWith(".js") && full !== require.resolve("../relay-crew-window")
-        && fs.readFileSync(full, "utf8").includes("openRelayCrewPane")) {
-        callers.push(path.relative(path.join(__dirname, ".."), full));
+        if (!["node_modules", "test", "dist", "build"].includes(entry.name)) walk(full, exts, needle, root);
+      } else if (exts.some((ext) => entry.name.endsWith(ext)) && full !== require.resolve("../relay-crew-window")
+        && fs.readFileSync(full, "utf8").includes(needle)) {
+        callers.push(path.relative(root, full));
       }
     }
   };
-  walk(path.join(__dirname, ".."));
-  assert.deepStrictEqual(callers, []);
+  const shell = path.join(__dirname, "..");
+  walk(shell, [".js"], "openRelayCrewPane", shell);
+  assert.deepStrictEqual(callers, ["ipc-registrar.js"]);
+  callers.length = 0;
+  const dashboard = path.join(shell, "..", "src");
+  walk(dashboard, [".ts", ".tsx"], "relayCrewAPI", dashboard);
+  const paneCalls = /\b(openPane|setPaneBounds|setPaneOverlay|closePane)\b/;
+  const users = callers.filter((f) => !/\.test\.tsx?$/.test(f)
+    && paneCalls.test(fs.readFileSync(path.join(dashboard, f), "utf8")));
+  assert.ok(callers.length > 0, "the scan finds the dashboard's relayCrewAPI users");
+  assert.deepStrictEqual(users, []);
 });
 
 test("window and pane: the handle and the attached Crew's log lines name the Crew", () => {
