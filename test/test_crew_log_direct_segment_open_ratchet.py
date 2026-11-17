@@ -121,7 +121,8 @@ NOT_A_SEGMENT: "dict[str, dict[str, str]]" = {
     "crew_log/lease.py": {"_take": "the unit's lease file"},
     "crew_log/pending_open.py": {"_drain": "pending-open marker files"},
     "crew_log/session_tree_projection_checkpoint.py": {
-        "_load_checkpoint": "the session-tree checkpoint JSON"
+        "_load_checkpoint": "the session-tree checkpoint JSON",
+        "checkpoint_refusal": "the session-tree checkpoint's refusal marker",
     },
     "crew_log/store_cuts.py": {
         "_read_cuts_raw": "the .cuts counter",

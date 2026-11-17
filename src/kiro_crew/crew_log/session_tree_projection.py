@@ -1451,6 +1451,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CHECKPOINT_DEBOUNCE_SECS,
         CHECKPOINT_NAME,
         CHECKPOINT_VERSION,
+        MAX_SESSION_TREE_CHECKPOINT_BYTES,
+        REFUSAL_NAME,
         _checkpoint_path,
         _edge_from_json,
         _edge_to_json,
@@ -1461,6 +1463,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _record_to_json,
         _ReplayResult,
         _save_checkpoint,
+        checkpoint_refusal,
     )
     from kiro_crew.crew_log.session_tree_projection_seed import (  # noqa: F401
         SEED_RETRY_COOLDOWN_SECS,
