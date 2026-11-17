@@ -16,6 +16,7 @@ import json
 import os
 import re
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -357,6 +358,40 @@ def _sidecar_record_in(
     return record, path, identity
 
 
+#: Views this process already proved current, keyed by (alias path, alias bytes
+#: digest, data home), each with the fingerprints of the alias file and its sidecar
+#: as they were when proved. Every v2 spawn re-checks every agent's view under the
+#: shared alias lock, and each full check reads two files through the sensitive-path
+#: screen, so a burst of spawns queued behind one another for minutes. On POSIX any
+#: write, rename or ``utime`` moves a file's ctime, so a changed file is read again.
+#: Windows reports creation time as ``st_ctime_ns``, and a same-size in-place edit with
+#: its mtime put back would look unchanged there, so Windows always runs the full check.
+_PROVED_CURRENT: dict[tuple[str, str, str], tuple[tuple[int, ...], tuple[int, ...]]] = {}
+# shortcut: cleared whole when full; one more full check per view, never a wrong answer.
+_PROVED_CURRENT_MAX = 4096
+#: A file changed this recently is not remembered: kernels with coarse timestamps can
+#: give a second same-size write within one tick the same mtime and ctime.
+_PROVED_CURRENT_MIN_AGE_NS = 2_000_000_000
+
+
+def _fingerprint(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _fingerprints_show_writes() -> bool:
+    """Whether a file's fingerprint moves on every write here (not on Windows)."""
+    return not platform_compat.IS_WINDOWS
+
+
+def _settled(*infos: os.stat_result) -> bool:
+    """Whether every file's last change is older than :data:`_PROVED_CURRENT_MIN_AGE_NS`."""
+    now = time.time_ns()
+    return all(
+        now - max(info.st_mtime_ns, info.st_ctime_ns) >= _PROVED_CURRENT_MIN_AGE_NS
+        for info in infos
+    )
+
+
 def _is_current_publication(
     directory: Path, alias_path: Path, alias_raw: str, crew_home_id: str
 ) -> bool:
@@ -368,7 +403,48 @@ def _is_current_publication(
     Every VALUE still counts, ``env`` included -- a changed value is a changed
     spec kiro-cli must be given, unlike the alias name and the ownership proof,
     which deliberately ignore ``env`` values (:func:`_alias_identity`).
+
+    A view this process already proved current is not read again while neither
+    file's fingerprint moved (:data:`_PROVED_CURRENT`).
     """
+    info = pinned_fs.lstat_by_name(alias_path)
+    if (
+        info is None
+        or platform_compat.is_link_or_junction(alias_path)
+        or not stat.S_ISREG(info.st_mode)
+    ):
+        return False
+    sidecar_info = pinned_fs.lstat_by_name(_projection_metadata_dir() / f"{alias_path.stem}.json")
+    key = (
+        alias_path.absolute().as_posix(),
+        hashlib.sha256(alias_raw.encode()).hexdigest(),
+        crew_home_id,
+    )
+    proved = (
+        (_fingerprint(info), _fingerprint(sidecar_info))
+        if _fingerprints_show_writes()
+        and sidecar_info is not None
+        and stat.S_ISREG(sidecar_info.st_mode)
+        and _settled(info, sidecar_info)
+        else None
+    )
+    if proved is not None and _PROVED_CURRENT.get(key) == proved:
+        return True
+    current = _check_current_publication(directory, alias_path, alias_raw, crew_home_id)
+    if current and proved is not None:
+        if len(_PROVED_CURRENT) >= _PROVED_CURRENT_MAX:
+            _PROVED_CURRENT.clear()
+        # Taken before the reads: a write after them changes the fingerprint.
+        _PROVED_CURRENT[key] = proved
+    else:
+        _PROVED_CURRENT.pop(key, None)
+    return current
+
+
+def _check_current_publication(
+    directory: Path, alias_path: Path, alias_raw: str, crew_home_id: str
+) -> bool:
+    """:func:`_is_current_publication`'s full check: both files read and compared."""
     info = pinned_fs.lstat_by_name(alias_path)
     if (
         info is None
