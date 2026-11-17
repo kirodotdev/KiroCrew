@@ -7,6 +7,7 @@ import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
 import { queryReadFailed } from '../../utils/queryReadFailed'
+import { useScrollEdges } from '../../hooks/useScrollEdges'
 
 /**
  * Episodes a semantic write superseded, with a way to put one back.
@@ -27,6 +28,7 @@ const TEXT_PREVIEW_CHARS = 240
 
 export default function MemoryRetiredCard({ store }: { store: string; privateMemory?: boolean }) {
   const queryClient = useQueryClient()
+  const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
   const retired = useInfiniteQuery({
     queryKey: ['memory-retired', store],
     initialPageParam: 0,
@@ -47,6 +49,9 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
   })
 
   const rows = retired.data?.pages.flatMap(page => page.retired) ?? []
+  // With no rows the table holds nothing focusable, so while it hides columns
+  // its scroller is the named Tab stop; a row brings its own Restore button.
+  const emptyClipped = (edges.left || edges.right) && rows.length === 0
 
   return (
     <Card>
@@ -59,7 +64,14 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
       {restore.error && <MemoryScopeNotice error={restore.error} />}
       {retired.isPending && <p role="status" className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.loading')}</p>}
       {!retired.error && !retired.isPending && (
-        <div className="overflow-x-auto"><table className="w-full border-collapse table-striped">
+        <div
+          ref={attachScroller}
+          className="overflow-x-auto"
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the fix: an empty table that hides columns holds nothing focusable, so an engine that does not focus scrollers itself skips it and one that does gives it no name, and axe's scrollable-region-focusable asks for the explicit stop.
+          tabIndex={emptyClipped ? 0 : undefined}
+          role={emptyClipped ? 'region' : undefined}
+          aria-label={emptyClipped ? i18nT('memoryV2.replaced_experiences') : undefined}
+        ><table ref={attachTable} className="w-full border-collapse table-striped">
           <thead>
             <tr>
               <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.memoryRetiredCard.memory')}</th>
