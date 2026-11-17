@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.background_failure_log import log_background_failure
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder, ui_language_tag
@@ -1228,8 +1229,8 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         text = await run_bg_oneliner(
             state.sessions, prompt, model=tips_model, sel_source="tips", timeout=90
         )
-    except Exception:
-        logger.warning("Tips generation failed; using catalog fallback", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Tips generation failed; using catalog fallback", exc)
         return _fallback_tips(cache.catalog, st)
 
     tips = _parse_tips(text, allowed_docs={e.doc for e in cache.catalog})
@@ -1248,8 +1249,8 @@ async def refresh_tips(state: DashboardState, cache: TipsCache) -> None:
     """
     try:
         tips = await generate_tips(state)
-    except Exception:
-        logger.warning("Tips generation failed", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Tips generation failed", exc)
         return
     async with cache._lock:
         cache.state.tips = tips
