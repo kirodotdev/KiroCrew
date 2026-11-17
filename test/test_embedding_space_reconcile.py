@@ -381,7 +381,7 @@ class TestLessonVectorRepair:
         assert _lessons_with_vectors(store) == 2
 
     def test_repair_exceeds_the_lazy_five_row_cap(self, tmp_path: Path) -> None:
-        """The sweep is not bounded by _MAX_BACKFILLS_PER_CALL.
+        """The sweep embeds every lesson row it finds, not a fixed handful.
 
         The lessons need distinct VOCABULARY, not just distinct vectors:
         ``write_lesson`` also dedups on keyword overlap, so near-identical

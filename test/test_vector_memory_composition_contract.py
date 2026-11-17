@@ -71,6 +71,7 @@ RUNTIME_MODULES = frozenset(
         "episodic_search",
         "episodic_write",
         "faiss_index",
+        "lesson_candidates",
         "lesson_write",
         "lessons",
         "migration",
@@ -412,7 +413,7 @@ _STORE_SIGNATURES = {
     "with_record_metadata": "(self, rows: 'list[dict]') -> 'list[dict]'",
     "write_episodic": "(self, text: 'str', embedding: 'list[float] | None' = None, conversation_id: 'str' = '', tags: 'list[str] | None' = None, importance: 'float' = 0.5, source: 'str' = 'consolidation', *, preserve_existing: 'bool' = False, defer_embedding: 'bool' = False, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None) -> 'bool'",
     "write_episodic_outcome": "(self, text: 'str', embedding: 'list[float] | None' = None, conversation_id: 'str' = '', tags: 'list[str] | None' = None, importance: 'float' = 0.5, source: 'str' = 'consolidation', *, preserve_existing: 'bool' = False, defer_embedding: 'bool' = False, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None) -> \"'EpisodicWriteOutcome'\"",
-    "write_lesson": "(self, rule: 'str', category: 'str' = 'knowledge', negative: 'str | None' = None, source: 'str' = 'user_explicit', rule_emb: 'list[float] | None' = None, rule_emb_generation: 'int | None' = None, repo_scope: 'str | None' = None, *, applies: 'str | None' = None, rule_emb_resolved: 'bool' = False, defer_backfills: 'bool' = False, facets: \"'memory_schema.MemoryFacets | None'\" = None, written_by: 'Mapping[str, str] | None' = None, source_ref: 'str | None' = None) -> 'LessonWriteResult'",
+    "write_lesson": "(self, rule: 'str', category: 'str' = 'knowledge', negative: 'str | None' = None, source: 'str' = 'user_explicit', rule_emb: 'list[float] | None' = None, rule_emb_generation: 'int | None' = None, repo_scope: 'str | None' = None, *, applies: 'str | None' = None, rule_emb_resolved: 'bool' = False, facets: \"'memory_schema.MemoryFacets | None'\" = None, written_by: 'Mapping[str, str] | None' = None, source_ref: 'str | None' = None) -> 'LessonWriteResult'",
 }
 
 #: Every name ``kiro_crew.vector_memory`` itself bound (definitions, not imports),
@@ -427,7 +428,7 @@ _EMPTY_VALUE_JSON _EPISODIC_LONG_TEXT_CHARS _EPISODIC_LONG_TEXT_THRESHOLD
 _EPISODIC_RELEVANCE_THRESHOLD _EPISODIC_SCORING_MAX_BYTES _EPISODIC_TEXT_MAX
 _EPISODIC_TEXT_MIN _EmbeddingVector _EpisodicScoringSet _FAISS_FILE _FAISS_SAVE_INTERVAL
 _HAS_FAISS _HAS_NUMPY _KEY_PATTERN _LESSON_NEGATIVE_SEP _LESSON_WROTE_OUTCOMES
-_MAX_AUDITED_REJECTS _MAX_BACKFILLS_PER_CALL _MAX_EVENTS _MAX_KEY_LEN
+_MAX_AUDITED_REJECTS _MAX_EVENTS _MAX_KEY_LEN
 _MAX_PROMOTION_REFUSED _MAX_SQL_PARAMS _MAX_VALUE_BYTES _MEMORY_META_TABLE _MIGRATIONS
 _MMR_LAMBDA _MMR_MAX_POOL _PREFS_OMISSION_NOTICE _ROW_STEM_CACHE_SIZE _ReadCounters
 _RecallQuery _RecallSpaceChanged _SCHEMA_V1 _SECURITY_REJECT_CODES _SEMANTIC_SCORING_MAX_BYTES
