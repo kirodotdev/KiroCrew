@@ -656,12 +656,15 @@ def probe_embedding_coverage(ctx: ProbeContext) -> dict[str, Any]:
 
 def probe_remote_crew_unreachable(ctx: ProbeContext) -> dict[str, Any]:
     pid = "remote_crew_unreachable"
+    from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.config.loader import config_dir
 
     path = config_dir() / "instances.json"
     if not path.is_file():
         return finding(pid, OK, "No Remote Crew is configured.")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Bytes, as InstancesRegistry._read reads it: json.loads then accepts a BOM,
+    # UTF-16 and UTF-32, and a Windows sharing violation is retried.
+    raw = json.loads(read_bytes_with_retry(path))
     items = raw.get("instances") if isinstance(raw, dict) else None
     instances = [i for i in items or [] if isinstance(i, dict) and i.get("id")]
     if not instances:

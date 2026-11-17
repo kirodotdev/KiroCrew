@@ -421,6 +421,22 @@ def test_remote_crew_that_does_not_answer(world):
     assert "Remote Crew" in f["fix"]["steps"][0]
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
+def test_remote_crew_probe_reads_every_encoding_the_registry_accepts(world, encoding):
+    # A BOM or UTF-16 file (PowerShell 5.1's default) must not make the check "could not run".
+    port = _closed_port()
+    instances = {"instances": [{"id": "r1", "name": "lab box", "local_port": port}]}
+    (world["home"] / "instances.json").write_bytes(json.dumps(instances).encode(encoding))
+    f = _run(world)["remote_crew_unreachable"]
+    assert f["status"] == dp.PROBLEM
+    assert f["evidence"]["unreachable"] == [{"name": "lab box", "local_port": port}]
+
+
+def test_remote_crew_file_no_encoding_decodes_is_not_ok(world):
+    (world["home"] / "instances.json").write_bytes(b"\xff\xfe\x00\xd8garbage")
+    assert _run(world)["remote_crew_unreachable"]["status"] != dp.OK
+
+
 def test_turn_running_for_half_an_hour(world):
     world["app"]["state"]._slots = {
         "chat-1": _Slot("Release notes", True),
