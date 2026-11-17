@@ -111,6 +111,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "spec_shell_allowlist": ("data", False, "", ""),
     "spec_write_allowlist": ("data", False, "", ""),
     "spec_write_cwd": ("data", False, "", ""),
+    "_agent_turn_hold_end": ("data", False, "", ""),
     "_agent_turn_reading": ("data", False, "", ""),
     "_agent_turn_start": ("data", False, "", ""),
     "_on_agent_turn": ("data", False, "", ""),

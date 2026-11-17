@@ -456,6 +456,7 @@ async def _wait_for_response(
     """
     deadline = time.monotonic() + timeout
     buffered: list[JsonRpcMessage] = []
+    hold_end: asyncio.Event | None = None
     self._awaited_responses.add(req_id)
     try:
         while time.monotonic() < deadline:
@@ -521,6 +522,10 @@ async def _wait_for_response(
                 # progress, so the guard may move the tool-idle clock for
                 # it. A co-tenant's fanned-out frame only voids one tick.
                 self._own_ingress_seq += 1
+            if msg is self._agent_turn_start:
+                # The turn opened for it waits until this wait has put it back
+                # (``stream_unsolicited``), instead of reading an empty queue.
+                hold_end = self._agent_turn_hold_end = asyncio.Event()
             buffered.append(msg)
         raise AcpTimeoutError(f"Timeout waiting for response to request {req_id}")
     finally:
@@ -531,3 +536,5 @@ async def _wait_for_response(
             # Frames that arrived after this response, while it was awaited, were
             # shown to no agent-turn hook; look at them again now nothing waits.
             self._rearm_agent_turn()
+        if hold_end is not None:
+            hold_end.set()

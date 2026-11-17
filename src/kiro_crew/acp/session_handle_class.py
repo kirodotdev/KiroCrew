@@ -1113,12 +1113,14 @@ class AcpSessionHandle:
     spec_write_cwd: str = ""
 
     # A turn the agent started on its own (``session_handle_agent_turns``): its
-    # first frame while no turn has read it, the chat's callback, and whether
-    # the running turn is one. Class defaults, so a host whose queue is plain
-    # never sets them and every read finds the default.
+    # first frame while no turn has read it, the chat's callback, whether the
+    # running turn is one, and the event a request wait that took that first
+    # frame sets once it has put the frame back. Class defaults, so a host whose
+    # queue is plain never sets them and every read finds the default.
     _agent_turn_start: JsonRpcMessage | None = None
     _on_agent_turn: Callable[[], None] | None = None
     _agent_turn_reading: bool = False
+    _agent_turn_hold_end: asyncio.Event | None = None
 
     @property
     def last_steer_monotonic(self) -> float:

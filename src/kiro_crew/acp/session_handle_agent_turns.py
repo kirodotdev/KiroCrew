@@ -20,7 +20,7 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: none (its three fields are class defaults on the handle).
+Instance fields written: none (its four fields are class defaults on the handle).
 
 Instance fields read: ``_abandoned_prompt_id``, ``_awaited_responses``, ``_queue``,
 ``_runtime``, ``_turn_done``.
@@ -33,6 +33,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp.client import _effective_prompt_timeout_async
 from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _starts_agent_turn
 from kiro_crew.acp.types import AcpEvent, JsonRpcMessage
 
@@ -178,8 +179,16 @@ async def stream_unsolicited(
 ) -> AsyncGenerator[AcpEvent, None]:
     """Yield the events of the turn the agent started on its own, sending nothing.
 
-    Yields nothing when no such turn is pending or a prompt took its frames.
+    Yields nothing when no such turn is pending or a prompt took its frames. While
+    a request wait holds the turn's first frame (``_wait_for_response``), it waits
+    until the wait puts it back, as on the per-chat client, so a message sent
+    meanwhile queues behind this turn instead of reading the agent's reply. The
+    timeout is resolved first, as there, so its config read leaves no gap between
+    that check and the turn's drain.
     """
+    timeout = await _effective_prompt_timeout_async(timeout)
+    while (hold_end := self._agent_turn_hold_end) is not None and not hold_end.is_set():
+        await hold_end.wait()
     if self._agent_turn_start is None:
         return
     async for event in self._run_turn(_no_request, timeout, agent_started=True):
