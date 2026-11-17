@@ -771,7 +771,7 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
   // The Bots page's own wiring: its registered guard refuses a leave over
   // unsaved panes and only raises the editor's discard confirm, so the
   // hand-off must ride that confirm instead of the page guard.
-  function PageHost() {
+  function PageHost({ pendingWrite = false }: { pendingWrite?: boolean }) {
     const [editingCrew, setEditingCrew] = useState('oncall')
     const crewAgentsQuery = useQuery({ queryKey: ['kirocrew-agents'], queryFn: () => mockApi.kirocrewAgents() })
     const leave = useGuardedLeave()
@@ -786,6 +786,8 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     })
     const { dirtyPanes, requestClose } = ctl
     useRegisterNavigationLeaveGuard(() => {
+      // A write of the page's own (a Heartbeat save) still in flight refuses.
+      if (pendingWrite) return false
       if (!editingCrew || dirtyPanes.size === 0) return true
       requestClose()
       return false
@@ -793,13 +795,13 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     return <CrewEditorModal ctl={ctl} />
   }
 
-  async function openOnBotsPage() {
+  async function openOnBotsPage(pendingWrite = false) {
     mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const store = configureStore({ reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer } })
     render(
       <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter>
-        <NavigationLeaveGuardProvider><PageHost /></NavigationLeaveGuardProvider>
+        <NavigationLeaveGuardProvider><PageHost pendingWrite={pendingWrite} /></NavigationLeaveGuardProvider>
       </MemoryRouter></Provider></QueryClientProvider>,
     )
     return screen.findByTestId('crew-editor-next-dialog')
@@ -827,6 +829,18 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
     expect(sendErrorToChat).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(screen.queryByTestId('crew-editor-next-dialog')).toBeNull())
+  })
+
+  it('on the Bots page, still asks the page guard after the editor discard is confirmed', async () => {
+    const dialog = await openOnBotsPage(true)
+    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
+    await waitFor(() => expect(screen.queryByTestId('crew-editor-next-dialog')).toBeNull())
+    // Discarding the editor's edits does not waive the page's pending write.
+    expect(sendErrorToChat).not.toHaveBeenCalled()
   })
 
   it('lists comes-with tools, MCP servers and skills in collapsible kind groups, none removable', async () => {

@@ -803,6 +803,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   // What runs after a confirmed close-discard: an action that leaves the editor
   // (an error notice's hand-off) and waited on the discard confirm.
   const closeProceed = useRef<(() => void) | null>(null)
+  const leaveAfterClose = useRef<(() => void) | null>(null)
   // Reset the pane whenever the editor points at a new crew (or closes).
   const paneSeededFor = useRef<string | null>(null)
   useEffect(() => {
@@ -921,10 +922,11 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     if (target === 'close') {
       closeSheet()
       // A hand-off that asked to leave over unsaved edits runs once they are
-      // discarded (`leaveGate`).
-      const after = closeProceed.current
+      // discarded (`leaveGate`). Discarding the editor's edits is not consent
+      // to lose the host page's own drafts or pending writes, so it still goes
+      // through the host's `leave`, after the close has rendered.
+      leaveAfterClose.current = closeProceed.current
       closeProceed.current = null
-      after?.()
     } else if (target === 'collapse') { collapseProceed.current?.(); collapseProceed.current = null }
     else if (target) setPane(target)
   }, [discardAsk, closeSheet, settleDiscardAnswer])
@@ -936,6 +938,12 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
       closeProceed.current = null
     }
   }, [discardAsk, settleDiscardAnswer])
+  useEffect(() => {
+    const after = leaveAfterClose.current
+    if (discardAsk !== null || !after) return
+    leaveAfterClose.current = null
+    leave(after)
+  }, [discardAsk, leave])
 
   const discardTakesSheet =
     discardAsk === 'close'
