@@ -98,7 +98,7 @@ permission deferral).
 | `acp/client_tool_events.py` | tool-call frames: text chunk, tool call, update and refinement extraction with their provenance caches, the ACP-layer SEL audit record, the Pre/PostToolUse hook fires and the tool results read back from kiro-cli's session JSONL |
 | `acp/client_usage.py` | usage, metadata and compaction frames: usage and prompt-token updates, context-window metadata, codex inline compaction and `wait_for_compaction` (claude's is in `acp/client_claude_turn.py`) |
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
-| `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
+| `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share) and the name of its systemd scope, the scope admission wait before `initialize` (`_admit_scope`, with its helpers in `acp/scope_admission.py`), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's and MiMo Code's deferred shell permission and the liveness consult |
 | `acp/client_new_conversation.py` | a fresh conversation on the live process: `new_conversation` for a member of `ACP_BACKENDS_CLIENT_NEW_CONVERSATION` (claude) closes the old session and sets a new one up as a cold start does (see claude-code-provider, *A fresh conversation on the live adapter*) |
 | `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
@@ -2297,9 +2297,12 @@ not by path, so re-creating the directory does not restore it.
 
 Steps 1–2 (`initialize`, `session/load` or `session/new`) block until a JSON-RPC
 response arrives (base 240s) because the session ID is required before proceeding.
+Before step 1, a spawn wrapped in a systemd scope waits for the user manager to admit
+the scope, and that wait comes out of the 240 s window of `initialize` (see
+[scope admission](#scope-admission)).
 If the first attempt times out, `ensure_ready()` kills the process and retries once
 with a fresh spawn — this handles slow kiro-cli first launches where MCP servers are
-still initializing.  `_wait_for_response()` checks `shutdown_event` each iteration
+still initializing. A scope admission timeout is not retried.  `_wait_for_response()` checks `shutdown_event` each iteration
 so init aborts promptly on Ctrl+C instead of blocking for the full timeout.
 
 **Activity-based deadline.** `_wait_for_response()`'s deadline is *not* a fixed
@@ -2595,8 +2598,9 @@ it has no runtime probe to borrow. It stamps its own `session/new` capture
 `AcpClient` built by `_entitlement_probe_client` from this client's own launch
 inputs (work dir, agent, env, backend, sandbox mode, gateway overlay, session key),
 so `_spawn` starts it exactly as it started this session. On its own process it
+waits for scope admission (`_admit_scope`), then
 sends `initialize` (the same `_initialize_params` this session's handshake sends)
-and, before `session/new`, re-verifies the derived spec with
+with the budget admission left, and, before `session/new`, re-verifies the derived spec with
 `require_unchanged_derived_spec` -- the same verify→create bracket every other
 spawn path closes between initialize and session creation, so a spec revoked
 during probe init aborts (raising `DerivedSpecStale`, absorbed as an empty answer)
@@ -4611,17 +4615,18 @@ Authentication, protocol, and configuration errors are not retried.
 Structured `acp_cold_start` logs distinguish queue wait and spawn, and include
 bounded active/queued counts, outcome, duration, backend class, and coarse process
 state. Structured `acp_startup_stage` logs distinguish `scope_admission` (the
-`AcpRuntime` wait for systemd to admit the agent's scope, see
+wait of `AcpRuntime` or `AcpClient` for systemd to admit the agent's scope, see
 [scope admission](#scope-admission)), `initialize`, `session/new`, `session/load`, and `session/set_mode`;
 timeout records carry the method and budget plus bounded stderr-line count. They
 never include prompts, workflow source, credentials, session ids or request ids.
 The `AcpRuntime` records about one process (`scope_admission`, and `initialize`
-when it starts under throttle) name its pid. The `scope_admission` record also
+when it starts under throttle) name its pid, and so does the `AcpClient`
+`scope_admission` record. The `scope_admission` record also
 names the scope unit. Of the runtime's other lines, only the init line names the
 unit, and it logs only after `initialize` succeeds. The spawn line logs before the
 wait and names the pid.
 
-`ensure_ready()` emits the `kirocrew.session.startup.duration` histogram (unit `ms`) timing the cold-start work — subprocess spawn + session init. The warm fast-path (an already-spawned, already-initialized session returns early) is intentionally **not** measured, since it does no startup work. The emit lives in a `finally` covering **every** exit path, with `outcome` recorded as one of `ready` / `auth_required` / `error` (defaulting to `error`, so any unexpected exception propagating through the `finally` is counted as a failure, never a false `ready`) and `spawned` (bool — whether this call actually forked a new process). `get_recorder` is **lazily imported** inside the `finally` to break the `config.loader → acp.types → acp.client → metrics.provider → config.loader` import cycle, and the entire emit is wrapped in `try/except` so a telemetry failure can never break session startup.
+`ensure_ready()` emits the `kirocrew.session.startup.duration` histogram (unit `ms`) timing the cold-start work — subprocess spawn + session init. The warm fast-path (an already-spawned, already-initialized session returns early) is intentionally **not** measured, since it does no startup work. The emit lives in a `finally` covering **every** exit path, with `outcome` recorded as `ready`, as `error` (the default, so any unexpected exception propagating through the `finally` is counted as a failure, never a false `ready`), or as the start failure that ended it: `auth_required`, `tool_gate_unroutable`, `scope_admission_timeout`, `sandbox_init_failed`, `delegate_launch_failed`, `windows_spawn_blocked` or `registration_rate_limited`. It also records `spawned` (bool — whether this call actually forked a new process). `get_recorder` is **lazily imported** inside the `finally` to break the `config.loader → acp.types → acp.client → metrics.provider → config.loader` import cycle, and the entire emit is wrapped in `try/except` so a telemetry failure can never break session startup.
 
 ### Session-start gate and tracked start ownership (`SessionStartGate`, `StartCollector`)
 
@@ -5878,7 +5883,34 @@ writes anything to the agent's stdin:
   the unit, the return code and the stderr tail, which names the layer that
   failed. `scope_admission.exit_evidence` waits for the tail and the exit status
   the same way as for an `initialize` death, and publishes the tail only through
-  `safe_stderr_tail`.
+  `safe_stderr_tail` (`scope_admission.published_stderr_tail`).
+
+`AcpClient` runs the same stage on its own spawn path. `_spawn` names the scope
+`kirocrew-cl-<process instance>.scope` (`scope_unit_name` and `name_scope_unit`
+with `_CLIENT_SCOPE_UNIT_PREFIX`), and keeps the unit systemd received in
+`_scope_unit`. The prefix is not the runtime's, so the readers of `kirocrew-rt-*`
+scopes (`session_scope_reap.kept_scopes`, `containment.populated_scopes`) do not
+count a client process. The token is the client's `process_instance`. The client
+does not write it to the child's environment, so a client child keeps the
+`KIROCREW_SPAWN_INSTANCE` it inherited. Both `initialize` sites call
+`_admit_scope` before they write the request: `_initialize_session` and the
+entitlement probe's `_entitlement_probe_answer`. The client's window is
+`_INIT_TIMEOUT` (240 s) with the same 30 s reserve, so admission can use 210 s
+(`client_timeouts._SCOPE_ADMISSION_TIMEOUT`). The process's own return code marks
+an exit, so the exit status is already read when the wait sees it. The errors are
+the client's own:
+
+- A timeout raises `AcpScopeNotAdmitted` (`src/kiro_crew/acp/scope_not_admitted.py`),
+  an `AcpError` with `transient` fixed `False` and the same text as
+  `AcpScopeAdmissionTimeout`. `ensure_ready` ends the
+  start without its one retry, with startup outcome `scope_admission_timeout`.
+- An exit raises `AcpProcessDied` with the same text as the runtime's death.
+  `ensure_ready` handles it as it handles a death during `initialize`: it reads
+  the stderr for a known start failure, then retries once.
+
+The client's `scope_admission` record logs under `kiro_crew.acp.client`. A start
+that ends in the stage goes through `ensure_ready`'s failed-start cleanup, and
+`_probe_advertised_models` shuts down a probe process that ends there.
 
 A `/proc` read that cannot run counts as admitted, so the spawn goes on to
 `initialize` as it did before the stage. That covers a permission error and a
@@ -5890,7 +5922,8 @@ duration_ms=... budget_s=... pid=... scope=...` line. An exit adds
 `reads=... returncode=...`, and a `/proc` read that cannot run adds
 `proc_check=unavailable reason=...`. An admission logs at INFO,
 or at WARNING when it took more than 5 s. A timeout and an exit log at WARNING.
-Pinned by `test/test_acp_scope_admission.py`.
+Pinned by `test/test_acp_scope_admission.py` and, for `AcpClient`,
+`test/test_acp_client_scope_admission.py`.
 
 **Death-log severity is a contract: expected teardowns are INFO, genuine deaths
 are WARNING.** `_mark_dead(reason, *, expected=False)` logs the single

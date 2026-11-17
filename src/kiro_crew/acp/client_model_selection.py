@@ -521,8 +521,9 @@ async def _entitlement_probe_answer(self: AcpClient) -> tuple[list[dict[str, str
     from kiro_crew.acp.session_handle import advertised_models_from_session
 
     await self._spawn()
+    budget = await self._admit_scope()
     init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
-    await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+    await self._wait_for_response(init_id, timeout=budget)
     # Close the verify->create bracket every other spawn path closes between
     # initialize and session/new: a spec revoked during probe init must not
     # create a session (which starts that spec's MCP server commands). A stale
