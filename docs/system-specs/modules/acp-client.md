@@ -3024,6 +3024,9 @@ KAS opts into a readiness barrier through its harness notification declaration.
 Its `_kiro/mcp/status` and `_kiro/tools/didChange` notifications carry an explicit
 `params.sessionId` and full `servers` / `tags` snapshots. The reader stages both
 methods before the create/load response and transfers only that session's frames.
+The KAS `mcp_init` declaration also stages `_kiro/mcp/governance_disabled`
+(`{sessionId, reason}`): the host emits it in the same window when its governance
+verdict fail-closes the session's MCP, and the wait reads it below.
 Status entries carry `name`, `status`, `failedAuthorization`, `errorMessage`,
 `tools` (the connected server's catalog) and `_meta.kiro.resource.source.origin`;
 the required Crew declarations have origin `client`. Exposure -- the model can
@@ -3397,6 +3400,23 @@ before. A timeout after an extension names `agent.session_start_timeout_secs`.
 The allowance is bounded so the subagent startup watchdog still outlives a
 start that spends its whole `session/new` budget and this wait, at the default
 and the 900 s maximum budget.
+With registry mode off, a `_kiro/mcp/governance_disabled` for this session
+with `reason: "api_failure"` arms a checkpoint `GOVERNED_SETTLE_SECS` (6s)
+later. The host sends it when its governance read failed and it fail-closed
+MCP: it then lists no servers for the session. If by the checkpoint the host
+has named none of the required servers for this session in any status entry or
+MCP tag, startup terminates with `AcpRuntimeError` naming the transient
+governance read failure, instead of waiting out the budget. If the host names a
+required server before then (a re-read turned MCP back on), the ordinary wait
+continues and a server that connects still starts the session. The failed start
+evicts the session, and the next start re-reads governance. With registry mode
+on, the registry checkpoint below still decides, as it does for a registry
+drop. `admin_disabled`, other reasons, another session's frame and no frame
+keep the ordinary wait. Read from the KAS 3.4.0 engine: it emits the frame at
+session start as `{sessionId, reason}` while its governance setting turns MCP
+off, `reason` being `api_failure` when the read failed and `admin_disabled`
+otherwise; a later governance change re-mounts the session's MCP and sends a
+fresh status.
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
