@@ -41,6 +41,8 @@ def _collect_session_docs(
     conversation_log: Any,
     saved_map: dict[str, str],
     session_key: str | None = None,
+    *,
+    indexed: bool = False,
 ) -> list[dict[str, Any]]:
     """Scan ALL sessions for non-code document file-changes (blocking).
 
@@ -49,6 +51,12 @@ def _collect_session_docs(
     slug}`` — with the **TRUE on-disk path** (never redacted). ``saved`` is True
     when the path already backs a real (materialized) artifact. Sorted
     newest-first. Runs OFF the event loop — reads every session's jsonl.
+
+    *indexed* reads each session's file changes at the identity the listing
+    index holds (``listing_identities``), so an unchanged session costs no
+    ``stat``. A change another process made then shows after the index's next
+    reconcile, as the listing's own rows do. The authorization scan leaves it
+    off and checks every session's file.
 
     INTERNAL ONLY — the raw ``path``/``name``/``session_title`` may contain a
     credential-shaped substring. Callers that reach an external surface MUST go
@@ -65,6 +73,12 @@ def _collect_session_docs(
     except Exception as exc:  # noqa: BLE001 — a corrupt history dir must not 500 the page
         logger.warning("session-docs: list_sessions failed: %s", exc)
         return []
+    identities = None
+    if indexed:
+        listing_identities = getattr(conversation_log, "listing_identities", None)
+        identities = listing_identities() if callable(listing_identities) else None
+        if not isinstance(identities, dict):
+            identities = None
     for sess in sessions:
         if not isinstance(sess, dict):
             continue  # malformed session entry — skip, never crash the scan
@@ -87,11 +101,12 @@ def _collect_session_docs(
         session_title = sess.get("title") or key
         try:
             file_change_reader = getattr(conversation_log, "read_file_change_messages", None)
-            msgs = (
-                file_change_reader(key)
-                if callable(file_change_reader)
-                else conversation_log.read_messages(key)
-            )
+            if not callable(file_change_reader):
+                msgs = conversation_log.read_messages(key)
+            elif identities is not None:
+                msgs = file_change_reader(key, identity=identities.get(key))
+            else:
+                msgs = file_change_reader(key)
         except Exception:  # noqa: BLE001 — skip an unreadable session, keep scanning
             continue
         for m in msgs:
@@ -155,7 +170,7 @@ def _scan_session_docs(
         cleaned = redact(text or "")
         return cleaned
 
-    out = _collect_session_docs(conversation_log, saved_map, session_key)
+    out = _collect_session_docs(conversation_log, saved_map, session_key, indexed=True)
     for e in out:
         e["path"] = _redact(e["path"])
         e["name"] = _redact(e["name"])

@@ -51,6 +51,7 @@ from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+    from kiro_crew.history_files import CacheIdentity
 
 
 class TranscriptReadProjection:
@@ -207,7 +208,9 @@ class TranscriptReadProjection:
         """Return the shared read-only cached transcript projection."""
         return self._log._read_messages(key)
 
-    def read_file_change_messages(self, key: str) -> list[dict]:
+    def read_file_change_messages(
+        self, key: str, *, identity: CacheIdentity | None = None
+    ) -> list[dict]:
         """Return lightweight rows carrying only ``ts`` and the changed paths.
 
         Each row is ``{"ts", "role", "meta": {"file_changes": [{"path": str}, ...]}}``,
@@ -216,16 +219,28 @@ class TranscriptReadProjection:
         change entries without a string ``path`` and rows left with none are
         dropped, and every other field of a change (``before``/``after``) is
         not kept.
+
+        *identity* is the file's cache identity as the caller already knows it
+        (``ConversationLog.listing_identities``). When the cached rows were read
+        at that identity and this process wrote nothing since, they are returned
+        with no ``stat``, so they are as current as that identity.
         """
-        path = self._log._path(key)
         generation = self._log._cache_gen(key)
+        cached = self._log._file_change_cache.get(key)
+        if (
+            identity is not None
+            and cached is not None
+            and cached.stamp == identity
+            and cached.generation == self._log._cache_gen(key)
+        ):
+            return cached.messages
+        path = self._log._path(key)
         try:
             before = path.stat()
         except FileNotFoundError:
             self._log._file_change_cache.pop(key, None)
             return []
-        stamp = (before.st_mtime_ns, before.st_size, before.st_ino, before.st_dev)
-        cached = self._log._file_change_cache.get(key)
+        stamp = self._log._cache_identity(before)
         if (
             cached is not None
             and cached.stamp == stamp
@@ -283,7 +298,7 @@ class TranscriptReadProjection:
             after = path.stat()
         except OSError:
             return messages
-        after_stamp = (after.st_mtime_ns, after.st_size, after.st_ino, after.st_dev)
+        after_stamp = self._log._cache_identity(after)
         if after_stamp == stamp:
             self._log._publish_if_current(
                 self._log._file_change_cache,
