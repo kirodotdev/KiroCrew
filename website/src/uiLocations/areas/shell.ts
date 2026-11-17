@@ -17,7 +17,7 @@ export const LOCATIONS = {
   'shell.search': {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label', key: 'app.search_sessions_files_and_commands' },
-    aliasKeys: ['app.k_search_for_anything', 'app.search_everywhere_k', 'components.commandPalette.search_everywhere'],
+    aliasKeys: ['app.k_search_for_anything', 'app.k_search_for_anything_ctrl', 'app.search_everywhere_k', 'app.search_everywhere_k_ctrl', 'components.commandPalette.search_everywhere'],
     terms: {
       en: ['command palette', 'command bar', 'search', 'global search', 'quick search', 'find anything', 'search bar', 'search box', 'search sessions', 'search my sessions'],
       'zh-CN': ['命令面板', '命令栏', '搜索', '搜索框', '快速搜索', '搜索栏', '搜索会话'],
