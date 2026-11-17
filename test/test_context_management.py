@@ -140,6 +140,62 @@ def test_evict_completed_agents():
     assert "a59" in agents  # newest kept
 
 
+def _failed(started: float, **extra):
+    return SimpleNamespace(done=True, started=started, outcome="failed", **extra)
+
+
+def test_eviction_keeps_failed_runs_with_no_successor():
+    """Newer finished runs do not push out a failed run "Retry failed" still needs."""
+    from kiro_crew.context_management import evict_completed_agents
+
+    agents = {"failed": _failed(0.0)}
+    for i in range(1, 61):
+        agents[f"a{i}"] = SimpleNamespace(done=True, started=float(i), outcome="completed")
+    assert evict_completed_agents(agents, max_retained=50) == 10
+    assert "failed" in agents
+    assert "a1" not in agents and "a60" in agents
+
+
+def test_failed_run_bound_evicts_oldest_first():
+    from kiro_crew.context_management import evict_completed_agents
+
+    agents = {f"f{i}": _failed(float(i)) for i in range(5)}
+    assert evict_completed_agents(agents, max_retained=50, max_retained_failed=3) == 2
+    assert sorted(agents) == ["f2", "f3", "f4"]
+
+
+def test_the_failed_run_bound_is_pinned():
+    from kiro_crew.context_management import MAX_RETAINED_FAILED
+
+    assert MAX_RETAINED_FAILED == 50
+
+
+@pytest.mark.parametrize("successor", [{"_retried_as": "r1"}, {"_continued_as": "c1"}])
+def test_a_failed_run_with_a_successor_is_still_evictable(successor):
+    from kiro_crew.context_management import evict_completed_agents
+
+    agents = {"taken": _failed(0.0, **successor), "newer": _failed(1.0)}
+    assert evict_completed_agents(agents, max_retained=0) == 1
+    assert list(agents) == ["newer"]
+
+
+@pytest.mark.parametrize(
+    "starting", [{"_retried_as": "(starting)"}, {"_continuation_starting": True}]
+)
+def test_a_failed_run_whose_successor_is_still_starting_is_kept(starting):
+    from kiro_crew.context_management import evict_completed_agents
+    from kiro_crew.subagent import SUCCESSOR_PENDING
+
+    assert SUCCESSOR_PENDING == "(starting)"
+    agents = {"starting": _failed(0.0, **starting), "idle": _failed(1.0), "new": _failed(2.0)}
+    assert evict_completed_agents(agents, max_retained=0) == 0
+    # Counts toward the bound, so an idle failed run goes first; never dropped itself.
+    assert evict_completed_agents(agents, max_retained=0, max_retained_failed=2) == 1
+    assert sorted(agents) == ["new", "starting"]
+    assert evict_completed_agents(agents, max_retained=0, max_retained_failed=0) == 1
+    assert list(agents) == ["starting"]
+
+
 def test_evict_skips_running():
     from kiro_crew.context_management import evict_completed_agents
 
