@@ -206,6 +206,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         move_cron_job_tab,
         prefetch_cron_dismissed,
         restore_cron_turn_timeout,
+        stored_cron_folder,
     )
     from kiro_crew.dashboard.cron_note_ack import (  # noqa: F401
         cron_item_already_recorded,
