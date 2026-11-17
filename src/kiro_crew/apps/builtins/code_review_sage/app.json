@@ -1,6 +1,6 @@
 {
   "name": "code-review-sage",
-  "version": "0.9.3",
+  "version": "0.9.5",
   "displayName": "Code Review Sage",
   "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Each pull request is reviewed in its own isolated agent session that covers every changed file, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are read in the app and staged as a draft GitHub review only when you publish them or turn on automatic posting, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
   "author": "kirocrew",

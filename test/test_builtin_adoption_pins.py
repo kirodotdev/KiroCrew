@@ -290,6 +290,16 @@ _SHIPPED_PINS = [
         "minAppSdkLevel": 8,
         "legacyNav": {"route": "/md-notebook", "icon": "NotebookPen"},
     },
+    {
+        "name": "code-review-sage",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-code-review-sage",
+        "commit": "711261d196f5ea4fa8027bbaa0e4991b11f3d402",
+        "version": "0.9.5",
+        "treeSha256": "f7ca3019c2768e8a1860a19c3b42f56b2772724611816606701dea06323103bd",
+        "archiveSha256": "10946e4f8263ae64f3a866b76e9fc045feaf2cfdc53c207c77937ee6910dcf32",
+        "minAppSdkLevel": 10,
+        "legacyNav": {"route": "/code-review-sage", "icon": "ScanSearch"},
+    },
 ]
 
 
