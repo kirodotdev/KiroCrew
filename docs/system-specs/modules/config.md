@@ -1738,7 +1738,10 @@ the operator's settings on an upgrade:
   value}}`, captured by `resolution.capture_extra_section_keys`. Without it, a
   build that renamed or removed `<section>.<key>` erased the value on the next
   `save()` of any kind (a log-level change, adding a workspace, editing an
-  agent), with no backup on that path.
+  agent), with no backup on that path. The capture names each distinct set of
+  unmodelled keys once per process in a DEBUG line, because the gateway rebuilds
+  the config several times a second from an unchanged file. It remembers at most
+  256 sets, each as a fixed-size digest.
 
 Both restore a key only when the emitted document LACKS it, so a captured copy
 can never overwrite a live value or undo a deliberate deletion. `_extra_keys`

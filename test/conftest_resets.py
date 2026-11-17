@@ -776,6 +776,23 @@ def _isolate_advertised_model_cache(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_config_load_debug_memories(_floor_monkeypatch):
+    """Start each test with no config-load DEBUG line already logged.
+
+    ``model_registry._passthrough_logged`` and ``config.resolution._logged_extra_key_sets``
+    remember which unregistered ids and unmodelled key sets this process has logged, so
+    an earlier test on the same worker would silence this test's first line.
+    ``raising=False`` keeps a tree without the sets (``prove.py``'s revert of the fix)
+    running its tests.
+    """
+    from kiro_crew import model_registry
+    from kiro_crew.config import resolution
+
+    _floor_monkeypatch.setattr(model_registry, "_passthrough_logged", set(), raising=False)
+    _floor_monkeypatch.setattr(resolution, "_logged_extra_key_sets", set(), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_display_verdicts():
     """Turn ``display_verdicts`` persistence off after every test.
 
