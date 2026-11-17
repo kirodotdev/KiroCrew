@@ -147,7 +147,7 @@ def _is_startup_stalled(
     return self._monitor._is_startup_stalled_impl(info, now, mono_now)
 
 
-def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
+def _note_tool_dispatch(info: SubagentInfo, event: Any, backend: str | None = None) -> None:
     """Record the in-flight tool for liveness attribution.
 
     Mirrors ``AcpSessionHandle``'s ``_inflight_tool`` snapshot: title, the
@@ -174,8 +174,17 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
     under its toolCallId until its terminal result, so a parallel call that
     finishes first hands the slot back to one still running instead of
     emptying it.
+
+    *backend* is the harness the run is on; opencode's identity is read from its
+    fused title only there (:meth:`ToolCallState.identity_of`). A later frame for a
+    call already held as a trusted wait (opencode's permission request, which
+    carries no wire title) keeps that identity and the seconds already read.
     """
-    server, tool_name = ToolCallState.identity_of(event)
+    server, tool_name = ToolCallState.identity_of(event, backend=backend)
+    call_id = getattr(event, "tool_call_id", "") or ""
+    prior = info._tool_tracker.active_calls.get(call_id) if call_id and not server else None
+    if prior is not None and prior[0].is_trusted_wait():
+        server, tool_name = prior[0].mcp_server_name, prior[0].tool_name
     state = ToolCallState(
         title=event.title or "",
         command=event.tool_input or "",
@@ -187,12 +196,14 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
         # dashboard dispatch loop's can.
         dispatch_parked_secs=0.0,
         is_shell=bool(getattr(event, "is_shell", False)),
-        # Only a provenance-verified identity, or KAS's half-identity for a
-        # kirocrew-core call, names the server, so a frame without one cannot
-        # select the trusted wait contract.
+        # Only a provenance-verified identity, KAS's half-identity for a
+        # kirocrew-core call, or opencode's fused title for one, names the
+        # server, so a frame without one cannot select the trusted wait contract.
         mcp_server_name=server,
         tool_name=tool_name,
     )
+    if prior is not None:
+        state.refine_wait_input(prior[0].command)
     # A native child's call (``sub_session_id`` set) is judged but takes the
     # empty-id slot: its result goes to the backend's own session and never
     # reaches this loop, so a stored entry would never be popped. A normal call is
@@ -203,6 +214,17 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
     else:
         info._tool_tracker.dispatch(getattr(event, "tool_call_id", "") or "", state)
     SubagentManager._retire_subagent_oracle(info)
+
+
+def _note_tool_update(info: SubagentInfo, event: Any) -> None:
+    """Give a held trusted wait the seconds its ``tool_call_update`` first states.
+
+    The duration counts from this update, so time spent waiting on a person's
+    approval of the call does not use it up.
+    """
+    entry = info._tool_tracker.active_calls.get(getattr(event, "tool_call_id", "") or "")
+    if entry is not None:
+        entry[0].refine_wait_input(getattr(event, "tool_input", ""), time.monotonic())
 
 
 def _note_tool_result(info: SubagentInfo, event: Any) -> None:

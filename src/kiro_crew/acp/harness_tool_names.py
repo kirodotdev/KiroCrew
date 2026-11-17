@@ -434,6 +434,28 @@ def _opencode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str
     return list(dict.fromkeys(splits))
 
 
+def opencode_fused_mcp_tool(title: str, kind: str, server: str) -> str:
+    """The tool half of opencode's fused ``<server>_<tool>`` *title* for *server*, or "".
+
+    Read only off a ``tool_call`` frame's own ``title`` (``AcpEvent.wire_title``), which
+    opencode writes as the tool's id (``kirocrew-core_wait``) while the call has no title
+    of its own. *kind* must be ``other``, the kind opencode gives every tool it has no
+    row for (an MCP tool among them); its built-ins whose later title is model text
+    (``read``, ``task``, ``webfetch``) get another kind. Only the one exact *server* is
+    tried, in opencode's spelling, and only when neither half holds a ``_``: the
+    title's one ``_`` is then the join, so no other server's tool fuses to the same
+    title (``kirocrew-core_x`` + ``wait`` is ``kirocrew-core_x_wait``, and names
+    nothing here). A tool half outside ``[A-Za-z0-9-]`` names nothing.
+    """
+    if kind != "other" or len(title) > MAX_HARNESS_TOOL_NAME_LEN:
+        return ""
+    spelled = _OPENCODE_UNSAFE_NAME_CHARS.sub("_", server)
+    if not spelled or "_" in spelled or title.count("_") != 1:
+        return ""
+    head, _, tool = title.partition("_")
+    return tool if head == spelled and tool and not _OPENCODE_UNSAFE_NAME_CHARS.search(tool) else ""
+
+
 def mimocode_rewrites_name(server: str) -> bool:
     """Whether MiMo Code writes *server* differently in a fused tool title.
 

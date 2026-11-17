@@ -689,8 +689,12 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "_mint_agent_id": ("method", "(self) -> 'str'"),
     "_note_startup_progress": ("method", "(self, info: 'SubagentInfo') -> 'None'"),
-    "_note_tool_dispatch": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
+    "_note_tool_dispatch": (
+        "staticmethod",
+        "(info: 'SubagentInfo', event: 'Any', backend: 'str | None' = None) -> 'None'",
+    ),
     "_note_tool_result": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
+    "_note_tool_update": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
     "_notify_cap_raised": ("method", "(self) -> 'None'"),
     "_notify_orphan": (
         "async method",
