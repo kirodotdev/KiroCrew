@@ -245,14 +245,18 @@ def _crew_endpoint(raw: Any, crew_domain: str) -> Optional[CrewEndpoint]:
         return None
     if not isinstance(url, str) or crew_url_problem(url) is not None:
         return None
-    # The token goes only to this origin, so it must be this endpoint's own name.
-    # With the relay's domain set, it must be exactly that name under the domain,
-    # on the default port.
+    # The token goes only to this origin, so it must be this endpoint's own name,
+    # on the default port. With the relay's domain set, it must be exactly that
+    # name under the domain.
     # shortcut: one relay domain, change to a list when the viewer must reach a second relay region.
     parts = urlsplit(url)
+    if parts.port is not None:
+        return None
     if crew_domain:
-        if parts.port is not None or parts.hostname != f"{endpoint}.{crew_domain}":
+        if parts.hostname != f"{endpoint}.{crew_domain}":
             return None
+    # No relay domain: pin the window to the exact host the control plane listed for this
+    # Crew. A host with nothing after the endpoint ID fails crew_url_problem above.
     elif not (parts.hostname or "").startswith(f"{endpoint}."):
         return None
     crew_type = raw.get("crewType")

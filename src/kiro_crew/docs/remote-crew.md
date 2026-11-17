@@ -272,9 +272,10 @@ uses `tunnel.relay_viewer_credential` must also set it:
 kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
 ```
 
-The desktop app opens a Crew, and sends its access token, only at exactly
-`https://<endpoint ID>.<relay domain>`. Without the relay domain the list still
-shows Crews, but opening one says Team Crews over the relay aren't set up.
+With `tunnel.relay_viewer_relay_domain` empty, the desktop app opens a listed
+Crew, and sends its access token, only at exactly the address the control plane
+lists for it, `https://<endpoint ID>.<domain>` with no port. With it set, only
+at exactly `https://<endpoint ID>.<relay domain>`.
 
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads
 these settings on every request, so the change takes effect at the next request with

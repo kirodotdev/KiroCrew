@@ -812,6 +812,17 @@ async def test_both_routes_pass_the_relay_domain_to_the_list(viewer) -> None:
 
 
 @pytest.mark.asyncio
+async def test_with_no_domain_set_the_mint_pins_the_window_to_the_listed_host(viewer) -> None:
+    viewer.tunnel.relay_viewer_relay_domain = ""
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert resp.status == 200 and viewer.crew_domains == [""]
+    assert (body["crewUrl"], body["relayDomain"]) == (CREW.crew_url, "relay.example.test")
+    assert ("mint", EP) in viewer.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "crew_url",
     [
@@ -836,7 +847,8 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
     viewer, monkeypatch, crew_url, domain
 ) -> None:
     on_domain = crew_url == f"https://{EP}.relay.example.test"
-    kept = not domain.strip() or (domain == "relay.example.test" and on_domain)
+    on_port = crew_url.endswith(":8443")
+    kept = (not domain.strip() and not on_port) or (domain == "relay.example.test" and on_domain)
     viewer.tunnel.relay_viewer_relay_domain = domain
     raw = {"endpointId": EP, "crewUrl": crew_url, "name": "Build box", "crewType": "PERSONAL"}
 
@@ -853,18 +865,15 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
         minted_body = await minted.json()
     assert listed.status == 200
     assert [c["endpointId"] for c in listed_body["crews"]] == ([EP] if kept else [])
-    if not domain.strip():
-        # Listed, but no token is minted until the relay domain is set.
-        assert (minted.status, minted_body["code"]) == (409, cps.NOT_SET_UP)
-        assert ("mint", EP) not in viewer.calls
-    elif kept:
+    if kept:
+        # With no domain set, the window is pinned to the host the list gave.
         assert minted.status == 200 and minted_body["crewUrl"] == crew_url
+        assert minted_body["relayDomain"] == crew_url.split(f"{EP}.", 1)[1]
     else:
         assert (minted.status, minted_body["code"]) == (403, "CREW_ACCESS_NOT_GRANTED")
         assert ("mint", EP) not in viewer.calls
     assert listed_body.get("code") != "NOT_SET_UP"
-    if domain.strip():
-        assert minted_body.get("code") != "NOT_SET_UP"
+    assert minted_body.get("code") != "NOT_SET_UP"
 
 
 @pytest.mark.asyncio

@@ -448,7 +448,7 @@ async def test_a_crew_exactly_under_the_relay_domain_is_kept(fake: FakeCps, crew
 
 
 @pytest.mark.parametrize(
-    "crew_url", [f"https://{TEAM}.evil.example.test", f"https://{TEAM}.{DOMAIN}:8443/"]
+    "crew_url", [f"https://{TEAM}.evil.example.test", f"https://{TEAM}.{DOMAIN}"]
 )
 async def test_with_no_relay_domain_the_endpoint_prefix_check_still_applies(
     fake: FakeCps, crew_url: str
@@ -460,6 +460,21 @@ async def test_with_no_relay_domain_the_endpoint_prefix_check_still_applies(
     fake.answer(200, body)
     crews = await list_crew_endpoints(fake.url, BEARER)
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
+
+
+@pytest.mark.parametrize(
+    "crew_url",
+    [f"https://{TEAM}.{DOMAIN}:8443/", f"https://{TEAM}.{DOMAIN}:443", f"https://{TEAM}."],
+)
+async def test_with_no_relay_domain_a_crew_on_a_port_or_with_no_domain_is_left_out(
+    fake: FakeCps, crew_url: str
+) -> None:
+    # The desktop app pins the window to the listed host on the default port.
+    body = page(1)
+    body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER)
+    assert [c.endpoint_id for c in crews] == [PERSONAL]
 
 
 @pytest.mark.parametrize(
