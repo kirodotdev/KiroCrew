@@ -4785,6 +4785,9 @@ so absence clears it.
   superseded or already-in-progress press logs `outcome="noop"`. Requests
   rejected before a command outcome, including validation and idle-dispatch
   race refusals, are recorded by the generic mutating-API audit instead.
+  The drain also runs an entry `session_run_queued` marked chosen
+  (`RUN_NOW_CHOSEN_KEY`) first, past the sub-agent hold, except while a teardown or
+  edit hold is on.
 
 - **The session's own human is never held behind sub-agents.** The sub-agent
   hold (`_dequeue_next_system_message`) drains system injections and keeps

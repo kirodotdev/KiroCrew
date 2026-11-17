@@ -483,6 +483,7 @@ class TestAdvertisedSet:
             "session_read_message",
             "session_summary",
             "session_queue",
+            "session_run_queued",
             "session_adopt",
             "session_handoff",
             "session_release",

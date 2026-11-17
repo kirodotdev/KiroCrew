@@ -185,6 +185,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "read_slack_history",
     # Reads and reorders a worker's queued instructions; same exfiltration reason.
     "session_queue",
+    # Stops a running turn and chooses what the target runs next, so it carries
+    # `session_stop`'s containment reason and `session_send`'s together.
+    "session_run_queued",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's

@@ -148,6 +148,9 @@ _MATE_AUTO_GRANTS = (
 #:   waiting in another session's queue, which is a write to
 #:   what that session runs next, and no conductor step calls it yet. The same
 #:   step-adopts-it rule as ``session_summary`` applies.
+#: * ``session_run_queued`` — WITHHELD. On a running target it stops the turn the
+#:   way ``session_stop`` does, discarding its work, and then chooses what the
+#:   target runs next. No conductor step calls it yet; the same rule applies.
 #: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
 #:   ``folder_id``: the PATCH goes to ``/api/chat/slots/<target>/folder`` where the
 #:   target is the session named in the ARGUMENTS, and the strictly-resolved

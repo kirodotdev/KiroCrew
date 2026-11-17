@@ -43,6 +43,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
 | `work_dispatch` | `POST /api/work-ledger/record`, then `POST /api/session-control/create`, `record` again and `POST /api/session-control/send` | Create a work item, open its worker, bind it and seed it in one call ([rfc-work-dispatch](../../request-for-change/rfc-work-dispatch.md)). No route of its own: the MCP process calls the four routes in order as the caller, sends the seed only after `bind` succeeded and only to the key `create` returned, and on a failure names the step and closes what it made (session, then item). The step-1 create carries `dispatch`; `/api/work-ledger/record` strips it before schema validation and refuses `no_ledger` when the verified caller owns no ledger, so `work_dispatch` never opens one and only `kirocrew-work`'s `work_ledger_record` does (rfc-work-dispatch amendment 2026-10-28); not auto-approved |
 | `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller manages (its creator until `session_handoff` names another manager; with `agent.session_manager_chain` on, any manager up the line); move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
+| `session_run_queued` | `POST /api/session-control/run-queued` | Run one entry the caller queued on a session it manages now, through the queue card's Run-now path: a running target is stopped cooperatively with the entry promoted and marked chosen (the turn's end drains exactly it, past the sub-agent hold) and the rest of the queue kept; an idle one dispatches it, refused `queue_held` while an edit or teardown hold is on. Same manager fence as `session_queue` and its rule for which entries qualify, but unlike a move it puts the caller's entry ahead of a person's waiting message |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their
@@ -110,7 +111,23 @@ ledger-bound worker can already be the recorded hand-back. `move` takes the queu
 card's own path (`PUT .../queue/order`): the change
 lands in memory, the same tab frame is broadcast, and the periodic flush saves
 it, so the verb makes no durability promise the card does not. Nothing in
-`queue_target` suspends between the gate and the reply. Delivery is the
+`queue_target` suspends between the gate and the reply. `session_run_queued` adds
+no content either: it runs an entry the caller queued, and only which entries
+qualify is `session_queue`'s rule: unlike a move (`move_blocked`), it puts the
+caller's entry ahead of a person's waiting message, by design. It
+shares the queue card's Run now steps with `POST /api/chat/slots/{slot}/interrupt`
+(`turn_stop._interrupt_claimed_turn`, `_dispatch_run_now_idle`,
+`_decline_compacting_interrupt`), so the two cannot drift. On a running target it
+marks the promoted entry `RUN_NOW_CHOSEN_KEY` (process-local, on the entry itself);
+`_start_next_queued_turn` runs a marked entry first with the sub-agent hold
+bypassed, as the idle Run now does, so the turn's end runs exactly that entry and
+the mark ends with it. The drain skips the mark while a teardown or edit hold is on
+(it applies once the hold lifts) and for an entry a person has since edited
+(`queue_entry_is_user_origin`). A person's later Run now on another card of a
+RUNNING target clears the mark (`clear_run_now_choice`), so their choice runs
+first. On an idle target the verb refuses `queue_held` under either hold, because
+the shared dispatch passes both only for a person's own Run now. A compaction that commits after the probe leaves the entry
+at the front unmarked and answers `compacting`, as the route does. Delivery is the
 sharpest verb and is bounded accordingly: the body is redacted through
 `sanitize_outbound` before it is persisted, it is prefixed with a `[sent by
 session <caller> via <verb>]` envelope so the target's transcript can never
@@ -1239,7 +1256,8 @@ The ownership fence below admits a fenced caller to the sessions it CREATED. A l
 opens a conductor and its workers cannot put the workers under the conductor that way,
 because the conductor created none of them. `session_handoff` names a MANAGER for a
 session, and for the verbs that run a session (`HANDOFF_WIDENED_OPERATIONS`: `send`,
-`read`, `summary`, `queue`, `stop`, `close`, `adopt`, `release`, `handoff`) the fence
+`read`, `summary`, `queue`, `run_queued`, `stop`, `close`, `adopt`, `release`,
+`handoff`) the fence
 checks the manager instead of the creator (`_outside_reach`). Every other verb, `fork`,
 `rename` and `set_model` among them, and `session_create`'s delegation lineage, still
 read `_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
