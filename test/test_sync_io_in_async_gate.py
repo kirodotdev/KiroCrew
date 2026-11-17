@@ -18,6 +18,7 @@ from pathlib import Path
 
 import gate_script_checks
 import pytest
+import source_corpus
 import yaml
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
@@ -462,7 +463,8 @@ class TestBaselineRatchet:
 
 class TestReportMode:
     def test_report_runs_and_covers_the_baselined_files(self, capsys) -> None:
-        assert gate.report() == 0
+        with source_corpus.untraced():
+            assert gate.report() == 0
         out = capsys.readouterr().out
         assert "on-loop blocking call(s)" in out
         for rel in gate._read_baseline(BASELINE):

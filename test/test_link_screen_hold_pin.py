@@ -75,7 +75,7 @@ from typing import NamedTuple
 
 import pytest
 from link_screen_sites import DECLARED_SITES
-from source_corpus import candidate_sources, parsed_candidates, src_root
+from source_corpus import candidate_sources, parsed_candidates, src_root, untraced
 
 from kiro_crew import atomic_write as atomic_write_module
 from kiro_crew import platform_compat
@@ -423,13 +423,14 @@ def _sites_in(tree: ast.Module, resolvers: frozenset[str]) -> Iterator[tuple[str
 @functools.cache
 def discovered_sites() -> frozenset[tuple[str, str]]:
     """Every ``(module, function)`` in the package that satisfies the condition."""
-    resolvers = _resolver_names()
     found: set[tuple[str, str]] = set()
-    for path, _text, tree in parsed_candidates(require_any=tuple(SCREENS)):
-        if not _policed(path):
-            continue
-        for func, _line in _sites_in(tree, resolvers):
-            found.add((_rel(path), func))
+    with untraced():
+        resolvers = _resolver_names()
+        for path, _text, tree in parsed_candidates(require_any=tuple(SCREENS)):
+            if not _policed(path):
+                continue
+            for func, _line in _sites_in(tree, resolvers):
+                found.add((_rel(path), func))
     return frozenset(found)
 
 
