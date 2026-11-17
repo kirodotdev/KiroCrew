@@ -14,6 +14,8 @@ const SRC = join(WEBSITE, 'src')
 const THEME_FILE = 'tailwind-theme.css'
 const HOOK_FILE = 'hooks/useViewportSegments.ts'
 const CHROME_FILE = 'styles/shell-chrome.css'
+/** The pane allocation morph's closing-panel rule (lib/layoutFormTransition.ts). */
+const MORPH_FILE = 'styles/layout-morph.css'
 /** The desktop top bar's collapse ladder: 768px, or the folded two-pane form. */
 const LADDER_PRELUDE = `(min-width:768px), ${FOLD_TWO_PANE_QUERY}`
 
@@ -111,6 +113,10 @@ describe('fold query parity', () => {
     expect(read(CHROME_FILE)).toContain(`@media ${LADDER_PRELUDE}{\n  .topbar.tb-measured > .tb-right`)
   })
 
+  it('the closing-panel morph rule applies only in the folded two-pane form', () => {
+    expect(read(MORPH_FILE)).toContain(`@media ${FOLD_TWO_PANE_QUERY} {\n  :root[data-layout-morph-panel="closing"] [data-vt-panel]`)
+  })
+
   it('no file under src/ writes any other segments query', () => {
     const drift: string[] = []
     for (const { path, text } of sources()) {
@@ -127,7 +133,7 @@ describe('fold query parity', () => {
       for (const m of text.matchAll(/\(\s*(?:horizontal|vertical)-viewport-segments\s*:[^)]*\)/g)) {
         if (m[0] !== FOLD_X_QUERY) drift.push(`${path}: ${m[0]}`)
       }
-      if (text.includes(FOLD_X_QUERY) && ![THEME_FILE, HOOK_FILE, CHROME_FILE].includes(path)) {
+      if (text.includes(FOLD_X_QUERY) && ![THEME_FILE, HOOK_FILE, CHROME_FILE, MORPH_FILE].includes(path)) {
         drift.push(`${path}: spells the fold query out; import FOLD_X_QUERY or FOLD_TWO_PANE_QUERY instead`)
       }
     }

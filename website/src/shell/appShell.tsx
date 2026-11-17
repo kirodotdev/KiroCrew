@@ -36,6 +36,8 @@ import { useFocusRouteRelay } from '../hooks/useFocusRouteRelay'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useViewportSegments } from '../hooks/useViewportSegments'
 import { foldHoldsRailCompact } from '../pages/chat/sidebarWidth'
+import { useFoldCompanionShown } from '../lib/foldCompanion'
+import { CHAT_PANE_MIN_W } from '../pages/chat/SidePanel'
 import { leadingEdge } from '../lib/layoutFormTransition'
 import { useKeyboardViewportReset } from '../hooks/useKeyboardViewportReset'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
@@ -59,7 +61,7 @@ import { PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import { useMobileConnect } from '../components/mobileConnect'
 import { useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 import { useMotionValue, useTransform } from 'framer-motion'
-import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
+import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft, useSafeInsets } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
@@ -521,10 +523,15 @@ export function useAppShell() {
   const isMobile = useIsMobile()
   // Beside a reported fold the sessions list ends at the fold, so the rail
   // stays compact wherever an expanded rail would push the list across it.
+  // With the side panel open there (the companion layout) the transcript sits
+  // beside the rail instead, and needs the chat pane's minimum.
   // The fold owns that state: the rail toggle does nothing while it holds.
   const foldSegments = useViewportSegments()
+  const foldCompanion = useFoldCompanionShown()
+  const safeInsets = useSafeInsets()
   const foldCompactRail = !isMobile && foldSegments !== null && foldHoldsRailCompact({
     segments: foldSegments, expandedRailW: railWidthFor({ isMobile: false, collapsed: false }), leading: leadingEdge(),
+    paneMin: foldCompanion ? CHAT_PANE_MIN_W : undefined, insets: safeInsets,
   })
   const [sidePanelDock] = useSidePanelDock()
   // Side panel docked to the bottom (desktop only) swaps the shell from a

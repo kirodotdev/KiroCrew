@@ -27,7 +27,7 @@ export interface ViewportSegment {
   readonly width: number
 }
 
-// Both APIs are behind feature flags and absent from the DOM typings.
+// Neither API is in the DOM typings (Viewport Segments ships in Chrome 138 and later).
 type SegmentsViewport = { segments?: ArrayLike<{ x: number; width: number }> | null }
 type PostureNavigator = Navigator & { devicePosture?: EventTarget }
 

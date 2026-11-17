@@ -12,6 +12,10 @@ import { anchorForSlot, sessionSlots, loadLayout } from '../../../hooks/splitLay
 import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { CHAT_PANE_MIN_W, sidePanelFillWidth } from '../SidePanel'
 import { useSidePanelDock } from '../../../hooks/useSidePanelDock'
+import { useViewportSegments } from '../../../hooks/useViewportSegments'
+import { leadingEdge } from '../../../lib/layoutFormTransition'
+import { foldGapWidth, foldPanelWidth } from '../../../lib/foldCompanion'
+import { useSafeInsets } from '../../../hooks/useDrawerSwipe'
 import { parseStoredSidebarWidth, SIDEBAR_MAX } from '../sidebarWidth'
 import { focusComposerAfter, focusComposer } from '../composerFocus'
 import { resolveFolderAgent, resolveFolderProjectDir, isStaleProjectDirError } from '../../../utils/folderAgent'
@@ -237,6 +241,12 @@ interface PanelLayoutOptions {
   closeSidebar: () => void
   previewExpanded: boolean
   sidebarOpen: boolean
+  /** The companion layout on screen (lib/foldCompanion.ts): the full
+   *  chat page beside a fold with the side panel open. */
+  foldCompanion?: boolean
+  /** How far the chat pane's left margin pulls it under the collapsed list
+   *  (ChatPage): right to left that is toward the panel, so the panel keeps it clear. */
+  collapsedReclaim?: number
   flyout: HoverIntent
   /** The composer state a memory-mode switch carries into the replacement session. */
   memorySwitch: Omit<MemorySwitchContext, 'dispatch' | 'slot' | 'mode' | 'showActionError'> & {
@@ -255,7 +265,7 @@ interface PanelLayoutOptions {
 export function usePanelLayout({
   mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
   mobileNewSessionInFlightRef, setMobileNewSessionBusy, setSidebarPinned, sidebarPinned, railWidth, winW, effectiveSidebarWidth, mobileSessions, openSidebar, closeSidebar, previewExpanded,
-  sidebarOpen, flyout, memorySwitch,
+  sidebarOpen, foldCompanion = false, collapsedReclaim = 0, flyout, memorySwitch,
 }: PanelLayoutOptions) {
   const flyoutNew = useCallback(() => {
     flyout.close()
@@ -317,6 +327,8 @@ export function usePanelLayout({
   // few hundred px in a state the user asked for by reopening the list.
   const panelMaximized = previewExpanded && !sidebarOpen
 
+  const foldSegments = useViewportSegments()
+  const foldHeld = foldCompanion && foldSegments !== null
   // FILL vs BESIDE for the activity panel, decided from the width left for the
   // CHAT once the shell's hideable chrome is subtracted — the nav rail track and
   // the session sidebar (a shrink-0 flex sibling of exactly sidebarWidth; on
@@ -327,12 +339,23 @@ export function usePanelLayout({
   // The panel's render PATH is unchanged either way, so crossing the threshold
   // never remounts it (no terminal re-attach, no Virtuoso churn) — only its
   // width changes. See sidePanelFillWidth for why this is loop-free.
-  const panelFillWidth = sidePanelFillWidth({
+  const panelFillWidth = foldHeld ? undefined : sidePanelFillWidth({
     winW,
     railW: railWidth,
     sidebarW: !isMobile && sidebarOpen ? effectiveSidebarWidth : 0,
     isMobile,
   })
+  // In the companion layout the panel never fills the chat column: it takes the
+  // trailing segment at that segment's width, so the transcript keeps the
+  // leading one (lib/foldCompanion.ts). The fold owns the width, as it owns the
+  // sessions list's. `panelFoldInset` is kept clear before the panel on its fold
+  // side: a fold gap the device reports, so neither pane lies under the hinge,
+  // and right to left the chat pane's collapsed reclaim, which its physical
+  // left margin pulls toward the panel there.
+  const leading = leadingEdge()
+  const safeInsets = useSafeInsets()
+  const panelFoldWidth = foldHeld && foldSegments ? foldPanelWidth({ segments: foldSegments, leading, insets: safeInsets }) : undefined
+  const panelFoldInset = foldHeld && foldSegments ? foldGapWidth(foldSegments) + (leading === 'right' ? collapsedReclaim : 0) : undefined
 
   // The mobile sessions toggle, rendered inline by whichever header owns the
   // surface's top-left: the single-chat title row, or in split view the grid's
@@ -501,7 +524,7 @@ export function usePanelLayout({
   // The welcome screen puts its memory chip directly above the composer.
   const showComposerMemoryChip = isWelcomeState
   return {
-    flyoutNew, panelReserve, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip,
+    flyoutNew, panelReserve, panelMaximized, panelFillWidth, panelFoldWidth, panelFoldInset, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip,
     memorySwitching, composerOptimizing, handleOptimizingChange,
   }
 }

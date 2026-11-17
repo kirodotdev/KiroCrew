@@ -15,7 +15,10 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
-import { switchSlot, sseMcpAppRender } from '../store/chatSlice'
+import { switchSlot, sseMcpAppRender, openActivityPanel, requestFolderReveal } from '../store/chatSlice'
+import { sseSlots } from '../store/dashboardSlice'
+import { foldCompanionShown } from '../lib/foldCompanion'
+import type { ChatSlot } from '../types'
 import type { ViewportSegment } from '../hooks/useViewportSegments'
 
 const device = vi.hoisted(() => ({ isMobile: true, touch: true, segments: null as null | ViewportSegment[] }))
@@ -33,7 +36,8 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: () => null }))
 vi.mock('../components/TypewriterText', () => ({ default: () => null }))
-vi.mock('../components/OverlayDrawer', () => ({ default: () => null }))
+// The sessions drawer, so a test can see whether the list is on screen.
+vi.mock('../components/OverlayDrawer', () => ({ default: ({ open }: { open: boolean }) => (open ? <div data-testid="sessions-drawer" /> : null) }))
 vi.mock('../components/AgentDropdownList', () => ({ default: () => null }))
 vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
@@ -197,5 +201,117 @@ describe('an MCP App frame across a fold on a touch-first phone', () => {
     await act(async () => { await Promise.resolve() })
     expect(document.querySelector('[data-testid="app-frame"]')).toBe(frame)
     expect(frame?.isConnected).toBe(true)
+  })
+})
+
+describe('asking for the sessions list while the panel holds the trailing segment', () => {
+  let shellColumn: HTMLElement
+  beforeEach(() => {
+    localStorage.clear()
+    __resetPanelTabs()
+    // A desktop browser in book pose: the desktop form, the shell's column, a fold.
+    device.isMobile = false
+    device.touch = false
+    device.segments = TAB
+    shellColumn = document.createElement('div')
+    shellColumn.id = 'activity-bar-slot'
+    document.body.appendChild(shellColumn)
+  })
+  afterEach(() => {
+    cleanup()
+    shellColumn.remove()
+  })
+
+  it('the sessions toggle closes the panel and pins the list, so the list takes the leading segment back', async () => {
+    const store = createTestStore()
+    act(() => { store.dispatch(sseSlots([{ key: 'slot-a', title: 'Session A' }] as unknown as ChatSlot[])) })
+    renderChat(store)
+    act(() => { store.dispatch(switchSlot.pending('r1', 'slot-a')) })
+    act(() => { store.dispatch(openActivityPanel()) })
+    await waitFor(() => expect(foldCompanionShown()).toBe(true))
+    expect(store.getState().chat.activityOpen).toBe(true)
+
+    act(() => { window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(localStorage.getItem('mc-sidebar-pinned')).toBe('true')
+    await waitFor(() => expect(foldCompanionShown()).toBe(false))
+  })
+
+  // Fails without the useFoldCompanionYieldsToReveal call in sessionsDrawer.ts.
+  it('a folder reveal (the command bar, a new folder) closes the panel, so the list takes the leading segment back', async () => {
+    const store = createTestStore()
+    act(() => { store.dispatch(sseSlots([{ key: 'slot-a', title: 'Session A' }] as unknown as ChatSlot[])) })
+    renderChat(store)
+    act(() => { store.dispatch(switchSlot.pending('r1', 'slot-a')) })
+    act(() => { store.dispatch(openActivityPanel()) })
+    await waitFor(() => expect(foldCompanionShown()).toBe(true))
+    expect(store.getState().chat.activityOpen).toBe(true)
+
+    act(() => { store.dispatch(requestFolderReveal('folder-a')) })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    await waitFor(() => expect(foldCompanionShown()).toBe(false))
+  })
+})
+
+/**
+ * The same request with no sessions at all. Flat, an empty list is held open
+ * and the toggle has nothing to collapse. Beside a fold with the panel open the
+ * list is hidden all the same, and each control that asks for it must close
+ * the panel. The rail's chat item and the keyboard shortcut send
+ * `toggle-pin-chat-sidebar` as an `Event`; each case sends it the way its
+ * control does. The sessions toggle's expand sends the same name as a
+ * `CustomEvent`, but its button renders only with sessions, so its case pins
+ * the event form, not a control reachable here.
+ */
+describe('asking for the sessions list with no sessions', () => {
+  let shellColumn: HTMLElement
+  beforeEach(() => {
+    localStorage.clear()
+    __resetPanelTabs()
+    device.isMobile = false
+    device.touch = false
+    device.segments = TAB
+    shellColumn = document.createElement('div')
+    shellColumn.id = 'activity-bar-slot'
+    document.body.appendChild(shellColumn)
+  })
+  afterEach(() => {
+    cleanup()
+    shellColumn.remove()
+  })
+
+  const ENTRY_POINTS: [string, () => Event][] = [
+    ["the rail's chat item (navRail.tsx)", () => new Event('toggle-pin-chat-sidebar')],
+    ['the keyboard shortcut (shellKeyboard.ts onToggleSessionPanel)', () => new Event('toggle-pin-chat-sidebar')],
+    ['the CustomEvent form expandSidebar sends (sessionsDrawer.ts)', () => new CustomEvent('toggle-pin-chat-sidebar')],
+  ]
+  for (const [name, request] of ENTRY_POINTS) {
+    it(`beside a fold with the panel open, ${name} closes the panel and the list shows`, async () => {
+      const store = createTestStore()
+      act(() => { store.dispatch(sseSlots([])) })
+      renderChat(store)
+      act(() => { store.dispatch(openActivityPanel()) })
+      await waitFor(() => expect(foldCompanionShown()).toBe(true))
+      expect(document.querySelector('[data-testid="sessions-drawer"]')).toBeNull()
+
+      act(() => { window.dispatchEvent(request()) })
+      expect(store.getState().chat.activityOpen).toBe(false)
+      await waitFor(() => expect(foldCompanionShown()).toBe(false))
+      expect(document.querySelector('[data-testid="sessions-drawer"]')).not.toBeNull()
+    })
+  }
+
+  it('flat, the toggle leaves an empty list held open and the panel as it was', async () => {
+    device.segments = null
+    const store = createTestStore()
+    act(() => { store.dispatch(sseSlots([])) })
+    renderChat(store)
+    act(() => { store.dispatch(openActivityPanel()) })
+    await waitFor(() => expect(document.querySelector('[data-testid="sessions-drawer"]')).not.toBeNull())
+
+    act(() => { window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(localStorage.getItem('mc-sidebar-pinned')).toBeNull()
+    expect(document.querySelector('[data-testid="sessions-drawer"]')).not.toBeNull()
   })
 })

@@ -683,7 +683,7 @@ export default function SidePanel({
   // placement, the clamp to the window, the two resize gestures and the eased
   // edge on a chat switch (`useSidePanelSize.ts`).
   const {
-    rootRef, isMobile, isBottom, setDock, effectiveWidth, effectiveHeight, dimTransition,
+    rootRef, isMobile, isBottom, setDock, dockLocked, effectiveWidth, effectiveHeight, dimTransition,
     resizing, slotSwitched, dimAnimating, panelResize, panelResizeV,
   } = useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, extraReserveW, canDockBottom, expanded, fillWidth })
 
@@ -938,11 +938,12 @@ export default function SidePanel({
             panel-square glyphs are never adjacent look-alikes. A permanent
             panel (no onClose) that cannot dock has no chrome here at all — the
             divider goes with it rather than ruling off an empty group. */}
-        {(closable || (canDockBottom && !isMobile)) && (
+        {(closable || (canDockBottom && !isMobile && !dockLocked)) && (
           <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 self-center relative z-10" />
         )}
         <div className="flex items-center gap-0.5 shrink-0 self-center">
-        {canDockBottom && !isMobile && (
+        {/* A reported fold holds the dock at the right, so the toggle is not offered there. */}
+        {canDockBottom && !isMobile && !dockLocked && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

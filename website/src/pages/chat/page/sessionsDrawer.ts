@@ -10,7 +10,7 @@ import { useShellSlot } from '../../../hooks/useShellSlot'
 import { panelInlineHost } from '../../../lib/touchLayoutForm'
 import { isTouchDevice } from '../../../utils/isTouchDevice'
 import { safeAreaLeft, registerDrawerTargets, animateDrawer, takeOverDrawer, useDrawerSwipe } from '../../../hooks/useDrawerSwipe'
-import { resumeFromHistory, requestFolderReveal, openActivityPanel, openActivityToTab } from '../../../store/chatSlice'
+import { resumeFromHistory, requestFolderReveal, openActivityPanel, openActivityToTab, closeActivityPanel } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { openPanelView } from '../../../hooks/usePanelTabs'
@@ -19,6 +19,8 @@ import { useAppSelector } from '../../../store'
 import { PREVIEW_EXPAND_EVENT } from '../../../components/WebPreviewPanel'
 import { useHoverIntent } from '../../../hooks/useHoverIntent'
 import { shouldMountSidePanel, isSidePanelHidden } from '../sidePanelMount'
+import { useViewportSegments } from '../../../hooks/useViewportSegments'
+import { foldCompanionApplies, foldYieldToList, useFoldCompanionLayout, useFoldCompanionYieldsToReveal } from '../../../lib/foldCompanion'
 import { i18nT } from '../../../i18n/t'
 
 /**
@@ -419,6 +421,7 @@ export function useSessionsDrawer({
   // The panel's host (panelInlineHost): inline in the phone form and wherever
   // the form without a fold would be the phone one, so a fold never moves the
   // panel to the other host.
+  const foldSegments = useViewportSegments()
   const panelInline = panelInlineHost({ isMobile })
   const activitySlot = useShellSlot('activity-bar-slot', !panelInline && !embedMode, activitySlotRev)
   /** The inline panel's mount predicate, shared by the overlay phase effect
@@ -426,6 +429,23 @@ export function useSessionsDrawer({
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
   const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
     && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
+  // Book pose with the side panel on screen (lib/foldCompanion.ts): the
+  // transcript takes the leading segment, the panel the trailing one, and the
+  // sessions list steps aside. Only the full chat page in its desktop form,
+  // where the panel sits in the shell's column beside a list.
+  const fullChatPage = !embedded && !embedMode
+  const foldCompanionWanted = foldCompanionApplies({ segments: foldSegments, desktop: !isMobile, listHost: fullChatPage, panelShown: sidePanelWantsMount })
+  const foldCompanion = useFoldCompanionLayout({ wanted: foldCompanionWanted, segments: foldSegments, isMobile, publish: fullChatPage })
+  // The panel's open state as the layout on screen has it: for the one render
+  // the companion layout trails the store, the panel stays as it was drawn.
+  const sidePanelActivityOpen = foldCompanion === foldCompanionWanted ? activityOpen : foldCompanion
+  // A new request to show a session or folder in the list closes the panel
+  // there and pins the list, so the list can show it.
+  const revealRequest = useAppSelector(state => state.chat.revealRequest)
+  useFoldCompanionYieldsToReveal({
+    companion: foldCompanion, revealRequest,
+    yieldToList: foldYieldToList({ autoHidden: sidebarAutoHidden, setPinned: setSidebarPinned, closePanel: () => dispatch(closeActivityPanel()) }),
+  })
   // Mobile right-panel overlay: slide in when the panel wants the screen,
   // slide out (keeping it mounted for the travel) when it stops wanting it.
   useEffect(() => {
@@ -718,9 +738,11 @@ export function useSessionsDrawer({
   // preview would otherwise stay covered by a list that cannot be dismissed.
   // It also waits for the first slot list: on a page load the list is empty
   // until then, and opening there flashes the list a user chose to hide.
+  // Beside a fold with the panel on screen the list has no segment of its own
+  // (foldCompanion): it steps aside without touching the pin.
   const sidebarOpen = isMobile
     ? mobileSessions
-    : (sidebarPinned || (slotsLoaded && filteredSlots.length === 0 && !previewExpanded))
+    : !foldCompanion && (sidebarPinned || (slotsLoaded && filteredSlots.length === 0 && !previewExpanded))
   // Whether the sidebar -- and with it the banner that says a failed
   // folder-order read -- is on this screen right now. The same facts that mount
   // it in SessionsSidebarChrome's render: embed-chat never mounts one, embed-sessions always does, and
@@ -776,6 +798,6 @@ export function useSessionsDrawer({
   return {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
     closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
-    sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar, panelInline,
+    sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar, foldCompanion, sidePanelActivityOpen, panelInline,
   }
 }

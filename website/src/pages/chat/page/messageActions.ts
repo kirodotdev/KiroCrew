@@ -5,7 +5,7 @@ import { useAppSelector, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { useWindowWidth } from '../../../hooks/useWindowWidth'
 import { useRailWidth } from '../../../hooks/useRailWidth'
-import { openActivityToTab, openActivityPanel, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity } from '../../../store/chatSlice'
+import { openActivityToTab, openActivityPanel, closeActivityPanel, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity } from '../../../store/chatSlice'
 import { TOGGLE_SIDE_TERMINAL_EVENT } from '../../../lib/panelToggleShortcuts'
 import { usePanelTerminalsPending } from '../../../hooks/usePanelTabs'
 import { useSelectionQuoteAsk } from '../../../chat-core/composer/selectionActions'
@@ -17,6 +17,7 @@ import { useComposerDockMetrics } from '../composerDockMetrics'
 import { useSelectionInertOverlays } from '../useSelectionInertOverlays'
 import { useStreamIdle } from '../ChatFooter'
 import { clampSidebarWidth } from '../sidebarWidth'
+import { foldYieldToList, yieldFoldCompanion } from '../../../lib/foldCompanion'
 import { revealComposer } from '../composerFocus'
 import { rewindWithRollback } from '../../../lib/rewindCall'
 import { i18nT } from '../../../i18n/t'
@@ -189,6 +190,16 @@ export function useMessageActions({
 
   useEffect(() => {
     const togglePin = () => {
+      // Beside a fold with the panel open the list was hidden, not unpinned:
+      // the request is to show it, so the panel gives up its segment. The
+      // toggle is a pin the user chose, so it is stored too. This comes before
+      // the no-sessions guard: with no sessions the list is hidden here too
+      // (it is force-open only outside the companion layout), and the panel
+      // must still close for it.
+      if (yieldFoldCompanion(foldYieldToList({ autoHidden: sidebarAutoHidden, setPinned: setSidebarPinned, closePanel: () => dispatch(closeActivityPanel()) }))) {
+        safeSetItem('mc-sidebar-pinned', 'true')
+        return
+      }
       // Always-available collapse. Only guard is no-sessions (the sidebar is
       // force-open then anyway, so there is nothing to collapse).
       if (filteredSlotsRef.current.length === 0) return
@@ -203,7 +214,7 @@ export function useMessageActions({
     }
     window.addEventListener('toggle-pin-chat-sidebar', togglePin)
     return () => window.removeEventListener('toggle-pin-chat-sidebar', togglePin)
-  }, [filteredSlotsRef, setSidebarPinned, sidebarAutoHidden])
+  }, [dispatch, filteredSlotsRef, setSidebarPinned, sidebarAutoHidden])
 
   const lastRole = messages[messages.length - 1]?.role ?? ''
   // Advances with every streamed chunk, so ChatFooter can tell "text is arriving"

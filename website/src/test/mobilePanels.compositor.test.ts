@@ -91,7 +91,9 @@ describe('inline side panel (right) — mobile overlay pairing', () => {
   it('mobile branch never animates width (layout animation)', () => {
     expect(start).toBeGreaterThan(0)
     // The width tween survives ONLY behind the desktop/embed ternary arm.
-    expect(block).toContain('initial={isMobile ? false : { width: 0 }}')
+    // `isMobile` alone resolves `initial` to false; beside a fold the desktop
+    // form's inline panel is placed with no reveal either (`foldPlaced`).
+    expect(block).toMatch(/initial=\{isMobile(?: \|\| foldPlaced)? \? false : \{ width: 0 \}\}/)
     expect(block).toContain('animate={isMobile ? undefined : {')
   })
 
