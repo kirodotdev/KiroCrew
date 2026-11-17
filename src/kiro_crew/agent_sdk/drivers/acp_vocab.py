@@ -184,9 +184,13 @@ def is_user_worded_failure(exc: BaseException) -> bool:
     error frame, including the formatter's fallback that passes the provider's
     own text or the raw error dict through. Timeouts and process deaths are
     excluded by type, because their messages are internal detail whatever they
-    carry. A caller that shows the text still redacts, caps and escapes it for
-    its own platform.
+    carry. The one exception is ``AcpScopeAdmissionTimeout``, an
+    ``AcpRuntimeError`` whose text is always the fixed diagnosis from
+    ``scope_admission.timeout_message``, so it is True. A caller that shows the
+    text still redacts, caps and escapes it for its own platform.
     """
+    if isinstance(exc, AcpScopeAdmissionTimeout):
+        return True
     if not isinstance(exc, AcpError) or isinstance(exc, (AcpTimeoutError, AcpProcessDied)):
         return False
     return exc.user_worded and exc.transient is not True

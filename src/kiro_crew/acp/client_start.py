@@ -1,8 +1,8 @@
 """Start an ``AcpClient`` session: spawn the child, run the initialize handshake, and create, load or fork the session.
 
-``_spawn``, ``_initialize_params``, ``_initialize_session``, ``_new_session_following_substitution``
-and ``ensure_ready``, the entry point that drives them, with
-``_harness_read_back`` and ``_adapter_session_mcp_servers``, which ask the kept
+``_spawn``, ``_admit_scope``, ``_initialize_params``, ``_initialize_session``,
+``_new_session_following_substitution`` and ``ensure_ready``, the entry point that drives
+them, with ``_harness_read_back`` and ``_adapter_session_mcp_servers``, which ask the kept
 process adapter.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
@@ -15,13 +15,14 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_kill_sent``, ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
-``_resume_session_id``, ``_resumed``, ``_session_id``, ``_spawn_start_token``,
-``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
+``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
 ``_scratch_dir``, ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``, ``last_prompt_stats``.
+``_stderr_lines``, ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``,
+``last_prompt_stats``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from kiro_crew import kiro_cli as kiro_cli_mod
 from kiro_crew import platform_compat
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
-from kiro_crew.acp import runtime_process_tree
+from kiro_crew.acp import runtime_process_tree, scope_admission
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
@@ -52,12 +53,18 @@ from kiro_crew.acp.client_spawn_env import (
     finish_suspended_spawn,
     kiro_cli_not_found_message,
 )
-from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
+from kiro_crew.acp.client_timeouts import (
+    _ACP_RESPAWN_BACKOFF_S,
+    _INIT_TIMEOUT,
+    _SCOPE_ADMISSION_RESERVE,
+    _SCOPE_ADMISSION_TIMEOUT,
+)
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
 from kiro_crew.acp.no_model_provider import AcpNoModelProvider
 from kiro_crew.acp.pi_mcp_registration import verify_registration
+from kiro_crew.acp.scope_not_admitted import AcpScopeNotAdmitted
 from kiro_crew.acp.session_mcp import refuse_contested_agent_spec
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
 from kiro_crew.acp.transport_errors import (
@@ -115,8 +122,11 @@ from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.sandbox import (
+    _CLIENT_SCOPE_UNIT_PREFIX,
     assert_voice_runtime_outside_agent_workspace,
     delegated_workspace_exposes_sealed_target,
+    name_scope_unit,
+    scope_unit_name,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.team_ids import apply_slack_team_env
@@ -464,6 +474,20 @@ async def _spawn(self: AcpClient) -> None:
 
             apply_client_application_env(env)
 
+    # This spawn's instance id (``AcpClient.process_instance``). Minted before the
+    # launch because the scope's unit name carries it too: ``_admit_scope`` waits
+    # for the pid to enter a scope it can name. Random rather than pid-derived, so
+    # a recycled pid cannot false-match.
+    instance = uuid.uuid4().hex[:16]
+
+    def _name_scope(argv: list[str]) -> tuple[list[str], str]:
+        # A no-op where the wrap did not happen, as on the runtime: the unit is
+        # read off the argv, so a host with no scope announces none.
+        named_argv = name_scope_unit(argv, instance, _CLIENT_SCOPE_UNIT_PREFIX)
+        if named_argv is argv:
+            return argv, ""
+        return named_argv, scope_unit_name(instance, _CLIENT_SCOPE_UNIT_PREFIX) or ""
+
     launched = await launch(
         self,
         LaunchRequest(
@@ -474,6 +498,7 @@ async def _spawn(self: AcpClient) -> None:
             scratch_label=self._session_key or "session",
             env_before_scrub=_env_before_scrub,
             env_after_scrub=_env_after_scrub,
+            scope_argv=_name_scope,
             agent_env=self._agent_env_snapshot,
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_expose_files=plan.extra_expose_files,
@@ -486,11 +511,13 @@ async def _spawn(self: AcpClient) -> None:
     self._pid = self._process.pid
     self._kill_sent = None
     self._process_tree_confirmed_dead = False
-    # Minted with the process it names, random rather than pid-derived: a
+    # Minted with the process it names (above), random rather than pid-derived: a
     # pid can be reused by the OS, and the start-time disambiguator is not
     # readable on every platform, so equality on a fresh random id is the
     # comparison that cannot false-match across spawns.
-    self._process_instance = uuid.uuid4().hex[:16]
+    self._process_instance = instance
+    # The unit systemd received, empty when no scope was created.
+    self._scope_unit = launched.scope_unit
     _spawn_label = plan.spawn_label
     # Everything from here to the end of _spawn runs with a LIVE subprocess
     # that nothing has recorded yet, so every step must be guarded. Without
@@ -743,12 +770,53 @@ def _initialize_params(self: AcpClient) -> dict[str, Any]:
     }
 
 
+async def _admit_scope(self: AcpClient) -> float:
+    """Wait for systemd to admit this spawn's scope, and return the ``initialize`` budget.
+
+    The client's twin of ``runtime_spawn_launch._admit_scope``, on the helpers in
+    ``scope_admission``. A spawn with no scope keeps the whole :data:`_INIT_TIMEOUT`:
+    ``_scope_unit`` is empty exactly when the cgroup wrap did not happen (see
+    ``_name_scope`` in :meth:`_spawn`), and then nothing waits. Otherwise
+    ``initialize`` gets what admission left of that window. A bound that passes
+    with the pid still outside its scope raises :class:`AcpScopeNotAdmitted`, and an
+    exit seen during the wait raises :class:`AcpProcessDied`, both before anything
+    is written to stdin. The process's own return code marks the exit, so it is
+    already reaped when the wait sees it.
+    """
+    unit = self._scope_unit
+    if not unit or self._process is None:
+        return _INIT_TIMEOUT
+    process = self._process
+    pid, bound = process.pid, _SCOPE_ADMISSION_TIMEOUT
+    admission = await scope_admission.wait_for_admission(
+        pid, unit, exited=lambda: process.returncode is not None, bound_s=bound
+    )
+    if admission.outcome == scope_admission.EXITED:
+        await self._settle_stderr()
+        rc = str(process.returncode)
+        tail = scope_admission.published_stderr_tail(
+            self._stderr_lines if self.memory_mode == "persistent" else None
+        )
+        scope_admission.log_stage(
+            admission, bound_s=bound, pid=pid, unit=unit, returncode=rc, log=logger
+        )
+        raise AcpProcessDied(scope_admission.died_message(unit, pid, rc, tail, admission.reads))
+    scope_admission.log_stage(admission, bound_s=bound, pid=pid, unit=unit, log=logger)
+    if admission.outcome == scope_admission.TIMEOUT:
+        raise AcpScopeNotAdmitted(scope_admission.timeout_message(unit, pid, bound))
+    return scope_admission.initialize_budget(
+        _INIT_TIMEOUT, _SCOPE_ADMISSION_RESERVE, admission.waited_s
+    )
+
+
 async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
-    # 1. Initialize
-    init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
+    # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so
+    # a start that ends at admission discards the launch MCP config as well.
     try:
-        init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+        budget = await self._admit_scope()
+        init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
+        init_resp = await self._wait_for_response(init_id, timeout=budget)
     finally:
         # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
         # the file deleted right after the initialize answer, the stdio server it
@@ -1245,6 +1313,14 @@ async def ensure_ready(self: AcpClient) -> None:
                 # it subclasses AcpError and would otherwise be retried by it,
                 # which is the shape that made the distinct type decorative.
                 _startup_outcome = "tool_gate_unroutable"
+                await self._cleanup_failed_live_spawn()
+                self._reset_state()
+                raise
+            except AcpScopeNotAdmitted:
+                # Not retried: a respawn asks the same slow user manager for one
+                # more transient unit, which adds to the queue it waits in. Before
+                # the generic handler, which would retry it.
+                _startup_outcome = "scope_admission_timeout"
                 await self._cleanup_failed_live_spawn()
                 self._reset_state()
                 raise

@@ -43,6 +43,13 @@ _MAX_CONSECUTIVE_EMPTY = 5
 
 # Timeouts for session initialization steps
 _INIT_TIMEOUT = 240.0  # 4 min — MCP servers can be slow to initialize
+# Scope admission's share of the ``initialize`` window, by the runtime's rule
+# (``runtime_spawn_launch._SCOPE_ADMISSION_RESERVE``): a scoped spawn has no agent
+# until the user systemd manager has moved its pid into the scope, and that wait
+# comes out of the same window. Admission may take the window less the reserve,
+# and ``initialize`` keeps at least the reserve after a slow admission.
+_SCOPE_ADMISSION_RESERVE = 30.0
+_SCOPE_ADMISSION_TIMEOUT = _INIT_TIMEOUT - _SCOPE_ADMISSION_RESERVE
 # set_mode/set_model: fire-and-forget.  kiro-cli accepts these commands
 # but usually never sends a JSON-RPC response — MCP servers load
 # asynchronously.  Any late responses land in _buffer and are harmlessly

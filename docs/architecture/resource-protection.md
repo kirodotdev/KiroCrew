@@ -263,12 +263,14 @@ runtime's pid at initialization, so an operator reading a kill can join the scop
 back to the runtime it held, and from that pid to the sessions it served — those
 are logged against the same pid as they are created.
 
-Every other wrap keeps the default anonymous name: `AcpClient._spawn`, cron,
-app-backend, hook, git and tool spawns. For `AcpClient._spawn` that is deliberate
-here — its spawn instance exists only in memory and is never written to the
-child's environment, so a name alone would not outlive the kill it is meant to
-explain. Giving that path a durable token is harness-parity work, not part of this
-naming pass.
+Every other wrap keeps the default anonymous name: cron, app-backend, hook, git and
+tool spawns. `AcpClient._spawn` names its scope too, as
+`kirocrew-cl-<process instance>.scope` (`_CLIENT_SCOPE_UNIT_PREFIX`), because its
+scope admission wait must find the unit in `/proc/<pid>/cgroup`. The prefix is its
+own, so the readers of `kirocrew-rt-*` runtime scopes skip it. The token is not
+written to the child's environment, so no reader can match a process to the scope
+through its environment. The client's `scope_admission` log record names the unit
+beside the pid.
 
 ### Failed scopes are collected
 

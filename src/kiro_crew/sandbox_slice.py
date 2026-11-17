@@ -422,6 +422,10 @@ def apply_windows_resource_ceiling(pid: int, *, background: bool = False) -> boo
 # list-units`` can tell an agent scope from anything else in the slice, and is
 # the token the reverse lookup matches on.
 _SCOPE_UNIT_PREFIX = "kirocrew-rt-"
+# Prefix of the scope of one ``AcpClient`` process (one session). A prefix of its
+# own, so the readers of runtime scopes (``session_scope_reap.kept_scopes``, Shared
+# Crew's ``containment.populated_scopes``) never count a client process as a runtime.
+_CLIENT_SCOPE_UNIT_PREFIX = "kirocrew-cl-"
 # systemd unit names accept alphanumerics and ``:-_.\`` plus escapes; anything
 # else has to be escaped to be a legal name. Rather than escape, a token
 # carrying something else is REFUSED (see ``scope_unit_name``), because every
@@ -429,7 +433,7 @@ _SCOPE_UNIT_PREFIX = "kirocrew-rt-"
 _SCOPE_UNIT_TOKEN_SAFE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 
 
-def scope_unit_name(token: str) -> str | None:
+def scope_unit_name(token: str, prefix: str = _SCOPE_UNIT_PREFIX) -> str | None:
     """The scope unit name for a spawn identified by *token*, or None.
 
     ``cgroup_scope_argv`` otherwise lets systemd auto-name the scope
@@ -448,6 +452,13 @@ def scope_unit_name(token: str) -> str | None:
     beside its pid at initialization, and sessions are logged against that same
     pid as they are created, so the join survives the process.
 
+    *prefix* is :data:`_SCOPE_UNIT_PREFIX` for a runtime. ``AcpClient`` passes
+    :data:`_CLIENT_SCOPE_UNIT_PREFIX` with its ``process_instance`` as the token,
+    so its scope admission wait has a unit to find in ``/proc/<pid>/cgroup``. Only
+    the runtime's token travels in the child's environment: a client child keeps
+    the ``KIROCREW_SPAWN_INSTANCE`` it inherited, which ties a ``kiro-cli`` an
+    agent's shell starts to that agent's runtime.
+
     Returns ``None`` when *token* cannot form a legal unit name, and the caller
     then wraps the spawn exactly as before -- anonymously, but bounded. That
     direction is deliberate: the scope's JOB is the DoS ceiling, and a naming
@@ -458,7 +469,7 @@ def scope_unit_name(token: str) -> str | None:
     """
     if not _SCOPE_UNIT_TOKEN_SAFE.match(token or ""):
         return None
-    return f"{_SCOPE_UNIT_PREFIX}{token}.scope"
+    return f"{prefix}{token}.scope"
 
 
 def cgroup_scope_argv(argv: list[str]) -> list[str]:
@@ -507,7 +518,8 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     spawn site being taught about sessions.
 
     The scope itself is left ANONYMOUS here -- systemd auto-names it
-    ``run-u<N>.scope``. A caller that can name the runtime it is spawning passes
+    ``run-u<N>.scope``. A caller that names its spawn (``AcpRuntime``, and
+    ``AcpClient`` with its own prefix) passes
     the result through :func:`name_scope_unit`, which is a separate step so that
     this function's argv stays byte-identical for the many callers wrapping a
     one-off tool or app subprocess that no reader needs to resolve back to a
@@ -604,8 +616,10 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     ]
 
 
-def name_scope_unit(argv: list[str], token: str) -> list[str]:
+def name_scope_unit(argv: list[str], token: str, prefix: str = _SCOPE_UNIT_PREFIX) -> list[str]:
     """Name the scope in a :func:`cgroup_scope_argv` result after *token*.
+
+    The unit is ``scope_unit_name(token, prefix)``.
 
     Returns *argv* UNCHANGED unless it really is a systemd-run scope wrapper AND
     *token* forms a legal unit name (:func:`scope_unit_name`). Both degradations
@@ -624,7 +638,7 @@ def name_scope_unit(argv: list[str], token: str) -> list[str]:
     ``--unit`` goes BEFORE the ``--`` separator. After it, systemd-run reads it as
     an argument to the wrapped command instead of a property of the scope.
     """
-    unit = scope_unit_name(token)
+    unit = scope_unit_name(token, prefix)
     if unit is None or "--scope" not in argv or "--" not in argv:
         return argv
     at = argv.index("--")

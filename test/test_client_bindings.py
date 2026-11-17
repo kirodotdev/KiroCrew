@@ -58,6 +58,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "51d4cc79ba1f", "client_class"),
     "_adapter_session_mcp_servers": ("function", False, "7eb96c2fda05", "client_start"),
     "_add_orphan_steers": ("function", False, "b3c41cdccc27", "client_turn_control"),
+    "_admit_scope": ("function", True, "59162e39f6f1", "client_start"),
     "_advertised_commands": ("data", False, "", ""),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "client_model_selection"),
     "_agent_env_for_spawn": ("function", False, "8cab7a4db01b", "client_spawn_env"),
