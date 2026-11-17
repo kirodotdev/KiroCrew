@@ -3,12 +3,15 @@
 ``GET /api/artifacts/session-docs`` walks every session through
 ``ConversationLog.read_file_change_messages``. A cache smaller than the store
 is evicted before reuse by that walk, and a cache that keeps ``before``/``after``
-bodies is too large to cover the store.
+bodies is too large to cover the store. The display scan checks each cached entry
+against the listing index's identity for its file, so an unchanged session costs
+no ``stat``.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +21,7 @@ from kiro_crew import history_projection
 from kiro_crew.dashboard.handlers import artifacts as h
 from kiro_crew.history import ConversationLog
 from kiro_crew.history_cache import _TRANSCRIPT_CACHE_MAX
+from kiro_crew.history_listing_index import SessionListingIndex
 
 #: More sessions than the general transcript cache bound.
 _SESSIONS = _TRANSCRIPT_CACHE_MAX + 44
@@ -149,3 +153,62 @@ def test_cache_memory_is_paths_only(store):
     # Two short paths and one timestamp per session; the 8 KiB of before/after
     # bodies per session are not kept.
     assert sizes and max(sizes) < 400
+
+
+def _index(log: ConversationLog) -> None:
+    """A listing index whose reconcile runs only when the test calls it."""
+    log._listing_index = SessionListingIndex(log, clock=lambda: 0.0, submit=lambda job: None)
+
+
+def _count_transcript_stats(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    stats: list[str] = []
+    real = os.stat
+
+    def counting(path, *args, **kwargs):
+        if str(path).endswith(".jsonl"):
+            stats.append(str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", counting)
+    return stats
+
+
+def test_display_scan_of_an_unchanged_store_stats_no_transcript(store, monkeypatch):
+    _index(store)
+    first = h._scan_session_docs(store, {})
+    stats = _count_transcript_stats(monkeypatch)
+
+    second = h._scan_session_docs(store, {})
+
+    assert stats == []
+    assert second == first
+    # The counter sees the per-session stats the scan without the index makes.
+    h._collect_session_docs(store, {})
+    assert len(set(stats)) == _SESSIONS
+
+
+def test_display_scan_reads_only_the_session_written_since(store, monkeypatch):
+    _index(store)
+    h._scan_session_docs(store, {})
+    store.append(
+        "sess7", "assistant", "done", extra_meta={"file_changes": [{"path": "/tmp/docs/new.md"}]}
+    )
+    opened = _count_file_reads(monkeypatch)
+
+    out = h._scan_session_docs(store, {})
+
+    assert opened == [str(store._path("sess7"))]
+    assert "/tmp/docs/new.md" in {e["path"] for e in out}
+
+
+def test_display_scan_sees_an_outside_write_after_the_reconcile(store):
+    _index(store)
+    h._scan_session_docs(store, {})
+    _write(store._path("sess7"), _rows(7, "/tmp/docs/renamed.md"))
+
+    store._listing_index.reconcile()
+    out = h._scan_session_docs(store, {})
+
+    paths = {e["path"] for e in out}
+    assert "/tmp/docs/renamed.md" in paths
+    assert "/tmp/docs/report_7.md" not in paths
