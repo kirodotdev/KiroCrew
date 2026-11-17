@@ -627,7 +627,7 @@ class AcpSessionHandle:
         self._parked_since: float | None = None
         # Last /api/session-keepalive touch addressed to THIS session (monotonic,
         # 0.0 for none), and `_parked_total` when it landed. Written by
-        # note_keepalive(); folded into the tool-idle clock in _dispatch_events.
+        # note_keepalive(); folded into both idle clocks in _dispatch_events.
         # Never reset per turn: a touch from an earlier turn is older than this
         # turn's own frames, so the fold can never pick it up.
         self._keepalive_ts: float = 0.0
