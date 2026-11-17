@@ -4902,8 +4902,22 @@ so absence clears it.
   that drain's attempt lasts; once it ends every card still queued is held, a
   later accepted card it starts by id after the running turn included), the
   sidebar row, board lane and command center count only
-  `queue_depth - queue_held_depth` (`readyQueueDepth`), and a restored card's
-  hourglass stands still, chosen or not.
+  `queue_depth - queue_held_depth` (`readyQueueDepth`).
+- **A held card says it waits.** `queue_entry_view` sets `meta.held` from
+  `is_held_queue_entry`, the same verdict `queue_held_depth` counts, beside the
+  `meta.restored` provenance, and the slot-detail queue snapshot copies the
+  restore marks that verdict reads. Provenance is not state: a restored card
+  chosen with Send now, or one the startup drain accepted, is not held, so its
+  hourglass turns like a live card's, and only a held card's hourglass stands
+  still (`QueueStack`). A held card shows "Restored after a restart. Won't send
+  on its own." (`components.queueStack.restored_held`) on its own wrapping row
+  under the message, and the card grows by the row's measured height. The row
+  hides while an action on the card is in flight, while its editor is open,
+  and where the stack does not offer Send now, edit and cancel. The flag rides
+  only the queue a slot read returns, so a `slots` frame whose
+  `queue_held_depth` moved for an open pane re-reads it (`slotList.ts`): the
+  active pane through `refreshSlot` unless the turn-end branch already did,
+  other open panes through the warm path, once per frame.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a
