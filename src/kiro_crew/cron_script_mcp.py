@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import mcp_structured_text as _structured_text
+from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron_script_child_env import _CRON_ENV_DENY, _GRANTED_ENV_KEYS, _clean_cron_env
@@ -300,7 +301,11 @@ class McpToolClient:
 
     def close(self) -> None:
         try:
-            self._proc.terminate()
+            if platform_compat.IS_WINDOWS:
+                # A server behind a ``.cmd`` wrapper is a grandchild terminate() misses.
+                platform_compat.kill_popen_tree(self._proc)
+            else:
+                self._proc.terminate()
             self._proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self._proc.kill()
@@ -316,7 +321,12 @@ class McpToolClient:
                 except Exception:
                     # A failed close must not stop the unlink below.
                     pass
-                Path(stderr_file.name).unlink(missing_ok=True)
+                try:
+                    Path(stderr_file.name).unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "could not delete MCP stderr capture %s: %s", stderr_file.name, exc
+                    )
             if self._sandbox_cleanup:
                 Path(self._sandbox_cleanup).unlink(missing_ok=True)
 
@@ -363,7 +373,11 @@ class KeptMcpServers:
             return result
         finally:
             if client is not None and not kept:
-                client.close()
+                try:
+                    client.close()
+                except Exception:
+                    # The call's own error, or its result, outranks a failed stop.
+                    logger.debug("stopping an MCP server after its call failed", exc_info=True)
 
     def close(self) -> None:
         """Stop every kept server; never raises, and later calls keep none."""
