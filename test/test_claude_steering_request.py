@@ -209,6 +209,29 @@ async def test_an_injected_answer_after_the_terminal_is_handled_is_undelivered()
         assert await await_until(steer, what="the steer") is False
 
 
+@pytest.mark.asyncio
+async def test_a_steer_injected_after_its_turn_ended_stays_possibly_delivered():
+    """False to the caller, but the adapter took it: the dashboard must not run it again."""
+    async with _Tasks() as spawned:
+        client = _client()
+        wire = _Wire(client)
+        turn = await _start_turn(client, spawned)
+
+        steer = _spawn(spawned, client.steer("racing"))
+        steering_id = await wire.next_steering_id()
+        wire.end_turn()
+        await await_until(turn, what="the turn")
+        client._settle_steering_answer(
+            JsonRpcMessage(id=steering_id, result={"outcome": "injected"})
+        )
+        assert await await_until(steer, what="the steer") is False
+        assert client.held_steers_possibly_delivered == {"racing"}
+        nxt = await _start_turn(client, spawned)
+        assert client.held_steers_possibly_delivered == frozenset()
+        wire.end_turn()
+        await await_until(nxt, what="the next turn")
+
+
 @pytest.mark.parametrize("stop_reason", ["cancelled", "max_tokens", "refusal"])
 @pytest.mark.asyncio
 async def test_only_a_clean_end_turn_reports_an_accepted_steer(stop_reason):
