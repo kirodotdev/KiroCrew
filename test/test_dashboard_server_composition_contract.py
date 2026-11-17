@@ -411,6 +411,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.card_send": "card_turn_arrival_middleware card_turn_delegation_middleware",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.chat_utils_injected_rows": "WORKFLOW_FOLLOWUP_KIND",
+    "kiro_crew.dashboard.executor_watchdog": "ExecutorStallProbe",
     "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
     "kiro_crew.dashboard.redaction_audience": "redaction_audience_middleware",
     "kiro_crew.relay_client.provider": "publish_gateway_ingress",

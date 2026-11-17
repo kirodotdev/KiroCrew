@@ -2716,7 +2716,23 @@ specified compatibility change.
     wait, and the channel transcript convergence;
   - `heartbeat` — the loop stall watchdog, the 5-second heartbeat that beats it, the
     prior crash dump's one report, and the healthy-boot marker both entrypoints
-    dispatch once ready;
+    dispatch once ready. Each beat also ticks the default executor's liveness probe
+    (`dashboard/executor_watchdog.py`), which keeps one no-op submitted to the loop's
+    default executor. A loop that keeps beating while every `to_thread` worker is
+    stuck looks healthy to the watchdog, so the probe watches that pool itself. A
+    no-op still queued after 60s logs every thread's stack at ERROR, once per stall,
+    rendered from `sys._current_frames()` without reading source files, so it works
+    on macOS too. The log record and a faulthandler dump to stderr are written on a
+    thread of their own, never on the loop, because the stalled device may be the
+    one behind them. A busy pool is not a stuck one: from the report on, each beat
+    samples which work item every `mc-default` worker is running, and any worker
+    that started, finished or changed an item restarts a no-progress clock. Only a
+    no-op queued for 300s with no worker progress for 240s, while the loop stall
+    watchdog is running, makes the gateway `os._exit(1)` so its service manager
+    restarts it. The exit runs once the report is written, or 5s later from the loop
+    if the write never finishes. It is hard because an orderly shutdown runs its stop
+    hooks through the same stuck pool. It writes nothing to the crash-dump file, so
+    the next boot does not report it as an event-loop stall;
   - `diagnostics` — the boot telemetry event and the diagnostic recorder;
   - `stt_hooks` — speech-to-text prewarm and idle sweep, and the local decision
     model's release at cleanup;

@@ -8,6 +8,7 @@ marker both entrypoints dispatch once ready, and the watchdog's shutdown.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -110,6 +111,8 @@ def _start_loop_heartbeat(
     state: DashboardState,
     _loop_watchdog: LoopStallWatchdog,
     _heap_trim_maintainer: platform_compat.HeapTrimMaintainer,
+    *,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> asyncio.Task[None]:
     """Start the event-loop heartbeat that beats *_loop_watchdog*; return its task.
 
@@ -126,7 +129,22 @@ def _start_loop_heartbeat(
     thread stacks via faulthandler once the heartbeat stops beating, so the
     stuck frame lands in the log automatically instead of leaving us to sample
     the PID by hand.
+
+    Each tick also drives the default executor's liveness probe
+    (:class:`kiro_crew.dashboard.executor_watchdog.ExecutorStallProbe`): a loop
+    that keeps beating while every ``to_thread`` worker is stuck looks healthy
+    to the watchdog, so the probe watches that pool and restarts the gateway
+    only while the watchdog itself is running.
+
+    *sleep* waits out each interval; it defaults to ``asyncio.sleep`` and is
+    injectable so a test can drive the beats without the real interval.
     """
+    _sleep = sleep or asyncio.sleep
+    # Deferred: an owner module imports no project module at module level (its
+    # names come through the facade), which the composition contract pins.
+    from kiro_crew.dashboard.executor_watchdog import ExecutorStallProbe
+
+    _executor_probe = ExecutorStallProbe(armed=lambda: _loop_watchdog.is_running())
 
     async def _loop_heartbeat() -> None:
         # 5s (not 10s) so the watchdog's dump-then-exit alarm is re-armed at a
@@ -145,11 +163,12 @@ def _start_loop_heartbeat(
         interval = 5.0
         while True:
             t0 = platform_compat.awake_now()
-            await asyncio.sleep(interval)
+            await _sleep(interval)
             lag = platform_compat.awake_now() - t0 - interval
             # Claimed before beat(): check() holds its own capture flag until a beat.
             capture_lag = _loop_watchdog.claim_lag_enrichment(lag)
             _loop_watchdog.beat()
+            _executor_probe.tick()
             # Resource-pressure notifications ride the heartbeat cadence
             # rather than owning a task: the notifier self-gates to its own
             # sample interval, never raises, and off-loads its synchronous
