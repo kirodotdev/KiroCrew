@@ -1289,13 +1289,17 @@ def _self_test() -> int:
         return build
 
     # Pick a prefix of the real specs that is one batch under 24,000 but over
-    # cmd.exe's limit -- exactly the #22727 shape.
+    # cmd.exe's limit -- exactly the #22727 shape. The joined length grows by one
+    # space plus the spec per target, so it is summed here; rebuilding the argv
+    # per spec re-validated every earlier spec on disk each time (quadratic).
+    # The batching calls below still build and validate the chosen subset.
     fe_subset: list[str] = []
+    length = len(" ".join(frontend_argv(fe_tree[:1]))) - len(fe_tree[0]) - 1
     for spec in fe_tree:
-        trial = fe_subset + [spec]
-        if len(" ".join(frontend_argv(trial))) > ARGV_CHAR_LIMIT:
+        length += len(spec) + 1
+        if length > ARGV_CHAR_LIMIT:
             break
-        fe_subset = trial
+        fe_subset.append(spec)
     check("the repro subset is a realistic size", len(fe_subset) > 50)
     bare_batches = argv_batches(_fe_build("/usr/bin/npx"), fe_subset)
     check(
