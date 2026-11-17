@@ -157,7 +157,7 @@ async def test_the_owner_socket_is_sent_the_browser_snapshot_frames() -> None:
     lh.reset_live_hub()
     lh._HUB = h
     try:
-        await ws_mod._send_browser_live_snapshot(_Ws())  # type: ignore[arg-type]
+        await ws_mod._send_browser_live_snapshot(_Ws(), owner_reader=True)  # type: ignore[arg-type]
     finally:
         lh.reset_live_hub()
     frames = [json.loads(t) for t in sent]

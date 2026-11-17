@@ -135,60 +135,16 @@ async def deny_session_approval_caller(request: web.Request, operation: str) -> 
     return await session_approval_refusal(request_app)
 
 
-#: What a Shared Crew teammate may answer on a session's own approval card. Every
-#: trust verb and ``yolo`` changes the session's approval mode rather than deciding
-#: one request, and a deny-rule override is the owner's alone, so those stay with
-#: the owner gate.
-_TEAMMATE_DECISIONS = frozenset({"approved", "rejected", "rejected_once"})
-
-
 def _shared_crew_teammate(request: web.Request) -> bool:
-    """Whether *request* is a Shared Crew teammate's own dashboard session, not the owner's.
+    """Whether *request* is a Shared Crew teammate's session, not the machine owner's.
 
-    A teammate is a person a sharing path admitted by its own check: a team Crew
-    teammate the Kiro relay verified (``routes_identity._relay_teammate``), or a
-    collaborator a membership boundary admitted (``is_collaborator_request``: the
-    Tailscale paths and an SSM invite). Teammates already open and run turns in
-    every session, so they decide that session's tool approvals too. App tokens,
-    internal callers and any other non-owner dashboard session are not teammates,
-    and nobody is one while the Shared Crew preview is off.
+    A teammate passes the owner gate here as everywhere
+    (``shared_crew.teammate_access``); this only keeps the decide-by-id form the
+    owner's browser alone uses, since a teammate's card always names its request.
     """
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-    from kiro_crew.shared_crew.collaborators import is_collaborator_request
-    from kiro_crew.shared_crew.preview import preview_enabled
-    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+    from kiro_crew.shared_crew.teammate_access import is_shared_crew_teammate
 
-    if request.get("internal_auth") is True or request.get("app", None) != "":
-        return False
-    if not preview_enabled() or is_owner_dashboard_request(request):
-        return False
-    return _relay_teammate(request) or is_collaborator_request(request)
-
-
-def _teammate_decision_refusal(
-    request: web.Request, slot_name: str, request_id: Any, action: Any
-) -> web.Response | None:
-    """Admit a teammate's decision on *slot_name*, or refuse an owner-only action.
-
-    Either way the outcome is recorded in the SEL under the teammate's subject.
-    """
-    allowed = isinstance(action, str) and action in _TEAMMATE_DECISIONS
-    try:
-        sel().log_api_access(
-            caller=str(request.get("user") or "anonymous"),
-            operation=f"tool_approval:{action if isinstance(action, str) else 'invalid'}",
-            outcome="allowed" if allowed else "denied",
-            source="shared_crew_teammate",
-            resources=f"slot={slot_name} request={request_id if isinstance(request_id, str) else ''}",
-            error="" if allowed else "approval mode and override decisions are owner-only",
-        )
-    except Exception:  # pragma: no cover - audit is best-effort
-        logger.debug("SEL audit failed for teammate approval decision", exc_info=True)
-    if allowed:
-        return None
-    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-
-    return _owner_denial_response(request, "forbidden")
+    return is_shared_crew_teammate(request)
 
 
 def bare_approval_decide_allowed(request: web.Request) -> bool:
@@ -1159,17 +1115,13 @@ def _state_approval_pending(state: DashboardState, request_id: Any) -> bool:
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval.
 
-    The owner, an app with the session approval grant, or a Shared Crew teammate
-    (:func:`_shared_crew_teammate`), who may approve or reject the live card the
-    decide names (``origin: "native"`` with its ``request_mid``) but not change the
-    approval mode or answer a deny-rule override.
+    The owner (a Shared Crew teammate passes the owner gate,
+    ``shared_crew.teammate_access``), or an app with the session approval grant.
     """
     state: DashboardState = request.app["state"]
-    teammate = _shared_crew_teammate(request)
-    if not teammate:
-        denied = await deny_session_approval_caller(request, "chat_slot_approve")
-        if denied is not None:
-            return denied
+    denied = await deny_session_approval_caller(request, "chat_slot_approve")
+    if denied is not None:
+        return denied
     request_app = str(request.get("app") or "")
     # A Crew Mode conductor's approval card decides a WORKER's request through this
     # same route (``crew_workers.api_crew_worker_approve``): that route gates the
@@ -1206,10 +1158,6 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
         )
-    if teammate:
-        refused = _teammate_decision_refusal(request, name, request_id, original_action)
-        if refused is not None:
-            return refused
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
     # A FRESH grant read: the body upload above can take long enough for the
@@ -1227,7 +1175,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     if (
         not strict_native
         and not request_app
-        and (teammate or not bare_approval_decide_allowed(request))
+        and (_shared_crew_teammate(request) or not bare_approval_decide_allowed(request))
     ):
         # A decide by request id alone, from a caller that is not the dashboard
         # owner's browser session: refuse it rather than resolve whichever

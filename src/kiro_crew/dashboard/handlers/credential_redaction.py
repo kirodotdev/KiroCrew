@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.edition_locks import audit_refusal
 from kiro_crew.security import redaction_switch
 
@@ -87,8 +87,9 @@ class _AuditUnavailable(Exception):
 
 
 async def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None:
-    """Refuse anyone but the dashboard OWNER; audited off the event loop."""
-    if is_owner_dashboard_request(request):
+    """Refuse anyone but the machine OWNER, whose own view the switch governs; audited
+    off the event loop."""
+    if is_host_owner_dashboard_request(request):
         return None
     # Names the calling APP, never a value -- worded without the word the SAST
     # logger rule keys on, since a literal there reads as a possible secret.

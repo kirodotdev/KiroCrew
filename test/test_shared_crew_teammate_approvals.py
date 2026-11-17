@@ -1,13 +1,13 @@
-"""A Shared Crew teammate decides a tool approval in a session they can run turns in.
+"""A Shared Crew teammate decides a session's tool approvals as the owner does.
 
 The relay cases are driven over a real loopback listener with the relay ingress,
 the client-sent strip and token auth chained as the gateway orders them, so the
 caller is exactly the ``relay:<Kiro user ID>`` teammate the relay hands over. A
-teammate approves or rejects a session's own card, in their own session or the
-owner's, and the decision names them as the responder. Changing the approval mode
-(Trust, Trust reads, a command grant, YOLO) and a deny-rule override stay with the
-owner, and a non-owner dashboard session that no sharing path admitted is still
-refused.
+teammate passes the owner gate (``shared_crew.teammate_access``): they approve or
+reject a card in their own session or the owner's, change the approval mode (Trust,
+YOLO) from a card or the mode route, and the decision names them as the responder.
+A teammate's decide still names the card it was clicked on, and a non-owner
+dashboard session that no sharing path admitted is still refused.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from token_auth_helpers import clear_nonces  # noqa: F401 -- the autouse fixture
 
 from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard.chat_handlers import api_chat_mode, api_chat_slot_approve
-from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ONCE
 from kiro_crew.dashboard.kiro_relay.caller import CrewKind, HostBinding
 from kiro_crew.dashboard.kiro_relay.ingress import (
     RELAY_INGRESS_APP_KEY,
@@ -186,7 +185,6 @@ async def test_a_relay_teammate_decides_an_approval_in_their_own_session(
     assert fut.result() == action
     assert body["decision"]["responder"]["id"] == ANA_ID
     assert body["decision"]["settled_by"] == "person"
-    assert (f"tool_approval:{action}", "allowed", f"relay:{ANA}") in _sel_outcomes(sel_log)
 
 
 @pytest.mark.asyncio
@@ -225,36 +223,31 @@ async def test_a_second_teammate_click_gets_the_first_decision(state, sel_log) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "action", ["trust", "trust_reads", "trust_command", "trust_base", "yolo", DENY_OVERRIDE_ONCE]
-)
-async def test_a_teammate_cannot_change_the_approval_mode_from_a_card(
-    state, sel_log, action
-) -> None:
+async def test_a_teammate_changes_the_approval_mode_from_a_card(state, sel_log) -> None:
     slot, fut = _pending(state, "rid-4")
+    action = "trust_reads"
     async with TestClient(TestServer(_relay_app(state))) as client:
         resp = await client.post(
             f"/api/chat/slots/{SLOT}/approve",
-            json={"action": action, "request_id": "rid-4", "response_id": "r-ana"},
+            json=_card_body(slot, "rid-4", action),
             headers=_teammate(client),
         )
         body = await resp.json()
-    assert resp.status == 403, body
-    assert body["code"] == "owner_only"
-    assert not fut.done()
-    assert not slot._trust and not slot._trust_reads
-    assert (f"tool_approval:{action}", "denied", f"relay:{ANA}") in _sel_outcomes(sel_log)
+    assert resp.status == 200, body
+    assert fut.done()
+    assert body["decision"]["responder"]["id"] == ANA_ID
 
 
 @pytest.mark.asyncio
-async def test_a_teammate_still_cannot_set_the_session_approval_mode(state, sel_log) -> None:
+async def test_a_teammate_sets_the_session_approval_mode(state, sel_log) -> None:
     slot, _fut = _pending(state, "rid-5")
     async with TestClient(TestServer(_relay_app(state))) as client:
         resp = await client.post(
             "/api/chat/mode", json={"mode": "trust", "slot": SLOT}, headers=_teammate(client)
         )
-    assert resp.status == 403
-    assert not slot._trust
+        body = await resp.json()
+    assert resp.status == 200, body
+    assert slot._trust
 
 
 @pytest.mark.asyncio
@@ -296,9 +289,11 @@ async def test_a_teammate_decide_must_name_the_card_it_was_clicked_on(state, sel
 
 
 @pytest.mark.asyncio
-async def test_a_relay_teammate_is_refused_with_the_shared_crew_preview_off(
+async def test_a_relay_teammate_decides_with_the_shared_crew_preview_off(
     state, sel_log, _floor_monkeypatch
 ) -> None:
+    # A relay teammate is the team Crew's own access path, granted by the control
+    # plane, so the preview that gates the Tailscale and SSM paths does not narrow it.
     _floor_monkeypatch.delenv("KIROCREW_SHARED_CREW_PREVIEW", raising=False)
     _floor_monkeypatch.setattr("kiro_crew.shared_crew.preview.snapshot_at_start", lambda: False)
     slot, fut = _pending(state, "rid-9")
@@ -308,9 +303,8 @@ async def test_a_relay_teammate_is_refused_with_the_shared_crew_preview_off(
             json=_card_body(slot, "rid-9", "approved"),
             headers=_teammate(client),
         )
-    assert resp.status == 403
-    assert not fut.done()
-    assert _sel_outcomes(sel_log) == []
+    assert resp.status == 200
+    assert fut.result() == "approved"
 
 
 @pytest.mark.asyncio

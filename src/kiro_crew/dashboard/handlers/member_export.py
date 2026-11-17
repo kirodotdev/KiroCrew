@@ -241,13 +241,6 @@ async def api_member_export(request: web.Request) -> web.Response:
     choices = _choices(body)
     if isinstance(choices, web.Response):
         return choices
-    from kiro_crew.shared_crew.routes_identity import _relay_teammate
-
-    if _relay_teammate(request):
-        # A teammate's export carries what a teammate may read: never the owner's
-        # rules (owner-only to read, and disclosure cannot be undone) nor the
-        # crons, whose prompts and scripts are the owner's scheduled jobs.
-        choices = dataclasses.replace(choices, rules=False, crons=False)
     state = request.app.get("state")
     crons = getattr(state, "crons", None)
     jobs = await crons.list_jobs_async(include_disabled=True) if crons is not None else []

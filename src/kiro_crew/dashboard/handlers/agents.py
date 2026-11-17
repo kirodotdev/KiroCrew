@@ -228,7 +228,6 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _eager_copy_mate_config,
     _mark_first_greeting_owed,
     _refresh_session_defaults,
-    _teammate_create_refusal,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agents_create,
 )
@@ -1651,17 +1650,17 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # with `app == ""` and would have sailed through, which is the same
     # caller-class hole that keeps reappearing when this question is hand-rolled
     # per class instead of delegated to the one predicate that already answers
-    # it. `is_owner_dashboard_request` is what `_require_owner` resolves to for
-    # the mutating agents routes, so the read and write sides now agree
-    # on who the owner is.
+    # it. Masking asks `is_host_owner_dashboard_request`, the machine-owner half of
+    # the `is_owner_dashboard_request` gate the mutating agents routes use, so a
+    # Shared Crew teammate who may write still reads masked.
     #
     # Fails CLOSED -- treated as NOT the owner, so masked -- when the app carries
     # no state to resolve an owner against. The predicate subscripts
     # `app["state"]`, and for a disclosure control "unknown caller" must mean
     # "mask", not "show".
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    redact = request.app.get("state") is None or not is_owner_dashboard_request(request)
+    redact = request.app.get("state") is None or not is_host_owner_dashboard_request(request)
     state: DashboardState | None = request.app.get("state")
 
     # A legacy built-in binding (``builtin``, no member id) is listed once its DM

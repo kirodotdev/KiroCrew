@@ -14,7 +14,6 @@ from aiohttp import web
 from kiro_crew.dashboard import redaction_audience
 from kiro_crew.dashboard import ws_chunk_scope as chunk_scope
 from kiro_crew.dashboard import ws_snapshot_hold as snapshot_hold
-from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
 from kiro_crew.dashboard.turn_heartbeat import TurnHeartbeat
 from kiro_crew.write_buffer_level import level_is_progress_signal
 
@@ -328,7 +327,9 @@ class WebSocketHub:
         # while it was off stays on that socket's stream redactor after it is turned on,
         # so its context holds. The owner's setting governs only what the owner reads.
         owners = getattr(self._owner, "_owner_ws_clients", None) or ()
-        shown = redaction_audience.for_socket(ws, msg, owner=ws in owners)
+        shown = redaction_audience.for_socket(
+            ws, msg, owner=redaction_audience.socket_reads_as_owner(ws, owners)
+        )
         if shown is None:
             return
         msg = shown
@@ -442,18 +443,6 @@ class WebSocketHub:
                 slug = data.get("slug") if isinstance(data, dict) else None
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
-                return False
-        if ws.get(RELAY_TEAMMATE_WS_FLAG, False):
-            # A relayed teammate is a dashboard user with no app surface: the
-            # remote limits refuse every app route, so the app frames the
-            # dashboard-user grant below would hand it are withheld first.
-            from kiro_crew.dashboard.ws_event_scope import (
-                app_origin_frame,
-                audit_teammate_withheld,
-            )
-
-            if app_origin_frame(msg_type, data):
-                audit_teammate_withheld(msg_type)
                 return False
         if ws.get("_is_dashboard_user", False):
             # The per-member event log is the owner's view of the crew, the
@@ -816,6 +805,14 @@ class WebSocketHub:
         loop = asyncio.get_running_loop()
         started = loop.time()
         send: asyncio.Future[None]
+        owners = getattr(self._owner, "_owner_ws_clients", None) or ()
+        if isinstance(msg, str) and not redaction_audience.socket_reads_as_owner(ws, owners):
+            # A Shared Crew teammate's owner socket: every owner frame, read redacted
+            # while the owner's switch is off, as the hub's other sends read it.
+            shown = redaction_audience.for_socket(ws, msg, owner=False)
+            if shown is None:
+                return
+            msg = shown
         release = snapshot_hold.held_send(ws, msg, self._hold_ceiling)
         if release is not None:
             try:
