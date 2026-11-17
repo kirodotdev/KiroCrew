@@ -8,7 +8,7 @@
  */
 import { useCallback, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { api, ApiError, type RelayCrewEntry } from '../api/client'
+import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../api/client'
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { timeAgo } from '../utils/timeAgo'
@@ -157,6 +157,8 @@ const OPEN_FRESH_MS = 5_000
 export function useRelayViewerCrews(): {
   hidden: boolean
   crews: RelayCrewEntry[]
+  /** The account the loaded list was read for; null on a refusal or when the gateway named none. */
+  account: RelayViewerAccount | null
   refusal: RelayListRefusal | null
   /** Read the list again now (the notice's Try again). */
   retry: () => void
@@ -211,9 +213,9 @@ export function useRelayViewerCrews(): {
   }
   if (hasBridge && !off && q.isPending && q.isFetching && held && held.at === q.errorUpdatedAt) {
     // Try again is reading: keep its refusal up, with Try again off, until the answer.
-    return { hidden: false, crews: [], refusal: held.refusal, retry, retrying: true, refreshOnOpen }
+    return { hidden: false, crews: [], account: null, refusal: held.refusal, retry, retrying: true, refreshOnOpen }
   }
-  if (!hasBridge || off || q.isPending) return { hidden: true, crews: [], refusal: null, retry, retrying: false, refreshOnOpen }
-  if (refusal) return { hidden: false, crews: [], refusal, retry, retrying: q.isFetching, refreshOnOpen }
-  return { hidden: false, crews: q.data?.crews ?? [], refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
+  if (!hasBridge || off || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
+  if (refusal) return { hidden: false, crews: [], account: null, refusal, retry, retrying: q.isFetching, refreshOnOpen }
+  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
 }
