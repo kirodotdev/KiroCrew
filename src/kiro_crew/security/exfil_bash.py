@@ -15,7 +15,8 @@ from __future__ import annotations
 import fnmatch
 import re
 
-from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
+from .denied_rules import _INERT_SEARCH_VERBS, BUILTIN_DENIED_RULES, _exception_eligible
+from .shell_commands import pipelines as _pipelines
 from .shell_commands import read_commands as _read_commands
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset
@@ -236,6 +237,74 @@ def _backslashes_are_quoted_literals(command: str) -> bool:
     return True
 
 
+# The nc redirect row reads the whole line as text, so a `<` that belongs to a
+# LATER command (`nc -z host 22; sort < in.txt`) is refused as if it fed nc. The
+# denial stays on the text, and both tiers (the regex above and the catalog row in
+# the deny gate) relax it only for a line `_nc_redirect_line_allows` reads in full.
+_NC_FILE_REDIRECT_RULE = "data-exfil-nc-file-redirect"
+_NC_FILE_REDIRECT_PATTERN = next(
+    rule.pattern for rule in BUILTIN_DENIED_RULES if rule.id == _NC_FILE_REDIRECT_RULE
+)
+
+
+def _nc_redirect_line_allows(command: str) -> bool:
+    """A line naming nc whose every input redirect feeds a pipeline without nc.
+
+    Reads the shared reader's commands and fails closed: quoting, an escape, a
+    comment, a variable or substitution, a glob, a group or subshell, a heredoc or
+    here-string, a compound command, ``exec`` or ``alias`` (which can hand a
+    later redirect to nc), non-ASCII or a control character keeps the deny. A word
+    holding ``nc`` (``/bin/nc``, ``sort=nc``, ``netcat``) may stand only first in
+    its command, or after ``echo`` in a command with no redirect, so nothing on
+    the line can make a later command run nc. Then a pipeline that holds such a
+    word must be one command with no input redirect (any redirect word with ``<``)."""
+    # shortcut: refuses any quoted or expanded line, upgrade only if a real line needs it.
+    if any(ch in command for ch in "\\#'\"$`(){}*?[") or "<<" in command:
+        return False
+    if not command.isascii() or any(ch < " " and ch not in "\t\n" for ch in command):
+        return False
+    if len(command) > 2000:
+        return False
+    # A list or a pipe; anything else (a paren) is already refused above.
+    separators = ("", ";", "&", "&&", "||", "|", "\n")
+    # A first word that opens or closes a compound command, or that changes how a
+    # later word runs or where its input comes from.
+    refused_first = frozenset(
+        (
+            *("if", "then", "else", "elif", "fi", "case", "esac", "for", "select"),
+            *("while", "until", "do", "done", "function", "coproc", "time", "!", "[["),
+            *("alias", "hash", "enable", "shopt", "builtin", "command", "eval", "source"),
+            ".",
+        )
+    )
+
+    def names_nc(raw: str) -> bool:
+        low = raw.lower()
+        return "nc" in low or "netcat" in low
+
+    commands = _read_commands(command)
+    for before, cmd in zip([None, *commands], commands):
+        raws = [word.raw for word in cmd.words]
+        if cmd.separator not in separators or "exec" in raws:
+            return False
+        # An empty command after a pipe (`a |` then a newline, or `|&`): bash runs
+        # the pipe on into the next command, which `_pipelines` would cut apart.
+        if not raws and before is not None and before.separator == "|":
+            return False
+        if raws and raws[0] in refused_first:
+            return False
+        inert_args = raws[:1] == ["echo"] and not cmd.redirects
+        if any(names_nc(raw) for raw in raws[1:]) and not inert_args:
+            return False
+    for pipeline in _pipelines(commands):
+        reads_input = any("<" in word.raw for cmd in pipeline for word, _target in cmd.redirects)
+        # Piped on, an echoed `nc` can become a script (`echo nc h 1 | tee run`).
+        joined = reads_input or len(pipeline) > 1
+        if joined and any(names_nc(word.raw) for cmd in pipeline for word in cmd.words):
+            return False
+    return True
+
+
 def audit_bash_exfiltration(
     command: str, *, enabled_ids: "frozenset[str] | None" = None
 ) -> str | None:
@@ -304,6 +373,9 @@ def audit_bash_exfiltration(
         # row while the other is still enforced.
         for m in rx.finditer(command):
             matched_id = _exfil_rule_id_for_match(label, m.group(0), rule_ids)
+            # The redirect belongs to a later command, not to nc: see the reader.
+            if matched_id == _NC_FILE_REDIRECT_RULE and _nc_redirect_line_allows(command):
+                break
             if _on(matched_id):
                 return _exfil_denial(reason, matched_id, command, m.span())
         continue

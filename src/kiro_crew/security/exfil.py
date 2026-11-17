@@ -1320,12 +1320,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASH_EXFIL_RULE_BY_PATTERN,
         _CARVEOUT_VERBS,
         _DATA_EXFIL_FILE_BODY_RULE,
+        _NC_FILE_REDIRECT_PATTERN,
+        _NC_FILE_REDIRECT_RULE,
         _READ_ONLY_GH,
         _backslashes_are_quoted_literals,
         _data_at_carveout_allows,
         _exfil_rule_id_for_match,
         _inert_line_allows,
         _is_read_only_gh,
+        _nc_redirect_line_allows,
         audit_bash_exfiltration,
     )
     from kiro_crew.security.exfil_git_object import (  # noqa: F401
@@ -1387,8 +1390,10 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
     )
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _INERT_SEARCH_VERBS,
+        BUILTIN_DENIED_RULES,
         _exception_eligible,
     )
+    from kiro_crew.security.shell_commands import pipelines as _pipelines  # noqa: F401
     from kiro_crew.security.shell_commands import read_commands as _read_commands  # noqa: F401
     from kiro_crew.sel import (  # noqa: F401
         SecurityEvent,
