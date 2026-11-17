@@ -78,6 +78,14 @@ _STEP_LABELS: tuple = (
     (STEP_CONNECT, "Connect"),
 )
 
+# What the rollback delete of a failed or cancelled launch found, on
+# ``LaunchJob.rollback``; empty when no rollback ran. Only NEVER_CREATED tells a
+# reader the launch left nothing in AWS, so the dashboard offers Launch as the retry.
+ROLLBACK_NEVER_CREATED = "never_created"
+ROLLBACK_REMOVED = "removed"
+ROLLBACK_UNCONFIRMED = "unconfirmed"
+ROLLBACK_ERROR = "error"
+
 
 def _resource_noun(job: "LaunchJob") -> str:
     """What a launch created, for the user-facing rollback and reap messages.
@@ -204,6 +212,9 @@ class LaunchJob:
     target_unreadable: bool = False
     # Explicit EC2 subnet (the VPC follows from it); empty = network auto-discovery.
     subnet_id: str = ""
+    # One of the ROLLBACK_* outcomes once a rollback ran; empty before, and on a
+    # job file written before the field existed.
+    rollback: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -233,6 +244,7 @@ class LaunchJob:
             "updated_at": self.updated_at,
             "login_target": self.login_target.to_dict(),
             "subnet_id": self.subnet_id,
+            "rollback": self.rollback,
         }
 
     @classmethod
@@ -277,6 +289,7 @@ class LaunchJob:
             login_target=login_target,
             target_unreadable=target_unreadable,
             subnet_id=str(d.get("subnet_id") or ""),
+            rollback=str(d.get("rollback") or ""),
         )
 
 
@@ -892,6 +905,7 @@ def _rollback_cancelled_stack(
     try:
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
+        job.rollback = ROLLBACK_ERROR
         job.error = (
             f"{prior}Cancelled, but the {_resource_noun(job)} {job.tag} could not be removed "
             f"automatically ({str(exc)[:200]}). Delete it from your crews — or with "
@@ -900,6 +914,7 @@ def _rollback_cancelled_stack(
         logger.warning("Could not roll back stack %s after cancellation: %s", job.tag, exc)
         return
     if confirmed:
+        job.rollback = ROLLBACK_REMOVED
         step.detail = f"Removed {job.tag} after cancellation."
         if job.error == ABORT_UNCONFIRMED_NOTE:
             # The note warns that a login left polling could still sign the crew
@@ -908,6 +923,7 @@ def _rollback_cancelled_stack(
             # to inspect a machine that is gone.
             job.error = ""
         return
+    job.rollback = ROLLBACK_UNCONFIRMED
     job.error = (
         f"{prior}Cancelled, and the delete of {_resource_noun(job)} {job.tag} was requested but "
         "did NOT confirm (it may be DELETE_FAILED). Check your crews — it may still be "
@@ -950,14 +966,16 @@ def _rollback_failed_provision(
     Best-effort and never raises; it augments the recorded failure message rather
     than replacing it, so the original error stays visible. Safe when no stack was
     created — deleting an absent stack is a no-op. When :func:`_engine_resource_exists`
-    says absent, a confirmed delete is reported as "never created". The delete still
-    runs: a lookup that reads an unrelated error as absent must not skip it.
+    says absent, a confirmed delete is reported as "never created", in the error text
+    and as ``ROLLBACK_NEVER_CREATED`` on ``job.rollback``. The delete still runs: a
+    lookup that reads an unrelated error as absent must not skip it.
     """
     base = job.error or "Setup failed."
     existed = _engine_resource_exists(engine, job)
     try:
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
+        job.rollback = ROLLBACK_ERROR
         job.error = (
             f"{base} The {_resource_noun(job)} {job.tag} could not be removed automatically "
             f"({str(exc)[:150]}). Delete it from your crews — or with the CLI — so it "
@@ -966,6 +984,7 @@ def _rollback_failed_provision(
         logger.warning("Could not roll back stack %s after provision failure: %s", job.tag, exc)
         return
     if confirmed:
+        job.rollback = ROLLBACK_REMOVED if existed else ROLLBACK_NEVER_CREATED
         outcome = (
             "was removed so it stops billing"
             if existed
@@ -973,6 +992,7 @@ def _rollback_failed_provision(
         )
         job.error = f"{base} The {_resource_noun(job)} {job.tag} {outcome}."
         return
+    job.rollback = ROLLBACK_UNCONFIRMED
     job.error = (
         f"{base} The delete of {_resource_noun(job)} {job.tag} was requested but did NOT confirm "
         "(it may be DELETE_FAILED). Check your crews — it may still be running and billing."

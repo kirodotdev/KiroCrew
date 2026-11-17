@@ -944,14 +944,15 @@ export function RemoteCrewPanel() {
   // success, whatever step it stopped at.
   const launchFailed = launchedKey === builtinLaunchKey
     && !!activeJob && activeJob.id === activeLaunchId && activeJob.status === 'failed'
-  // Only a failure before provisioning started is known to have created nothing,
-  // so only then is the same-settings guard lifted and Launch itself the retry.
-  // From provisioning on, a stack may still exist: a refused sign-in or a later
-  // step leaves a registered crew, and a failed provision is rolled back on a
-  // best-effort basis the job does not report as a field. There the guard stays,
-  // so repeating the settings takes the explicit "Launch another crew".
-  const launchFailedBeforeProvision = launchFailed && !activeJob.instance_id && !isRegistered(activeJob)
-    && activeJob.steps.some(st => st.key === 'provision' && (st.state === 'pending' || st.state === 'skipped'))
+  // Only a launch known to have created nothing lifts the same-settings guard and
+  // makes Launch itself the retry: one that failed before provisioning started, or
+  // a failed provision whose rollback confirmed the stack never existed. Otherwise
+  // a stack may still exist: a refused sign-in or a later step leaves a registered
+  // crew, and a rollback can remove a stack or fail to confirm its delete. There the
+  // guard stays, so repeating the settings takes the explicit "Launch another crew".
+  const launchFailedNothingCreated = launchFailed && !activeJob.instance_id && !isRegistered(activeJob)
+    && (activeJob.rollback === 'never_created'
+      || activeJob.steps.some(st => st.key === 'provision' && (st.state === 'pending' || st.state === 'skipped')))
   // The job is a snapshot: a crew it registered can be deleted afterwards, and
   // an instance that never registered has no row. So "listed in Your crews" is
   // said only while the live list holds that instance; otherwise the line stays
@@ -959,7 +960,7 @@ export function RemoteCrewPanel() {
   // crew row holds as its SSM target; the row's own id is derived from its name.
   const launchFailedCrewListed = launchFailed && isRegistered(activeJob)
     && !!activeJob.instance_id && instances.some(i => i.ssm_target === activeJob.instance_id)
-  const alreadyLaunched = launchedKey === builtinLaunchKey && !launchFailedBeforeProvision
+  const alreadyLaunched = launchedKey === builtinLaunchKey && !launchFailedNothingCreated
   // The gateway refuses a launch while any crew setup is still running
   // (`launch_already_running`), so neither launch button is offered until it ends.
   const setupRunning = !!activeJob && !isTerminal(activeJob)
@@ -1703,7 +1704,7 @@ export function RemoteCrewPanel() {
                    the gateway accepted the launch), so navigating away loses them. */
                 <ErrorNotice
                   variant="inline"
-                  message={launchFailedBeforeProvision
+                  message={launchFailedNothingCreated
                     ? i18nT('pages.settings.remoteCrewPanel.launch_failed_retry')
                     : launchFailedCrewListed
                       ? i18nT('pages.settings.remoteCrewPanel.launch_failed_crew_listed')

@@ -224,9 +224,13 @@ describe('RemoteCrewPanel launch form', () => {
     expect(vi.mocked(api.cloudLaunch).mock.calls[1]).toEqual(vi.mocked(api.cloudLaunch).mock.calls[0])
   })
 
-  it('after a launch that failed before provisioning, says it failed and offers Launch as the retry', async () => {
-    // Stopped at the AWS check: nothing was created, so repeating the settings is safe.
-    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'failed' as const, steps: FAILED_AT_PREFLIGHT })
+  // Nothing was created, so repeating the settings is safe: the launch stopped at
+  // the AWS check, or its provision rollback confirmed the stack never existed.
+  it.each([
+    ['before provisioning', { steps: FAILED_AT_PREFLIGHT }],
+    ['in a provision whose rollback found no stack', { steps: FAILED_AT_PROVISION, rollback: 'never_created' as const }],
+  ])('after a launch that failed %s, says it failed and offers Launch as the retry', async (_case, failed) => {
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'failed' as const, ...failed })
     const u = userEvent.setup()
     await openSetup(u)
 
@@ -248,8 +252,8 @@ describe('RemoteCrewPanel launch form', () => {
   })
 
   // From provisioning on a stack may still exist: a refused sign-in leaves a
-  // registered crew, and a failed provision is rolled back best-effort with no
-  // field saying whether the rollback confirmed.
+  // registered crew, and a failed provision's rollback may have removed a stack,
+  // left its delete unconfirmed, or come from a gateway that reports no outcome.
   // "Listed in Your crews" is said only while the live list holds the instance:
   // the job is a snapshot, so a registered crew deleted since gets the neutral line.
   it.each([
@@ -257,6 +261,8 @@ describe('RemoteCrewPanel launch form', () => {
     ['sign-in, with its registered crew deleted since', { instance_id: LAUNCHED_ID, steps: FAILED_AFTER_REGISTER }, [], CHECK_CREWS],
     ['registration, with an instance that never registered', { instance_id: LAUNCHED_ID, steps: FAILED_AT_REGISTER }, [LIVE_CREW], CHECK_CREWS],
     ['provisioning, with no instance returned', { steps: FAILED_AT_PROVISION }, [], CHECK_CREWS],
+    ['provisioning, with its stack removed', { steps: FAILED_AT_PROVISION, rollback: 'removed' as const }, [], CHECK_CREWS],
+    ['provisioning, with its delete unconfirmed', { steps: FAILED_AT_PROVISION, rollback: 'unconfirmed' as const }, [], CHECK_CREWS],
   ])('after a launch that failed during %s, says it failed but keeps the same-settings guard', async (_case, failed, live, line) => {
     // The list holds the crew only once the launch has gone out, as the gateway's would.
     vi.mocked(api.listInstances).mockImplementation(async () => ({
