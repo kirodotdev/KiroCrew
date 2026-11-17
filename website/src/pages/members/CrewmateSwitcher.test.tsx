@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import type { MemberRosterRow } from '../../api/client'
 import type { MemberSignals } from './rosterFilter'
@@ -410,6 +410,82 @@ describe('CrewmateSwitcher opens on an outside request', () => {
     expect(screen.queryByTestId('crewmate-switcher-list')).toBeNull()
     rerender(<CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} openRequest={4} />)
     expect(await screen.findByTestId('crewmate-switcher-list')).toBeInTheDocument()
+  })
+})
+
+describe('CrewmateSwitcher list scroll cue', () => {
+  // The listbox caps its height and the scrollbar shows only while scrolling,
+  // so the bottom mask fade is the one cue at rest that more rows sit below. jsdom does no layout: the scroller's geometry is stubbed on the
+  // prototype, keyed by test id, and `scrollTop` is set on the node itself.
+  const MASK_CLASS = '[mask-image:'
+  const LIST = 'crewmate-switcher-listbox'
+  class InertObserver { observe() {} unobserve() {} disconnect() {} }
+  const proto = HTMLElement.prototype
+  const saved = {
+    scrollHeight: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'),
+    clientHeight: Object.getOwnPropertyDescriptor(proto, 'clientHeight'),
+  }
+  let hiddenBelow = 0
+
+  beforeEach(() => {
+    hiddenBelow = 0
+    vi.stubGlobal('ResizeObserver', InertObserver)
+    Object.defineProperty(proto, 'clientHeight', { configurable: true, get() { return 200 } })
+    Object.defineProperty(proto, 'scrollHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.dataset.testid === LIST ? 200 + hiddenBelow : 200 },
+    })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(proto, k, d)
+      else delete (proto as unknown as Record<string, unknown>)[k]
+    }
+  })
+
+  const manyMembers = Array.from({ length: 12 }, (_, i) => row(`mate${i}`))
+
+  it('fades the bottom while rows sit below the fold', async () => {
+    hiddenBelow = 160
+    setup({ members: manyMembers, activeName: 'mate0' })
+    await open()
+    const list = screen.getByTestId(LIST)
+    await waitFor(() => expect(list.className).toContain(MASK_CLASS))
+    // The cue is paint only: the listbox and its options read the same.
+    expect(list).toHaveAttribute('role', 'listbox')
+    expect(options(list)).toHaveLength(12)
+  })
+
+  it('shows no fade when the list fits', async () => {
+    setup({ members: manyMembers, activeName: 'mate0' })
+    await open()
+    const list = screen.getByTestId(LIST)
+    expect(list.className).not.toContain(MASK_CLASS)
+  })
+
+  it('lifts the fade once the list is scrolled to the bottom', async () => {
+    hiddenBelow = 160
+    setup({ members: manyMembers, activeName: 'mate0' })
+    await open()
+    const list = screen.getByTestId(LIST)
+    await waitFor(() => expect(list.className).toContain(MASK_CLASS))
+    list.scrollTop = 160
+    fireEvent.scroll(list)
+    await waitFor(() => expect(list.className).not.toContain(MASK_CLASS))
+  })
+
+  it('drops the fade when a search leaves only rows that fit', async () => {
+    hiddenBelow = 160
+    setup({ members: manyMembers, activeName: 'mate0' })
+    await open()
+    const list = screen.getByTestId(LIST)
+    await waitFor(() => expect(list.className).toContain(MASK_CLASS))
+    // The filtered list fits; the box did not resize, so only the remeasure
+    // on the row change can clear the cue.
+    hiddenBelow = 0
+    fireEvent.change(screen.getByTestId('crewmate-switcher-search'), { target: { value: 'mate1' } })
+    await waitFor(() => expect(list.className).not.toContain(MASK_CLASS))
   })
 })
 
