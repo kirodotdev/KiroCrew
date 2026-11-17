@@ -38,6 +38,7 @@ from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.archive_config_vetting import config_document_refusal
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
@@ -254,7 +255,12 @@ def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
                 atomic_write(src, json.dumps({"channel_settings": channels}, indent=2))
                 vetted[name] = (channels, dropped)
             else:
-                vetted[name] = _read_archive_object(src)
+                document = _read_archive_object(src)
+                if name in ("config.json", "config.local.json"):
+                    why = config_document_refusal(document)
+                    if why:
+                        raise _SettingsRefused(f"the archive's {name} is unsafe: {why}")
+                vetted[name] = document
             # Replace installs the STAGED file's mode (`_backup_and_copy` copies it
             # from the source fstat), and the extractor creates every staged file at
             # the umask default -- typically group/world-readable. The config writer

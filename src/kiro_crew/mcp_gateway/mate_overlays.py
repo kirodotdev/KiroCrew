@@ -62,6 +62,7 @@ from kiro_crew.agent_files import (
 )
 from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_overlay import _source_sig
+from kiro_crew.members import is_single_path_component
 
 # Logged under the rewriter's logger so an operator reading one pass reads one stream.
 logger = logging.getLogger("kiro_crew.mcp_gateway.rewriter")
@@ -119,9 +120,8 @@ def governance_agents(identity: str) -> tuple[str, ...] | None:
     return (MATE_WORKER_AGENT, identity)
 
 
-def _is_file_id(name: str) -> bool:
-    """Whether *name* names one file in a folder rather than a path."""
-    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+#: Whether a name names one file in a folder rather than a path: the shared rule.
+_is_file_id = is_single_path_component
 
 
 def mate_dir_refused(target: Path) -> bool:

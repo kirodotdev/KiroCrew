@@ -357,6 +357,8 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
 #: later save fail -- so an installed one is held to the same reader the dashboard
 #: import uses. Keyed by file name; the value names the validator.
 _FLAT_DOCUMENT_VALIDATORS: dict[str, str] = {
+    "config.json": "config_document",
+    "config.local.json": "config_document",
     "ui-prefs.json": "ui_prefs",
     "notification_settings.json": "notification_settings",
 }

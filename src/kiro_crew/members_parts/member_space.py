@@ -177,6 +177,26 @@ def is_crew_id(value: object) -> bool:
     return isinstance(value, str) and bool(_AGENT_NAME_RE.match(value))
 
 
+def is_single_path_component(value: object) -> bool:
+    """Return whether *value* names exactly one file or folder, never a path.
+
+    The rule for a stored roster key or ``member_id`` that is joined into a path: not
+    empty, no ``/`` or ``\\``, not ``.`` or ``..``, no NUL and no line break, and no
+    drive prefix such as ``D:`` (on Windows a drive-relative name discards the parent it
+    is joined to; the rule is the same on every OS). It is not the crew-id grammar, so a
+    key already stored with dots, spaces or non-Latin letters stays valid.
+    """
+    from pathlib import PureWindowsPath  # local: keeps the facade's served names unchanged
+
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in (".", "..")
+        and not any(c in value for c in "/\\\x00\n\r")
+        and not PureWindowsPath(value).drive
+    )
+
+
 def crew_id_for_display_name(name: str, taken: Container[str]) -> str:
     """Derive an unused crew id for a crew the user named *name*.
 
