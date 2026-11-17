@@ -568,6 +568,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _CGROUP_DEFAULT_MAX_TOTAL_TASKS,
         _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB,
         _CGROUP_TOTAL_MEMORY_FRACTION,
+        _CLIENT_SCOPE_UNIT_PREFIX,
         _PROC_MEMINFO,
         _SCOPE_UNIT_PREFIX,
         _SCOPE_UNIT_TOKEN_SAFE,

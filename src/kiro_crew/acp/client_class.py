@@ -442,6 +442,9 @@ class AcpClient:
         # that minted a resource from a successor that cannot honor it. Fresh
         # per spawn, cleared with the process. See ``process_instance``.
         self._process_instance: str = ""
+        # The scope unit systemd received for this spawn (``kirocrew-cl-<instance>``),
+        # empty when no scope was created. Cleared with the process.
+        self._scope_unit: str = ""
         self._session_id: str | None = None
         self._next_id = 1
         self._buffer: deque[JsonRpcMessage] = deque(maxlen=100)
@@ -1430,6 +1433,7 @@ class AcpClient:
 
     # Start an ``AcpClient`` session: spawn the child, run the initialize handshake, and create, load or fork the session: ``kiro_crew.acp.client_start``.
     _spawn = _client_start._spawn
+    _admit_scope = _client_start._admit_scope
     _new_session_following_substitution = _client_start._new_session_following_substitution
     _initialize_params = _client_start._initialize_params
     _initialize_session = _client_start._initialize_session

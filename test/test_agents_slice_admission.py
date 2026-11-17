@@ -442,6 +442,10 @@ class TestInitializeHandshakeUnderThrottle:
         assert seen["method"] == "initialize"
         assert seen["timeout"] == _INITIALIZE_TIMEOUT
         assert _INITIALIZE_TIMEOUT > _REQUEST_TIMEOUT
+        # The spawn passes what scope admission left of the window, and that is
+        # the budget ``initialize`` is sent with.
+        await rt._initialize_handshake({}, 34.0)
+        assert seen["timeout"] == 34.0
 
     def test_cold_start_budget_expires_before_the_startup_watchdog_reaps(self):
         """A subagent's ``info._pid`` is recorded only after ``provider.start()``
