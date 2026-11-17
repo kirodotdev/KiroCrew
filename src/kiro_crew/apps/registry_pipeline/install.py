@@ -95,7 +95,6 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _sel_credential_grant,
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env, minimal_env
-from kiro_crew.apps.store_origin import count_first_install
 from kiro_crew.platform import redact_log_via_context as _redact_log_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -1505,6 +1504,8 @@ async def install_from_registry(
                     ),
                 )
             if not was_installed:
+                from kiro_crew.apps.store_origin import count_first_install
+
                 await count_first_install(name, via)
             outcome = {
                 "ok": True,
@@ -1583,6 +1584,8 @@ async def install_from_registry(
                     ),
                 )
             if not was_installed:
+                from kiro_crew.apps.store_origin import count_first_install
+
                 await count_first_install(result.name, via)
         # Install/update failed AFTER a successful clone+build: the checkout was
         # rolled back above, durable_success stays False, and the `finally`'s

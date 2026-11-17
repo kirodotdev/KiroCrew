@@ -45,7 +45,7 @@ def _shipped_builtin_ids() -> frozenset[str]:
 
 def public_app_ids() -> frozenset[str]:
     """Every app on this machine with a public id. Reads the install records: call off the loop."""
-    from kiro_crew.apps.manager_records import (
+    from kiro_crew.apps.manager import (
         InstalledRecordShapeError,
         _is_sidecar_entry,
         _read_installed,
