@@ -279,6 +279,25 @@ class TestGatewayOriginInjection:
 
     _SECRET = "test-app-secret-0123456789abcdef"
 
+    @pytest.fixture(autouse=True)
+    def _owner_marker(self, _floor_monkeypatch):
+        """An installed, enabled app holds the owner-enable marker the app token needs."""
+        _floor_monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+
+    def test_an_app_without_the_owner_marker_gets_no_origin_and_no_proof(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """No marker, no app token (``validate_app_secret``), so the origin would only 403."""
+        monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: False)
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None, "the spawn never reached the Popen boundary"
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env
+        assert "KIROCREW_GATEWAY_ORIGIN_PROOF" not in env
+        assert env["KIROCREW_PROXY_SECRET"] == self._SECRET  # the proxy HMAC check still works
+
     def _install_backend_app(self, tmp_path, name="origin-app"):
         src = _make_app_with_backend(tmp_path, name=name)
         install_app(src)
