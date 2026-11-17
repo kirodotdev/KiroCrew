@@ -119,6 +119,7 @@ _LINT_JOBS = ("backend-lint", "frontend-lint")
 _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
+    "metrics-schema-history": "stdlib manifest diff against the base; seconds, no install",
     # These two hold the baselined ratchets. They are OFF the gate path
     # deliberately, and the trade is real: a ratchet failure does not SAVE the
     # matrix, it reds the pull request alongside it. What is bought is the
