@@ -335,6 +335,70 @@ async def test_newest_session_with_no_list_falls_back_to_an_older_one():
     ]
 
 
+ACCOUNT_FREE = "a" * 64
+ACCOUNT_POWER = "b" * 64
+
+
+def _signed_in_as(request: MagicMock, fingerprint: str) -> MagicMock:
+    """Give *request* a prerequisite service whose store names *fingerprint*."""
+
+    async def _read() -> str:
+        return fingerprint
+
+    request.app["kiro_prerequisite_service"] = SimpleNamespace(current_identity_fingerprint=_read)
+    return request
+
+
+@pytest.mark.asyncio
+async def test_a_session_spawned_under_another_account_does_not_narrow():
+    # A `kiro-cli login` to a Power account while a chat that started on the free
+    # account is still up: the newest session holds the free account's list and
+    # re-probing it asks the same old process. It is skipped for the session
+    # spawned under the account signed in now.
+    old = _provider([{"modelId": "auto"}])
+    old.spawn_identity = ACCOUNT_FREE
+    new = _provider([{"modelId": "auto"}, {"modelId": "claude-opus-5"}])
+    new.spawn_identity = ACCOUNT_POWER
+    request = _signed_in_as(_request(new, old), ACCOUNT_POWER)
+    assert _names(await agents._entitled_kiro_models(request, CATALOG)) == [
+        "auto",
+        "claude-opus-5",
+    ]
+    assert old._refresher_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_only_old_account_sessions_leave_the_catalog_alone():
+    # With no session for the new account the entitlement is unknown, so the
+    # catalog fails open instead of showing the old account's auto-only list.
+    old = _provider([{"modelId": "auto"}])
+    old.spawn_identity = ACCOUNT_FREE
+    request = _signed_in_as(_request(old), ACCOUNT_POWER)
+    assert await agents._entitled_kiro_models(request, CATALOG) == CATALOG
+
+
+@pytest.mark.asyncio
+async def test_same_account_and_unknown_stamps_still_narrow():
+    # A session of the signed-in account, an unstamped one, and an unreadable
+    # store all keep narrowing: only a PROVEN other account is skipped.
+    same = _provider([{"modelId": "auto"}])
+    same.spawn_identity = ACCOUNT_FREE
+    assert _names(
+        await agents._entitled_kiro_models(_signed_in_as(_request(same), ACCOUNT_FREE), CATALOG)
+    ) == ["auto"]
+    unstamped = _provider([{"modelId": "auto"}])
+    unstamped.spawn_identity = ""
+    unstamped._runtime = None
+    assert _names(
+        await agents._entitled_kiro_models(
+            _signed_in_as(_request(unstamped), ACCOUNT_POWER), CATALOG
+        )
+    ) == ["auto"]
+    assert _names(
+        await agents._entitled_kiro_models(_signed_in_as(_request(same), ""), CATALOG)
+    ) == ["auto"]
+
+
 @pytest.mark.asyncio
 async def test_no_live_session_leaves_the_catalog_alone():
     # Nothing has initialized yet: entitlement is unknown, not "nothing".
