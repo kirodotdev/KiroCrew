@@ -2845,7 +2845,12 @@ ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
 | Kiro Crew's own managed servers | required: the whole start budget, the start fails without them | the same |
 | Sent on the session by Kiro Crew (a Connection's bridge) | best effort, at most `MOUNTED_MCP_WAIT_SECS` (5 s) | the same |
 | One of the agent's own the gateway shares (a session element that runs `-m kiro_crew.mcp_gateway.stub`) | not waited for by the start; left to the first turn, like the row below | best effort, at most 5 s |
-| The agent's own (the user's), which stay in the agent's block | not waited for by the start; left to the first turn (below) | best effort, at most 5 s |
+| The agent's own (the user's), which stay in the agent's block | not waited for by the start; left to the first turn (below) | best effort, at most 5 s; never for `kirocrew-lite` |
+
+`kirocrew-lite` mounts nothing. A server in its block was written into the spec
+by another tool, and a background turn on it is closed right after such a start
+(`llm_helpers_parts/background_turns.py`), so its start does not wait for that
+server first.
 
 `person_waits` is the one predicate, and WHO IS WAITING decides it, not the
 queue the start waited in. A person is waiting when the start claimed

@@ -59,7 +59,8 @@ def first_prompt_brief_wait(
         only when nobody is waiting on this start (a sub-agent child, an
         unattended run, a warm start, a re-sent server set). Such a run may have
         one turn only, so a server that is late for it is a server it never
-        gets.
+        gets. Never for the background helper ``kirocrew-lite``, which mounts
+        nothing (``session_parts.policy.BACKGROUND_AGENT``).
 
     * Not waited for by the START: the agent's own servers when a person is
       waiting on it (:func:`person_waits`). Kiro CLI does not wait for them
@@ -87,7 +88,15 @@ def first_prompt_brief_wait(
     servers = params.get("mcpServers")
     sent = list(servers) if isinstance(servers, list) else []
     if not person_waits(start_priority, focus_resume=focus_resume):
-        sent += _own_servers(params, agent)
+        # The background helper's template mounts nothing, so a server in its block
+        # is one another tool wrote into the spec, and a background turn on it is
+        # closed right after such a start (``llm_helpers_parts.background_turns``).
+        # Waiting for that server only delays the refusal.
+        # shortcut: matched by name; give lite a real tool and this must go.
+        from kiro_crew.session_parts.policy import BACKGROUND_AGENT  # circular import
+
+        if agent != BACKGROUND_AGENT:
+            sent += _own_servers(params, agent)
     else:
         # A person is waiting: a server the gateway shares is one of the agent's own
         # moved onto the session, so it is left to the first turn as they are.
