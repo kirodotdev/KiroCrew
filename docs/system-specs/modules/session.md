@@ -1784,7 +1784,9 @@ against sweep completeness, and are torn down at `close_all`.
   via `MACHINERY_ROLES` and every other surface suppresses it too
   (`transcriptRenderers` `automation_notice_inject` draws nothing), so the raw
   `[Automation notice] …` text never appears as a row beside the refusal's own
-  `notice` bar. The Sessions page keeps drawing the `notice` bar as today.
+  `notice` bar. Regenerate on the answer to that turn refuses
+  (`automated_turn_reply`) and removes nothing. The Sessions page keeps drawing
+  the `notice` bar as today.
   `ask_question` needs no exemption here: the tool BLOCKS and returns the
   user's answers as its own result, so the turn that asked continues and ends
   with ordinary visible output rather than parking on an unanswered card.
