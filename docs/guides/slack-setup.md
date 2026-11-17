@@ -378,7 +378,9 @@ choose **New folder…** in the folder list to create one there.
 
 A conductor only plans and hands off work, so in a code channel it needs **Let code channels
 start helper agents** (`slack.code_channel_dispatch`), the sub-toggle under **Code channels**. It
-is off by default and turning Code channels on does not turn it on. Helpers work in the code
+turns on when you first turn Code channels on, and you can turn it off there or in the same save.
+If a value is already saved, including an off, turning Code channels on keeps it, so an existing
+setup does not change on upgrade. A missing, unreadable or malformed value reads as off. Helpers work in the code
 channel's folder and ask you before changing files, unless that channel is set to approve
 automatically (Trust). When on, the channel's conductor can
 create worker sessions and follow them on its work ledger, only on your own messages, only for

@@ -107,6 +107,8 @@ describe('Slack Code payload', () => {
     expect(slackCodePayload({ ...saved, effort: 'high' }, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
     expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true } }, saved)).toEqual({
       code_channels: true,
+      // An enabling save always carries the helper-agents value the card shows.
+      code_channel_dispatch: false,
       code_channel_defaults: { folder: null },
     })
   })
@@ -246,7 +248,10 @@ describe('Code channels card', () => {
     expect(preview).not.toHaveTextContent('kirocrew-conductor')
   })
 
-  it('turning Code channels on leaves dispatch off and says what turning it on does', async () => {
+  it('with no first enable read, turning Code channels on sends the off it shows and says what turning it on does', async () => {
+    // Also the stale-card case: the GET read no first enable (a value stored, or
+    // config.json unreadable then), so the server must not decide helpers on
+    // from files the card never showed.
     const { save } = seed()
     await hydrated()
     expect(screen.queryByTestId('slack-code-dispatch')).toBeNull()
@@ -260,7 +265,54 @@ describe('Code channels card', () => {
     expect(screen.queryByTestId('slack-code-dispatch-off')).toBeNull()
     fireEvent.click(saveBtn())
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: false })
+  })
+
+  it('turning Code channels on while config.local.json owns helper agents sends no helper value', async () => {
+    const { save } = seed({ code_channel_dispatch_overlay: true, code_channel_dispatch_overlay_state: 'unreadable' })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    await screen.findByTestId('slack-code-dispatch')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
     expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+  })
+
+  it('a first enable of Code channels turns helper agents on with it', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const sub = await screen.findByTestId('slack-code-dispatch')
+    expect(within(sub).getByRole('switch', { name: 'Let code channels start helper agents' })).toBeChecked()
+    expect(sub).toHaveTextContent('On by default when you first turn on Code channels.')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: true })
+  })
+
+  it('an off chosen in the enabling save is sent, so it is stored as an explicit off', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const toggle = await screen.findByRole('switch', { name: 'Let code channels start helper agents' })
+    fireEvent.click(toggle)
+    expect(toggle).not.toBeChecked()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: false })
+  })
+
+  it('turning Code channels back off before saving leaves helper agents as saved', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    const cc = screen.getByRole('switch', { name: 'Code channels' })
+    fireEvent.click(cc)
+    await screen.findByTestId('slack-code-dispatch')
+    fireEvent.click(cc)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
     expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
   })
 

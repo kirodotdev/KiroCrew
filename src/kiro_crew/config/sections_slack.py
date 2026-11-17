@@ -318,11 +318,12 @@ class SlackConfig:
             "Only on turns the owner started, only for workers it created itself, "
             "one level deep, filed in the channel's folder, with the channel's own "
             "approval mode and never more; channels shared beyond this workspace "
-            "are excluded. Needs slack.code_channels on as well; turning that on "
-            "does not turn this on. Off keeps the full channel containment: a "
-            "conductor in a code channel cannot hand off work. Off by default, and "
-            "a missing, unreadable or malformed value reads as off. Takes effect "
-            "on the next call; no restart.",
+            "are excluded. Needs slack.code_channels on as well; a save that first "
+            "turns that on from the settings page turns this on with it, unless a "
+            "value is already stored (an explicit off is kept). Off keeps the full "
+            "channel containment: a conductor in a code channel cannot hand off "
+            "work. Off when unset, and a missing, unreadable or malformed value "
+            "reads as off. Takes effect on the next call; no restart.",
             tags=["slack"],
         ),
     )

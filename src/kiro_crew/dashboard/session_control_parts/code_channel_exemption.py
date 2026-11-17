@@ -44,10 +44,11 @@ conduct, bounded so neither protection is given up:
 
 Fails CLOSED throughout: an unloaded store, an unreadable mirror, an unknown share
 state or an unrecorded sender all refuse. One switch turns it all on:
-``slack.code_channel_dispatch``, OFF by default and opt-in on the Slack Code card,
-with ``slack.code_channels`` on and capable beneath it. Turning code channels on
-never turns dispatch on. A missing, malformed or unreadable value -- or any config
-file or ``slack`` section this process failed to read whole -- reads as off.
+``slack.code_channel_dispatch``, OFF when unset and saved on by the Slack Code card's
+first enable of code channels (a stored value, an explicit off included, is kept),
+with ``slack.code_channels`` on and capable beneath it. A missing, malformed or
+unreadable value -- or any config file or ``slack`` section this process failed
+to read whole -- reads as off.
 """
 
 from __future__ import annotations

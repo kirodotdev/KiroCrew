@@ -20827,7 +20827,7 @@
           "code_channels_desc": "An: Der Agent kann pro Programmieraufgabe einen Slack-Kanal mit Kontextleiste und Diff-Tab öffnen, dich einladen und dort unter seinem eigenen Namen posten, Nachrichten anheften und Notizen führen. Dafür erhält deine Slack-App 6 Berechtigungen. Aus: Es ändert sich nichts, und du kannst die Berechtigungen später in Slack entfernen. Slack führt Code-Kanäle schrittweise ein, daher hat dein Workspace sie vielleicht noch nicht.",
           "stage_tag": "Vorschau",
           "code_channel_dispatch": "Code-Kanäle Hilfsagenten starten lassen",
-          "code_channel_dispatch_desc": "Helfer arbeiten im Ordner des Code-Kanals und fragen dich, bevor sie Dateien ändern, außer der Kanal ist auf automatische Genehmigung gestellt (Trust).",
+          "code_channel_dispatch_desc": "Standardmäßig an, wenn du Code-Kanäle zum ersten Mal einschaltest. Helfer arbeiten im Ordner des Code-Kanals und fragen dich, bevor sie Dateien ändern, außer der Kanal ist auf automatische Genehmigung gestellt (Trust).",
           "code_channel_dispatch_overlay_on": "An, festgelegt in {{path}}, das diesen Schalter überschreibt. Ändere es dort.",
           "code_channel_dispatch_overlay_off": "Aus, festgelegt in {{path}}, das diesen Schalter überschreibt. Ändere es dort.",
           "code_channel_dispatch_overlay_unreadable": "{{path}} kann nicht gelesen werden, daher sind die Hilfsagenten aus. Repariere die Datei und starte {{productName}} neu.",
