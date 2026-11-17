@@ -760,7 +760,19 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         self._last_steer_monotonic = time.monotonic()
         self._release_held_steers()
         return True
-    return await self._send_steering_request(aimed_at, text) is True
+    # Registered before the write, as for a held steer: a turn that ends while the
+    # write is in flight finds the text in :attr:`held_steers_possibly_delivered`.
+    possibly_delivered = self._held_steer_writes()
+    possibly_delivered.add(text)
+    try:
+        delivered = await self._send_steering_request(aimed_at, text)
+    except Exception as exc:
+        if getattr(exc, "ambiguous_delivery", False) is not True:
+            possibly_delivered.discard(text)
+        raise
+    if delivered is not None:
+        possibly_delivered.discard(text)
+    return delivered is True
 
 
 def _held_steers(self: AcpClient) -> list[tuple[int, str]]:

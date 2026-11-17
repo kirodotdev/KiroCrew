@@ -1518,8 +1518,10 @@ class AgentConfig:
             "that runs as the next turn, so it can run twice. While it is on, a "
             "hard stop that drops another session's pending steer, on any harness, "
             "tells that session the steer may not have run. Off by default: such "
-            "a steer queues for the next turn, and only the composer steers these "
-            "harnesses.",
+            "a steer is not injected when it is sent. A peer steer that cannot be "
+            "injected yet is held and injected once at the turn's next tool "
+            "boundary, and is never queued back after that, so it cannot run "
+            "twice; if the turn ends first it queues for the next turn.",
         ),
     )
     member_dispatch: bool = field(

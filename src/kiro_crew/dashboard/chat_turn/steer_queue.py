@@ -292,6 +292,45 @@ def _mark_held_steers_possibly_delivered(slot: "_ChatSlot", client: object) -> N
             slot._steer_possibly_delivered.add(message)
 
 
+def _tell_sender_unconfirmed(state: "DashboardState", slot: "_ChatSlot", steer_msg: str) -> None:
+    """Settle a marked steer's receipt as unconfirmed and tell its sender (best effort)."""
+    from kiro_crew.dashboard import deferred_steer
+    from kiro_crew.dashboard.session_control import (
+        SEND_DISCARD_UNCONFIRMED_STEER,
+        notify_send_origin_discarded,
+    )
+
+    deferred_steer.mark_unconfirmed(slot, steer_msg)
+    try:
+        notify_send_origin_discarded(
+            state,
+            entry_meta=slot._steer_admissions.get(steer_msg),
+            target_slot=slot,
+            text=steer_msg,
+            cause=SEND_DISCARD_UNCONFIRMED_STEER,
+        )
+    except Exception:  # noqa: BLE001 - the teardown must finish; the notice is best-effort
+        logger.warning("unconfirmed-steer notice failed (slot %s)", slot.key, exc_info=True)
+
+
+def _release_delivered_peer_steer(slot: "_ChatSlot", steer_msg: str) -> None:
+    """Drop every per-text record of a steer that is not being requeued."""
+    for name in (
+        "_steer_admissions",
+        "_steer_delivery_ids",
+        "_steer_send_ids",
+        "_steer_attachment_meta",
+        "_steer_automation",
+        "_steer_decision_strips",
+        "_steer_user_origin",
+        "_steer_channel_origin",
+        "_steer_owner_origin",
+    ):
+        getattr(slot, name).pop(steer_msg, None)
+    slot._steer_act_now.discard(steer_msg)
+    slot._steer_possibly_delivered.discard(steer_msg)
+
+
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
     """Degrade unconsumed mid-turn steers into ordinary queue cards.
 
@@ -322,6 +361,15 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     requeued = slot._pending_steers[:]
     slot._pending_steers.clear()
     for steer_msg in reversed(requeued):
+        if steer_msg in slot._deferred_steer_delivered.values():
+            # A held peer steer marked delivered before its injection
+            # (``dashboard.deferred_steer``): the harness may have acted on it, so it
+            # is not queued back -- it never runs a second time. Its sender is told
+            # it may not have run, its receipt reads "unconfirmed", and its per-text
+            # records are released with it.
+            _tell_sender_unconfirmed(state, slot, steer_msg)
+            _release_delivered_peer_steer(slot, steer_msg)
+            continue
         # The turn is over and never confirmed this steer, so the row persisted at
         # write time is now WRONG if it still reads as a successful injection.
         # Correct it before the queue card goes out, so the transcript and the card

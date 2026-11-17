@@ -119,6 +119,7 @@ from kiro_crew.context import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
+from kiro_crew.dashboard import deferred_steer as _deferred_steer
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
@@ -1287,6 +1288,11 @@ async def _run_chat(
                 await _on_tool_call_update(turn, event)
             elif event.kind == EVENT_TOOL_RESULT:
                 await _on_tool_result(turn, event)
+                # A tool call just finished: the next model step is the boundary a
+                # held peer steer is injected at. A task, not an await: this loop is
+                # also the reader of the steer's acknowledgement.
+                if slot._deferred_steers:
+                    _deferred_steer.schedule_flush(state, slot)
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 _flow = await _on_permission_request(turn, event)
                 if _flow is _Flow.CONTINUE:

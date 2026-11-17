@@ -886,20 +886,29 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
             "is running, so it reads it mid-work. Watch what it does with it "
             "with session_read_message." + caps
         )
+    if resp.get("pending_steer"):
+        return (
+            f"\U0001f4e8 pending-steer for `{target}` (steer {str(resp.get('steer_id', ''))[:16]}) "  # emoji-ok: tool text, the glyph of its sibling replies
+            "— it could not take your message "
+            "this instant, so the gateway holds it and injects it at the target's next "
+            "tool-call boundary in the same turn. session_status then shows "
+            "delivered@<time> for that steer id; if the turn ends first it is queued and "
+            "the next turn starts at once. Do not re-send it." + caps
+        )
+    if resp.get("steer_state"):
+        return (
+            f"\U0001f4e8 Already sent to `{target}` — the same steer is {resp['steer_state']}. "  # emoji-ok: tool text, the glyph of its sibling replies
+            "Nothing was sent again." + caps
+        )
     if resp.get("started"):
         return (
             f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "
             "Watch the result with session_read_message." + caps
         )
-    # A steer that could not be injected lands here, on the queue: say so, or
-    # the caller reads "queued" as "the target was busy" and never learns its
-    # steer did not cut anything.
-    queued_note = (
-        " Your steer could not go into the running turn, so it was queued instead." if steer else ""
-    )
+    # A plain (non-steer) send that waits for the turn to end lands here.
     return (
         f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
-        f"when the current turn ends.{queued_note} Poll with session_read_message." + caps
+        "when the current turn ends. Poll with session_read_message." + caps
     )
 
 
@@ -976,12 +985,21 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
             lines.append(f"  \u2705 `{target}` — cut into its running turn")
         elif row.get("started"):
             lines.append(f"  \u2705 `{target}` — started a turn on it")
+        elif row.get("pending_steer"):
+            lines.append(
+                f"  ✅ `{target}` — pending-steer {str(row.get('steer_id', ''))[:16]}: injected at its next tool-call "  # emoji-ok: tool text, the glyph of its sibling rows
+                "boundary, or queued with the next turn started at once if the turn ends first"
+            )
+        elif row.get("steer_id") and row.get("steer_state"):
+            # The same steer was already sent a moment ago: report its real state.
+            lines.append(
+                f"  \u2705 `{target}` — same steer {str(row['steer_id'])[:16]} already "  # emoji-ok: tool text, the glyph of its sibling rows
+                f"{str(row['steer_state'])[:40]}; nothing was sent again"
+            )
         else:
-            # A steer that could not be injected lands here, for the reason
-            # session_send spells out: reporting a plain queue would leave the
-            # caller believing that target was interrupted.
-            fell_back = " (steer fell back to the queue)" if mode == "steer" else ""
-            lines.append(f"  \u2705 `{target}` — queued until its turn ends{fell_back}")
+            lines.append(
+                f"  \u2705 `{target}` — queued until its turn ends"  # emoji-ok: tool text, the glyph of its sibling rows
+            )
     if delivered < requested:
         lines.append(
             "Some targets were not reached — the rows above say which and why. "
@@ -1225,6 +1243,14 @@ def _status_activity_suffix(row: dict[str, Any]) -> str:
     link = row.get("dashboard_link")
     if isinstance(link, str) and link:
         parts += f" — {link}"
+    # Peer steers held for a tool boundary, and how recent ones settled: an id the
+    # send reply named, and a state, never text.
+    receipts = [r for r in row.get("steer_receipts") or [] if isinstance(r, dict)][:8]
+    if receipts:
+        shown = ", ".join(
+            f"{str(r.get('steer_id', ''))[:16]} {str(r.get('state', ''))[:40]}" for r in receipts
+        )
+        parts += f"; steers: {shown}"
     return parts
 
 

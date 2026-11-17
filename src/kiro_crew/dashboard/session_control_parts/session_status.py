@@ -670,7 +670,10 @@ async def created_session_status(
         queue_ready = any(not is_held_queue_entry(item) for item in slot._queue)
         activity = session_activity(state, slot)
         running = session_execution_active(activity)
+        from kiro_crew.dashboard import deferred_steer
+
         link = worker_dashboard_link(key) if via_code_channel else ""
+        steer_receipts = deferred_steer.receipts(slot)
         row = {
             "target": key,
             "title": _bounded_status_title(slot.display_title),
@@ -689,6 +692,9 @@ async def created_session_status(
             **_pending_approval_fields(state, slot),
             **(_activity_fields(slot) if via_code_channel else {}),
             **({"dashboard_link": link} if link else {}),
+            # Peer steers held for a tool boundary, and how recent ones settled:
+            # "pending-steer", then "delivered@<ts>" or "queued@<ts>".
+            **({"steer_receipts": steer_receipts} if steer_receipts else {}),
             "source": "+".join(sources),
         }
         if via_code_channel:

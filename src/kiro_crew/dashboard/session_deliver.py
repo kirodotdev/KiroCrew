@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -69,13 +69,23 @@ class Origin:
     #: A peer's own Crew session key, for the trace link its delivery carries.
     sender: str = ""
     subscription: str = ""
+    #: The steer id of a peer steer held for a tool boundary
+    #: (``dashboard.deferred_steer``); it becomes the steer's delivery id.
+    held: str = ""
+    #: That steer's id in the held list; the steer RPC marks it delivered by this key.
+    mark: str = ""
+    #: That steer's held entry itself: the RPC re-checks it by identity, so a later
+    #: re-send of the same text (same id) is never mistaken for it.
+    entry: object = field(default=None, compare=False, repr=False)
 
 
 def cron(label: str) -> Origin:
     return Origin(ORIGIN_CRON, label=label)
 
 
-def peer(*, steer: bool, sender: str = "") -> Origin:
+def peer(
+    *, steer: bool, sender: str = "", held: str = "", mark: str = "", entry: object = None
+) -> Origin:
     """A peer session's text.
 
     ``steer=True`` is the steer arm only: it never queues or starts a turn, so a
@@ -83,7 +93,7 @@ def peer(*, steer: bool, sender: str = "") -> Origin:
     makes the one queue-or-run delivery itself (``steer=False``). *sender* is the
     peer's session key, read only to link the turn the text starts to the sender's.
     """
-    return Origin(ORIGIN_PEER, steer=steer, sender=sender)
+    return Origin(ORIGIN_PEER, steer=steer, sender=sender, held=held, mark=mark, entry=entry)
 
 
 def app(label: str) -> Origin:
@@ -437,7 +447,16 @@ async def _deliver_peer(
         )
 
         outcome = await steer_into_running_turn(
-            state, slot, text, user_origin=False, admission=admission, relay_meta=relay_meta
+            state,
+            slot,
+            text,
+            user_origin=False,
+            admission=admission,
+            relay_meta=relay_meta,
+            held_peer=bool(origin.held),
+            delivery_id=origin.held or None,
+            held_key=origin.mark,
+            held_entry=origin.entry,
         )
         if outcome == STEER_STEERED:
             return DELIVERED_STEERED

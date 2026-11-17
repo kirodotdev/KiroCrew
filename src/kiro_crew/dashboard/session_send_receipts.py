@@ -58,8 +58,9 @@ META_KEY = "sessionSend"
 RECEIPT_FIELD = "receipt"
 
 #: The outcomes a receipt can name: the target started a turn on the message,
-#: took it into the turn it was running, or queued it behind that turn.
-OUTCOMES = frozenset({"delivered", "steered", "queued"})
+#: took it into the turn it was running, queued it behind that turn, or holds it
+#: as a pending steer for the turn's next tool boundary.
+OUTCOMES = frozenset({"delivered", "steered", "queued", "pending-steer"})
 
 #: The receipts' own store. A conductor may send to many workers in one turn,
 #: hence more room per session than a directive needs; and a send the gateway
@@ -161,6 +162,8 @@ def outcome_of(result: dict[str, Any]) -> str:
         return "steered"
     if result.get("started"):
         return "delivered"
+    if result.get("pending_steer"):
+        return "pending-steer"
     return "queued"
 
 

@@ -380,6 +380,11 @@ class _ChatSlot:
         "_steer_clear",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
+        "_deferred_steers",
+        "_deferred_steer_receipts",
+        "_deferred_steer_delivered",
+        "_deferred_steer_ended_gen",
+        "_deferred_flush_task",
         "_steer_attachment_meta",
         "_steer_act_now",
         "_steer_automation",
@@ -762,6 +767,17 @@ class _ChatSlot:
     _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]
     _steer_audience_fence_holders: dict[str, int]
+    #: Steers held for the next tool boundary and the receipts of settled ones
+    #: (``dashboard.deferred_steer``).
+    _deferred_steers: list[Any]
+    _deferred_steer_receipts: dict[str, dict[str, Any]]
+    #: Ids of held steers marked delivered before their injection; the teardown
+    #: requeue skips them, so none runs a second time.
+    _deferred_steer_delivered: dict[str, str]
+    #: The turn generation whose hand-off has begun: nothing is held for it any more.
+    _deferred_steer_ended_gen: int
+    #: The one running boundary flush (``dashboard.deferred_steer.schedule_flush``).
+    _deferred_flush_task: Any
     _steer_attachment_meta: dict[str, dict[str, Any]]
     _steer_act_now: set[str]
     _steer_automation: dict[str, dict]

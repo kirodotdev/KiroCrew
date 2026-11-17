@@ -260,12 +260,12 @@ async def test_steer_cuts_into_the_running_turn_instead_of_queueing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_steer_the_client_cannot_take_falls_back_to_the_queue(tmp_path):
+async def test_a_steer_the_client_cannot_take_is_held_not_queued(tmp_path):
     """Steering is best-effort; the message is not.
 
     With no steer-capable client on the slot the helper answers UNAVAILABLE, and
-    the message must land on the queue rather than be dropped — the caller is told
-    it queued, so it never reads a silent loss as a delivery.
+    the message is held as a pending steer for the next tool boundary (see
+    ``test_pending_steer``) rather than queued behind the whole turn or dropped.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -281,7 +281,9 @@ async def test_a_steer_the_client_cannot_take_falls_back_to_the_queue(tmp_path):
 
     assert out["steered"] is False
     assert out["started"] is False
-    assert any("check the other branch first" in q.get("content", "") for q in target._queue)
+    assert out["pending_steer"] is True
+    assert not target._queue
+    assert len(target._deferred_steers) == 1
 
 
 @pytest.mark.asyncio
@@ -981,8 +983,8 @@ def test_send_refuses_an_empty_or_oversized_message(tmp_path):
 async def test_a_send_names_its_peer_origin_to_the_session_entry_point(tmp_path, monkeypatch):
     """The peer path hands its text to `session_deliver.deliver` with a `peer` origin.
 
-    A steer that the client cannot take asks for a steer first, then falls back
-    to the queue arm with `steer=False` and the sender's address on the entry.
+    A steer that the client cannot take asks for a steer first and is then held
+    for the next tool boundary, with nothing written to the queue.
     """
     from kiro_crew.dashboard import session_deliver
 
@@ -1007,8 +1009,9 @@ async def test_a_send_names_its_peer_origin_to_the_session_entry_point(tmp_path,
     )
 
     assert out["steered"] is False and out["started"] is False
-    assert calls == [("peer", True, False), ("peer", False, True)]
-    assert any("route me" in q.get("content", "") for q in target._queue)
+    assert out["pending_steer"] is True
+    assert calls == [("peer", True, False)]
+    assert not target._queue
 
 
 # ── The gateway-set structured sender (meta.relay) on the delivered row ──

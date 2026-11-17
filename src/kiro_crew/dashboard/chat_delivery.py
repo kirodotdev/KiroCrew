@@ -453,8 +453,18 @@ async def steer_into_running_turn(
     banner: str = "",
     relay_meta: dict | None = None,
     author: dict | None = None,
+    held_peer: bool = False,
+    held_key: str = "",
+    held_entry: object = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
+
+    ``held_peer`` marks a peer steer the gateway held for this tool boundary: on a
+    harness that can drop an accepted steer it skips the ``peer_steer_loss_recovery``
+    refusal. ``held_key`` names that held steer (``dashboard.deferred_steer``): just
+    before the RPC, with no await since the last check, this call confirms the steer is
+    still held (a hard stop may have discarded it) and, on such a harness, marks it
+    delivered, so the teardown requeue skips it and it is injected at most once.
 
     Requires a live, steer-capable inner ACP client that the turn published on
     the slot. Fire-and-forget by design: the inline steer card materializes when
@@ -600,8 +610,12 @@ async def steer_into_running_turn(
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
-    if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
+    loss_prone = getattr(client, "steer_needs_loss_recovery", False) is True
+    if not user_origin and not held_peer and loss_prone:
         # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
+        # A held peer steer (``dashboard.deferred_steer``) opts in for itself: it is
+        # sent at a tool boundary, registered pending, and marked delivered by its
+        # sender first, so the requeue never queues a second copy of it.
         # A snapshot, not a load: no file read on the loop, no await before registering.
         live_config = live.snapshot()
         if live_config is None or not live_config.agent.peer_steer_loss_recovery:
@@ -688,6 +702,19 @@ async def steer_into_running_turn(
     # it is handed to the requeue, which puts it on the queue entry; the drain then
     # unions entry meta onto the row it appends, so the id reaches the row even
     # through a merge.
+    if held_key:
+        # No await since `wait_for_clear` above: a hard stop that discarded this held
+        # steer meanwhile has already emptied the list, and nothing is registered yet.
+        # By identity: a discard followed by a re-send leaves an entry of the same id.
+        if not any(h is held_entry for h in slot._deferred_steers):
+            return STEER_UNAVAILABLE
+        # With the key on the operator wants the ordinary requeue-on-loss, so no mark.
+        # A missing config reads as off, as the refusal above does.
+        recovery_config = live.snapshot() if loss_prone else None
+        if loss_prone and not (
+            recovery_config is not None and recovery_config.agent.peer_steer_loss_recovery
+        ):
+            slot._deferred_steer_delivered[held_key] = message
     if not (isinstance(delivery_id, str) and delivery_id):
         delivery_id = uuid.uuid4().hex
     slot._steer_delivery_ids[message] = delivery_id
@@ -807,6 +834,7 @@ async def steer_into_running_turn(
         slot._steer_automation[message] = dict(nudge_meta)
     slot._pending_steers.append(message)
     possibly_delivered = False
+    wire_message = message
     slot._steer_rpc_in_flight.add(message)
     try:
         wire_message = responsive_chat.steer_message(slot, message) if responsive else message
@@ -819,6 +847,13 @@ async def steer_into_running_turn(
         possibly_delivered = getattr(exc, "ambiguous_delivery", False) is True
     finally:
         slot._steer_rpc_in_flight.discard(message)
+    if held_key and loss_prone and not steered and not possibly_delivered:
+        # The client answered False but keeps the text as unresolved: the adapter took it
+        # as its turn ended. Kept as possibly delivered, so the delivered mark stays and
+        # the teardown neither queues it nor runs it again.
+        unresolved = getattr(client, "held_steers_possibly_delivered", None)
+        if isinstance(unresolved, (set, frozenset)) and (wire_message or "").strip() in unresolved:
+            possibly_delivered = True
 
     # The append-only log records no steer of its own, and this coroutine is why.
     # ``steered`` means the client accepted the write and nothing more: the turn it

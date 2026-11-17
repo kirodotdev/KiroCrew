@@ -197,8 +197,8 @@ class TestBroadcastReports:
         assert "Steered" in out
         assert "cut into its running turn" in out
 
-    def test_a_steer_that_fell_back_to_a_queue_says_so_for_that_target(self) -> None:
-        """The caller asked for an interruption and one target did not get one.
+    def test_a_held_steer_says_pending_steer_for_that_target(self) -> None:
+        """The caller asked for an interruption and one target has not taken it yet.
         Reporting a plain queue would leave it believing every target was cut into."""
         out, _ = _bc(
             {"message": "stop", "mode": "steer", "all": True},
@@ -207,11 +207,12 @@ class TestBroadcastReports:
                 "mode": "steer",
                 "requested": 2,
                 "delivered": 2,
-                "results": [_row("chat-2", steered=True), _row("chat-3")],
+                "results": [_row("chat-2", steered=True), _row("chat-3", pending_steer=True)],
             },
         )
         assert "cut into its running turn" in out
-        assert "steer fell back to the queue" in out
+        assert "pending-steer" in out
+        assert "steer fell back to the queue" not in out
 
     def test_a_queue_broadcast_never_mentions_steering(self) -> None:
         out, _ = _bc(

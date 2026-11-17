@@ -388,6 +388,7 @@ def test_an_unknown_discard_cause_writes_nothing_and_does_not_raise(tmp_path):
         # The steer sentence does not fit the "discarded before it ran" frame,
         # so it carries no token and the card shows its English content.
         (sc.SEND_DISCARD_HARD_STOP_STEER, None),
+        (sc.SEND_DISCARD_UNCONFIRMED_STEER, None),
     ],
 )
 def test_only_a_framed_discard_cause_carries_the_localized_token(tmp_path, cause, token):
