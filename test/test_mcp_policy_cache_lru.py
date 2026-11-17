@@ -15,7 +15,6 @@ import http.server
 import json
 import socketserver
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -26,11 +25,22 @@ import kiro_crew.mcp_shared_policy as policy_mod
 
 _delay = {"seconds": 0.0}
 _status = {"code": 200}
+#: Set at teardown so a handler still holding back a slow answer returns at once.
+_released = threading.Event()
+
+#: The read timeout a slow case gives the policy client, in place of the product's
+#: own 5 s: what these cases need is a read that times out, not the length of the
+#: wait. A fast read keeps the product's timeout.
+_SLOW_READ_TIMEOUT = 0.5
+#: How long a slow gateway holds its answer: far past the read timeout, and cut
+#: short by ``_released`` at teardown.
+_SLOW_ANSWER = 30.0
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - http.server API
-        time.sleep(_delay["seconds"])
+        if _delay["seconds"]:
+            _released.wait(_delay["seconds"])
         if _status["code"] == 409:
             body = json.dumps({"code": "policy_unreadable", "reason": "spec"}).encode("ascii")
         else:
@@ -78,9 +88,20 @@ def gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(mcp_shared, "_included_tools_by_session", {})
     monkeypatch.setattr(mcp_shared, "_retired_policy_by_session", {})
     monkeypatch.setattr(mcp_shared, "_policy_last_used", {})
+    real_urlopen = mcp_shared.loopback_urlopen
+
+    def short_when_slow(req, timeout, **kwargs):
+        if _delay["seconds"]:
+            timeout = min(timeout, _SLOW_READ_TIMEOUT)
+        return real_urlopen(req, timeout, **kwargs)
+
+    # Through the facade: it forwards the patch to every member that binds the name.
+    monkeypatch.setattr(mcp_shared, "loopback_urlopen", short_when_slow)
     _delay["seconds"] = 0.0
     _status["code"] = 200
+    _released.clear()
     yield
+    _released.set()
     _delay["seconds"] = 0.0
     _status["code"] = 200
     server.shutdown()
@@ -95,7 +116,7 @@ def test_session_in_use_survives_a_full_cache_and_a_busy_gateway(gateway: None) 
         assert policy_mod._resolve_tool_policy("dashboard:in-use").unresolved == ""
     policy_mod._resolve_tool_policy("dashboard:one-more")
 
-    _delay["seconds"] = 6.5  # past the 5 s read timeout
+    _delay["seconds"] = _SLOW_ANSWER  # past the read timeout
     answered = policy_mod._resolve_tool_policy("dashboard:in-use", ignore_negative_cache=True)
 
     assert answered.unresolved == ""
@@ -108,7 +129,7 @@ def test_evicted_session_is_served_its_last_good_policy_on_a_busy_gateway(gatewa
         policy_mod._resolve_tool_policy(f"dashboard:other-{n}")
     assert "dashboard:idle" not in policy_mod._excluded_tools_by_session
 
-    _delay["seconds"] = 6.5
+    _delay["seconds"] = _SLOW_ANSWER
     answered = policy_mod._resolve_tool_policy("dashboard:idle", ignore_negative_cache=True)
 
     assert answered.unresolved == ""
@@ -126,7 +147,7 @@ def test_explicit_refusal_drops_the_last_good_policy(gateway: None) -> None:
     assert refused.unresolved == "policy_unreadable"
 
     _status["code"] = 200
-    _delay["seconds"] = 6.5
+    _delay["seconds"] = _SLOW_ANSWER
     answered = policy_mod._resolve_tool_policy("dashboard:idle", ignore_negative_cache=True)
 
     assert answered.unresolved == "resolution_failed"
@@ -144,7 +165,7 @@ def test_last_good_record_is_bounded(gateway: None, monkeypatch: pytest.MonkeyPa
 
 
 def test_session_that_never_resolved_is_still_refused_on_a_busy_gateway(gateway: None) -> None:
-    _delay["seconds"] = 6.5
+    _delay["seconds"] = _SLOW_ANSWER
     answered = policy_mod._resolve_tool_policy("dashboard:new", ignore_negative_cache=True)
 
     assert answered.unresolved == "resolution_failed"

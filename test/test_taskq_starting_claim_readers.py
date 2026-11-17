@@ -21,6 +21,12 @@ import functools
 from pathlib import Path
 from typing import Iterator
 
+import pytest
+
+#: One worker for the module, so the cached ``_scan`` of ``src/`` runs once per run
+#: rather than once on every worker a test of this file lands on.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_taskq_starting_claim_readers")
+
 SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 #: Attributes that read whether a run is live in this process.
