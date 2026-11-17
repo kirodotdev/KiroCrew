@@ -9,6 +9,8 @@ counter                                        one increment per
 ``kirocrew.lesson.injected``                   admitted turn composed with a lesson
                                                tier (``hit``: a lesson went in)
 ``kirocrew.app.task.completed``                unit of work an app reports finished
+``kirocrew.app.installed``                     first install of an app from a registry
+                                               (``via``: store / default)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -30,7 +32,10 @@ own skill can be named after what they work on, so a name outside
 :data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. The same holds for apps: an
 app that is not one of :data:`OFFICIAL_APP_IDS` (the shipped built-ins) is
 ``private``. Both lists are in memory at import, so neither importing this module
-nor labelling a value reads the filesystem.
+nor labelling a value reads the filesystem. :func:`app_public_id`, the label of
+``kirocrew.app.installed``, also names the apps installed from the store; it reads
+a set the gateway fills off the event loop, so labelling with it reads no file
+either.
 
 **Recording never changes the result of what it measures.** Every function here
 swallows its own failures after a debug log, and each call site records only
@@ -54,6 +59,7 @@ LESSON_INJECTED = "kirocrew.lesson.injected"
 #: carries the closed ``skill`` label from :func:`skill_label`.
 SKILL_LAZY_LOAD_COUNT = "kirocrew.skill.lazy_load.count"
 APP_TASK_COMPLETED = "kirocrew.app.task.completed"
+APP_INSTALLED = "kirocrew.app.installed"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -264,6 +270,55 @@ def app_label(app: object) -> str:
     if isinstance(app, str) and app in OFFICIAL_APP_IDS:
         return app
     return APP_PRIVATE
+
+
+#: Every app with a public id (:mod:`kiro_crew.apps.store_origin`): the shipped
+#: built-ins by their ``app.json`` name, and the apps installed from the store. Filled
+#: off the event loop by :func:`refresh_public_app_ids`; empty until then, so every
+#: app is ``private`` before the first fill.
+_public_app_ids: frozenset[str] = frozenset()
+
+
+def refresh_public_app_ids() -> None:
+    """Re-read which apps have a public id. Reads the install records: call off the loop.
+
+    The gateway runs it at boot and after every app lifecycle change
+    (``slots_push.refresh_app_state``), and a registry install runs it before it
+    counts the install. Never raises; a failed read keeps the last set.
+
+    shortcut: only a gateway process fills the set, so a CLI process labels every
+    app ``private``; fill it there too once a CLI path records an app metric.
+    """
+    global _public_app_ids
+    try:
+        from kiro_crew.apps.store_origin import public_app_ids
+
+        _public_app_ids = public_app_ids()
+    except Exception:
+        logger.debug("public app ids refresh failed", exc_info=True)
+
+
+def app_public_id(app: object) -> str:
+    """*app*'s public id: a shipped built-in's or a store install's name, else ``private``.
+
+    Not a string is ``other``. Whether an install came from the store is read from
+    its install record, so an app the store later delists keeps its id. Reads only
+    memory. Separate from :func:`app_label`, whose values
+    ``kirocrew.app.task.completed`` already sends and which stay as they are.
+    """
+    if not isinstance(app, str):
+        return OTHER
+    return app if app in _public_app_ids else APP_PRIVATE
+
+
+#: How an install was asked for: ``store`` from the store or a registry the owner
+#: added, ``default`` by the default-apps pass.
+APP_INSTALL_VIA_VALUES: tuple[str, ...] = ("store", "default", OTHER)
+
+
+def record_app_installed(app: object, via: object) -> None:
+    """*app* was installed for the first time, asked for *via* (``store`` / ``default``)."""
+    _emit(APP_INSTALLED, {"app": app_public_id(app), "via": _closed(via, APP_INSTALL_VIA_VALUES)})
 
 
 def record_app_task(app: object, outcome: object) -> None:

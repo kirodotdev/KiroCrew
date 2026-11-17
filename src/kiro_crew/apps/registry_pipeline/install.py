@@ -258,6 +258,7 @@ async def install_from_registry(
     resolved_entry: dict[str, Any] | None = None,
     start_disabled: bool = False,
     before_replace: Callable[[], Awaitable[None]] | None = None,
+    via: str = "store",
 ) -> dict[str, Any]:
     """Clone an app from its git repo and install it.
 
@@ -291,6 +292,9 @@ async def install_from_registry(
         before_replace: Awaited right before a managed app's files are copied in,
             once every gate, the build and ``onInstall`` have passed. An update takes
             the app down here; a self-managed app replaces no installed file.
+        via: How the install was asked for, the ``via`` of
+            ``kirocrew.app.installed``: ``store`` (the store routes, the default) or
+            ``default`` (the default-apps pass).
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
@@ -1499,6 +1503,10 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
+            if not was_installed:
+                from kiro_crew.apps.store_origin import count_first_install
+
+                await count_first_install(name, via)
             outcome = {
                 "ok": True,
                 "name": name,
@@ -1575,6 +1583,10 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
+            if not was_installed:
+                from kiro_crew.apps.store_origin import count_first_install
+
+                await count_first_install(result.name, via)
         # Install/update failed AFTER a successful clone+build: the checkout was
         # rolled back above, durable_success stays False, and the `finally`'s
         # reporter filters the restored stale out — no per-exit report is needed.

@@ -99,6 +99,11 @@ from kiro_crew.metrics.recorder import MetricsRecorder
             {"via": "organic"},
             {"Feature": "milestone", "Activity": "features_completed", "via": "organic"},
         ),
+        (
+            "kirocrew.app.installed",
+            {"app": "weather-app", "via": "store"},
+            {"Feature": "app", "Activity": "installed", "Entity": "weather-app", "via": "store"},
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):
@@ -109,7 +114,7 @@ def test_each_metric_gets_its_shape(name, attrs, expected):
 
 def test_every_metric_is_covered_by_the_shape_table_above():
     """A new entry must come with a row in the parametrized table."""
-    assert len(BEHAVIORAL_METRICS) == 9
+    assert len(BEHAVIORAL_METRICS) == 10
 
 
 def test_a_missing_activity_attribute_reads_other():

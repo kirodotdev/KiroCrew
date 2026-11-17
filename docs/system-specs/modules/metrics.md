@@ -3165,6 +3165,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
 | `kirocrew.app.task.completed` | counter | `app`: a shipped built-in app id (`BUILTIN_NAMES`, its `apps/builtins/` directory name) or `private`; `outcome`: `ok` / `error` / `other` | a finished Papyrus compile (`record_app_task`) |
+| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
 | `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
@@ -3174,14 +3175,14 @@ Shared attributes (`metrics/usage_attrs.py`):
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
 
-The attributes above are what the emit sites pass. The last three rows are the
-behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
+The attributes above are what the emit sites pass. `kirocrew.app.installed` and the
+last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
 subset of `PRODUCT_METRICS`). On the live provider `MetricsRecorder` creates them on
 a second meter with scope `kiro.crew` (every other metric uses `kiro_crew`) and
 reshapes their attributes on the way in, so every sink sees: `Feature` (`tips`,
-`feature_video` or `milestone`), `Activity` (the tip `action`, the video `status`,
-or the milestone metric's last name segment), and `Entity` in place of `feature` /
-`milestone`. Other keys are kept. The reshape renames keys and adds constants only,
+`feature_video`, `milestone` or `app`), `Activity` (the tip `action`, the video
+`status`, or the metric's last name segment), and `Entity` in place of `feature` /
+`milestone` / `app`. Other keys are kept. The reshape renames keys and adds constants only,
 so it cannot add a value the emit site did not close. A collector can then admit
 user behavior by scope with no per-metric rule.
 

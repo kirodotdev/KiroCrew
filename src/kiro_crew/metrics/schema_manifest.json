@@ -2,6 +2,34 @@
   "_comment": "The exported metric schema: every metric in PRODUCT_METRICS, its kind, unit, instrumentation scope, temporality, attribute keys and closed values. Rows, keys and values are only ever added; see docs/guides/telemetry-otlp-export.md (Metric schema contract). Regenerate with: python test/metrics_schema_helpers.py --write",
   "metrics": [
     {
+      "name": "kirocrew.app.installed",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "installed"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "via": {
+          "values": [
+            "default",
+            "other",
+            "store"
+          ]
+        }
+      }
+    },
+    {
       "name": "kirocrew.app.task.completed",
       "kind": "counter",
       "unit": "1",

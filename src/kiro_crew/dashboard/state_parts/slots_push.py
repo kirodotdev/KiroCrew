@@ -344,13 +344,15 @@ def refresh_app_state() -> None:
     The hidden-chat listing first: it clears the queued flag, so a change landing
     after that point asks again and the gate's sets below never miss it. Then the
     tool gate's own-server sets, so a removed or replaced app stops being granted
-    without a restart.
+    without a restart. Last, the public app ids the app metrics label with.
     """
     from kiro_crew.apps import hidden_sessions
     from kiro_crew.apps.builtin_adoption_gate import refresh_gate_app_trust
+    from kiro_crew.metrics.feature_usage import refresh_public_app_ids
 
     hidden_sessions.refresh_hiding_apps()
     refresh_gate_app_trust()
+    refresh_public_app_ids()
 
 
 def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> None:
