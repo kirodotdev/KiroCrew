@@ -536,6 +536,46 @@ class TestProbe:
         assert mcp_mod._scope_has_entry("team-foo", store) is False
         assert store.read_bytes() == before
 
+    def test_tool_overrides_edit_a_raw_keyed_store_entry_in_place(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """A tool toggle on the ``playwright-mcp`` row edits the raw
+        ``npm:@playwright/mcp`` store entry it stands for. Red under
+        ``servers.get(name)``: it seeded a canonical twin and edited that, so
+        the raw entry kept the tool off."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        raw = {
+            "mcpServers": {
+                "npm:@playwright/mcp": {"command": "npx", "disabledTools": ["browser_install"]}
+            }
+        }
+        store.write_text(json.dumps(raw), encoding="utf-8")
+        assert mcp_mod._set_tool_overrides("playwright-mcp", {"browser_install": True}) == [
+            "browser_install"
+        ]
+        assert json.loads(store.read_text())["mcpServers"] == {
+            "npm:@playwright/mcp": {"command": "npx"}
+        }
+        assert mcp_mod._set_tool_overrides("playwright-mcp", {"browser_install": False}) == [
+            "browser_install"
+        ]
+        assert json.loads(store.read_text())["mcpServers"] == raw["mcpServers"]
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "npm:@team/foo": {"command": "a"},
+                        "other:team/foo": {"command": "b"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = store.read_bytes()
+        assert mcp_mod._set_tool_overrides("team-foo", {"t": False}) == []
+        assert store.read_bytes() == before
+
     def test_uninstall_by_alias_removes_the_raw_slash_named_entry_everywhere(
         self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
