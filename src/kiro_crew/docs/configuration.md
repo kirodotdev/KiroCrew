@@ -212,6 +212,31 @@ error names the stores that were hidden.
 - Do not make `~/.aws/config` a symlink. On Linux the sandbox copies whatever
   the link points at, so a link to a credential file would expose it.
 
+### Gemini with a Google AI Pro or Ultra subscription
+
+To use Gemini models with your Google AI Pro or Ultra subscription, without a
+separate API key, select the `antigravity` backend. The Antigravity runtime signs
+in with your Google account itself:
+
+1. Install the Google Antigravity ACP 1.4.4 archive the backend card names. Kiro
+   Crew refuses other versions.
+2. Set `agent.acp_backend` to `antigravity`.
+3. In a terminal on the gateway host, set `auth.type` to `oauth-personal` in
+   `~/.gemini/antigravity-acp/settings.json` (under `$GEMINI_HOME` when that is
+   set).
+4. Start a new chat. The runtime opens Google sign-in in the browser. Sign in
+   with the account that has the subscription.
+
+Chat, cron jobs and subagents all run on the selected backend. The runtime keeps
+its token in its own profile (`antigravity-acp/acp_token.json`), and Kiro
+Crew never stores it. The sandbox leaves that file readable to the Antigravity
+runtime, so a shell the model spawns inside it can read the token too.
+
+If you have a Gemini API key instead, Antigravity reads `GEMINI_API_KEY` from its
+launch environment. Or use the `strands` backend: set `agent.strands_provider`
+to `google`, `agent.strands_model` to a Gemini model id, and map
+`GEMINI_API_KEY` to a saved secret in `agent.strands_env`.
+
 The non-default harnesses are offered only when this build registers them. A
 host governance policy can narrow that list further, and the dashboard reports
 missing harness components with their install command. `kirocrew doctor` reports
