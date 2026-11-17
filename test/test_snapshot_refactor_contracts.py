@@ -295,7 +295,17 @@ def test_the_restore_command_line_is_unchanged() -> None:
     assert _parser_rows(snap.restore_main) == [
         (("-h", "--help"), "help", 0, None, argparse.SUPPRESS, None, _HELP, "_HelpAction"),
         ((), "snapshot", "?", None, None, None, None, "_StoreAction"),
-        (("--mode",), "mode", None, None, None, ("replace", "merge"), None, "_StoreAction"),
+        (
+            ("--mode",),
+            "mode",
+            None,
+            None,
+            None,
+            ("replace", "merge"),
+            "replace = overwrite existing state, merge = keep it and add; asked on a "
+            "terminal when omitted, refused off a terminal",
+            "_StoreAction",
+        ),
         (("--dry-run",), "dry_run", 0, True, False, None, None, "_StoreTrueAction"),
         (
             ("--force",),

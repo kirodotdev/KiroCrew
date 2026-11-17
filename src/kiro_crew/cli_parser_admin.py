@@ -103,7 +103,10 @@ def register_restore_parser(sub: _Commands) -> None:
     rest_parser.add_argument(
         "--mode",
         choices=("replace", "merge"),
-        help="replace = overwrite existing state, merge = keep it and add (default: auto-detect)",
+        help=(
+            "replace = overwrite existing state, merge = keep it and add; "
+            "asked on a terminal when omitted, refused off a terminal"
+        ),
     )
     rest_parser.add_argument(
         "--dry-run", action="store_true", help="Preview what would be restored, write nothing"
