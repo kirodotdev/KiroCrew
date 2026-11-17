@@ -99,6 +99,7 @@ describe('importedItemCount', () => {
     'ui-prefs (nothing to restore)',
     'ui-prefs (nothing to restore; 3 unstorable entries dropped)',
     'hooks (skipped, already exists)',
+    'skills (skipped: held back, not installed: helper, loose.sh)',
     'crons (skipped: unreadable or invalid cron store)',
     'memory_stores/work (kept the existing store; the archive\'s copy was not merged into it)',
   ])('does not count an item the import left alone: %s', (item) => {
@@ -308,6 +309,26 @@ describe('PortabilityTab restoring browser settings', () => {
     expect(sessionStorage.getItem(IMPORT_RESULT_KEY)).toBeNull()
   })
 
+  it('names the skills a Merge held back, with the overflow, on its own warning line', async () => {
+    await importWith({
+      items: ['config (merged)', 'skills (skipped: held back, not installed: helper, loose.sh +3 more)'],
+      skills_held: ['helper', 'loose.sh'],
+      skills_held_more: 3,
+    })
+
+    expect(screen.getByText(/Import complete \(1 item\)/)).toBeTruthy()
+    const line = screen.getByTestId('portability-import-warning').textContent ?? ''
+    expect(line).toContain('helper')
+    expect(line).toContain('loose.sh')
+    expect(line).toContain('3 more')
+    expect(line).toContain('Merge never installs')
+  })
+
+  it('shows no held-skills line when the summary names none', async () => {
+    await importWith({ items: ['config (merged)'] })
+    expect(screen.queryByTestId('portability-import-warning')).toBeNull()
+  })
+
   it('reloads after a clean restore and shows the success line after the reload', async () => {
     const view = await importWith({ items: ['ui-prefs (merged)', 'config (merged)'], ui_prefs_restored: true })
 
@@ -498,6 +519,14 @@ describe('PortabilityTab chat history', () => {
     await screen.findByText('manifest.json is missing')
     expect(screen.queryByTestId('portability-preview-checking')).toBeNull()
     expect(input.disabled).toBe(false)
+  })
+
+  it('marks the Skills row not imported under Merge, and not under Replace', async () => {
+    await preview({ skill_count: 2 })
+    expect(screen.getByTestId('portability-preview-skills-held').textContent).toBe(' (not imported)')
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Mode' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Replace', exact: true }))
+    expect(screen.queryByTestId('portability-preview-skills-held')).toBeNull()
   })
 
   it('says when the chosen archive has no chats', async () => {

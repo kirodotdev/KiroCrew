@@ -361,8 +361,10 @@ this home (not the home itself, the data home or a folder holding it, or a
 protected folder); otherwise this install's copy stays and the result names it.
 A settings file in the archive that is not
 usable is named in the result and never installed, in either mode.
-Memory, crons, workspace files and skills follow the never-overwrite rules
-above in both tools.
+Memory, crons and workspace files follow the never-overwrite rules above in
+both tools. Skills do not: a dashboard Merge installs none of the archive's
+skills, even ones this install lacks, and the result names the skills it held
+back. Only the dashboard's Replace, or `kirocrew restore`, installs them.
 
 The dashboard export also carries your chat folders (`folders.json`). The
 import adds every folder this install does not have, matched by its id, and
