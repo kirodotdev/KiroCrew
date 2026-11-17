@@ -148,6 +148,46 @@ class TestPruneAtomicity:
         temps = list(tmp_path.glob(".sel_prune_*"))
         assert temps == []
 
+    @pytest.mark.parametrize("with_old", [True, False])
+    def test_next_prune_removes_temp_left_by_a_killed_prune(
+        self, tmp_path: Path, with_old: bool
+    ) -> None:
+        """A prune killed mid-rewrite leaves its temp; the next prune removes it."""
+        now = datetime.now(tz=timezone.utc)
+        lines = [_make_entry(now - timedelta(hours=1), "keep")]
+        if with_old:
+            lines.insert(0, _make_entry(now - timedelta(days=100), "old"))
+        sel_file = tmp_path / "security_events.jsonl"
+        sel_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        orphan = tmp_path / ".sel_prune_k1lled00.tmp"
+        orphan.write_text(_make_entry(now) + "\n", encoding="utf-8")
+        neighbour = tmp_path / ".sel_prune_notes.txt"
+        neighbour.write_text("not a prune temp", encoding="utf-8")
+
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log.prune(keep_days=30) == (1 if with_old else 0)
+
+        assert not orphan.exists()
+        assert neighbour.read_text(encoding="utf-8") == "not a prune temp"
+        surviving = sel_file.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line)["tool"] for line in surviving] == ["keep"]
+
+    def test_prune_without_the_rotation_lock_leaves_temps_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the rotation lock a sibling's prune may own the temp, so keep it."""
+        now = datetime.now(tz=timezone.utc)
+        sel_file = tmp_path / "security_events.jsonl"
+        sel_file.write_text(_make_entry(now - timedelta(days=100)) + "\n", encoding="utf-8")
+        in_flight = tmp_path / ".sel_prune_running.tmp"
+        in_flight.write_text("", encoding="utf-8")
+
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(log, "_open_rotation_lock", lambda: None)
+        log.prune(keep_days=30)
+
+        assert in_flight.exists()
+
 
 class TestPruneConcurrency:
     """Verify appends from another thread during prune are not lost."""

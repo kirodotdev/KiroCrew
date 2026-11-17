@@ -177,6 +177,8 @@ Two bounds, and the tighter wins:
 - **Age:** 365 days (`_RETENTION_DAYS`), pruned daily by the heartbeat service (`_PRUNE_TICKS`).
 - **Size:** the live log rotates at 32 MiB (`_SEGMENT_MAX_BYTES`) and only the newest 7 closed segments are kept (`_SEGMENT_KEEP`), so on a busy host evidence can age out before 365 days.
 
+The age prune rewrites the live log through a `.sel_prune_*.tmp` temp beside it. A process killed inside that rewrite leaves the temp behind, so each live rewrite first deletes every `.sel_prune_*.tmp` there. It does this under the cross-process rotation lock that every live rewrite holds, so the temp of a prune still running is never one of them. The deleted temps hold no record the live log lacked, because their replace never ran. A prune that cannot take the rotation lock skips the live rewrite and leaves the temps alone.
+
 ## Integration Points
 
 | Surface | What's Logged | Module |
