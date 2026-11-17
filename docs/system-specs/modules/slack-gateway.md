@@ -2518,13 +2518,20 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   have stopped some before failing. After the stops, an idle channel's status is
   set back to `active` only if its session is still idle; the channel's own
   session is stopped once, at the press, and is not read again (a turn a person's
-  next message starts during the Stop is theirs). The board also watches the
+  next message starts during the Stop is theirs). Whether it runs is read at the
+  press, before any await (`stop_channel`), so a message sent after an idle
+  channel's Stop is not stopped, and neither is a helper report or wake that
+  starts the channel's session during the sweep (as before this change; holding
+  it is the follow-up hold change). The board also watches the
   sessions filed in the channel's folder and the crew-log children its last board
   names; a running one the store does not record as a helper agent is not stopped,
   and the reply counts it as still running (`stop_helpers.left_running` over
-  `BoardCache.watched_sessions`, empty when the board's scope refuses the channel). The reply says how many it stopped ("Stopped N: this channel's
-  session, K helper agents (…) and M sub-agents."), naming up to five stopped helpers the
-  board's scope admits, linked to its chat with the board's own links; with none
+  `BoardCache.watched_sessions`, empty when the board's scope refuses the channel,
+  read right before the reply's send with no await between). After the fence,
+  `routing._stop_bound` hands the rest to `stop_helpers.stop_channel` (the stops,
+  the status settle, the SEL rows and the reply). The reply says how many it
+  stopped ("Stopped N: this channel's session, K helper agents and M
+  sub-agents.") and names none of them; with none
   stopped and nothing to report, `!stop` says "Nothing running." and the native Stop posts nothing. A
   Stop does not hold anything afterwards: a message queued for a stopped helper,
   its AutoNudge or patrol, or a send from the channel's session can start it
@@ -2534,16 +2541,12 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   approval, ledger move or re-arm republishes the board and the needs-you
   replies.
 - **When a board write goes out.** The board's four writes (post, edit, pin and a
-  needs-you reply) are its writes of the helper agents' content, besides the
-  Code tab (gated as above), the wrap-up's outcome lines (below) and the Stop
-  reply, which names stopped helpers by their board titles. Each
-  re-checks the board's scope right before its raw send, with no await between:
-  the publisher asks `_writable` (scope and Stop) right before the raw client's
-  call, which awaits nothing before its HTTP request, and the Stop reply reads
-  `stop_helpers.board_titles` (scope) right before its send.
-  `test_slack_code_channel_commit_point.py` lists every board writer, so a new one
-  fails until it is gated; the Stop reply's check is pinned by
-  `test_slack_code_channel_stop_helpers.py`. A board counts as
+  needs-you reply) are its only writes of the helper agents' content, besides the
+  Code tab (gated as above) and the wrap-up's outcome lines (below). Each board write
+  re-checks the board's scope and the Stop right before its raw send, with no await
+  between: the publisher asks `_writable` right before the raw client's call, which
+  awaits nothing before its HTTP request. `test_slack_code_channel_commit_point.py`
+  lists every such writer, so a new one fails until it is gated. A board counts as
   published only once its writes reached Slack. A pass that read a board and did not
   get it out (fenced by a Stop, failed) arms exactly one re-publish (`board.settle`):
   the channel's one re-arm timer, armed in a clean context, debounced and backed off

@@ -322,36 +322,24 @@ async def test_a_helper_that_starts_a_turn_during_the_stop_is_stopped_too(
     assert _posts(env) == ["Stopped 2: 2 helper agents."]
 
 
-async def test_the_reply_names_each_stopped_helper_the_board_shows_linked_to_its_chat(
+async def test_the_reply_counts_the_stopped_helpers_and_names_none(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The board's titles and links, only while its scope admits the channel; the
-    reply never claims nothing starts again (nothing is held yet)."""
-    from kiro_crew.slack.code_channels.board import links
+    """How many it stopped, as the RFC says: no helper's title, even one the board
+    shows; the reply never claims nothing starts again (nothing is held yet)."""
     from kiro_crew.slack.code_channels.workspace import core as workspace
 
     _world(env, monkeypatch, **{"chat-h1": True, "chat-h2": True})
-    admitted = {"on": True}
-    board = SimpleNamespace(
-        rows=[SimpleNamespace(session_key="dashboard_chat-h1", title="Fix the <login> test")]
-    )
+    board = SimpleNamespace(rows=[SimpleNamespace(session_key="dashboard_chat-h1", title="Fix")])
     service = SimpleNamespace(
-        _board_still_admitted=lambda binding: admitted["on"],
+        _board_still_admitted=lambda binding: True,
         board=lambda team, channel, session: board,
+        watched_sessions=lambda binding: set(),
         _forget_worker_status=lambda binding: None,
     )
     monkeypatch.setattr(workspace, "service", lambda: service)
-    monkeypatch.setattr(
-        links, "link_builder", lambda: (lambda key: f"https://crew.example/s/{key}")
-    )
-    await _bang_stop(env, "301.0")
-    assert _posts(env)[-1] == (
-        "Stopped 2: 2 helper agents (<https://crew.example/s/chat-h1|Fix the &lt;login&gt; test>)."
-    )
-    admitted["on"] = False
-    await _bang_stop(env, "302.0")
-    assert _posts(env)[-1] == "Stopped 2: 2 helper agents."
-    assert not any("starts again" in text for text in _posts(env))
+    await _bang_stop(env)
+    assert _posts(env) == ["Stopped 2: 2 helper agents."]
 
 
 async def test_a_helper_whose_compaction_declines_the_stop_is_said_so_on_either_stop(
@@ -540,51 +528,6 @@ async def test_a_sub_agent_sweep_cancelled_midway_is_said(
     ]
 
 
-async def test_the_reply_names_no_helper_once_the_board_refuses_during_the_link_builder(
-    env: Env, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The channel turned shared while the link builder ran off the loop: the
-    titles are read after that await, so the reply only counts."""
-    from kiro_crew.slack.code_channels.board import links
-    from kiro_crew.slack.code_channels.workspace import core as workspace
-
-    _world(env, monkeypatch, **{"chat-h1": True})
-    admitted = {"on": True}
-    board = SimpleNamespace(rows=[SimpleNamespace(session_key="chat-h1", title="Fix login")])
-    service = SimpleNamespace(
-        _board_still_admitted=lambda binding: admitted["on"],
-        board=lambda team, channel, session: board,
-        _forget_worker_status=lambda binding: None,
-    )
-
-    def builder() -> Any:
-        admitted["on"] = False  # the audience refresh lands while the builder runs
-        return lambda key: f"https://crew.example/s/{key}"
-
-    monkeypatch.setattr(workspace, "service", lambda: service)
-    monkeypatch.setattr(links, "link_builder", builder)
-    await _bang_stop(env)
-    assert _posts(env) == ["Stopped 1: 1 helper agent."]
-
-
-async def test_the_reply_escapes_titles_and_links_only_a_linkable_url() -> None:
-    from kiro_crew.slack.code_channels import stop_helpers
-    from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
-
-    urls = {
-        "chat-w1": "https://dash.example/a|b",
-        "chat-w2": f"https://dash.example/?t={SAMPLE_SLACK_BOT_TOKEN}",
-        "chat-w3": "https://dash.example/ok",
-        "chat-w4": "javascript:alert(1)",
-    }
-    titles = {"chat-w1": "a <b> & c", "chat-w2": "<!here>", "chat-w3": "x>y", "chat-w4": "t"}
-    tally = stop_helpers.Tally(helpers=[(key, "stopping") for key in sorted(titles)])
-    text = stop_helpers.reply_text(False, tally, titles=titles, link_for=urls.get)
-    assert "*a &lt;b&gt; &amp; c*" in text and "*&lt;!here&gt;*" in text and "*t*" in text
-    assert "<https://dash.example/ok|x&gt;y>" in text
-    assert "a|b" not in text and SAMPLE_SLACK_BOT_TOKEN not in text and "javascript" not in text
-
-
 async def test_a_sweep_that_failed_partway_is_said_even_when_a_later_sweep_works(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -681,6 +624,57 @@ async def test_a_running_session_the_board_shows_but_the_stop_does_not_reach_is_
     admitted["on"] = False
     await _bang_stop(env, "302.0")
     assert _posts(env)[-1] == "Nothing running."
+
+
+async def _stop_while_the_first_sweep_waits(
+    env: Env, monkeypatch: pytest.MonkeyPatch, w: dict[str, Any]
+) -> None:
+    """``!stop``, with the channel's session starting a turn while the first sub-agent
+    sweep is awaited (the person's next message), released only after that."""
+    import asyncio
+
+    from kiro_crew.testing.wait import await_until
+
+    assert env.state is not None
+    swept, release = asyncio.Event(), asyncio.Event()
+
+    class _Held(_Subagents):
+        async def cancel_for_parent(self, parent: str) -> tuple[int, int]:
+            if not swept.is_set():
+                swept.set()
+                await release.wait()
+            return await super().cancel_for_parent(parent)
+
+    env.state.subagents = _Held()  # type: ignore[attr-defined]
+    monkeypatch.setattr("kiro_crew.dashboard.chat_utils.effective_session_key", lambda s: s.key)
+    stop = asyncio.ensure_future(_bang_stop(env))
+    try:
+        await await_until(swept, what="the Stop's first sub-agent sweep")
+        w["slots"][CHANNEL_SESSION].running = True  # a turn runs now, whatever it was at the press
+    finally:
+        release.set()
+    await await_until(stop, what="the Stop")
+
+
+async def test_a_turn_the_channel_starts_during_the_first_sweep_is_not_stopped(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idle at the press: the turn the next message starts while the sweep is awaited
+    began after the Stop, so it runs on and the reply does not count it."""
+    w = _world(env, monkeypatch, **{"chat-h1": True})
+    await _stop_while_the_first_sweep_waits(env, monkeypatch, w)
+    assert [k for k, _ in w["stopped"]] == ["chat-h1"]
+    assert _posts(env) == ["Stopped 1: 1 helper agent."]
+
+
+async def test_a_channel_session_running_at_the_press_is_stopped_after_the_first_sweep(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = _world(env, monkeypatch, **{"chat-h1": True})
+    w["slots"][CHANNEL_SESSION].running = True
+    await _stop_while_the_first_sweep_waits(env, monkeypatch, w)
+    assert [k for k, _ in w["stopped"]] == [CHANNEL_SESSION, "chat-h1"]
+    assert _posts(env) == ["Stopped 2: this channel's session and 1 helper agent."]
 
 
 async def test_a_turn_the_channel_starts_during_the_stop_keeps_its_status(

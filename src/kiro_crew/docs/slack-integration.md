@@ -328,8 +328,7 @@ exactly as with the switch off, and the page says why under the switch.
   commits under its name, and the wrap-up lists each helper agent's outcome. A helper agent that needs you gets a threaded reply that mentions you, and the
   channel's status shows it is waiting on you. **Stop** (or `!stop`) in the channel
   stops the channel's own agent, the running turn of every helper agent it started
-  and their sub-agents, and says how many it stopped, naming up to five stopped helpers
-  the work board shows, linked to its chat, and how many it could not stop. A
+  and their sub-agents, and says how many it stopped and how many it could not stop. A
   session on the board that the channel's agent did not start as a helper (a chat
   filed in the channel's folder, for one) is not stopped; the reply says how many
   such sessions still run. Stop does not hold them yet: a message

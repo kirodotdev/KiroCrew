@@ -1,10 +1,12 @@
 """A code channel's Stop reaches its helper agents and their sub-agents.
 
-Slack's Stop and ``!stop`` (``routing._stop_bound``) stop the channel's own
-session, the running turn of every helper agent the code-channel store records as
-that session's (``store().workers_of``, written at each helper's birth; never the
-crew-log tree, whose parent edge follows adoption) and the sub-agents those turns
-started. Helpers are one level deep, so there are no grandchildren to walk.
+Slack's Stop and ``!stop`` (``routing._stop_bound``, which sets the stop fence
+and then calls :func:`stop_channel`) stop the channel's own session, the running
+turn of every helper agent the code-channel store records as that session's
+(``store().workers_of``, written at each helper's birth; never the crew-log tree,
+whose parent edge follows adoption) and the sub-agents those turns started.
+Helpers are one level deep, so there are no grandchildren to walk. The reply
+says how many were stopped; it names none of them.
 
 This is the brake only: nothing is held afterwards. A message queued for a
 stopped helper, its own AutoNudge or patrol, or a send from the channel's session
@@ -22,9 +24,6 @@ from typing import Any
 from kiro_crew.slack.code_channels.store import StoreUnavailable, store
 
 logger = logging.getLogger(__name__)
-
-#: How many stopped helpers the reply names; the rest are counted.
-NAMED = 5
 
 #: Stop answers that stopped nothing (Pause all's rule). "no active turn" is not
 #: one: the press still ends that turn at its dispatch gate.
@@ -212,45 +211,8 @@ def left_running(state: Any, binding: Any, tally: Tally) -> int:
     return sum(1 for s in _live(state, sorted(watched - helpers)) if getattr(s, "running", False))
 
 
-def board_titles(binding: Any) -> dict[str, str]:
-    """Slot key -> work-board title of the helpers the board may show in this channel.
-
-    Empty when the board's scope refuses the channel: the reply names no helper
-    the board would withhold. Synchronous, read right before the reply's send.
-    """
-    from kiro_crew.slack.code_channels.workspace import core as workspace
-
-    try:
-        service = workspace.service()
-        if service is None or binding is None or not service._board_still_admitted(binding):
-            return {}
-        board = service.board(binding.team_id, binding.channel_id, binding.session_key)
-    except Exception:
-        return {}
-    titles: dict[str, str] = {}
-    for row in getattr(board, "rows", ()) or ():
-        key = str(getattr(row, "session_key", "") or "").removeprefix("dashboard_")
-        if key and row.title:
-            titles[key] = titles[f"dashboard_{key}"] = row.title
-    return titles
-
-
-def reply_text(
-    session: bool,
-    tally: Tally,
-    *,
-    titles: dict[str, str] | None = None,
-    link_for: Any = None,
-) -> str:
-    """What the channel is told: how many were stopped ("Nothing running." for none).
-
-    *titles* are the work board's titles of the helpers it may show (``{}`` when
-    its scope refuses the channel); each stopped one with a title is named,
-    linked to its chat when a link can be built (the board's own links, never a
-    token), up to :data:`NAMED`.
-    """
-    from kiro_crew.slack.code_channels.board.render import _escape, _link, _linkable
-
+def reply_text(session: bool, tally: Tally) -> str:
+    """What the channel is told: how many were stopped ("Nothing running." for none)."""
     stopped = tally.stopped
     total = int(session) + len(stopped) + tally.subagents
     compacting = len(tally.compacting)
@@ -286,13 +248,93 @@ def reply_text(
         parts.append("this channel's session")
     if stopped:
         noun = "helper agent" if len(stopped) == 1 else "helper agents"
-        named = [(key, (titles or {}).get(key, "")) for key in stopped]
-        names = []
-        for key, title in [(k, t) for k, t in named if t][:NAMED]:
-            url = link_for(key) if callable(link_for) else ""
-            names.append(_link(url, title) if _linkable(url) else f"*{_escape(title)}*")
-        parts.append(f"{len(stopped)} {noun}" + (f" ({', '.join(names)})" if names else ""))
+        parts.append(f"{len(stopped)} {noun}")
     if tally.subagents:
         parts.append(f"{tally.subagents} sub-agent{'' if tally.subagents == 1 else 's'}")
     listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
     return f"Stopped {total}: {listed}.{declined}"
+
+
+async def stop_channel(
+    orch: Any, binding: Any, sender_id: str, channel: str, *, source: str, say_idle: bool
+) -> str:
+    """The Stop after ``routing._stop_bound`` set its fence: stop, settle, audit, reply.
+
+    Returns the channel's own session's stop info (``"idle"`` when it was not
+    running). Routing's helpers are read off the module, where tests patch them.
+    """
+    from kiro_crew.slack.code_channels import routing
+
+    state = routing._dashboard_state()
+    slot = routing.bound_slot(state, binding) if binding is not None else None
+    conductor = binding.session_key if binding is not None else ""
+    # Read before the first await: a turn the channel's session starts during the
+    # sweep (the person's next message) began after the press and is not stopped.
+    pressed = state is not None and slot is not None and bool(getattr(slot, "running", False))
+    tally = await stop_helpers(
+        state,
+        slot,
+        conductor,
+        own=lambda: _stop_channel_session(state, slot, sender_id, channel, source, pressed),
+    )
+    info = tally.own
+    if info == "error":
+        routing._audit(sender_id, source, "allowed", f"channel={channel} result=error")
+    elif info == "idle" and not getattr(slot, "running", False):
+        # Nothing to stop, but Slack never clears "processing" by itself. After
+        # the stops, so a failure here cannot read as a stop that failed, and
+        # only while still idle: a turn started meanwhile keeps its own status.
+        from kiro_crew.slack.code_channels.status import settle_after_stop
+
+        await settle_after_stop(channel)
+        if binding is not None:
+            # Stop set the status itself: the watch's record of what it showed is
+            # stale, so its next pass shows the helper agents' state again.
+            from kiro_crew.slack.code_channels.workspace import core as workspace
+
+            service = workspace.service()
+            if service is not None:
+                service._forget_worker_status(binding)
+    elif info == "compacting":
+        await routing._post(orch, channel, routing.COMPACTING_STOP_TEXT, None)
+    for key, result in tally.helpers:
+        routing._audit(
+            sender_id, source, "allowed", f"channel={channel} slot={key} result={result}"
+        )
+    own = info not in NOT_STOPPED and info not in ("idle", "error", "refused")
+    # No await from here to the raw send: the sessions counted as left running
+    # are the ones the board's scope admits then.
+    tally.others = left_running(state, binding, tally)
+    if not (own or tally.stopped or tally.subagents or tally.notes) and not (
+        say_idle and info != "compacting"
+    ):
+        return info
+    await routing._post(orch, channel, reply_text(own, tally), None)
+    return info
+
+
+async def _stop_channel_session(
+    state: Any, slot: Any, sender_id: str, channel: str, source: str, pressed: bool
+) -> str:
+    """Stop the channel's own session; ``"idle"`` when it was not running at the press.
+
+    *pressed* is whether it ran when Stop was pressed (read before any await).
+    Only the stop and its audit row: what follows a stop (the status settle, the
+    compaction notice) is :func:`stop_channel`'s, so its answer is never lost to them.
+    """
+    from kiro_crew.slack.code_channels import routing
+
+    if not pressed or state is None or slot is None or not getattr(slot, "running", False):
+        routing._audit(sender_id, source, "allowed", f"channel={channel} result=idle")
+        return "idle"
+    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+    # Each call is a person's own press: a redelivered ``!stop`` is answered from
+    # ``inbound_gate``'s per-message memory and a redelivered native Stop is
+    # dropped by its ``event_ts`` before reaching here, so a second call is a
+    # second decision and may take the escalation (the compaction escape too).
+    result = await stop_slot_turn(state, slot, source="slack", escalate=True)
+    # A refused stop (``ok: False``, no info) stopped nothing.
+    info = "refused" if result.get("ok") is False else str(result.get("info") or "stopping")
+    routing._audit(sender_id, source, "allowed", f"channel={channel} slot={slot.key} result={info}")
+    return info
