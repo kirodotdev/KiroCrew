@@ -47,7 +47,7 @@ Every PR names an issue of this repository on a line of its own: `Closes #N` (th
 merge closes it) or `Part of #N` (it stays open). The `Issue Gate` lane checks it.
 It is paused today (`GATE_ENFORCED: "false"`); write the line anyway.
 
-No issue yet? Open one from `.github/ISSUE_TEMPLATE/` BEFORE Phase 1. The tier
+No issue yet? Open one BEFORE Phase 1, drafted by `feature-request` step 4. The tier
 table (T1-T4; T3 and T4 wait for `triaged`) and the Captain's triage are in
 `references/ci.md` § Issue tiers.
 
