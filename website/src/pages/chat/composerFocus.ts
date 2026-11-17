@@ -228,14 +228,18 @@ export const REJECT_APPROVAL_EVENT = 'kc-reject-approval'
 /**
  * Reject the pending tool call ONCE (the reject-approval chord). A refused call
  * runs nothing, so a chord may give this answer unread where it may not approve.
- * The row comes from `queryPendingApprovalAction`, so the same pane rule and
- * in-flight skip apply; the pane's own `useToolApproval` makes the decision.
- * Typing in the side chat sends nothing: its own conversation has no approval
- * row, so the lookup would fall back to the main conversation's prompt.
+ * The row is found by its first enabled control, under the same pane rule as
+ * `queryPendingApprovalAction`, and not through the focus chord's primary: a
+ * card too cramped to show its request holds Allow once but keeps Reject, and
+ * a refusal must still reach it. A row whose every control is disabled has a
+ * decision in flight and gets nothing. The pane's own `useToolApproval` makes
+ * the decision. Typing in the side chat sends nothing: its own conversation has
+ * no approval row, so the lookup would fall back to the main conversation's prompt.
  */
 export function rejectPendingApproval(): void {
   if (document.activeElement?.closest('[data-side-chat-input]')) return
-  queryPendingApprovalAction()?.closest('[data-approval-actions]')?.dispatchEvent(new Event(REJECT_APPROVAL_EVENT))
+  const scope: ParentNode = focusedPane() ?? document
+  scope.querySelector('[data-approval-actions] button:not([disabled])')?.closest('[data-approval-actions]')?.dispatchEvent(new Event(REJECT_APPROVAL_EVENT))
 }
 
 /**

@@ -837,6 +837,9 @@ export default function ChatPane({
            pane renders the session the user just opened. */
         data-pane-slot={slotKey}
         data-chat-scope=""
+        /* The host band floating over the pane's top (see `topInset`), for the
+           approval card's cap (requestRegionCap.ts), which must stay under it. */
+        data-pane-top-inset={topInset || undefined}
         {...dropTargetProps}
         className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
           frameless

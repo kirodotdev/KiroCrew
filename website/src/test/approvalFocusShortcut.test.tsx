@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { markCrewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
 import { setActiveId } from '../store/instancesSlice'
 import type { RootState } from '../store'
+import { reduceMotion } from './approvalCardFixtures'
 
 vi.mock('../api/client', () => {
   class MockApiError extends Error {
@@ -171,6 +172,25 @@ describe('rejectPendingApproval', () => {
     expect(hits).toEqual(['second'])
   })
 
+  it('still refuses on a card that holds Allow once but keeps Reject (a cramped card)', () => {
+    const pane = buildPane('focused', [{ text: 'Reject' }, { text: 'Trust', disabled: true }, { text: 'Allow once', disabled: true }])
+    pane.querySelectorAll('button')[2].setAttribute('data-approval-primary', '')
+    const hits: string[] = []
+    pane.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('row'))
+    pane.querySelector('textarea')!.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual(['row'])
+  })
+
+  it('sends nothing while every control in the row is held for a decision in flight', () => {
+    const pane = buildPane('focused', [{ text: 'Reject', disabled: true }, { text: 'Allow once', disabled: true }])
+    const hits: string[] = []
+    pane.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('row'))
+    pane.querySelector('textarea')!.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual([])
+  })
+
   it('sends nothing while the side chat composer has focus', () => {
     // The side chat has no approval row of its own, so the lookup would fall
     // back to the main conversation's prompt and refuse it from another chat.
@@ -248,6 +268,9 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
   beforeEach(() => { vi.clearAllMocks(); localStorage.clear() })
 
   it('lands on the row first control', () => {
+    // No fade, so the card takes focus from its first frame (the fade-in lock
+    // has its own tests in ChatInput.approvalTrust.test.tsx).
+    reduceMotion()
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     const allow = screen.getByRole('button', { name: /Allow once/ })
     pressChord()
@@ -259,6 +282,7 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     // exemption ("works even from other inputs") and Alt+Shift+M states the
     // reason: a chord you reach for mid-sentence is dead if it bails out in the
     // composer. Safe here only because the chord moves focus and nothing else.
+    reduceMotion()
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     const composer = document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!
     act(() => { composer.focus() })
