@@ -1436,7 +1436,18 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # event loop on purpose — the session pool is loop-owned and the probe
         # is two dict lookups plus a returncode read.
         live_child = _live_child_instance(state, slot)
-        body = await asyncio.to_thread(_render, live_child)
+        # The render and its UTF-8 encode fail closed like every read stage
+        # above. Unguarded, a raise here escapes as aiohttp's bare text/plain 500
+        # ("Internal Server Error"), which the client shows as a blank
+        # transcript. Log the traceback under this handler's logger, naming the
+        # slot, and answer the retryable 503 (``history_corpus_unreadable()``)
+        # the read stages answer.
+        try:
+            body = await asyncio.to_thread(_render, live_child)
+            encoded = body.encode()
+        except Exception:
+            logger.warning("slot-detail render/encode failed for %s", slot.key, exc_info=True)
+            return history_corpus_unreadable()
     if fill:
         wire_render.schedule_fill(
             memo_scope, messages, running, live_child=live_child, workspace=workspace
@@ -1444,4 +1455,4 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # Access was decided above, so a 304 here is never an access shortcut.
     from kiro_crew.dashboard.conditional_get import conditional_json_response
 
-    return await conditional_json_response(request, body.encode())
+    return await conditional_json_response(request, encoded)
