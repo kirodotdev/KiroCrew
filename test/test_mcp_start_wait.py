@@ -137,6 +137,40 @@ class TestTheRule:
         assert more == 44
 
 
+class TestTheBackgroundHelper:
+    """``kirocrew-lite`` mounts nothing, so a server in its block was written by another tool.
+
+    A background turn on it is closed after the start when it mounts anything
+    (``llm_helpers_parts.background_turns``), so the start must not first wait for it.
+    """
+
+    _LITE = "kirocrew-lite"
+    _INJECTED = {
+        **_PARAMS,
+        "_meta": {"kiro": {"customAgents": [{"id": _LITE, "mcpServers": {"creds-agent": {}}}]}},
+    }
+
+    def test_a_start_nobody_waits_on_does_not_wait_for_a_server_in_its_block(self):
+        brief = first_prompt_brief_wait(self._INJECTED, self._LITE, (_CORE,), BACKGROUND)
+
+        assert "creds-agent" not in brief
+
+    def test_it_still_waits_for_what_kiro_crew_sent_on_the_session(self):
+        assert first_prompt_brief_wait(self._INJECTED, self._LITE, (_CORE,), BACKGROUND) == (
+            "bridge",
+        )
+
+    def test_another_agent_still_waits_for_its_own_servers(self):
+        params = {
+            **_PARAMS,
+            "_meta": {
+                "kiro": {"customAgents": [{"id": _AGENT, "mcpServers": {"creds-agent": {}}}]}
+            },
+        }
+
+        assert "creds-agent" in first_prompt_brief_wait(params, _AGENT, (_CORE,), BACKGROUND)
+
+
 def _own(names: tuple[str, ...]) -> dict:
     """The start as sent by an agent whose own block holds the servers *names*."""
     agent = {"id": _AGENT, "mcpServers": dict.fromkeys(names, {})}
