@@ -382,6 +382,8 @@ async def resolve_server(
         try:
             plan_name, plan, _method, _env = await official_install_plan(rid.strip())
         except OfficialPlanError as exc:
+            if exc.code == "blocked_by_policy":
+                raise catalog_mod.AdditionError(exc.code, exc.message) from None
             if exc.code in _EDITION_LOOKUP_CODES and await edition_package_detail(rid.strip()):
                 raise catalog_mod.AdditionError(
                     "edition_package", _edition_package_message(rid.strip())

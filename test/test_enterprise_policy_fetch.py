@@ -1259,8 +1259,25 @@ class TestOss:
 
 
 class TestBatchOneRevision:
-    def test_the_revision_names_the_batch_one_translation(self):
-        assert epf.TRANSLATION_REVISION == "t4"
+    def test_the_revision_names_the_skill_name_translation(self):
+        assert epf.TRANSLATION_REVISION == "t5"
+
+    def test_a_t4_cache_is_refetched_and_reads_the_skill_name(self, enterprise, vault, cps):
+        """A ``t4`` copy turned skill install off for a named deny; it is refetched."""
+        vault()
+        cps.reply = _envelope(
+            "rules:\n"
+            "  - {capability: skill, effect: allow}\n"
+            "  - {capability: skill, effect: deny, match: [evil]}\n"
+        )
+        fresh = epf.fetch(_request())
+        scope = fresh.etag.partition(":")[0]
+        t4_etag = f"{scope}:t4/{epf.cached_version(fresh.etag)}"
+        assert epf.cached_version(t4_etag) == ""
+        again = epf.fetch(_request(t4_etag))
+        assert not again.not_modified
+        extensions = json.loads(again.body)["capabilities"]["extension_install"]["scopes"]
+        assert "skill:evil" in extensions["extensions"]["deny"]
 
     def test_a_t3_cache_is_refetched_and_reads_the_new_terms(self, enterprise, vault, cps):
         """A copy a ``t3`` build wrote is not kept on ``UNCHANGED``: the service answers

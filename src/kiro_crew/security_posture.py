@@ -241,6 +241,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (``_redacted_detail``) into its failure, which reaches the operator
         # through the same registered sink and the git routes' own progress feed.
         "platform/release_apply.py",
+        # Pure helper: the CapabilityManager seam redacts a governance refusal's
+        # reason (a caller's package id, an edition's skill names) into the
+        # CapabilityResult it returns. It emits nothing itself; the dashboard
+        # capability handlers that serve the result are the egress.
+        "platform/capability_bound.py",
         # Same shape for a source install: redacts the tail of the npm build log
         # (an install can echo a registry URL carrying credentials) before it
         # becomes the failure message that the update paths show on their
