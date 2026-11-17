@@ -549,7 +549,7 @@ def test_auto_compaction_capture_shows_the_engine_summarizing_on_its_own() -> No
 
 
 def test_report_usage_captures_each_carry_the_turn_bill() -> None:
-    """kiro and KAS bill in credits; claude, opencode and goose in prompt-result tokens."""
+    """kiro and KAS bill in credits; claude, opencode, goose and codex in prompt-result tokens."""
     rel = "kiro/compaction-live.jsonl"
     metered = [
         e
@@ -564,7 +564,20 @@ def test_report_usage_captures_each_carry_the_turn_bill() -> None:
         "claude/session.jsonl",
         "opencode/session-live.jsonl",
         "goose/turn-live.jsonl",
+        "codex/session-live.jsonl",
     ):
         results = [r.get("result") or {} for r in _responses(rel).values()]
         ends = [r for r in results if "stopReason" in r]
         assert ends and all(e["usage"]["outputTokens"] > 0 for e in ends), rel
+
+
+def test_codex_refused_turn_reports_no_usage_and_reads_as_unbilled() -> None:
+    """codex-acp ends a turn the provider refused with ``usage: null``, read as no counts."""
+    from kiro_crew.acp._dispatch import parse_prompt_token_usage
+
+    results = [
+        r.get("result") or {} for r in _responses("codex/turn-usage-null-live.jsonl").values()
+    ]
+    (end,) = [r for r in results if "stopReason" in r]
+    assert end["usage"] is None
+    assert parse_prompt_token_usage(end) is None

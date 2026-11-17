@@ -551,11 +551,14 @@ Consumers read the turn's `TurnUsage` fields and the usage routes, not the harne
 
 `ACP_BACKENDS_REPORT_USAGE` (`agent_sdk/backends_turns.py`) names the columns
 whose turns land billing or token counts in `TurnUsage`: kiro-cli and KAS in
-credits, CC, OpenCode and goose in token counts on the `session/prompt` result.
+credits, CC, OpenCode, goose and Codex in token counts on the `session/prompt` result.
+codex-acp 2.3.0 sends `usage {inputTokens, outputTokens, totalTokens, ...}` on every
+billed turn (`acp_frames/codex/session-live.jsonl`) and `usage: null` on a turn the
+provider refused (`acp_frames/codex/turn-usage-null-live.jsonl`, an HTTP 503).
 On a member a turn that reports none billed none, which is what lets memory
 consolidation take an empty, unbilled reply as free; it reads the provider's
-`reports_turn_usage`. Codex and Pi are outside the set because this section
-establishes no usage for them, and DeepSeek because its `usage_update` carries
+`reports_turn_usage`. Pi is outside the set because this section
+establishes no usage for it, and DeepSeek because its `usage_update` carries
 context occupancy (`used`, `size`), which feeds the context meter rather than
 `TurnUsage`, and its captured `session/prompt` result carries no token counts.
 

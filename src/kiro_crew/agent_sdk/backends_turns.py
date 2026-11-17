@@ -981,13 +981,15 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
-# turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
+# turn reporting none billed none. §6 establishes no count for pi; deepseek reports occupancy.
 # Live captures, one per member: kiro-cli 2.32.0 bills each turn as a ``_kiro.dev/metadata``
 # meteringUsage unit=credit entry (acp_frames/kiro/compaction-live.jsonl); KAS 0.66.70 as a
 # turn_completion promptTurnSummaries unit=credit entry (acp_frames/kas/turn-usage-live.jsonl);
-# claude, opencode and goose as token counts on the ``session/prompt`` result's ``usage``
+# claude, opencode, goose and codex as token counts on the ``session/prompt`` result's ``usage``
 # (acp_frames/claude/session.jsonl, acp_frames/opencode/session-live.jsonl,
-# acp_frames/goose/turn-live.jsonl).
+# acp_frames/goose/turn-live.jsonl, acp_frames/codex/session-live.jsonl). codex-acp 2.3.0
+# answers ``usage: null`` on a turn the provider refused (acp_frames/codex/turn-usage-null-live.jsonl,
+# an HTTP 503), which ``parse_prompt_token_usage`` reads as no counts.
 ACP_BACKENDS_REPORT_USAGE = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -995,6 +997,7 @@ ACP_BACKENDS_REPORT_USAGE = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_CODEX,
     }
 )
 
