@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        store_linked_thread_images,
         update_config_locked,
     )
 
@@ -902,6 +903,53 @@ async def route_linked_thread(
     )
 
     note_channel_sender(_linked_slot, user_id)
+    # Before the redaction and the handoff: the turn below runs after this
+    # message's handler task has deleted its downloaded files. The copy awaits,
+    # so the slot is checked again once it is back: still registered, and for an
+    # unpinned route still the thread's owner.
+    _stored = await store_linked_thread_images(
+        _dashboard_state,
+        _linked_slot,
+        text,
+        still_current=lambda: (
+            _dashboard_state._slots.get(_linked_slot_key) is _linked_slot  # type: ignore[attr-defined]
+            and (route_pinned or _dashboard_state.get_linked_slot(reply_ts) is _linked_slot)
+        ),
+    )
+    if _stored is None:
+        # The slot was closed, deleted or relinked during the copy. A pinned
+        # route reads as a pinned route with no live slot. An unpinned one is
+        # resolved again and pinned to what it resolves to, as after the window
+        # load above, which bounds this to one more pass.
+        if route_pinned:
+            return LinkedRoute.UNROUTED
+        _relinked = _dashboard_state.get_linked_slot(reply_ts)
+        if _relinked is None:
+            if await closed_dashboard_owner_refused(
+                text,
+                session_key,
+                user_id,
+                channel,
+                slack,
+                reply_ts,
+                interpret_commands=interpret_commands,
+            ):
+                return LinkedRoute.REFUSED
+            return LinkedRoute.UNROUTED
+        return await route_linked_thread(
+            text,
+            session_key,
+            user_id,
+            channel,
+            slack,
+            reply_ts,
+            target_slot=_relinked,
+            route_pinned=True,
+            user_meta=user_meta,
+            turn_context=turn_context,
+            interpret_commands=interpret_commands,
+        )
+    text = _stored
     # Redact for UI display only — LLM receives original text so it can process
     # user intent fully (redaction strips URLs/creds that may be relevant
     # context). The LLM's own output is redacted before display.

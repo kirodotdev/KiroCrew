@@ -148,6 +148,7 @@ from kiro_crew.slack.handler import (
     slack_cfg,
 )
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
+from kiro_crew.slack.linked_thread_images import set_inbound_files as set_linked_thread_files
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
     _SESSION_KIND_DASHBOARD,
@@ -1512,6 +1513,9 @@ async def _route_message(
         slack=_ingest_slack if _ingest_slack is not None else _route_slack,
     ):
         return
+    # A linked dashboard chat's turn reads these after this task deletes them;
+    # route_linked_thread stores the pictures in its session first.
+    set_linked_thread_files(_attachment_temp_paths)
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──
     # Keyed on the SAME session the turn will run under. A single-session DM keys
