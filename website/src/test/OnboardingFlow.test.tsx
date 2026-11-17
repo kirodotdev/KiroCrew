@@ -225,7 +225,10 @@ describe('OnboardingFlow — About You step', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'UX Designer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     // Error surfaces, still on step 2, tour NOT shown
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn't save/)
+    const notice = await screen.findByTestId('onboarding-profile-save-error')
+    expect(notice.querySelector('span.whitespace-pre-wrap')?.textContent).toBe(
+      "Couldn't save your answers — press Next to retry, or Skip again to continue without saving.",
+    )
     expect(screen.getByText('Tell Kiro about you')).toBeInTheDocument()
     expect(screen.queryByText('Work that runs on time')).not.toBeInTheDocument()
   })

@@ -609,7 +609,7 @@ function ServerDetailPanel({
       {phase?.step === 'conflict' && (
         <ErrorNotice
           className="mb-3 text-xs"
-          message={i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name })}
+          message={i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name }).replace(/\s+/g, ' ')}
           askAgent
           testId="mcp-browser-detail-conflict"
         />
