@@ -78,7 +78,9 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     extra_row: tuple[str, str, str, str | None] | None = None
     if record.kind == "failed":
         exc = record.error
-        failure = "❌ " + (redact_local_paths(redact(str(exc) or exc.__class__.__name__))[0][:1000])
+        failure = "Error: " + (
+            redact_local_paths(redact(str(exc) or exc.__class__.__name__))[0][:1000]
+        )
         error_mid = (
             project_channel_row_live(dashboard_state, key, "error", failure, "msg msg-err")
             if mirror_mids is not None

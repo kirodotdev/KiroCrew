@@ -1,7 +1,7 @@
 """Messages queued behind a running turn: their receipt, and the drain that answers them.
 
 ``_enqueue_with_receipt`` queues a mid-turn message (the queue path of
-``dispatch/midturn.py``) together with its collapsing "⏳ Queued (N): …" receipt, under
+``dispatch/midturn.py``) together with its collapsing "Queued (N): …" receipt, under
 ``self._queue.lock``. When the turn ends, ``_drain_queue`` runs the pump through
 ``messaging.queue_drain.drain_until_quiet``: ``_pump_queue`` collapses one sender's
 messages into one replayed turn, re-enqueues the rest in order, flips the receipt with
@@ -310,7 +310,7 @@ async def _enqueue_with_receipt(
     person_origin: bool = False,
 ) -> bool:
     """Atomically enqueue a mid-turn message and create/grow its collapsing
-    "⏳ Queued (N): …" receipt, under ``self._queue.lock``.
+    "Queued (N): …" receipt, under ``self._queue.lock``.
 
     The drain takes the same lock, so it sees this message with its receipt or
     neither, never an orphaned bubble. Returns False if the turn finished in the
@@ -357,7 +357,7 @@ async def _receipt_flip_locked(
     *,
     owner: str,
 ) -> None:
-    """Flip the receipt to a durable "▶️ Now answering" record and drop the
+    """Flip the receipt to a durable "Now answering" record and drop the
     live entry so the next mid-turn burst opens a fresh receipt. Caller MUST
     hold ``self._queue.lock`` (the drain holds it across dequeue + flip).
 

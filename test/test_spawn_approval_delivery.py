@@ -1095,7 +1095,7 @@ class TestTheDeliveryHookCharacterization:
         chat_id, text, kw, nonce = calls[0]
         assert chat_id == 7
         assert text == (
-            "🔐 Approve sub-agent spawn?\n"
+            "Approve sub-agent spawn?\n"
             "<pre>spawn_run(&lt;b&gt;&quot;x&quot;&lt;/b&gt; &amp; &#x27;y&#x27;)</pre>"
         )
         assert kw == {
@@ -1103,12 +1103,12 @@ class TestTheDeliveryHookCharacterization:
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "✅ Approve", "callback_data": f"a:spawn:abc:{nonce}:1"},
-                        {"text": "🚫 Deny", "callback_data": f"a:spawn:abc:{nonce}:0"},
+                        {"text": "Approve", "callback_data": f"a:spawn:abc:{nonce}:1"},
+                        {"text": "Deny", "callback_data": f"a:spawn:abc:{nonce}:0"},
                     ],
                     [
                         {
-                            "text": "🤝 Trust this conversation",
+                            "text": "Trust this conversation",
                             "callback_data": f"a:spawn:abc:{nonce}:t",
                         }
                     ],
@@ -1131,7 +1131,7 @@ class TestTheDeliveryHookCharacterization:
         asyncio.run(
             d.deliver_spawn_approval("spawn:abc", description, "telegram:kirocrew:direct:7")
         )
-        assert cli.sent[0][0] == f"🔐 Approve sub-agent spawn?\n<pre>{detail}</pre>"
+        assert cli.sent[0][0] == f"Approve sub-agent spawn?\n<pre>{detail}</pre>"
 
     def test_the_window_is_armed_detached_before_the_send(self) -> None:
         d, _cli, _sess = _dispatcher({7})

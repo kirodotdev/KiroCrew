@@ -1575,8 +1575,8 @@ made; no gate reads it back. Two consumers:
   `{"status": "queued", ...}` record for a member that had not started when its
   wait ended (and reports it only there, never also as an error), `kirocrew spawn run` prints `Queued subagent <id> …`, and the
   channel `spawn <task>` keyword (`messaging/commands.py`) replies
-  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`, and
-  `⚠️ Subagent … was not started: <error>` for a refusal (a terminal record, not
+  `Queued subagent …` with the reason instead of `Spawned subagent …`, and
+  `Warning: Subagent … was not started: <error>` for a refusal (a terminal record, not
   None). A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
   shape and clears within seconds. Neither the admission verdicts nor the memory

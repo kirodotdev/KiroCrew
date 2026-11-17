@@ -544,7 +544,7 @@ class TestPartialDrainInAForumTopic:
 
     def test_the_now_answering_receipt_shows_the_users_words_not_the_framing(self) -> None:
         # A queued reply's receipt must show what the user typed, matching the
-        # "⏳ Queued" bubble — never the internal reply-context framing that only
+        # "Queued" bubble — never the internal reply-context framing that only
         # the agent-facing replayed turn carries.
         from kiro_crew.context_assembly import markers as _markers
 

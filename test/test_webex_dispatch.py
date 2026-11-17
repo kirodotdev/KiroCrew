@@ -122,7 +122,7 @@ class TestTurn:
         # Must not raise — the dispatcher swallows and finalizes.
         await d.handle_message(_inbound("hi"))
 
-        # Placeholder finalized (no perma-"🤔") even though get_or_create failed.
+        # Placeholder finalized (no perma-"Thinking…") even though get_or_create failed.
         assert client.edits  # close() drove on_done -> placeholder edited
         # Never held the semaphore -> never release / record_failure it.
         assert sessions.released == []
@@ -208,7 +208,7 @@ class TestCommands:
 
         await d.handle_message(_inbound("/new"))
 
-        assert client.sent == [("ROOM", "✅ Started a fresh conversation.")]
+        assert client.sent == [("ROOM", "Started a fresh conversation.")]
         assert d._conv.current_gen(_EMAIL) == 1  # generation bumped
         assert sessions.successes == []  # no LLM turn
 
@@ -237,7 +237,7 @@ class TestCommands:
         assert provider.compacted is True
         assert sessions.acquired == [key]
         assert sessions.released == [key]
-        assert client.sent == [("ROOM", "🗜️ Context compacted.")]
+        assert client.sent == [("ROOM", "Context compacted.")]
 
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
@@ -296,7 +296,7 @@ class TestCommands:
 
         assert provider.compacted is False
         assert sessions.released == []
-        assert [m for (_, m) in client.sent] == [f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"]
+        assert [m for (_, m) in client.sent] == [f"Note: {COMPACT_ACCOUNT_CHANGED_TEXT}"]
 
     @pytest.mark.asyncio
     async def test_compact_without_active_session(self) -> None:
@@ -571,7 +571,7 @@ class TestStop:
 
         assert provider.cancelled == [0]
         assert sessions.cleared == [d._session_key(_EMAIL)]
-        assert "🛑 Stopped." in client.sent[-1][1]
+        assert "Stopped." in client.sent[-1][1]
 
     @pytest.mark.asyncio
     async def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:
@@ -747,7 +747,7 @@ class TestStop:
         assert restored == [theirs], "the other member's entry reached the successor"
         assert sessions.queued == [theirs]
         assert sessions.released[-1] == d._session_key(_EMAIL)
-        assert "🛑 Stopped." in client.sent[-1][1]
+        assert "Stopped." in client.sent[-1][1]
         sl._stop_declined_markers.clear()
 
     @pytest.mark.asyncio
@@ -1473,7 +1473,7 @@ class TestCompactionHonesty:
 
         reply = client.sent[-1][1]
         assert "timed out" in reply and "/new" in reply
-        assert "🗜️ Context compacted." not in reply
+        assert "Context compacted." not in reply
 
     @pytest.mark.asyncio
     async def test_a_failed_result_is_not_reported_as_success(self) -> None:
@@ -1497,7 +1497,7 @@ class TestCompactionHonesty:
 
         await d.handle_message(_inbound("/compact"))
 
-        assert "🗜️ Context compacted." in client.sent[-1][1]
+        assert "Context compacted." in client.sent[-1][1]
 
     @pytest.mark.asyncio
     async def test_an_unrecognised_result_type_reports_success(self) -> None:
@@ -1514,7 +1514,7 @@ class TestCompactionHonesty:
 
         await d.handle_message(_inbound("/compact"))
 
-        assert "🗜️ Context compacted." in client.sent[-1][1]
+        assert "Context compacted." in client.sent[-1][1]
 
     @pytest.mark.asyncio
     async def test_compaction_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:

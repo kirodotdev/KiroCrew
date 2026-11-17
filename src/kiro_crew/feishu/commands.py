@@ -32,7 +32,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("help", "显示命令列表"),
 )
 
-_HELP_HEADER = "🦞 Kiro Crew — 飞书"
+_HELP_HEADER = "Kiro Crew — 飞书"
 _HELP_FOOTER = "直接发消息即可对话。回复生成中发来的消息会并入当前回复。"
 
 

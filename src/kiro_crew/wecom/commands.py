@@ -178,4 +178,4 @@ def is_bare_mid_turn_override(text: str) -> bool:
 
 def build_override_usage() -> str:
     """Usage shown for a bare ``/steer`` or ``/queue``."""
-    return "ℹ️ /steer 和 /queue 需要跟上要发送的内容，例如：/steer 换成中文回答"
+    return "提示：/steer 和 /queue 需要跟上要发送的内容，例如：/steer 换成中文回答"

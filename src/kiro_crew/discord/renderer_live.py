@@ -186,7 +186,7 @@ def _segment_text(self: DiscordRenderer) -> str:
 
 def note_steer(self: DiscordRenderer, text: str) -> None:
     """Record the user's own mid-turn steer text (their typed words, NOT
-    the redacted backend echo); rendered as an inline "↪️ steered" chip.
+    the redacted backend echo); rendered as an inline "↪ steered" chip.
     Capped to avoid unbounded growth on a pathological steer burst."""
     t = (text or "").strip()
     if t and len(self._steer_texts) < 50:
@@ -198,5 +198,5 @@ def _chip_for_seal(self: DiscordRenderer, i: int) -> str | None:
     heads the segment opened by the i-th rotation."""
     if 0 <= i < len(self._steer_texts):
         t = _neutralize_md(self._steer_texts[i])
-        return f"> ↪️ {t}" if t else None
+        return f"> ↪ {t}" if t else None
     return None

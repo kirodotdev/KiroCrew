@@ -76,7 +76,7 @@ def _safe_teams_text(text: str, max_chars: int) -> str:
 
 class _TeamsResumeSurface:
     owner_refusal = (
-        "🔒 `/sessions` requires exactly one configured `teams.allowed_emails` "
+        "`/sessions` requires exactly one configured `teams.allowed_emails` "
         "entry — a dashboard session is the operator's own transcript, so it is "
         "not listable on a shared allow-list."
     )
@@ -138,7 +138,7 @@ class _TeamsResumeSurface:
             return message_id or ""
         except TeamsSendError:
             logger.warning("Teams resume: picker card delivery failed", exc_info=True)
-            await self.say("⚠️ Couldn't show the session list. Try `/sessions` again.")
+            await self.say("Warning: Couldn't show the session list. Try `/sessions` again.")
             return ""
 
     async def settle_picker(self, message_id: str, text: str) -> bool:
@@ -324,7 +324,7 @@ class TeamsSessionResume:
             content = await asyncio.to_thread(_replay_preview, raw)
             if not content:
                 continue
-            icon = "🧑" if role == "user" else "🤖"
+            icon = "You:" if role == "user" else "Agent:"
             try:
                 # The icon gets its OWN line: on the body's first line it would sit in
                 # front of a fence opener, which must start the line, so a replayed code
@@ -385,16 +385,14 @@ def _picker_heading(query: str, total: int, normalized: str) -> str:
         else:
             summary = f"Showing {shown} matching session{'s' if shown != 1 else ''}"
         return (
-            f"🔎 **Session search**\n{summary} for “{label}”, ranked over "
+            f"**Session search**\n{summary} for “{label}”, ranked over "
             "titles and message content.\nChoose one to continue here; `/unlink` comes back."
         )
     if total > PICKER_LIMIT:
         summary = f"Showing {PICKER_LIMIT} of {total} most recent sessions."
     else:
         summary = f"Showing {shown} most recent session{'s' if shown != 1 else ''}."
-    return (
-        f"🧵 **Recent sessions**\n{summary}\nChoose one to continue here; " "`/unlink` comes back."
-    )
+    return f"**Recent sessions**\n{summary}\nChoose one to continue here; " "`/unlink` comes back."
 
 
 __all__ = ["ResumeReleaseError", "RoutingDecision", "SessionChoice", "TeamsSessionResume"]
