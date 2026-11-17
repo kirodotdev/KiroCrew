@@ -77,11 +77,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 again for all four: the ssh-to-self floor's substitution-body check lives in
 #: its own module, ``kiro_crew.security.argv_floor_ssh_bodies``, which the deny floor that
 #: every listing already loads imports.
+#: Raised by 1 for ``mcp-core`` (490 to 491) and ``mcp-mate`` (355 to 356): ``kiro_crew.dashboard_frame``,
+#: which both listings already load, takes the live capture's size caps from
+#: ``kiro_crew.dashboard.dashboard_capture``, a small module of its own (asyncio, secrets and
+#: dataclasses only) so the frame's script and the gateway's check read one number.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 490,
+    "mcp-core": 491,
     "mcp-cron": 360,
     "mcp-guide": 354,
-    "mcp-mate": 355,
+    "mcp-mate": 356,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

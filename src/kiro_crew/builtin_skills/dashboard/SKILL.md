@@ -53,6 +53,14 @@ run cannot start it answers "no image" with the reason and no file; an
 earlier picture is not the page as it is now. A template page has no picture.
 The file holds real values: leave it where it is.
 
+**Read the page the person sees.** `dashboard_capture` asks the person's open
+Dashboard tab for your live page's visible text and the state of its checkboxes,
+radios and selects, as they are on their screen now, including what a later push
+drew. It never reads what the person typed into a text field. Those fields are
+listed by label as "(not read)". The tab shows a sign while it reads. With no visible tab on your page the answer is
+"not captured"; use `dashboard_snapshot` then. A page served without script
+cannot be read this way.
+
 The gateway's secret filter also processes markup and script. A note reports
 how many places changed and the first line, without revealing the replaced
 text. A long identifier-like string can trigger it; shorter pieces joined in

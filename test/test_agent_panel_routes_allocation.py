@@ -767,14 +767,22 @@ async def test_an_app_token_caller_is_denied_the_panel(vetted):
 
 @pytest.mark.asyncio
 async def test_no_route_here_writes_from_the_browser_surface():
-    """Everything under /api/members here is a read; writes are MCP-only."""
+    """Everything under /api/members here is a read; writes are MCP-only.
+
+    The one POST is a tab's answer to a ``dashboard_capture`` the Bot asked for: it is
+    accepted only for the request pending in memory and writes nothing anywhere."""
     member_routes = [
         r
         for r in _mounted().router.routes()
         if str(r.resource.canonical).startswith("/api/members")
     ]
     assert member_routes
-    assert {r.method for r in member_routes} <= {"GET", "HEAD"}
+    answer = "/api/members/{slug}/dashboard/capture"
+    assert {r.method for r in member_routes if str(r.resource.canonical) != answer} <= {
+        "GET",
+        "HEAD",
+    }
+    assert {r.method for r in member_routes if str(r.resource.canonical) == answer} == {"POST"}
 
 
 @pytest.mark.asyncio

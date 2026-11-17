@@ -580,6 +580,9 @@ DASHBOARD_ROLLBACK_SCHEMA = ToolSchema(
 #: argument that could point it at another page or another crewmate.
 DASHBOARD_SNAPSHOT_SCHEMA = ToolSchema(tool_name="dashboard_snapshot")
 
+#: Empty and registered, for the snapshot's reason: the page read is the caller's own.
+DASHBOARD_CAPTURE_SCHEMA = ToolSchema(tool_name="dashboard_capture")
+
 MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_publish": PANEL_PUBLISH_SCHEMA,
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
@@ -592,6 +595,7 @@ MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "dashboard_apply": DASHBOARD_APPLY_SCHEMA,
     "dashboard_rollback": DASHBOARD_ROLLBACK_SCHEMA,
     "dashboard_snapshot": DASHBOARD_SNAPSHOT_SCHEMA,
+    "dashboard_capture": DASHBOARD_CAPTURE_SCHEMA,
 }
 
 

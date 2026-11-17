@@ -23148,6 +23148,7 @@
       "profile_dynamic_capabilities_failed": "Impossibile salvare questa impostazione. Riprova.",
       "dashboard_send_failed": "Impossibile inviare la risposta. È nella casella della chat.",
       "dashboard_send_unsure": "«{{reply}}» potrebbe non essere stata inviata. Controlla il thread prima di inviarla di nuovo.",
+      "dashboard_capture_sign": "{{crew}} sta leggendo questa pagina",
       "dashboard_card_send_badge": "I pulsanti di risposta inviano subito — modifica su Profilo",
       "dashboard_card_send_badge_label": "L'invio con un clic è attivo: un pulsante di risposta in questa scheda invia subito la risposta. Modificalo nella scheda Profilo.",
       "profile_dashboard_card_send_switch": "Invia le risposte con un clic",

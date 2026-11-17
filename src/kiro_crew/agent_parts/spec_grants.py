@@ -394,6 +394,10 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     # argument at all, and the values it draws are the ones the crewmate's own tab and
     # ``dashboard_fields`` already show it.
     "@kirocrew-panel/dashboard_snapshot",
+    # The calling crewmate's own page read from the person's open tab, granted on the
+    # same read test: it writes nothing, takes no argument, answers only from a visible
+    # tab showing that page, and that tab shows a sign while it reads.
+    "@kirocrew-panel/dashboard_capture",
 )
 
 

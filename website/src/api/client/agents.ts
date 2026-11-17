@@ -575,6 +575,13 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
           + encodeURIComponent(member) + '&dashboard=' + encodeURIComponent(dashboard),
         { method: 'POST' },
       ).then(j) as Promise<{ dashboard?: string; read: { [key: string]: unknown } } | null>,
+    /** This tab's answer to a `dashboard_capture` frame: the Bot's live page as it is
+     *  drawn here now. 409 when the request is no longer pending or another tab already
+     *  answered; 413 over the gateway's caps. */
+    memberDashboardCapture: (slug: string, body: object) =>
+      fetch('/api/members/' + encodeURIComponent(slug) + '/dashboard/capture', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }).then(j) as Promise<{ ok?: boolean } | null>,
     // The crewmate's self-maintained briefing markdown. Read-only from the UI
     // (no editor: the file is agent-written and edited where the crewmate keeps
     // it). `member` is the exact crew name (slugs are lossy).

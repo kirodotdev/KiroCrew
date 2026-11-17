@@ -276,10 +276,17 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/agent-panel/dashboard/snapshot", _deferred("agent_panel", "api_dashboard_snapshot")
     )
+    app.router.add_get(
+        "/api/agent-panel/dashboard/capture", _deferred("agent_panel", "api_dashboard_capture")
+    )
     app.router.add_post(
         "/api/agent-panel/dashboard/record", _deferred("agent_panel", "api_dashboard_record")
     )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    app.router.add_post(
+        "/api/members/{slug}/dashboard/capture",
+        _deferred("agent_panel", "api_member_dashboard_capture"),
+    )
     # The installed app's record door: an app token reaches it only through its
     # ``permissions.api`` grant, and the handler admits nothing else.
     app.router.add_post("/api/member-records/{slug}", _deferred("agent_panel", "api_member_record"))

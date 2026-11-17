@@ -72,6 +72,7 @@ import {
   refreshMayChangeRegistry,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
+import { DASHBOARD_CAPTURE_FRAME, handleDashboardCapture } from './websocket/dashboardCapture'
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
@@ -99,6 +100,7 @@ export { __resetRedactionHealForTests, healRedactionSwitchAfterReconnect } from 
 // prefix would let a refresh reach a different cache entry from the frame.
 export { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, handleDashboardMoved } from './websocket/serverState'
 export { DASHBOARD_FIELDS_FRAME, subscribeDashboardFields } from './websocket/dashboardFields'
+export { handleDashboardCapture, subscribeDashboardCapture } from './websocket/dashboardCapture'
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
@@ -474,6 +476,11 @@ export function useWebSocket() {
             // query invalidation would re-read the whole page and throw away the
             // page's own state on every value change.
             handleDashboardFields(data)
+            break
+          case DASHBOARD_CAPTURE_FRAME:
+            // A Bot asking to read its own live page. Handed to the dashboard showing
+            // that crewmate, which answers only while this tab is visible.
+            handleDashboardCapture(data)
             break
           case 'dashboard_value_written':
           case 'dashboard_instance_changed':

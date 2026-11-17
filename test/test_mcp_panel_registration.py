@@ -275,6 +275,7 @@ class TestWhatThisSetGrants:
         "dashboard_apply",
         "dashboard_rollback",
         "dashboard_snapshot",
+        "dashboard_capture",
     }
 
     def test_the_set_is_exactly_the_panel_tools(self) -> None:
