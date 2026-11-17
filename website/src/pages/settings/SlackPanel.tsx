@@ -171,7 +171,7 @@ function reconnectRefusal(e: unknown): string {
 type ReconnectOutcome = { connected: true } | { connected: false; message: string }
 
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
-export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly }: {
+export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly, onPendingChange }: {
   label: string
   description?: string
   /** An info tip beside the label, for prose that explains what the list IS;
@@ -182,9 +182,25 @@ export function TagListEditor({ label, description, hint, values, placeholder, o
   onChange: (next: string[]) => void
   validate?: (v: string) => boolean
   readOnly?: boolean
+  /** Told when the add box gains typed-but-not-added text (true) and when it
+   *  loses it again (false), by clearing, by Add, or by this editor unmounting.
+   *  That text lives only here, so a parent that guards unsaved edits needs it. */
+  onPendingChange?: (hasPending: boolean) => void
 }) {
   const [draft, setDraft] = useState('')
   const [err, setErr] = useState('')
+  const hasPending = !!draft.trim()
+  const pendingCb = useRef(onPendingChange)
+  useEffect(() => { pendingCb.current = onPendingChange }, [onPendingChange])
+  const reportedPending = useRef(false)
+  useEffect(() => {
+    if (reportedPending.current === hasPending) return
+    reportedPending.current = hasPending
+    pendingCb.current?.(hasPending)
+  }, [hasPending])
+  useEffect(() => () => {
+    if (reportedPending.current) pendingCb.current?.(false)
+  }, [])
   const ime = useImeGuard()
   const add = () => {
     const v = draft.trim()

@@ -563,11 +563,9 @@ build_backend() {
     fi
   fi
 
-  # The Feishu channel SDK. Settings offers no install command for this bundle,
-  # and every app update replaces the whole bundle, so it ships here or not at all.
-  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-    "$out/bin/python3.12" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check "$ROOT[feishu]"
+  # The Feishu channel SDK is NOT bundled: about 11,000 files per backend that
+  # most users never load. The app installs it into the data home when the owner
+  # presses Install in Settings (src/kiro_crew/sdk_extras.py).
 
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
@@ -751,11 +749,7 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
-  # The Feishu channel SDK, for the same reason as in build_backend.
-  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-    "$out/python.exe" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check \
-    "kirocrew[feishu] @ $root_uri"
+  # The Feishu channel SDK is installed on first use, as in build_backend.
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""
@@ -831,18 +825,16 @@ build_backend_windows() {
   # median 12.5 s on a cold file cache. Both hash modes ignore mtime, which is
   # the property this needs; only the re-read is dropped. The POSIX trees above
   # are checked-hash: a codesigned macOS bundle and a Linux package, neither of
-  # which shows the symptom. lark_oapi is traced too: the Feishu channel
-  # imports its ~11k modules on the gateway loop, and compiling them there on
-  # the first start stalls that loop. (macOS leaves it out; see
-  # precompile_macos_backend.)
+  # which shows the symptom. The Feishu SDK is not in the bundle; its on-demand
+  # install compiles its own caches (sdk_extras.py).
   log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
-    --root "$out" --module kiro_crew.cli_server --module lark_oapi
+    --root "$out" --module kiro_crew.cli_server
 
   # An update moves every installed file into %TEMP% first, and a file whose
   # moved path passes MAX_PATH abandons the update (the script states the
-  # arithmetic). Some lark_oapi caches written just above are that deep, so
+  # arithmetic). A cache written just above may be that deep, so
   # drop each over-budget cache (its module compiles from source instead) and
   # fail the build on any other over-budget file. -B: measuring writes nothing.
   log "Checking the Windows update path budget ($(basename "$out"))…"

@@ -85,7 +85,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'McpManagementCwdQuestion.tsx': "McpManagement.tsx's working-folder question dialog, a per-server answer asked before sharing, rendered on the MCP Servers page (`/mcp`), zero settings",
   'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, rendered on the MCP Servers page (`/mcp`), zero settings",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
-  'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
+  'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; a copy button and, for Feishu on the desktop app, a one-shot Install action, no setting and no control writes a config path',
   'PeoplePanel.tsx': 'read-only list of who has used this Crew and where access is managed; no setting and no control writes a config path',
   'PeopleCrew.tsx': 'the one People list with source chips and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
   'PeopleModes.tsx': 'the pieces PeoplePanel mounts beside the sources (invalid state, a source status badge, the Console link); no setting and no control writes a config path',

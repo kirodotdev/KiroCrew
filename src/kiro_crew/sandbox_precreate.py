@@ -124,6 +124,10 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # directory reads as "not installed" to ``browser_harness.install.install_state``
     # exactly as an absent one does.
     "browser-harness",
+    # The optional channel SDK root, for the ``browser-harness`` reason: absent until
+    # the owner presses Install, and an absent target is a name the agent may create
+    # and fill with code the gateway later imports. Empty reads as "not installed".
+    "extras",
     # The KAS engine bundle root, for the ``browser-harness`` reason: on an install
     # that has never run ``kirocrew kas install`` the directory is absent, and an
     # absent target is a seal skipped and a name the agent may create.
@@ -215,6 +219,7 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "app-agent-launch",
     "browser-harness",
+    "extras",
     "engines",
     "subagents",
     "member-memory-bindings",
@@ -262,6 +267,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed browser engine",
         "the agent could replace the Browser Harness interpreter or the Chromium the "
         "gateway runs against the user's own browser",
+    ),
+    "extras": (
+        "sealed channel SDKs",
+        "the agent could replace the channel SDK code the gateway imports",
     ),
     "engines": (
         "sealed agent engine",

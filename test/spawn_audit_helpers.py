@@ -572,6 +572,24 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         #     helper allowlist, never through argv; the children must reach the
         #     real browser and the loopback relay, so a sandbox would break them.
         "browser_harness/install.py::_run",
+        # ``sdk_extras.py::_lay_down`` (called by ``install_extra``) runs ``<sys.executable> -I -m
+        # pip install --target
+        # <data home>/extras/<extra>/.<tag>.partial --no-deps --require-hashes
+        # --only-binary :all: -r <shipped lock>``. Every token is a module constant, the
+        # shipped hash lock or a data-home path. Two callers, both gateway-owned: the
+        # owner's Install press (owner + local only) and the background install at
+        # gateway start for an enabled, credentialed Feishu channel
+        # (``feishu/gateway.py::_schedule_sdk_install``). Scrubbed PYTHON*/PIP_* env, with
+        # only the user's own index settings (``_configured_index_env``) passed back on
+        # the first attempt; a download failure there retries once against pypi.org.
+        # Not agent-influenced.
+        "sdk_extras.py::_lay_down",
+        # ``sdk_extras.py::_pip_config_list`` runs ``<sys.executable> -m pip config list``
+        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so the installer can
+        # find the index the user configured for pip. Same two gateway-owned callers
+        # as ``_lay_down``; only its index-url/extra-index-url/trusted-host/cert lines
+        # are used. Not agent-influenced.
+        "sdk_extras.py::_pip_config_list",
         "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose

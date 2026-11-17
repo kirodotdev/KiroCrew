@@ -373,6 +373,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # worker, with Kiro's Chromium beside it (``browser_harness.install``).
     # READONLY in-sandbox, fenced from file tools so the interpreter cannot be swapped.
     "browser-harness",
+    # The optional channel SDKs the gateway imports (``sdk_extras``). Same fences.
+    "extras",
     # The Harness daemon's runtime directory: its IPC socket (the Windows port file
     # carries the IPC token), pid file and log (``browser_harness.supervisor``).
     # Whoever can open the socket drives the user's Chrome, so only the gateway may.

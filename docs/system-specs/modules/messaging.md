@@ -7276,8 +7276,22 @@ and closes its loop before the daemon thread exits.
 `lark-oapi` is an OPTIONAL dependency declared as the
 `[feishu]` extra in `setup.cfg` and lazily imported inside the client module;
 `maybe_start_feishu` catches `ImportError` and logs a skip so a missing
-library never takes down the gateway. The desktop app's bundled backend ships
-the extra (`packaging/build-desktop.sh`). No public webhook endpoint is required.
+library never takes down the gateway. The desktop app's backend does NOT ship
+the extra: there `sdk_install_in_app` is true while the SDK is missing, and the
+panel's Install calls `POST /api/feishu/sdk/install` (owner, local machine only),
+which installs the hash-locked wheels into `<data home>/extras/` through
+`kiro_crew.sdk_extras`; `maybe_start_feishu` and `_channel_sdk_status` call
+`sdk_extras.activate()` first, which appends a finished install to `sys.path`.
+When an enabled, credentialed Feishu channel still finds no SDK on the desktop
+app, `maybe_start_feishu` schedules one background `sdk_extras.install_extra`
+per start and then `restart_channel("feishu")`, so an update that stopped
+bundling the SDK does not leave an existing user's channel off. Installs are
+serialized by a process lock in `sdk_extras`.
+pip first uses the index the user set for pip (the gateway's `PIP_INDEX_URL` and
+related variables, merged key by key over the index lines of `pip config list`), and on a download
+failure there runs once more against pypi.org; nothing else from pip's config
+reaches the install, and the hash lock pins every file whichever index serves it.
+No public webhook endpoint is required.
 
 **Optional-SDK card (Feishu, Teams, WhatsApp).** Every channel whose client
 library ships as an optional extra is one `_CHANNEL_SDK_EXTRA` entry in
@@ -7302,7 +7316,22 @@ While `sdk_installed` is false the WhatsApp and bot-channel (Feishu) panels hide
 owns that state. The Teams `jwt_required` notice carries no command, ends with the
 restart step, and shows only when the card does not (`jwt_available` false while
 `find_spec` finds a `jwt` module: PyJWT installed after the start, or a `jwt`
-module that is not PyJWT; or an older gateway). There is no Install button.
+module that is not PyJWT; or an older gateway). Only Feishu has an Install
+button, and only on the desktop app (`sdk_install_in_app`). Its line names no
+package and says the order: install, restart, then turn the channel on; the
+terminal path's "then restart" line does not repeat under it. After the install
+succeeds the card says a restart of the background service is due (a few
+seconds, open chats briefly disconnect), then to turn on Enable and save, and,
+where the app can restart the gateway it runs, offers the same two-step Restart
+gateway as Settings → About (`useDesktopGatewayRestart`). That restart repaints
+the window, so while the channel form holds an unsaved draft or credential
+(`hasUnsavedChanges`, the draft compared with the last read) the button is
+disabled with a "save your settings first" line; Teams and WhatsApp pass no
+such flag and are unchanged. A failed install answers 502 with a stable code that
+the card words itself: `sdk_download_failed` when pip could not fetch the wheels
+(no matching distribution, a connection, proxy or name-resolution error, or the
+pip timeout; `InstallError.kind == "download"`) and `sdk_install_failed` for any
+other failure. pip's own lines go only to the gateway log.
 
 Feishu capabilities: `streaming=False`, `edit=False`, `reactions=False`,
 `files_inbound=True`, `files_outbound=True`, `rich_blocks=False`,

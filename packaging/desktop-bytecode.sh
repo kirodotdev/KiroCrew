@@ -73,11 +73,8 @@ COVERAGE
 # every spawn. kiro_crew itself is compiled whole because a trace of an import
 # misses what runs later: a measured gateway boot lazily imports about 450 of
 # its modules, which cost about 0.7 s per start when compiled in memory.
-# lark_oapi, which Windows also traces, is left out: its ~10.9k modules are
-# more than the rest of the backend's caches together. The cost lands only on
-# a gateway with the Feishu channel on, which compiles it at every start
-# (measured on a Linux x86_64 host: 5.4 s to import without caches against
-# 2.5 s with them).
+# The Feishu SDK is not bundled; its on-demand install compiles its own caches
+# (src/kiro_crew/sdk_extras.py).
 precompile_macos_backend() {
   local out="$1" py sp module servers entry
   local -a trace=() whole=()

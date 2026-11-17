@@ -659,6 +659,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # over an installed prefix would read as "engine absent" to any in-sandbox
     # status probe, while a seal keeps the truth visible and only the write denied.
     "browser-harness",
+    # The optional channel SDKs the desktop app installs on first use
+    # (``sdk_extras.EXTRAS_LEAF``), which the unsandboxed gateway IMPORTS. Same class
+    # as ``browser-harness``: a write would choose code the gateway runs, so it is
+    # sealed; the installer runs in the gateway, outside the sandbox.
+    "extras",
     # The KAS engine bundles Kiro Crew installs itself (``acp.kas_bundle``): a
     # pinned ``@kiro/agent`` tree and the Node runtime that executes it. Same
     # class as ``browser-harness``: a sandboxed KAS process must read and execute
@@ -1063,6 +1068,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # a leaf no child should get. The read-only and no-follow seals still stop any
     # child replacing what the gateway execs.
     "browser-harness",
+    # The optional channel SDKs, withheld for the ``browser-harness`` reason: only the
+    # gateway imports them, so no child needs to read them.
+    "extras",
     # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
     # (not an enforced harness's) starts the launcher that reads them.
     "kas-mcp-launch",
