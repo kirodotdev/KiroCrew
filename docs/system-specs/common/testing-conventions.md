@@ -1834,7 +1834,8 @@ measures, never above.
   `test/conftest.py`, which only applies to `test/` — `testpaths` also collects
   `src/kiro_crew/apps/builtins`) pins `$XDG_CONFIG_HOME` to a tmp
   dir so `dev_fleet._dropin_path()` cannot name the operator's real
-  `~/.config/systemd/user/kirocrew-gateway.service.d/`, and traps every stdlib
+  `~/.config/systemd/user/kirocrew.service.d/` (or `kirocrew-gateway.service.d/`
+  on a host whose live unit has that name), and traps every stdlib
   spawn funnel (`subprocess.Popen.__init__`,
   `BaseEventLoop.subprocess_exec`/`subprocess_shell`, `os.execve`) to
   refuse a `systemctl`/`launchctl` invocation carrying a **mutating verb**

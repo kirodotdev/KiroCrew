@@ -244,7 +244,7 @@ def _block_host_service_mutation(request, _floor_monkeypatch):
 
     Redirecting ``$XDG_CONFIG_HOME`` (the seams part) stops a test from *writing* a real
     unit file, but not from *running* ``systemctl --user daemon-reload`` or
-    ``systemctl --user restart kirocrew-gateway.service``. Those restart the
+    ``systemctl --user restart kirocrew.service``. Those restart the
     developer's live gateway even when the drop-in they read is pristine, so the
     second half of the floor has to be an execution guard.
 

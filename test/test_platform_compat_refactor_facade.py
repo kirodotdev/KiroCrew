@@ -227,7 +227,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _windows_system_dirs _FOLDERID_DOCUMENTS _POWERSHELL_USER_PROFILES windows_documents_dir
         windows_powershell_profile_paths _UNPINNED_TOOL_PROBED _log_tool_outside_trusted_dirs
         _WINDOWS_GIT_DIRS trusted_git_bin trusted_system_bin _trusted_bin_search
-        trusted_system_bin_quiet _LOCAL_SYSTEM_BIN_DIR _UNTRUSTED_AWS_BIN_LOGGED
+        trusted_system_bin_quiet _LOCAL_SYSTEM_BIN_DIR POSIX_DEFAULT_BIN_DIRS _UNTRUSTED_AWS_BIN_LOGGED
         _MAX_SYMLINK_HOPS _root_owned_entry traversed_components traversed_components_and_links
         _group_shared_with_another_account _ACL_XATTR_VERSION _ACL_USER _ACL_GROUP _ACL_MASK
         _ACL_WRITE _NO_ACL_ERRNOS _acl_admits_another_account group_write_admits_another_account

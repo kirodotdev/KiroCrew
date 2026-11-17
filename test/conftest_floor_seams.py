@@ -39,8 +39,9 @@ def _isolate_xdg_config_home(_xdg_config_root, _floor_monkeypatch):
     """Point ``$XDG_CONFIG_HOME`` at a tmp dir so no test writes a real unit file.
 
     ``dev_fleet._dropin_path()`` resolves the make-live systemd drop-in as
-    ``$XDG_CONFIG_HOME/systemd/user/kirocrew-gateway.service.d/make-live.conf``,
-    falling back to ``~/.config`` when the variable is unset — which is the
+    ``$XDG_CONFIG_HOME/systemd/user/<live unit>.d/make-live.conf``, where the live
+    unit is ``kirocrew.service`` or ``kirocrew-gateway.service``, and falls back to
+    ``~/.config`` when the variable is unset — which is the
     default on most developer machines and in CI. So a test that reaches the
     cutover path without stubbing ``_dropin_path`` writes the operator's real
     drop-in. That is how a test once took the gateway down.
