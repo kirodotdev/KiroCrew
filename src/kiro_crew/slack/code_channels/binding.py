@@ -9,8 +9,9 @@ channel TOP-LEVEL (a code channel is one session, never a thread).
 
 **What the session starts with** (:func:`resolve_session_spec`): the order
 :func:`kiro_crew.slack.features.resolve_code_channel_session` applies --
-agent from the explicit default, else the default folder's ``default_agent``,
-else Slack's default agent; model and effort explicit or the agent's own; the
+agent: the conductor mode agent while "Always use conductor mode" is on (where
+conductor mode is offered), else the explicit default, else the default folder's
+``default_agent``, else Slack's default agent; model and effort explicit or the agent's own; the
 default folder when it exists; project from the folder chain, else the origin
 thread's ``!project``, else the dashboard default; approval mode explicit, else
 ``ask``. A ``trust_reads`` / ``trust`` mode is put on the new slot through
@@ -93,6 +94,21 @@ def _slack_default_agent(cfg: Any) -> str:
     return agent.strip() if isinstance(agent, str) else ""
 
 
+def resolved_default_agent(cfg: Any) -> str:
+    """``agent.default_agent`` as a new dashboard chat resolves it, or ``""`` when unset.
+
+    Through :func:`~kiro_crew.config.loader.default_template` (a removed spec falls
+    back to the managed default) and :func:`dispatch_kiro_agent` (a file stem
+    becomes the declared name), the stamp ``_default_template_stamp`` writes.
+    Filesystem-backed: run it through ``asyncio.to_thread``.
+    """
+    if not _slack_default_agent(cfg):
+        return ""
+    from kiro_crew.config.loader import default_template, dispatch_kiro_agent
+
+    return dispatch_kiro_agent(default_template(cfg))
+
+
 def _origin_project(origin_thread_ts: str) -> str:
     """The project the origin Slack thread was bound to with ``!project``."""
     if not origin_thread_ts:
@@ -120,15 +136,29 @@ async def resolve_session_spec(state: Any, cfg: Any, *, origin_thread_ts: str = 
         folders = await _read_folders(state)
     origin_project = _origin_project(origin_thread_ts)
     defaults = features.code_channel_defaults(cfg)
+    # The ``agent`` section from the live config watcher: the gateway's own config
+    # object (*cfg*, ``slack_cfg``) takes only the Slack fields on a reload, so its
+    # ``agent.crew_mode_agent`` and ``agent.default_agent`` are the boot values.
+    # *cfg* stands in until the watcher has a snapshot.
+    from kiro_crew.config import live
+
+    agent_cfg = live.snapshot() or cfg
+    conductor_agent = features.code_channel_conductor_agent(cfg, agent_cfg=agent_cfg)
+    if conductor_agent:
+        from kiro_crew.dashboard.slack_code_settings import conductor_overlay_unreadable
+
+        if await asyncio.to_thread(conductor_overlay_unreadable):
+            # config.local.json cannot be read, so whether it turns the switch off
+            # is unknown: off, read now (the live config may keep an older copy).
+            logger.info("code channel: config.local.json unreadable; conductor mode off")
+            conductor_agent = None
+    default_agent = await asyncio.to_thread(resolved_default_agent, agent_cfg)
     if not defaults.folder and state is not None and hasattr(state, "read_folders"):
         # Zero-config: file into the "Code channels" folder, created on first
-        # use (and again if the user deleted it) with the conductor as its
-        # default agent. The resolution order is unchanged -- an explicit
-        # default agent still wins over the folder's.
+        # use (and again if the user deleted it) with no default agent, so the
+        # session runs the owner's default agent unless something names another.
         try:
-            auto_id = await ensure_folder_path(
-                state, AUTO_FOLDER_PATH, default_agent=AUTO_FOLDER_AGENT
-            )
+            auto_id = await ensure_folder_path(state, AUTO_FOLDER_PATH)
         except BindingUnavailable as exc:
             # Two folders of that name: the settings page says so; the session
             # goes unfiled (the resolver's own rule).
@@ -141,21 +171,25 @@ async def resolve_session_spec(state: Any, cfg: Any, *, origin_thread_ts: str = 
     resolved = features.resolve_code_channel_session(
         defaults,
         folders,
-        slack_agent=_slack_default_agent(cfg),
+        slack_agent=default_agent,
         origin_project_dir=origin_project,
+        conductor_agent=conductor_agent,
     )
     if resolved.folder_missing:
         logger.info("code channel default folder does not exist; filing at top level")
     from kiro_crew.dashboard.slack_code_settings import default_agent_available
 
-    if await default_agent_available(defaults.agent, resolved.project_dir) is False:
+    if (
+        resolved.agent_source != "conductor"
+        and await default_agent_available(defaults.agent, resolved.project_dir) is False
+    ):
         # A saved default that is gone (its spec removed) is skipped, as the
         # settings preview shows: the folder's agent, then Slack's, runs instead.
         logger.info("code channel default agent %r no longer exists; inheriting", defaults.agent)
         resolved = features.resolve_code_channel_session(
             defaults,
             folders,
-            slack_agent=_slack_default_agent(cfg),
+            slack_agent=default_agent,
             origin_project_dir=origin_project,
             default_agent_available=False,
         )
@@ -171,8 +205,12 @@ async def resolve_session_spec(state: Any, cfg: Any, *, origin_thread_ts: str = 
     return SessionSpec(
         agent=resolved.agent or "",
         # The defaults picker offers templates only: a same-named crewmate must
-        # not take that pick. Folder and Slack defaults resolve as they do elsewhere.
-        agent_kind="template" if resolved.agent_source == "default" else "",
+        # not take that pick, nor the conductor mode agent (a template, as the
+        # dashboard's conductor mode switch picks it), nor ``agent.default_agent``
+        # (the default template, never a crewmate: ``default_template``). Now the
+        # zero-config path, it must not resolve to a Bot keyed by the same name.
+        # Only a folder's agent resolves its namespace as it does elsewhere.
+        agent_kind="template" if resolved.agent_source in ("default", "conductor", "slack") else "",
         model=resolved.model or "",
         reasoning_effort=resolved.reasoning_effort or "",
         folder_id=folder_id,
@@ -409,10 +447,9 @@ def _usable_project_dir(configured: str) -> str:
     return ""
 
 
-#: The sidebar folder zero-config code channels file into, and its agent: the
-#: resolver's own constants, so creation and resolution name the same folder.
+#: The sidebar folder zero-config code channels file into: the resolver's own
+#: constant, so creation and resolution name the same folder.
 AUTO_FOLDER_PATH = features.AUTO_FOLDER_NAME
-AUTO_FOLDER_AGENT = features.AUTO_FOLDER_AGENT
 
 
 async def _read_folders(state: Any) -> list[dict[str, Any]]:

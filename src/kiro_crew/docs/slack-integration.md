@@ -343,12 +343,17 @@ restart): a folder, an agent, a model, a reasoning effort and an approval mode. 
 them; anything empty falls through:
 
 - folder: the default folder here, else a top-level **Code channels** folder. That folder is
-  created the first time a code channel needs it, with `kirocrew-conductor` as its default
-  agent, so a code channel with nothing set runs the conductor there. **New folder…** in
+  created the first time a code channel needs it, with no default agent, so a code channel
+  with nothing set runs your default agent there (an auto folder an earlier release created
+  with `kirocrew-conductor`, never changed since, counts as having none for code channels; a
+  dashboard **New chat** in it still gets `kirocrew-conductor` until you clear the folder's
+  agent). **New folder…** in
   the folder list creates a sidebar folder (name, optional project directory and default
   agent) and selects it;
 - agent: the default agent here, then the folder's default agent, then the agent Slack
-  already uses. The list offers every agent a chat can run, the shipped ones included,
+  already uses. **Always use conductor mode** (`conductor_mode`, every build but LTS)
+  instead runs every new code channel in conductor mode on `agent.crew_mode_agent`, over both.
+  The list offers every agent a chat can run, the shipped ones included,
   except background-only ones (`kirocrew-lite`, `kirocrew-guest`, `kirocrew-heartbeat`);
 - project: the folder's project directory, then the project of the thread the channel was
   opened from;

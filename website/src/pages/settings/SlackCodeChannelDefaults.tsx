@@ -8,6 +8,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Bot, Folder, FolderGit2, Info, ShieldCheck } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderConfigModal from '../../components/FolderConfigModal'
@@ -19,6 +20,8 @@ import { useFolderSortMode } from '../../hooks/useFolderSortMode'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel } from '../../lib/effort'
 import { Field, INHERIT_MODEL, ModelField } from '../../components/crew/crewFields'
+import { SettingsToggle } from '../../components/settings'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { i18nT } from '../../i18n/t'
 import { compareText } from '../../i18n/format'
 import { APPROVAL_MODES, slackCodeDraftFrom, type SlackCodeDraft } from './slackCodeDraft'
@@ -61,15 +64,25 @@ const SOURCE_KEY: Record<string, string> = {
   auto: 'pages.settings.slackPanel.slackCode.source_auto',
   agent: 'pages.settings.slackPanel.slackCode.source_agent',
   builtin: 'pages.settings.slackPanel.slackCode.source_builtin',
+  conductor: 'pages.settings.slackPanel.slackCode.source_conductor',
 }
 
 function sourceLabel(source: string): string {
   return Object.prototype.hasOwnProperty.call(SOURCE_KEY, source) ? i18nT(SOURCE_KEY[source]) : ''
 }
 
+/** Scrolls to "Let code channels start helper agents" in the Code channels block
+ *  (SlackCodePanel) and focuses it; nothing when that block is not rendered. */
+function focusHelpersToggle() {
+  const toggle = document.querySelector<HTMLElement>('[data-testid="slack-code-dispatch"] [role="switch"]')
+  // Optional call: jsdom has no scrollIntoView.
+  toggle?.scrollIntoView?.({ block: 'center' })
+  toggle?.focus({ preventScroll: true })
+}
+
 /** A configuration warning (a stale or unusable default): nothing failed, so it
  *  is guidance, not an `ErrorNotice`. Failed loads keep `ErrorNotice`. */
-function InlineWarning({ text }: { text: string }) {
+function InlineWarning({ text }: { text: React.ReactNode }) {
   return (
     <p role="status" className="text-[12px] text-warn m-0 flex items-start gap-1.5">
       <AlertTriangle size={13} className="flex-none mt-0.5" aria-hidden="true" />
@@ -117,8 +130,8 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
   const tagsQ = useQuery<ChatTag[]>({ queryKey: ['chat-tags'], queryFn: () => api.chatTags(), enabled: creatingFolder })
 
   // What an unset folder means (the server's rule): the top-level auto folder,
-  // created with the conductor on first use. Matched here too so a folder made a
-  // moment ago through "New folder…" counts before the next GET.
+  // created with no default agent on first use. Matched here too so a folder
+  // made a moment ago through "New folder…" counts before the next GET.
   const autoInfo = data.code_channel_auto_folder
   // Top-level folders with the auto name: one is the auto folder, none means it
   // is created on first use, two or more are ambiguous (the server's rule:
@@ -130,6 +143,29 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
   }, [folders, autoInfo])
   const autoFolder = autoHits.length === 1 ? autoHits[0] : null
   const autoAmbiguous = autoHits.length > 1
+  // The auto folder's agent as the server reads it: the value earlier releases
+  // created it with (never edited since) counts as none.
+  const autoFolderAgent = autoFolder?.default_agent && autoFolder.default_agent !== autoInfo?.legacy_agent
+    ? autoFolder.default_agent
+    : ''
+  // "Always use conductor mode" decides the agent only where conductor mode is
+  // offered (every build but LTS; the server reads the same edition lock);
+  // hidden and inert otherwise.
+  const conductorModeOffered = useCrewMode()
+  // `config.local.json` sets the switch, or may: a save here could not change it.
+  const conductorOverlay = data.code_channel_conductor_mode_overlay_state ?? 'absent'
+  // The switch's value in force. Pinned by config.local.json: the server's
+  // (overlay-applied) value, never a draft kept from before the pin; unreadable:
+  // off, as the bind and the save read it (fail-closed, as for the helper-agents
+  // switch); otherwise the draft. The toggle, its note, the preview and the
+  // picker all read this one value.
+  const conductorValue = conductorOverlay === 'pinned'
+    ? data.code_channel_defaults?.conductor_mode === true
+    : conductorOverlay === 'unreadable' ? false : draft.conductorMode
+  const conductorOn = conductorModeOffered && conductorValue
+  const conductorAgent = data.code_channel_conductor_agent ?? ''
+  // Where config.local.json lives, as the server names it (home shown as ~).
+  const overlayPath = data.code_channel_dispatch_overlay_path || '~/.kiro/crew/config.local.json'
 
   const folderOptions = useMemo(() => {
     // The auto folder is the default row; it is listed again only when it is
@@ -149,10 +185,10 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
     : autoAmbiguous
       ? i18nT('pages.settings.slackPanel.slackCode.folder_auto_ambiguous', { name: autoInfo.name })
     : autoFolder
-      ? autoFolder.default_agent
-        ? i18nT('pages.settings.slackPanel.slackCode.folder_auto_existing_agent', { name: autoFolder.name, agent: autoFolder.default_agent })
+      ? autoFolderAgent
+        ? i18nT('pages.settings.slackPanel.slackCode.folder_auto_existing_agent', { name: autoFolder.name, agent: autoFolderAgent })
         : i18nT('pages.settings.slackPanel.slackCode.folder_auto_existing', { name: autoFolder.name })
-      : i18nT('pages.settings.slackPanel.slackCode.folder_auto_create', { name: autoInfo.name, agent: autoInfo.agent })
+      : i18nT('pages.settings.slackPanel.slackCode.preview_folder_auto', { name: autoInfo.name })
   // The GET lists agents for the SAVED folder's project as the folders stood
   // when the page loaded. A folder picked but not saved yet, or a folder made
   // since (New folder…), can mean another project, so the list is asked for
@@ -203,9 +239,6 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
   const pickedFolder = savedFolderMissing
     ? null
     : draft.folder ? folders.find(f => f.id === draft.folder) ?? null : autoFolder
-  // No folder set and the auto folder not made yet: it will be, with its agent.
-  // Two top-level folders of that name: neither is used and none is created.
-  const autoPending = !draft.folder && !autoFolder && !autoAmbiguous && !!autoInfo
   const folderPath = draft.folder
     ? folderOptions.labels[folderOptions.values.indexOf(draft.folder)] ?? ''
     : autoFolder
@@ -228,12 +261,19 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
   const savedAgentMissing = (data.code_channel_warnings ?? []).includes('agent_missing')
     && draft.agent === (data.code_channel_defaults?.agent ?? '')
   const agentRuns = !!draft.agent && !savedAgentMissing && !agentNotInFolder
-  const [agent, agentSource] = agentRuns
-    ? [draft.agent, 'default']
-    : pickedFolder?.default_agent
-      ? [pickedFolder.default_agent, 'folder']
-      : autoPending && autoInfo
-        ? [autoInfo.agent, 'folder']
+  // The folder's agent as the server reads it: on a top-level auto-named folder,
+  // however it is picked, the value earlier releases created it with counts as none.
+  const folderAgent = !pickedFolder?.default_agent
+    ? ''
+    : autoHits.some(f => f.id === pickedFolder.id) && pickedFolder.default_agent === autoInfo?.legacy_agent
+      ? ''
+      : pickedFolder.default_agent
+  const [agent, agentSource] = conductorOn
+    ? [conductorAgent, 'conductor']
+    : agentRuns
+      ? [draft.agent, 'default']
+      : folderAgent
+        ? [folderAgent, 'folder']
         : slackAgent ? [slackAgent, 'slack'] : ['', '']
   // A model picked here, or the agent's own (Inherited).
   const modelSet = !!draft.model && draft.model !== INHERIT_MODEL
@@ -267,13 +307,58 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
                   />
                 </Field>
                 </div>
-                <Field label={i18nT('pages.settings.slackPanel.slackCode.agent')} hint={i18nT('pages.settings.slackPanel.slackCode.agent_hint')}>
+                {conductorModeOffered && (
+                  // Full width, above the field it overrides: while on, conductor
+                  // mode decides every new code channel's agent.
+                  <div className="sm:col-span-2" data-testid="slack-code-conductor-mode">
+                    <SettingsToggle
+                      label={i18nT('pages.settings.slackPanel.slackCode.conductor_mode')}
+                      description={i18nT('pages.settings.slackPanel.slackCode.conductor_mode_desc', { agent: conductorAgent })}
+                      hint={i18nT('pages.settings.slackPanel.slackCode.conductor_mode_hint')}
+                      checked={conductorValue}
+                      onChange={v => onChange({ conductorMode: v })}
+                      disabled={readOnly || conductorOverlay !== 'absent'}
+                      configKey="slack.code_channel_defaults.conductor_mode"
+                    />
+                    {/* No hand-off: the card sits beside the unsaved Slack draft. */}
+                    {conductorOverlay === 'unreadable' && (
+                      <div className="mt-1" data-testid="slack-code-conductor-mode-overlay" data-state="unreadable">
+                        <ErrorNotice variant="inline" message={i18nT('pages.settings.slackPanel.slackCode.conductor_mode_overlay_unreadable', { path: overlayPath })} />
+                      </div>
+                    )}
+                    {conductorOverlay === 'pinned' && (
+                      <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-conductor-mode-overlay" data-state="pinned">
+                        <Info size={12} className="text-muted flex-none mt-0.5" />
+                        <span className="text-[12px] text-muted">{conductorValue
+                          ? i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_on', { path: overlayPath })
+                          : i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_off', { path: overlayPath })}</span>
+                      </div>
+                    )}
+                    {/* Display only: a conductor cannot work without helpers, and
+                        the switch never turns them on for the owner. The setting's
+                        name is a link to its toggle in the Code channels block above. */}
+                    {conductorOn && !draft.dispatch && (
+                      <div data-testid="slack-code-conductor-helpers-off">
+                        <InlineWarning text={
+                          <Trans
+                            i18nKey="pages.settings.slackPanel.slackCode.conductor_mode_helpers_off"
+                            // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the control's label is the setting name `Trans` renders inside it
+                            components={{ toggle: <button type="button" className="text-accent hover:underline bg-transparent border-none p-0 cursor-pointer text-left" onClick={focusHelpersToggle} /> }}
+                          />
+                        } />
+                      </div>
+                    )}
+                  </div>
+                )}
+                <Field label={i18nT('pages.settings.slackPanel.slackCode.agent')}
+                  hint={i18nT(conductorOn ? 'pages.settings.slackPanel.slackCode.agent_conductor_note' : 'pages.settings.slackPanel.slackCode.agent_hint')}>
                   <SimpleSelect
                     options={agentOptions}
                     value={draft.agent}
                     onChange={v => onChange({ agent: v })}
                     clearLabel={i18nT('pages.settings.slackPanel.slackCode.agent_none')}
-                    disabled={readOnly}
+                    // Kept as stored while conductor mode decides, and used again once it is off.
+                    disabled={readOnly || conductorOn}
                     aria-label={i18nT('pages.settings.slackPanel.slackCode.agent')}
                   />
                 </Field>
@@ -328,10 +413,12 @@ export default function SlackCodeChannelDefaults({ data, draft, onChange, readOn
               {!draft.folder && autoAmbiguous && autoInfo && (
                 <InlineWarning text={i18nT('pages.settings.slackPanel.slackCode.auto_folder_ambiguous', { name: autoInfo.name })} />
               )}
-              {savedAgentMissing && (
+              {/* Not while conductor mode decides the agent: the stored pick is
+                  dormant, the picker is disabled, and a folder change saves. */}
+              {savedAgentMissing && !conductorOn && (
                 <InlineWarning text={i18nT('pages.settings.slackPanel.slackCode.agent_missing', { agent: draft.agent })} />
               )}
-              {agentNotInFolder && !savedAgentMissing && (
+              {agentNotInFolder && !savedAgentMissing && !conductorOn && (
                 <InlineWarning text={i18nT('pages.settings.slackPanel.slackCode.agent_not_in_folder', { agent: draft.agent })} />
               )}
 

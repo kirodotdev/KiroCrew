@@ -193,6 +193,8 @@ class Env:
         self.store = CodeChannelStore(tmp_path / "slack-code-channels.json")
         self.on = True
         self.defaults: dict[str, str] = {}
+        #: ``agent.default_agent``: what a zero-config code channel runs.
+        self.default_agent = "slack-default"
         self.activation: dict[str, str] = {}
         self.decision = RouteDecision("code_channel", title="Fix flaky login test")
         self.classified: list[str] = []
@@ -223,7 +225,7 @@ class Env:
                         reasoning_effort=self.defaults.get("reasoning_effort", ""),
                     ),
                 ),
-                agent=SimpleNamespace(default_agent="slack-default"),
+                agent=SimpleNamespace(default_agent=self.default_agent),
                 channel_config=lambda ch: ChannelConfig(
                     activation=self.activation.get(ch, ACTIVATION_MENTION)
                 ),

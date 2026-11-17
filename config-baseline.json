@@ -7604,7 +7604,8 @@
           "agent": null,
           "model": null,
           "reasoning_effort": null,
-          "approval_mode": null
+          "approval_mode": null,
+          "conductor_mode": null
         }
       }
     },
@@ -8043,7 +8044,8 @@
         "agent": null,
         "model": null,
         "reasoning_effort": null,
-        "approval_mode": null
+        "approval_mode": null,
+        "conductor_mode": null
       }
     },
     {
@@ -8132,6 +8134,23 @@
         "trust_reads",
         "trust"
       ],
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.conductor_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Always use conductor mode",
+      "help": "Run every new code channel in conductor mode, on the conductor mode agent (agent.crew_mode_agent). It overrides the code-channel default agent and the folder's agent for new code channels; a session already running keeps its agent. Applies only where conductor mode is offered (every build but LTS). A conductor hands work to helper agents, so slack.code_channel_dispatch should be on too. Off when unset; a missing or malformed value reads as off.",
+      "hasChildren": false,
+      "enumValues": null,
       "defaultValue": null,
       "nullable": true
     },

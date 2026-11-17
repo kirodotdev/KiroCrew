@@ -281,6 +281,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.always-use-conductor-mode-slack",
+    "label": "Always use conductor mode (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.conductor_mode",
+    "labelSuffix": "Slack",
+    "hint": "Channels already running keep their agent. A conductor hands work to helper agents, so turn on “Let code channels start helper agents” too.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channel_defaults.conductor_mode"
+  },
+  {
     "id": "channels.answer-in-group-spaces-webex",
     "label": "Answer in group spaces (Webex)",
     "labelKey": "pages.settings.webexPanel.allow_group_spaces",

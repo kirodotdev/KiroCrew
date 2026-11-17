@@ -399,14 +399,21 @@ export function SlackPanel() {
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
       auto_link_sessions: draft.auto_link_sessions,
       show_in_session_list: draft.show_in_session_list,
-      ...(codeBaseline.current ? slackCodePayload(draft.code, codeBaseline.current) : {}),
+      ...(codeBaseline.current
+        ? slackCodePayload(
+          draft.code,
+          codeBaseline.current,
+          // config.local.json sets "Always use conductor mode", or may: never send it.
+          (data?.code_channel_conductor_mode_overlay_state ?? 'absent') !== 'absent',
+        )
+        : {}),
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     if (appClear) payload.app_token_clear = true
     else if (appToken.trim()) payload.app_token = appToken.trim()
     saveMut.mutate(payload)
-  }, [draft, botToken, appToken, botClear, appClear, saveMut])
+  }, [draft, botToken, appToken, botClear, appClear, saveMut, data?.code_channel_conductor_mode_overlay_state])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.slackPanel.loading_slack_config')}</p>
   // Nothing to lose here: the form is not mounted in this branch.

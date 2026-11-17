@@ -125,6 +125,7 @@ class TestSwitches:
             "model": None,
             "reasoning_effort": None,
             "approval_mode": None,
+            "conductor_mode": False,
         }
         assert body["code_channel_warnings"] == []
 
@@ -750,19 +751,37 @@ class TestStaleDefaults:
 
 
 class TestAutoFolder:
-    def test_unset_folder_reports_the_auto_folder_and_the_conductor(self, env: dict) -> None:
+    def test_unset_folder_reports_the_auto_folder_and_no_folder_agent(self, env: dict) -> None:
         _, body = _call(env, "GET")
         assert body["code_channel_auto_folder"] == {
             "name": "Code channels",
-            "agent": "kirocrew-conductor",
+            "legacy_agent": "kirocrew-conductor",
             "id": None,
             "ambiguous": False,
         }
         eff = body["code_channel_effective"]
         assert (eff["folder_path"], eff["folder_auto_create"]) == ("Code channels", True)
-        assert (eff["agent"], eff["agent_source"]) == ("kirocrew-conductor", "folder")
+        # No folder agent and no agent.default_agent: the built-in default runs.
+        assert (eff["agent"], eff["agent_source"]) == (None, "")
         assert eff["folder"] is None
         assert body["code_channel_agents"] == ["builder", "reviewer"]
+
+    def test_the_legacy_conductor_on_the_auto_folder_is_not_reported_as_its_agent(
+        self, env: dict
+    ) -> None:
+        env["state"]._folders = [
+            *_FOLDERS,
+            {
+                "id": "eeeeeeeeeeee",
+                "name": "Code channels",
+                "parent_id": "",
+                "default_agent": "kirocrew-conductor",
+            },
+        ]
+        _, body = _call(env, "GET")
+        eff = body["code_channel_effective"]
+        assert eff["folder"]["id"] == "eeeeeeeeeeee"
+        assert eff["agent_source"] != "folder" and eff["agent"] != "kirocrew-conductor"
 
     def test_existing_auto_folder_reports_its_own_settings(self, env: dict) -> None:
         env["state"]._folders = [
@@ -803,6 +822,315 @@ class TestAutoFolder:
         monkeypatch.setattr(scs, "_agent_names", _broken)
         _, body = _call(env, "GET")
         assert body["code_channel_agents"] is None
+
+
+def _with_slack(env: dict, slack: dict) -> None:
+    env["cfg"].write_text(json.dumps({"slack": slack}), encoding="utf-8")
+
+
+class TestConductorMode:
+    """``code_channel_defaults.conductor_mode``: "Always use conductor mode"."""
+
+    @pytest.fixture(autouse=True)
+    def _keep_remembered_agent(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        # The GET reads ``crew_mode.crew_mode_agent(cfg)``, which remembers it.
+        from kiro_crew import crew_mode
+
+        _floor_monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+
+    def test_on_saves_true_and_off_clears_it(self, env: dict) -> None:
+        status, res = _call(env, "PUT", {"code_channel_defaults": {"conductor_mode": True}})
+        assert status == 200, res
+        assert _stored(env)["code_channel_defaults"]["conductor_mode"] is True
+        status, res = _call(env, "PUT", {"code_channel_defaults": {"conductor_mode": False}})
+        assert status == 200, res
+        assert _stored(env)["code_channel_defaults"].get("conductor_mode") is None
+        _, body = _call(env, "GET")
+        assert body["code_channel_defaults"]["conductor_mode"] is False
+
+    @pytest.mark.parametrize("raw", ["true", 1, [True], {}])
+    def test_anything_but_a_boolean_is_refused(self, env: dict, raw: object) -> None:
+        status, res = _call(env, "PUT", {"code_channel_defaults": {"conductor_mode": raw}})
+        assert status == 400 and "conductor_mode must be a boolean" in res.get("error", "")
+
+    def test_on_wins_over_the_default_and_the_folder_agent(self, env: dict) -> None:
+        _with_slack(
+            env,
+            {
+                "code_channel_defaults": {
+                    "folder": "bbbbbbbbbbbb",
+                    "agent": "reviewer",
+                    "conductor_mode": True,
+                }
+            },
+        )
+        _, body = _call(env, "GET")
+        eff = body["code_channel_effective"]
+        assert (eff["agent"], eff["agent_source"]) == ("kirocrew-conductor", "conductor")
+        assert body["code_channel_conductor_agent"] == "kirocrew-conductor"
+        # The stored default agent is kept for when the switch goes off.
+        assert body["code_channel_defaults"]["agent"] == "reviewer"
+
+    def test_a_folder_change_does_not_judge_the_dormant_default_agent(self, env: dict) -> None:
+        # "project-only" exists only in the Dev project: picking Twin (no project)
+        # would refuse it, but while conductor mode decides the agent it is dormant.
+        stored = {"folder": "bbbbbbbbbbbb", "agent": "project-only", "conductor_mode": True}
+        _with_slack(env, {"code_channel_defaults": stored})
+        status, res = _call(env, "PUT", {"code_channel_defaults": {"folder": "cccccccccccc"}})
+        assert status == 200, res
+        saved = _stored(env)["code_channel_defaults"]
+        assert (saved["folder"], saved["agent"]) == ("cccccccccccc", "project-only")
+
+    def test_an_explicit_agent_edit_is_still_checked_while_it_is_on(self, env: dict) -> None:
+        _with_slack(env, {"code_channel_defaults": {"conductor_mode": True}})
+        status, _ = _call(env, "PUT", {"code_channel_defaults": {"agent": "no-such-agent"}})
+        assert status == 400
+
+    def test_with_it_off_a_folder_change_still_judges_the_default_agent(self, env: dict) -> None:
+        stored = {"folder": "bbbbbbbbbbbb", "agent": "project-only"}
+        _with_slack(env, {"code_channel_defaults": stored})
+        status, _ = _call(env, "PUT", {"code_channel_defaults": {"folder": "cccccccccccc"}})
+        assert status == 400
+
+    def test_a_folder_only_save_judges_the_stored_agent_as_main_does(self, env: dict) -> None:
+        # The overlay-merged judgment is for a save that turns the switch off. A
+        # plain folder change with the switch off judges the stored agent against
+        # the new folder, as before, even while config.local.json sets an agent.
+        stored = {"folder": "bbbbbbbbbbbb", "agent": "project-only"}
+        _with_slack(env, {"code_channel_defaults": stored})
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text(
+            json.dumps({"slack": {"code_channel_defaults": {"agent": "reviewer"}}}),
+            encoding="utf-8",
+        )
+        try:
+            body = {"code_channel_defaults": {"folder": "cccccccccccc"}}
+            status, res = _call(env, "PUT", body)
+            assert status == 400 and "'project-only' not found" in res["error"]
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    def test_turning_it_off_with_a_folder_change_judges_the_default_agent(self, env: dict) -> None:
+        stored = {"folder": "bbbbbbbbbbbb", "agent": "project-only", "conductor_mode": True}
+        _with_slack(env, {"code_channel_defaults": stored})
+        body = {"code_channel_defaults": {"folder": "cccccccccccc", "conductor_mode": False}}
+        assert _call(env, "PUT", body)[0] == 400
+
+    def test_turning_it_off_alone_judges_a_missing_stored_agent(self, env: dict) -> None:
+        # The stored agent runs again once the switch is off: a gone one is refused,
+        # and picking another (or clearing it) in the same save is accepted.
+        _with_slack(env, {"code_channel_defaults": {"agent": "ghost", "conductor_mode": True}})
+        off = {"conductor_mode": False}
+        status, res = _call(env, "PUT", {"code_channel_defaults": off})
+        assert status == 400 and "'ghost' not found" in res["error"]
+        assert _stored(env)["code_channel_defaults"]["conductor_mode"] is True
+        both = {"conductor_mode": False, "agent": "reviewer"}
+        assert _call(env, "PUT", {"code_channel_defaults": both})[0] == 200
+        # Turning it on never judges the agent it overrides.
+        _with_slack(env, {"code_channel_defaults": {"agent": "ghost"}})
+        on = {"conductor_mode": True}
+        assert _call(env, "PUT", {"code_channel_defaults": on})[0] == 200
+        # Resending the switch unchanged (off, as stored) turns nothing off: the
+        # stored agent is not judged.
+        _with_slack(env, {"code_channel_defaults": {"agent": "ghost"}})
+        assert _call(env, "PUT", {"code_channel_defaults": {"conductor_mode": None}})[0] == 200
+
+    def test_turning_it_off_judges_the_agent_the_overlay_leaves_to_it(self, env: dict) -> None:
+        # Once the switch is off the agent that runs is config.json's with the overlay
+        # merged over it. An agent the overlay sets is not this page's to change, so
+        # it never blocks the save; the base one is judged only where it still runs.
+        _with_slack(env, {"code_channel_defaults": {"agent": "ghost", "conductor_mode": True}})
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        off = {"code_channel_defaults": {"conductor_mode": False}}
+        try:
+            overlay.write_text(
+                json.dumps({"slack": {"code_channel_defaults": {"agent": "reviewer"}}}),
+                encoding="utf-8",
+            )
+            assert _call(env, "PUT", off)[0] == 200
+            # Not even a missing one: the switch can always be turned off from here
+            # (the runtime skips a missing agent and the GET warns about it).
+            _with_slack(
+                env, {"code_channel_defaults": {"agent": "reviewer", "conductor_mode": True}}
+            )
+            overlay.write_text(
+                json.dumps({"slack": {"code_channel_defaults": {"agent": "ghost"}}}),
+                encoding="utf-8",
+            )
+            assert _call(env, "PUT", off)[0] == 200
+            # An empty overlay section merges: the base agent is still what runs.
+            _with_slack(env, {"code_channel_defaults": {"agent": "ghost", "conductor_mode": True}})
+            overlay.write_text(
+                json.dumps({"slack": {"code_channel_defaults": {}}}), encoding="utf-8"
+            )
+            assert _call(env, "PUT", off)[0] == 400
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    def test_a_missing_dormant_default_agent_is_still_reported(self, env: dict) -> None:
+        # Reported while the switch is on too, so the card can show it the moment
+        # its draft turns the switch off, without a second save.
+        _with_slack(env, {"code_channel_defaults": {"agent": "ghost", "conductor_mode": True}})
+        _, body = _call(env, "GET")
+        assert "agent_missing" in body["code_channel_warnings"]
+        assert body["code_channel_effective"]["agent_source"] == "conductor"
+
+    def test_a_non_object_defaults_overlay_pins_the_switch_off(self, env: dict) -> None:
+        # The merge replaces code_channel_defaults whole with a non-object, and the
+        # reader takes it as all-unset: the overlay pins the switch off.
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text(json.dumps({"slack": {"code_channel_defaults": None}}), encoding="utf-8")
+        _with_slack(env, {"code_channel_defaults": {"conductor_mode": True}})
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_conductor_mode_overlay_state"] == "pinned"
+            assert body["code_channel_defaults"]["conductor_mode"] is False
+            put = {"code_channel_defaults": {"conductor_mode": True}}
+            status, res = _call(env, "PUT", put)
+            assert status == 409 and "is set in config.local.json" in res["error"]
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    def test_an_overlay_pin_refuses_a_change_instead_of_acknowledging_it(self, env: dict) -> None:
+        # config.local.json wins over the base file a save writes: a withdrawal
+        # saved there would read "saved" while code channels kept the conductor.
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        pinned = {"slack": {"code_channel_defaults": {"conductor_mode": True}}}
+        overlay.write_text(json.dumps(pinned), encoding="utf-8")
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_defaults"]["conductor_mode"] is True
+            assert body["code_channel_conductor_mode_overlay_state"] == "pinned"
+            body_put = {"code_channel_defaults": {"conductor_mode": None}}
+            status, res = _call(env, "PUT", body_put)
+            assert status == 409 and "config.local.json" in res["error"]
+            base = json.loads(env["cfg"].read_text(encoding="utf-8")) if env["cfg"].exists() else {}
+            assert "conductor_mode" not in (
+                (base.get("slack") or {}).get("code_channel_defaults") or {}
+            )
+            # Other defaults still save.
+            ok = _call(env, "PUT", {"code_channel_defaults": {"reasoning_effort": "high"}})
+            assert ok[0] == 200
+            overlay.write_text("{ torn", encoding="utf-8")
+            _, body = _call(env, "GET")
+            assert body["code_channel_conductor_mode_overlay_state"] == "unreadable"
+            assert _call(env, "PUT", body_put)[0] == 409
+        finally:
+            overlay.unlink(missing_ok=True)
+        _, body = _call(env, "GET")
+        assert body["code_channel_conductor_mode_overlay_state"] == "absent"
+
+    def test_an_overlay_pinned_on_keeps_the_dormant_agent_out_of_a_folder_change(
+        self, env: dict
+    ) -> None:
+        # The base file has no switch; config.local.json turns it on, so the stored
+        # project-only agent is dormant and a folder change saves.
+        _with_slack(
+            env, {"code_channel_defaults": {"folder": "bbbbbbbbbbbb", "agent": "project-only"}}
+        )
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        pinned = {"slack": {"code_channel_defaults": {"conductor_mode": True}}}
+        overlay.write_text(json.dumps(pinned), encoding="utf-8")
+        try:
+            put = {"code_channel_defaults": {"folder": "cccccccccccc"}}
+            status, res = _call(env, "PUT", put)
+            assert status == 200, res
+            # An unreadable overlay: whether it turns the switch off is unknown, so
+            # it counts as off and the agent is judged.
+            overlay.write_text("{ torn", encoding="utf-8")
+            back = {"code_channel_defaults": {"folder": "bbbbbbbbbbbb"}}
+            assert _call(env, "PUT", back)[0] == 200
+            assert _call(env, "PUT", put)[0] == 400
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    @pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="needs symlinks")
+    def test_a_dangling_overlay_symlink_reads_as_no_overlay(
+        self, env: dict, tmp_path: Path
+    ) -> None:
+        # The name exists but its target is gone: the loader reads that as no
+        # config.local.json, so every reader of the switch does too. The switch is
+        # not locked, the stored value is in force, and a change saves.
+        _with_slack(env, {"code_channel_defaults": {"conductor_mode": True}})
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            overlay.symlink_to(tmp_path / "gone.json")
+        except OSError:
+            pytest.skip("this host cannot create symlinks")
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_conductor_mode_overlay_state"] == "absent"
+            assert body["code_channel_effective"]["agent_source"] == "conductor"
+            assert body["code_channel_dispatch_overlay_state"] == "absent"
+            off = {"code_channel_defaults": {"conductor_mode": False}}
+            assert _call(env, "PUT", off)[0] == 200
+            assert _call(env, "PUT", {"code_channel_dispatch": True})[0] == 200
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    def test_an_unreadable_overlay_reads_the_switch_as_off(self, env: dict) -> None:
+        # config.json turns it on and config.local.json is torn: the GET and the save
+        # read the switch as off (as the bind does), so the stored agent is live.
+        stored = {"folder": "bbbbbbbbbbbb", "agent": "project-only", "conductor_mode": True}
+        _with_slack(env, {"code_channel_defaults": stored})
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text("{ torn", encoding="utf-8")
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_conductor_mode_overlay_state"] == "unreadable"
+            assert body["code_channel_effective"]["agent_source"] != "conductor"
+            put = {"code_channel_defaults": {"folder": "cccccccccccc"}}
+            assert _call(env, "PUT", put)[0] == 400
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    def test_an_overlay_that_sets_only_dispatch_does_not_pin_it(self, env: dict) -> None:
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text(json.dumps({"slack": {"code_channel_dispatch": True}}), encoding="utf-8")
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_conductor_mode_overlay_state"] == "absent"
+            put = {"code_channel_defaults": {"conductor_mode": True}}
+            assert _call(env, "PUT", put)[0] == 200
+        finally:
+            overlay.unlink(missing_ok=True)
+
+    def test_where_conductor_mode_is_not_offered_the_usual_order_applies(
+        self, env: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import edition
+
+        monkeypatch.setattr(edition, "is_lts", lambda: True)
+        # The lock logs its first use process-wide; restore that record.
+        from kiro_crew import edition_locks
+
+        monkeypatch.setattr(edition_locks, "_logged", set())
+        _with_slack(env, {"code_channel_defaults": {"agent": "reviewer", "conductor_mode": True}})
+        _, body = _call(env, "GET")
+        eff = body["code_channel_effective"]
+        assert (eff["agent"], eff["agent_source"]) == ("reviewer", "default")
+
+    def test_on_lts_a_stored_on_never_makes_the_default_agent_dormant(
+        self, env: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # LTS has no conductor mode, so a stored on is inert: a folder-only change
+        # to a project that lacks the stored agent is refused, as on main.
+        from kiro_crew import edition, edition_locks
+
+        monkeypatch.setattr(edition, "is_lts", lambda: True)
+        monkeypatch.setattr(edition_locks, "_logged", set())
+        stored = {"folder": "bbbbbbbbbbbb", "agent": "project-only", "conductor_mode": True}
+        _with_slack(env, {"code_channel_defaults": stored})
+        status, res = _call(env, "PUT", {"code_channel_defaults": {"folder": "cccccccccccc"}})
+        assert status == 400 and "'project-only' not found" in res["error"]
 
 
 class TestAgentChoices:
