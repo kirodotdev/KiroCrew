@@ -21,7 +21,9 @@ from voice_reply_helpers import (
     _patch_aws_on_path,
 )
 
+from kiro_crew import platform_compat
 from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 from kiro_crew.voice_reply import (
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
@@ -544,6 +546,11 @@ class TestOggOpusOutput:
 # ── stitch_mp3s() failure-path cleanup ──────────────────────────────────
 
 
+async def _lost_run(signal, what: str):
+    """Await *signal* under the lost-run bound only, failing by name on a hang."""
+    return await await_until(signal, timeout=FALLBACK_TIMEOUT_SECS, what=what)
+
+
 class TestStitchMp3s:
     """Failure exits must not leak the internally allocated (mkstemp) output.
 
@@ -649,6 +656,148 @@ class TestStitchMp3s:
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
         assert not os.path.exists(argv[argv.index("-i") + 1])  # the list file
+
+    @staticmethod
+    def _hold_files_until_reaped(monkeypatch, held: set[str]) -> None:
+        """Refuse to remove a path in ``held``, as Windows does while a child has it open."""
+        real_unlink = os.unlink
+
+        def unlink(path, *args, **kwargs):
+            if os.fspath(path) in held:
+                raise PermissionError(32, "The process cannot access the file", path)
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", unlink)
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancel_during_reap_still_waits_for_the_child(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A second cancel landing on the post-kill reap must not abandon it, or
+        # the removals run while the child still holds every file open.
+        allocated = _capture_mkstemp(monkeypatch)
+        chunks = self._two_inputs(tmp_path)
+        held: set[str] = set()
+        self._hold_files_until_reaped(monkeypatch, held)
+        running, reaping, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        proc = _mock_subprocess(returncode=0)
+        calls = 0
+
+        async def communicate():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                running.set()
+                await asyncio.Event().wait()  # ffmpeg still stitching
+            reaping.set()
+            await released.wait()
+            held.clear()  # the killed child has exited and closed its files
+            return b"", b""
+
+        proc.communicate = communicate
+
+        listing: list[str] = []
+
+        async def fake_exec(*cmd, **kwargs):
+            listing.append(cmd[cmd.index("-i") + 1])
+            held.update([listing[0], cmd[-1], *chunks])
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            task = asyncio.ensure_future(stitch_mp3s(chunks))
+            await _lost_run(running, "the stitch starting ffmpeg")
+            task.cancel()
+            await _lost_run(reaping, "the post-kill reap starting")
+            # Both are queued before the task runs again, so the repeat cancel
+            # reaches the stitch before the reap can finish.
+            task.cancel()
+            released.set()
+            with pytest.raises(asyncio.CancelledError):
+                await _lost_run(task, "the cancelled stitch")
+
+        proc.kill.assert_called_once()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+        assert not os.path.exists(listing[0])
+        # The dashboard caller (chat_voice) removes the chunks under
+        # ``suppress(OSError)``, which would hide a refused removal; a bare
+        # unlink is the strict form of the same step.
+        for chunk in chunks:
+            os.unlink(chunk)
+        assert os.listdir(tmp_path) == []
+
+    @pytest.mark.asyncio
+    async def test_cancel_returns_when_the_killed_child_never_exits(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        monkeypatch.setattr(platform_compat, "REAP_TIMEOUT_SECS", 0)
+        running = asyncio.Event()
+        proc = _mock_subprocess(returncode=0)
+        pending: list[asyncio.Future] = []
+
+        def communicate():
+            # A future only this test could resolve: neither the stitch nor the
+            # reap ever ends on its own.
+            pending.append(asyncio.get_running_loop().create_future())
+            running.set()
+            return pending[-1]
+
+        proc.communicate = communicate
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            task = asyncio.ensure_future(stitch_mp3s(self._two_inputs(tmp_path)))
+            await _lost_run(running, "the stitch starting ffmpeg")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await _lost_run(task, "the cancelled stitch")
+
+        proc.kill.assert_called_once()
+        assert len(pending) == 2
+        assert pending[1].cancelled()  # the bound gave up on the reap
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_timeout_reap_reaches_the_awaiter(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A timeout returns None, but a cancel that lands on its reap must still
+        # be raised once the reap ends.
+        _capture_mkstemp(monkeypatch)
+        reaping, released = asyncio.Event(), asyncio.Event()
+        proc = _mock_subprocess(returncode=0)
+        calls = 0
+        reap_returned = False
+
+        async def communicate():
+            nonlocal calls, reap_returned
+            calls += 1
+            if calls == 1:
+                raise asyncio.TimeoutError
+            reaping.set()
+            await released.wait()
+            reap_returned = True
+            return b"", b""
+
+        proc.communicate = communicate
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            task = asyncio.ensure_future(stitch_mp3s(self._two_inputs(tmp_path)))
+            await _lost_run(reaping, "the post-kill reap starting")
+            task.cancel()
+            released.set()
+            with pytest.raises(asyncio.CancelledError):
+                await _lost_run(task, "the cancelled stitch")
+
+        proc.kill.assert_called_once()
+        assert calls == 2
+        assert reap_returned  # the reap finished before the cancel was raised
 
     @pytest.mark.asyncio
     async def test_empty_output_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
