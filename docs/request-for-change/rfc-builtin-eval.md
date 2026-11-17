@@ -18,7 +18,8 @@ Status: accepted. The repository owner, a maintainer, asked for the
 direction on 2026-11-15, widened it the same day from long tasks only to a
 weekly eval tool with three tiers, a Crew headless CLI and a case-harvest
 step, and accepted it on 2026-11-16 with the PR that ships §12's first part
-(`kirocrew chat --headless`). The rest is not built. Every code reference was
+(`kirocrew chat --headless`). `kirocrew eval run --suite tasks` v1 is built
+(§14.1); the rest is not. Every code reference was
 read at `4bc26f6ecb`, and §12's at `cb2f78b946`.
 
 It lands on its own because it adds new first-class surfaces (`kirocrew eval
@@ -707,6 +708,31 @@ held-out, rejected and why, published and retired.
 8. Weekly schedule, report, trend, alerts, spend cap (§10).
 
 Each phase is its own PR against this document.
+
+### 14.1 Built: `kirocrew eval run` v1
+
+A slice of phases 3, 5 and 6: the `tasks` suite (`src/kiro_crew/eval/tasks.py`)
+with the Crew chat, Crew conductor and Claude Code arms
+(`src/kiro_crew/eval/arms.py`), one simple and one medium case under
+`evals/tasks/cases/`, and `--check` (each case fails on its base and passes on
+its reference, no model) as the CI-side gate. kiro-cli V3 and Codex are
+registered and every run of them is VOID with "not available". Where v1 does
+less than, or differs from, the sections above:
+
+| point | v1 |
+|---|---|
+| flags (§3.4) | `--suite tasks\|DIR --tier --harness --case --repeat --eval-home --out --model --json --check`. `--suite` also takes a suite directory. No `scenarios` / `skills` suites, `--baseline`, `--junit`, `--detach`, `--budget-week`; no `report`, `harvest`, `admit` |
+| eval user (§4.1, §4.4) | refused unless the running user's home holds none of the sandbox's credential paths (`security.paths.sensitive_home_dirs` plus `~/.config/gh` and `~/.kube`; only an empty directory under Crew's own data home, which running the CLI may create, is let through) and the user cannot list any other login user's home. With `HOME` set to the run home, the strict tier masks the empty run home, not the eval user's real home, so for the unsandboxed paths (the hidden check, the Claude Code arm) this credential-free user is the whole fence, which is less than §4.4 item 1 says. No mount-namespace fallback. Linux and macOS only |
+| network, MCP, memory (§4.1) | no allowlisting proxy. A fresh data home and `HOME` per run, so no user MCP server or memory is present; Claude Code gets `--strict-mcp-config` and no config |
+| task branch (§7.1) | `trunk`, not `main`: Kiro Crew refuses a push to a protected branch name even to a local origin, so a Crew arm could not finish a case on `main` |
+| cases (§7.1, §13.2) | a case's `base/` is the touched module cut down to the code the fix needs, not the whole repository at the PR's base, so it builds offline in a second; `CASE.md` names what was cut. No stand-in, `gates/`, `mutants/`, `probes/`, scrub report |
+| ask detector (§5) | Crew arms: the headless CLI's own `asks`. Claude Code: `permission_denials` and `AskUserQuestion` / `ExitPlanMode` calls. No final-question rule yet |
+| audit (§4.4) | VOID when a run's output names the case suite's path. The suite (cases, checks, `lib/`) is fingerprinted at batch start and after every run; a run that changed it is VOID and the batch stops, so no run can rewrite the grader later runs are judged by. No wire log, so no credential-path, gateway-port or `github.com` scan. The hidden check imports the submitted code in its own child process, as the eval user and outside the Crew sandbox, so code written to print a fake verdict, or to edit its own run's files while it is checked, could game its own score (and only that, given the fingerprint); v1 relies on the dedicated eval user, not on the check, to contain the agent, and a sandboxed check is a follow-up |
+| Claude Code fence (§4.2, §11) | as designed: the eval home and the dedicated OS user are its fence; the runner does not wrap it in Crew's sandbox |
+| continue budget (§3.2) | none: one harness message (the seed) per run |
+| model pin (§3.2) | `--model` is passed to every arm and recorded; a run is not voided for an unpinned model |
+| idle after done (§10) | the hidden check is sampled every 60 s while the arm runs |
+| Crew gateway (§12.3) | the runner starts one per run in the run's data home (`--port auto --no-open --no-tunnel`; the port from its run marker, ready when `/api/health` answers), and stops it, and the arm's process group, only after the final hidden check, so a server the agent started is still up while it is judged |
 
 ## 15. Alternatives considered
 

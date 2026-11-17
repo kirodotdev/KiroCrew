@@ -23,6 +23,31 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Embedding child: this interpreter, -P, a fixed module; requests travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "embeddings_child.py::spawn",
+        # `kirocrew eval run --suite tasks` (rfc-builtin-eval.md §3-§5). Every argv
+        # below is built by the runner from fixed strings, the suite's case files
+        # and paths the runner created; none comes from the agent or the model.
+        # The case's `build.sh`, run on a fresh empty directory before any agent.
+        "eval/tasks.py::build_repo",
+        # `git add/commit/push` in a repo `build_repo` just made, for the
+        # no-model `--check` gate only; no agent has touched that repo.
+        "eval/tasks.py::apply_reference",
+        # This package's own gateway (`python -P -m kiro_crew gateway --port auto
+        # --no-open --no-tunnel`) in the run's fresh data home; it sandboxes the
+        # agents it spawns itself.
+        "eval/tasks.py::start_gateway",
+        # The harness under test: `kirocrew chat --headless` (this package) or
+        # the operator's `claude` binary, with flags fixed in eval/arms.py and the
+        # case's seed as data. The agent runs INSIDE that harness: Crew confines
+        # it with its own strict sandbox; Claude Code's containment is the
+        # dedicated eval OS user the preflight requires (RFC §4.1, §4.2, §11).
+        "eval/tasks.py::drive_arm",
+        # The case's hidden check (`python <suite>/hidden/check.py <origin>`).
+        # Not routed on purpose: the check's child process imports the code the
+        # agent pushed, by design, so a strict-sandbox route is a recorded
+        # follow-up (RFC §14.1). Containment today is the dedicated eval OS user
+        # with no credentials that preflight enforces, a scrubbed env (PATH and
+        # locale only), a time limit, and deletion of the run directory after.
+        "eval/tasks.py::_run_check",
         # Consolidation write child: this interpreter, -P, a fixed module; jobs travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "consolidation_write_child.py::_spawn",
