@@ -102,6 +102,9 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # gateway records without letting a sandbox create the missing root.
     "subagents",
     "member-memory-bindings",
+    # Absent, a sandbox could create the directory and write the identity records the
+    # gateway's session check reads.
+    "session-tokens",
     "memory_stores",
     # Memory move jobs and ledgers: absent, a sandbox could create the directory and
     # seed a ledger that a rollback would then delete from.
@@ -223,6 +226,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "engines",
     "subagents",
     "member-memory-bindings",
+    "session-tokens",
     "decisions",
     "models",
     "kirocrew-bin",
@@ -289,6 +293,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed run records",
         "the agent could rewrite the app owner a retained V1 run restores its "
         "authorization from",
+    ),
+    "session-tokens": (
+        "sealed session identity records",
+        "the agent could write a record that makes a session key attested",
     ),
     # Sealing the seam that turns the feature on without sealing the record it writes
     # would be half a control: appending one feedback row is enough to put a verdict
