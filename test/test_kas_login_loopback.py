@@ -229,9 +229,46 @@ async def test_loopback_near_miss_callback_path_fails_fast(tmp_path, loopback_sh
             assert "Sign-in could not finish" in await resp.text()
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result["status"] == "error"
-    assert result["code"] == "loopback_failed"
+    assert result["code"] == "loopback_wrong_address"
     assert "not a callback address" in result["error"]
     assert session.calls == []
+    assert TokenStore(tmp_path).resolve() is None
+
+
+class _RaisingResp:
+    """A token request that fails before the auth service answers."""
+
+    def __init__(self, err: BaseException):
+        self._err = err
+
+    async def __aenter__(self):
+        raise self._err
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response, error",
+    [
+        (_FakeResp(500, "boom"), "token exchange failed: HTTP 500 boom"),
+        (_RaisingResp(aiohttp.ClientConnectionError("connection refused")), "connection refused"),
+        (_RaisingResp(asyncio.TimeoutError()), ""),
+    ],
+)
+async def test_loopback_failed_code_exchange_is_its_own_code(
+    tmp_path, loopback_shape, response, error
+):
+    """The browser came back with a good code; the exchange, not the return, failed."""
+    service, _ = _service(tmp_path, responses=[response])
+    begin = await service.begin_loopback("google")
+    await _hit_callback(
+        begin["port"],
+        {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+    )
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result == {"status": "error", "code": "loopback_exchange_failed", "error": error}
     assert TokenStore(tmp_path).resolve() is None
 
 

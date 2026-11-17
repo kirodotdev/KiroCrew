@@ -624,8 +624,17 @@ engine instead ([aws-control.md](aws-control.md)).
   (`api_kas_login_begin_loopback`) starts the PKCE loopback sign-in and returns the
   portal URL plus the polling handle. A coded 409 `loopback_unavailable` (the install
   shape does not support loopback, or every allowlisted port is busy) sends the client
-  to the device flow. `POST /api/kas-login/cancel` abandons a pending sign-in and
-  releases the loopback callback port at once instead of at its deadline.
+  to the device flow, and so does a timeout or a failure poll answer other than
+  `token_store_failed`. The code screen then says why in one line chosen by the
+  poll's code: `loopback_wrong_address` (the browser came back with this sign-in's
+  state to a path the listener does not serve), `loopback_exchange_failed` (the code
+  exchange failed, an unreachable auth service included) and `loopback_failed` (any
+  other listener failure, such as the sign-in page returning an error) each name what
+  happened in an error notice, since the browser did come back; a `loopback_timeout`,
+  the 409 and the user's own "Use a code instead" keep "couldn't come back to this
+  computer directly" as a status line. `POST /api/kas-login/cancel` abandons a
+  pending sign-in and releases the loopback callback port at once instead of at its
+  deadline.
 - Wiring `KasAuthProvider` to the running engine is done through the kiro-cli relay
   (`acp/kas_host_auth.py` + the `_kiro/auth/getAccessToken` handler on
   `AcpRuntime`'s reader loop). Verified end-to-end against a real kiro-cli release

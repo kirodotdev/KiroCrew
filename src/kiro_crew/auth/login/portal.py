@@ -58,6 +58,13 @@ class PortalTimeoutError(PortalAuthError):
     """
 
 
+class PortalAddressError(PortalAuthError):
+    """The browser came back with this sign-in's state to a path not listened on.
+
+    Distinct so the caller can say so: the browser did reach this machine.
+    """
+
+
 def generate_code_verifier() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
 
@@ -217,7 +224,7 @@ async def wait_for_callback(
             return web.Response(status=404, text="Not found.", content_type="text/plain")
         if not result.done():
             result.set_exception(
-                PortalAuthError(
+                PortalAddressError(
                     f"the sign-in page sent the browser back to {request.path!r}, "
                     "which is not a callback address this computer listens on"
                 )

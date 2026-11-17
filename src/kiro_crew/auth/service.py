@@ -145,6 +145,10 @@ class LoopbackUnavailableError(Exception):
     """
 
 
+class _LoopbackExchangeError(Exception):
+    """A loopback sign-in's code exchange failed after the browser came back."""
+
+
 class InvalidRegionError(Exception):
     """A caller-supplied region is outside the AWS region-name grammar.
 
@@ -985,16 +989,22 @@ class KasLoginService:
         # callback's login_option so the stored provider matches the account.
         chosen = _social_from_login_option(callback["login_option"]) or provider
         session = await self._http()
-        return await portal.exchange_code(
-            chosen, callback["code"], verifier, redirect_uri, session=session
-        )
+        try:
+            return await portal.exchange_code(
+                chosen, callback["code"], verifier, redirect_uri, session=session
+            )
+        except (portal.PortalAuthError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+            # The browser came back; the auth service, reached or not, did not finish.
+            raise _LoopbackExchangeError(str(err)) from err
 
     async def _poll_loopback(self, login_id: str, pending: _PendingLoopbackLogin) -> dict[str, Any]:
         """Report the listener task's state; terminal outcomes drop the entry.
 
-        A timeout or a listener failure carries ``code: loopback_failed`` so the
-        dashboard can degrade to the device flow for the same provider without a
-        detour through an error screen.
+        A timeout (``loopback_timeout``) or a listener failure lets the dashboard
+        degrade to the device flow for the same provider without a detour through
+        an error screen. A failure's code names its cause so the code screen can say
+        why: ``loopback_wrong_address``, ``loopback_exchange_failed``, else
+        ``loopback_failed``.
         """
         if not pending.task.done():
             if datetime.now(timezone.utc) < pending.expires_at:
@@ -1022,7 +1032,13 @@ class KasLoginService:
         if isinstance(err, portal.PortalTimeoutError):
             return {"status": "expired", "code": "loopback_timeout"}
         logger.warning("loopback login failed: %s", err)
-        return {"status": "error", "code": "loopback_failed", "error": str(err)}
+        if isinstance(err, portal.PortalAddressError):
+            code = "loopback_wrong_address"
+        elif isinstance(err, _LoopbackExchangeError):
+            code = "loopback_exchange_failed"
+        else:
+            code = "loopback_failed"
+        return {"status": "error", "code": code, "error": str(err)}
 
     async def cancel(self, login_id: str) -> None:
         """Abandon a pending login, releasing its callback port if it holds one.
