@@ -138,6 +138,34 @@ def _tcid_identity_key(tcid: str | None) -> str:
     return hashlib.sha256(canonical.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _sel_label_digest(text: str) -> str:
+    """Fixed-size stand-in for a model-authored title or kind; ``""`` stays ``""``."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest() if text else ""
+
+
+def _note_sel_tool_label(turn: _ChatTurn, tool_call_id: str | None, title: str, kind: str) -> bool:
+    """Record the title and kind the SEL now holds for a call; False when unchanged.
+
+    A ``tool_call_update`` omits a field it does not change, so an empty title or
+    kind keeps the recorded value, and an update that changes neither adds
+    nothing to the audit trail. Only a key that names one call is tracked, so the
+    turn's first-source map bounds how many calls this record holds, and each
+    field is kept as a digest, because a shell title is the whole command and has
+    no length bound. Any other id returns True: its update is logged rather than
+    compared with another call's record.
+    """
+    key = _tcid_identity_key(tool_call_id)
+    if not key or key not in turn._tcid_first_source or key in turn._tcid_collapsed:
+        return True
+    prev = turn._sel_tool_labels.get(key)
+    title_d, kind_d = _sel_label_digest(title), _sel_label_digest(kind)
+    label = (title_d or prev[0], kind_d or prev[1]) if prev else (title_d, kind_d)
+    if label == prev:
+        return False
+    turn._sel_tool_labels[key] = label
+    return True
+
+
 def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
     """Build the meta dict persisted on a tool message — `tool_call_id`,
     `purpose`, and the full redacted `input`. Output is appended later by the
@@ -419,14 +447,16 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     if _risk_meta:
         _tool_row_meta = {**(_tool_row_meta or {}), **_risk_meta}
     slot.append("tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_row_meta)
+    _sel_title = _redact_display_text(event.title)
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
         source="dashboard",
-        tool_name=_redact_display_text(event.title),
+        tool_name=_sel_title,
         tool_kind=event.tool_kind,
         outcome="invoked",
     )
+    _note_sel_tool_label(turn, event.tool_call_id, _sel_title, event.tool_kind or "")
     # AskUserQuestion: validate, then post through the server-side
     # owner so the card carries a ``card_id`` and retires with the
     # next user row / consumed steer like every other question card.
@@ -720,15 +750,17 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         )
         # Update the audit log so the SEL trail captures the
         # refined title/kind, not just the "Terminal"/"grep" stub
-        # logged at the initial EVENT_TOOL_CALL.
-        sel().log_tool_invocation(
-            session_key=session_key,
-            agent=slot.agent or "kirocrew",
-            source="dashboard",
-            tool_name=_title_upd,
-            tool_kind=_kind_upd,
-            outcome="refined",
-        )
+        # logged at the initial EVENT_TOOL_CALL. Backends re-send the
+        # same title on most updates, so only a change is logged.
+        if _note_sel_tool_label(turn, event.tool_call_id, _title_upd, _kind_upd):
+            sel().log_tool_invocation(
+                session_key=session_key,
+                agent=slot.agent or "kirocrew",
+                source="dashboard",
+                tool_name=_title_upd,
+                tool_kind=_kind_upd,
+                outcome="refined",
+            )
         # Patch the persisted tool message in place so its content
         # shows the refined title and meta carries the populated
         # input.  Walk in reverse and break on the first match —

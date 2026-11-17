@@ -590,6 +590,110 @@ class TestRunChatToolCallUpdate:
         assert refined[0]["tool_kind"] == "execute"
         assert refined[0]["source"] == "dashboard"
 
+    async def _sel_tool_events(self, tmp_path, monkeypatch, events):
+        """Run *events* through a turn and return its SEL tool_invocation calls."""
+        captured: list[dict] = []
+
+        class _FakeSel:
+            def log_tool_invocation(self, **kw):
+                captured.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.sel", lambda: _FakeSel())
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_unchanged_refinement_logs_no_sel_event(self, tmp_path, monkeypatch):
+        """An update repeating the title and kind the SEL already holds for the
+        call adds no `refined` event. A field the update omits (empty) keeps
+        the recorded value, as ACP defines for `tool_call_update`."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        upd = dict(kind=EVENT_TOOL_CALL_UPDATE, tool_call_id="tc-7")
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, title="ls /tmp", tool_kind="execute", tool_call_id="tc-7"
+            ),
+            LLMEvent(**upd, title="ls /tmp", tool_kind="execute", tool_input='{"command":"ls"}'),
+            LLMEvent(**upd, title="ls /tmp", tool_kind="execute"),
+            LLMEvent(**upd, title="ls /tmp"),
+            LLMEvent(**upd, tool_input='{"command":"ls /tmp"}'),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        captured = await self._sel_tool_events(tmp_path, monkeypatch, events)
+
+        assert [c["outcome"] for c in captured] == ["invoked"]
+
+    @pytest.mark.asyncio
+    async def test_each_real_refinement_logs_one_sel_event(self, tmp_path, monkeypatch):
+        """Every change of a call's title or kind still writes exactly one
+        `refined` event, and the comparison is per call: a second call reaching
+        the same title as the first is its own refinement."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        a = dict(kind=EVENT_TOOL_CALL_UPDATE, tool_call_id="tc-a")
+        b = dict(kind=EVENT_TOOL_CALL_UPDATE, tool_call_id="tc-b")
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, title="Terminal", tool_kind="execute", tool_call_id="tc-a"
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, title="Terminal", tool_kind="execute", tool_call_id="tc-b"
+            ),
+            LLMEvent(**a, title="ls /tmp", tool_kind="execute"),
+            LLMEvent(**b, title="ls /tmp", tool_kind="execute"),
+            LLMEvent(**a, title="ls /tmp", tool_kind="execute"),
+            LLMEvent(**a, title="ls -la /tmp"),
+            LLMEvent(**a, title="ls -la /tmp", tool_kind="read"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        captured = await self._sel_tool_events(tmp_path, monkeypatch, events)
+
+        refined = [(c["tool_name"], c["tool_kind"]) for c in captured if c["outcome"] == "refined"]
+        assert refined == [
+            ("ls /tmp", "execute"),
+            ("ls /tmp", "execute"),
+            ("ls -la /tmp", ""),
+            ("ls -la /tmp", "read"),
+        ]
+
+    def test_sel_label_record_keeps_a_bounded_digest_of_a_long_title(self):
+        """A shell title is the whole command, so the per-call record keeps a
+        fixed-size digest of it, and a change past any prefix still counts."""
+        from types import SimpleNamespace
+
+        import kiro_crew.dashboard.chat_runner  # noqa: F401  (binds tool_rows' runtime names)
+        from kiro_crew.dashboard.chat_turn.tool_rows import _note_sel_tool_label, _tcid_identity_key
+
+        turn = SimpleNamespace(
+            _tcid_first_source={_tcid_identity_key("tc-long"): "d"},
+            _tcid_collapsed=set(),
+            _sel_tool_labels={},
+        )
+        title = "cat > f <<'EOF'\n" + "x" * 100_000
+        assert _note_sel_tool_label(turn, "tc-long", title, "execute") is True
+        assert _note_sel_tool_label(turn, "tc-long", title, "") is False
+        assert _note_sel_tool_label(turn, "tc-long", title + "y", "") is True
+        (stored,) = turn._sel_tool_labels.values()
+        assert max(len(field) for field in stored) <= 64
+
     @pytest.mark.asyncio
     async def test_refinement_no_tool_call_id_skipped(self, tmp_path, monkeypatch):
         """Refinement events without a tool_call_id are silently dropped —

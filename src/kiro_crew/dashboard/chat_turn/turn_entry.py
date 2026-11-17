@@ -716,6 +716,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # Identified call key -> digests of the (title, kind) the SEL last recorded
+    # for it, so a tool_call_update that changes neither writes no `refined` row.
+    # Keyed like `_failed_write_calls`, so the first-source map bounds the count,
+    # and the digests bound each entry's size.
+    turn._sel_tool_labels = {}
     # tool_call_id -> the receipt selector of a ``session_send`` call
     # (``session_send_receipts.call_selector`` over its raw arguments), so its
     # completed result can pick up what the gateway delivered.
