@@ -53,6 +53,14 @@
     .talk li b { color: var(--text-strong, #fff); font-weight: 600; }
     .talk .thread { font: inherit; font-size: 10.5px; margin-top: 6px; padding: 1px 8px; border-radius: 6px; cursor: pointer;
       border: 1px solid var(--info, #6aa9ff); background: var(--bg-elevated, #1a1a1a); color: var(--text-strong, #fff); }
+    .fold { margin-top: 6px; }
+    .fold .fold-tg { font: inherit; font-size: 11px; width: 100%; text-align: left; cursor: pointer; padding: 6px 9px;
+      border: 1px dashed var(--border, #333); border-radius: 8px; background: none; color: var(--muted, #9aa); }
+    .fold .fold-tg:hover { background: var(--bg-hover, #222); }
+    .fold .fold-tg:focus-visible { outline: 2px solid var(--accent, #00d492); outline-offset: 1px; }
+    .fold .caret { display: inline-block; width: 1em; }
+    .fold .fold-new { margin-top: 3px; padding-left: 9px; font-size: 10.5px; color: var(--text, #e6e6e6); overflow-wrap: anywhere; }
+    .fold.pulse .fold-tg { border-color: var(--border-strong, #555); animation: gb-glow 2.6s ease-in-out 2; }
     .nest { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border, #333); }
     .nest .nh { font-size: 10.5px; color: var(--muted, #9aa); }
     .nest .row { margin-top: 5px; }
@@ -86,7 +94,16 @@
   <div class="states" id="states"></div>
   <div class="tally" id="tally"></div>
 
-  <div id="items"></div>
+  <!-- Open items first, then the abandoned ones folded into one row, then the closed ones. -->
+  <div id="items">
+    <div id="gb-live"></div>
+    <div class="fold" id="gb-dropped" hidden>
+      <button type="button" class="fold-tg" id="gb-dropped-tg" aria-expanded="false" aria-controls="gb-dropped-list"><span class="caret" aria-hidden="true">&#9656;</span><span class="fold-label"></span></button>
+      <div class="fold-new" id="gb-dropped-new" aria-live="polite"></div>
+      <div id="gb-dropped-list" hidden></div>
+    </div>
+    <div id="gb-closed"></div>
+  </div>
 
   <div class="sub" style="margin-top: 7px;">
     <span data-dashboard-field="items">-</span> <span data-i18n="on_board">on the board,</span>
@@ -105,6 +122,8 @@
       // looked up here. The zh-CN strings are \u-escaped so the source stays ASCII.
       var I18N = {
         en: {
+          dropped_new: 'just moved here: {t}',
+          dropped_n: '{n} abandoned',
           title: 'Goal board', round: 'round', goal_version: 'goal version', depth: 'depth',
           entries: 'entries', opened: 'opened', last_write: 'last write',
           on_board: 'on the board,', not_shown: 'not shown (list truncated)',
@@ -140,6 +159,8 @@
           talk_recent: 'Latest lines', talk_thread: 'See the back-and-forth \u2197', talk_thread_title: 'Open {v}'
         },
         'zh-CN': {
+          dropped_new: '\u521a\u79fb\u5165\uff1a{t}',
+          dropped_n: '\u5df2\u653e\u5f03 {n} \u9879',
           title: '\u76ee\u6807\u770b\u677f', round: '\u8f6e\u6b21', goal_version: '\u76ee\u6807\u7248\u672c', depth: '\u5c42\u7ea7',
           entries: '\u6761\u76ee', opened: '\u5f00\u542f\u4e8e', last_write: '\u6700\u540e\u5199\u5165',
           on_board: '\u9879\u5728\u770b\u677f\u4e0a\uff0c', not_shown: '\u9879\u672a\u663e\u793a\uff08\u5217\u8868\u5df2\u622a\u65ad\uff09',
@@ -177,6 +198,8 @@
           talk_thread: '\u770b\u6765\u56de \u2197', talk_thread_title: '\u6253\u5f00 {v}'
         },
         'hi': {
+          dropped_new: '\u0905\u092d\u0940 \u092f\u0939\u093e\u0901 \u0906\u092f\u093e: {t}',
+          dropped_n: '{n} \u091b\u094b\u0921\u093c\u0947 \u0917\u090f',
           state_discussing: '\ud83d\udcac \u091a\u0930\u094d\u091a\u093e \u091c\u093e\u0930\u0940',
           talk_counts: '{a} \u0938\u0939\u092e\u0924 \u00b7 {d} \u0905\u0938\u0939\u092e\u0924 \u00b7 {c} \u091c\u093e\u0901\u091a \u092e\u0947\u0902 \u00b7 {q} \u0906\u092a\u0938\u0947',
           talk_meta: '{p} \u00b7 \u0926\u094c\u0930 {r} \u00b7 {m} \u092e\u093f\u0928\u091f',
@@ -194,6 +217,8 @@
           talk_thread_title: '{v} \u0916\u094b\u0932\u0947\u0902'
         },
         'es': {
+          dropped_new: 'reci\u00e9n movida aqu\u00ed: {t}',
+          dropped_n: '{n} abandonadas',
           state_discussing: '\ud83d\udcac en debate',
           talk_counts: '{a} acordados \u00b7 {d} en disputa \u00b7 {c} en revisi\u00f3n \u00b7 {q} para ti',
           talk_meta: '{p} \u00b7 ronda {r} \u00b7 {m} min', phase_talking: 'conversando',
@@ -204,6 +229,8 @@
           talk_thread_title: 'Abrir {v}'
         },
         'fr': {
+          dropped_new: 'vient d\u2019arriver ici : {t}',
+          dropped_n: '{n} abandonn\u00e9es',
           state_discussing: '\ud83d\udcac en discussion',
           talk_counts: '{a} d\u2019accord \u00b7 {d} en d\u00e9saccord \u00b7 {c} en v\u00e9rification \u00b7 {q} pour vous',
           talk_meta: '{p} \u00b7 tour {r} \u00b7 {m} min', phase_talking: '\u00e9change en cours',
@@ -214,6 +241,8 @@
           talk_thread_title: 'Ouvrir {v}'
         },
         'bn': {
+          dropped_new: '\u098f\u0987\u09ae\u09be\u09a4\u09cd\u09b0 \u098f\u0996\u09be\u09a8\u09c7 \u098f\u09b2: {t}',
+          dropped_n: '{n}\u099f\u09bf \u09ac\u09be\u09a6 \u09a6\u09c7\u0993\u09af\u09bc\u09be',
           state_discussing: '\ud83d\udcac \u0986\u09b2\u09cb\u099a\u09a8\u09be \u099a\u09b2\u099b\u09c7',
           talk_counts: '{a} \u098f\u0995\u09ae\u09a4 \u00b7 {d} \u09ae\u09a4\u09ad\u09c7\u09a6 \u00b7 {c} \u09af\u09be\u099a\u09be\u0987 \u099a\u09b2\u099b\u09c7 \u00b7 {q} \u0986\u09aa\u09a8\u09be\u09b0 \u099c\u09a8\u09cd\u09af',
           talk_meta: '{p} \u00b7 \u09b0\u09be\u0989\u09a8\u09cd\u09a1 {r} \u00b7 {m} \u09ae\u09bf\u09a8\u09bf\u099f',
@@ -231,6 +260,8 @@
           talk_thread_title: '{v} \u0996\u09c1\u09b2\u09c1\u09a8'
         },
         'pt': {
+          dropped_new: 'acabou de vir para c\u00e1: {t}',
+          dropped_n: '{n} abandonadas',
           state_discussing: '\ud83d\udcac em discuss\u00e3o',
           talk_counts: '{a} acordados \u00b7 {d} em disputa \u00b7 {c} em verifica\u00e7\u00e3o \u00b7 {q} para voc\u00ea',
           talk_meta: '{p} \u00b7 rodada {r} \u00b7 {m} min', phase_talking: 'conversando',
@@ -241,6 +272,8 @@
           talk_thread: 'Ver a conversa \u2197', talk_thread_title: 'Abrir {v}'
         },
         'ru': {
+          dropped_new: '\u0442\u043e\u043b\u044c\u043a\u043e \u0447\u0442\u043e \u0441\u044e\u0434\u0430: {t}',
+          dropped_n: '\u0411\u0440\u043e\u0448\u0435\u043d\u043e: {n}',
           state_discussing: '\ud83d\udcac \u043e\u0431\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0435',
           talk_counts: '\u0441\u043e\u0433\u043b\u0430\u0441\u043e\u0432\u0430\u043d\u043e {a} \u00b7 \u0441\u043f\u043e\u0440\u043d\u043e {d} \u00b7 \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f {c} \u00b7 \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u0432\u0430\u043c {q}',
           talk_meta: '{p} \u00b7 \u0440\u0430\u0443\u043d\u0434 {r} \u00b7 {m} \u043c\u0438\u043d',
@@ -259,6 +292,8 @@
           talk_thread_title: '\u041e\u0442\u043a\u0440\u044b\u0442\u044c {v}'
         },
         'de': {
+          dropped_new: 'gerade hierher verschoben: {t}',
+          dropped_n: '{n} aufgegeben',
           state_discussing: '\ud83d\udcac in Diskussion',
           talk_counts: '{a} einig \u00b7 {d} strittig \u00b7 {c} in Pr\u00fcfung \u00b7 {q} an dich',
           talk_meta: '{p} \u00b7 Runde {r} \u00b7 {m} Min.', phase_talking: 'im Gespr\u00e4ch',
@@ -269,6 +304,8 @@
           talk_thread_title: '{v} \u00f6ffnen'
         },
         'ja': {
+          dropped_new: '\u4eca\u3053\u3053\u3078\u79fb\u52d5: {t}',
+          dropped_n: '\u4e2d\u6b62 {n} \u4ef6',
           state_discussing: '\ud83d\udcac \u8b70\u8ad6\u4e2d',
           talk_counts: '\u5408\u610f {a} \u00b7 \u76f8\u9055 {d} \u00b7 \u78ba\u8a8d\u4e2d {c} \u00b7 \u3042\u306a\u305f\u3078 {q}',
           talk_meta: '{p} \u00b7 \u7b2c {r} \u30e9\u30a6\u30f3\u30c9 \u00b7 {m} \u5206',
@@ -281,6 +318,8 @@
           talk_thread_title: '{v} \u3092\u958b\u304f'
         },
         'ko': {
+          dropped_new: '\ubc29\uae08 \uc774\ub3d9: {t}',
+          dropped_n: '\uc911\ub2e8\ub428 {n}\uac1c',
           state_discussing: '\ud83d\udcac \ub17c\uc758 \uc911',
           talk_counts: '\ud569\uc758 {a} \u00b7 \uc774\uacac {d} \u00b7 \ud655\uc778 \uc911 {c} \u00b7 \uc9c8\ubb38 {q}',
           talk_meta: '{p} \u00b7 {r}\ub77c\uc6b4\ub4dc \u00b7 {m}\ubd84', phase_talking: '\ub17c\uc758 \uc911',
@@ -292,6 +331,8 @@
           talk_thread_title: '{v} \uc5f4\uae30'
         },
         'it': {
+          dropped_new: 'appena spostata qui: {t}',
+          dropped_n: '{n} abbandonate',
           state_discussing: '\ud83d\udcac in discussione',
           talk_counts: '{a} concordati \u00b7 {d} in disaccordo \u00b7 {c} in verifica \u00b7 {q} per te',
           talk_meta: '{p} \u00b7 round {r} \u00b7 {m} min', phase_talking: 'in discussione',
@@ -837,32 +878,92 @@
       var itemNodes = {};
       var itemSignatures = {};
       var emptyNode = null;
+      // Whether the reader opened the abandoned row, kept across refills. Closed at first.
+      var droppedOpen = false;
+      var droppedCount = 0;
+      // The section each card was last drawn in, and the titles of the tasks that
+      // moved from the open list into the closed fold since the reader last opened it:
+      // the row names them, so a card that left the open list does not vanish unseen.
+      var lastSection = {};
+      var droppedNew = {};
+
+      // Which part of the list an item sits in: open work first, abandoned items
+      // folded into one row, then the items that closed accepted or rejected.
+      function section(it) {
+        var s = text(it.state);
+        return s === 'abandoned' ? 'dropped' : s === 'accepted' || s === 'rejected' ? 'closed' : 'live';
+      }
+
+      function drawDropped(n) {
+        droppedCount = n;
+        var box = document.getElementById('gb-dropped');
+        var tg = document.getElementById('gb-dropped-tg');
+        var listEl = document.getElementById('gb-dropped-list');
+        if (!box || !tg || !listEl) return;
+        box.hidden = !n;
+        var label = tg.querySelector('.fold-label');
+        var caret = tg.querySelector('.caret');
+        var want = i18n('dropped_n', { n: n });
+        if (label && label.textContent !== want) label.textContent = want;
+        var glyph = droppedOpen ? '\u25be' : '\u25b8';
+        if (caret && caret.textContent !== glyph) caret.textContent = glyph;
+        tg.setAttribute('aria-expanded', droppedOpen ? 'true' : 'false');
+        listEl.hidden = !droppedOpen;
+        if (droppedOpen) droppedNew = {};
+        var fresh = Object.keys(droppedNew).map(function (k) { return droppedNew[k]; });
+        var note = document.getElementById('gb-dropped-new');
+        var said = fresh.length ? i18n('dropped_new', { t: fresh.join(', ') }) : '';
+        if (note && note.textContent !== said) note.textContent = said;
+        var cls = 'fold' + (fresh.length ? ' pulse' : '');
+        if (box.className !== cls) box.className = cls;
+        if (!tg.getAttribute('data-wired')) {
+          tg.setAttribute('data-wired', '1');
+          tg.addEventListener('click', function () {
+            droppedOpen = !droppedOpen;
+            drawDropped(droppedCount);
+          });
+        }
+      }
 
       function drawItems(list) {
-        var host = document.getElementById('items');
-        if (!host) return;
+        var hosts = {
+          live: document.getElementById('gb-live'),
+          dropped: document.getElementById('gb-dropped-list'),
+          closed: document.getElementById('gb-closed')
+        };
+        if (!hosts.live || !hosts.dropped || !hosts.closed) return;
         if (list.length && emptyNode) { emptyNode.remove(); emptyNode = null; }
         var all = boards();
         var own = ownBoardId(list, all);
         var keep = {};
+        var at = { live: 0, dropped: 0, closed: 0 };
         for (var i = 0; i < list.length; i++) {
           var it = list[i];
           var id = text(it.item_id) || String(i);
           if (keep[id]) id += '#' + i;
           keep[id] = true;
+          var part = section(it);
+          var host = hosts[part];
+          // A card that left the open list for the fold, while the fold is closed.
+          var moved = !!lastSection[id] && lastSection[id] !== part;
+          if (moved && part === 'dropped' && !droppedOpen) droppedNew[id] = text(it.title) || text(it.item_id) || DASH;
+          if (part !== 'dropped') delete droppedNew[id];
+          lastSection[id] = part;
+          var slot = at[part]++;
           var signature = JSON.stringify([locale(), it, reach(all, own, text(it.item_id), 1, own ? [own] : [], [])]);
           var card = itemNodes[id];
           if (card && itemSignatures[id] === signature) {
             // Unchanged: the same node stays, moved only when the order changed.
-            if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null);
+            if (host.children[slot] !== card) host.insertBefore(card, host.children[slot] || null);
             continue;
           }
           if (card) card.remove();
           card = document.createElement('div');
           itemNodes[id] = card;
           itemSignatures[id] = signature;
-          card.className = 'item' + (seen[id] ? '' : ' pop') + (live(it) ? ' live' : '') + (needsYou(it) ? ' you' : '');
-          if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 45) + 'ms';
+          // A card moved to another section pops in again where it lands.
+          card.className = 'item' + (seen[id] && !moved ? '' : ' pop') + (live(it) ? ' live' : '') + (needsYou(it) ? ' you' : '');
+          if (!seen[id] && !moved) card.style.animationDelay = (Math.min(slot, 12) * 45) + 'ms';
           seen[id] = true;
           var t = document.createElement('div');
           t.className = 't';
@@ -925,21 +1026,24 @@
           var worker = text(it.spender);
           if (worker) card.appendChild(line(i18n('worker'), worker));
           drawNest(card, all, own, text(it.item_id), 1, own ? [own] : []);
-          host.insertBefore(card, host.children[i] || null);
+          host.insertBefore(card, host.children[slot] || null);
         }
         Object.keys(itemNodes).forEach(function (id) {
           if (keep[id]) return;
           itemNodes[id].remove();
           delete itemNodes[id];
           delete itemSignatures[id];
+          delete lastSection[id];
+          delete droppedNew[id];
         });
+        drawDropped(at.dropped);
         var emptyText = list.length ? null : i18n('empty');
         if (emptyNode && emptyNode.textContent !== emptyText) { emptyNode.remove(); emptyNode = null; }
         if (emptyText && !emptyNode) {
           emptyNode = document.createElement('div');
           emptyNode.className = 'line';
           emptyNode.textContent = emptyText;
-          host.appendChild(emptyNode);
+          hosts.live.appendChild(emptyNode);
         }
       }
 
