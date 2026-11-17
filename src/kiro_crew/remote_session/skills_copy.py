@@ -42,7 +42,7 @@ import shlex
 import stat
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -365,18 +365,56 @@ _NOT_A_SECRET = re.compile(
 )
 #: The shortest value counted as a secret (shorter ones are flags and names).
 _MIN_SECRET_VALUE = 4
+#: A pair whose value starts on a later line or spans lines: a quoted value after a
+#: line break (JSON ``"password":\n "v"``, YAML ``password:\n  "v"``), or a TOML
+#: triple-quoted string (``password = """v"""``).
+_SPLIT_PAIR = re.compile(
+    r"""(?<![A-Za-z0-9_.-])["']?([A-Za-z0-9_.-]{1,64})["']?[ \t]*[:=]"""
+    r"""(?:[ \t]*(?:\"\"\"(.*?)\"\"\"|'''(.*?)''')|[ \t]*\r?\n\s*(?:"([^"\n]*)"|'([^'\n]*)'))""",
+    re.DOTALL,
+)
+#: A YAML block scalar header (``|``, ``|-``, ``>+``, ``|2``): the value is the
+#: lines below it.
+_BLOCK_SCALAR = re.compile(r"^[|>][-+0-9]*$")
+
+
+def _block_value(text: str, key_start: int, header_end: int) -> str:
+    """The text of the YAML block scalar whose header ends at *header_end*: the
+    lines after it, up to the first non-blank line no deeper than the key's line."""
+    line_start = text.rfind("\n", 0, key_start) + 1
+    key_line = text[line_start:key_start]
+    key_indent = len(key_line) - len(key_line.lstrip(" "))
+    rest = text[header_end:].split("\n")[1:]
+    lines: list[str] = []
+    for line in rest:
+        if line.strip() and len(line) - len(line.lstrip(" ")) <= key_indent:
+            break
+        lines.append(line.strip())
+    return "\n".join(lines).strip()
+
+
+def _config_values(text: str) -> Iterator[tuple[str, str]]:
+    """Each ``(key, value)`` a config document assigns, a block scalar, a quoted
+    value on a later line and a triple-quoted string decoded, so a secret label
+    is checked against the value itself."""
+    for match in _CONFIG_PAIR.finditer(text):
+        value = next((g for g in match.groups()[1:] if g is not None), "").strip()
+        if match.group(4) is not None and _BLOCK_SCALAR.match(value):
+            value = _block_value(text, match.start(1), match.end())
+        yield match.group(1), value
+    for match in _SPLIT_PAIR.finditer(text):
+        yield match.group(1), next((g for g in match.groups()[1:] if g is not None), "").strip()
 
 
 def _labelled_secret(data: bytes) -> bool:
     """Whether a config document assigns a value to a password- or key-named field.
 
-    shortcut: a pattern read of ``key: value`` pairs, not a parser for each format;
-    a value split across lines is not seen. Upgrade to a shared label detector
-    once ``security`` offers one."""
+    shortcut: a pattern read of ``key: value`` pairs (block scalars, quoted values
+    on the next line and triple-quoted strings included), not a parser for each
+    format. Upgrade to a shared label detector once ``security`` offers one."""
     for text in _texts(data):
-        for match in _CONFIG_PAIR.finditer(text):
-            key = re.sub(r"[-_.]", "", match.group(1).lower())
-            value = next((g for g in match.groups()[1:] if g is not None), "").strip()
+        for raw_key, value in _config_values(text):
+            key = re.sub(r"[-_.]", "", raw_key.lower())
             if (
                 key in _SECRET_LABELS
                 and len(value) >= _MIN_SECRET_VALUE

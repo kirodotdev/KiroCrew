@@ -364,6 +364,40 @@ def test_a_config_file_labelled_with_a_password_drops_its_whole_skill(tmp_path, 
     assert plan.skills == {} and _dropped(plan) == [skills_copy._CONFIG_SECRET]
 
 
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        ("config.yaml", "db:\n  password: |-\n    hunter2\n  user: me\n"),
+        ("config.yaml", "password: >\n  hunter2\n"),
+        ("app.json", '{\n  "password":\n    "hunter2"\n}\n'),
+        ("config.toml", 'password = """\nhunter2\n"""\n'),
+        ("config.toml", "password = '''hunter2'''\n"),
+    ],
+)
+def test_a_password_split_across_lines_still_drops_its_skill(tmp_path, name, body):
+    """A value on the line below its key (block scalar, JSON line break, TOML
+    triple quotes) is read as the value, not as an empty one."""
+    folder = _skill(tmp_path, "db")
+    (folder / name).write_text(body)
+    plan = skills_copy.plan_copy([_row(folder, "db")])
+    assert plan.skills == {} and _dropped(plan) == [skills_copy._CONFIG_SECRET]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "password: |-\n  ${DB_PASSWORD}\nuser: me\n",
+        "password: |\n\nuser: me\n",
+        'password = """\n"""\n',
+    ],
+)
+def test_a_split_placeholder_or_empty_value_does_not_drop_its_skill(tmp_path, body):
+    folder = _skill(tmp_path, "db")
+    (folder / "settings.yaml").write_text(body)
+    plan = skills_copy.plan_copy([_row(folder, "db")])
+    assert "db" in plan.skills and plan.dropped == []
+
+
 @pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-32", "utf-32-le", "utf-32-be"])
 def test_a_utf16_config_password_still_drops_its_skill(tmp_path, encoding):
     folder = _skill(tmp_path, "db")
