@@ -532,17 +532,25 @@ class AcpProvider(LLMProvider):
     @property
     def tested_version_notice(self) -> str:
         """The notice when this session's harness reports a release outside the one
-        Crew tested it on (goose, codex, claude, pi and kiro-cli today, and the kiro-cli
-        a KAS relay runs under), else ``""``. A warning, never a refusal.
+        Crew tested it on (goose, codex, claude, pi, deepseek and kiro-cli today, and
+        the kiro-cli a KAS relay runs under), else ``""``. A warning, never a refusal.
         """
-        from kiro_crew.acp.client_turn_control import untested_version_issue
+        from kiro_crew.acp.client_turn_control import (
+            TESTED_VERSION_READ_AT_SPAWN,
+            untested_version_issue,
+        )
 
         # No default: a client with no backend is not kiro-cli, whose id is "".
         backend = getattr(self._client, "backend", None)
-        if isinstance(backend, str) and (
-            notice := untested_version_issue(backend, self.agent_version)
-        ):
-            return notice
+        if isinstance(backend, str):
+            # A handshake that names no release is not read: its spawn's disk read is.
+            version = (
+                getattr(self._client, "harness_installed_version", "")
+                if backend in TESTED_VERSION_READ_AT_SPAWN
+                else self.agent_version
+            )
+            if notice := untested_version_issue(backend, version):
+                return notice
         notice = getattr(self._client, "kas_untested_version_notice", "")
         return notice if isinstance(notice, str) else ""
 

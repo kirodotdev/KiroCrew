@@ -84,6 +84,7 @@ from kiro_crew.agent_sdk.backend_cards import LINE_MID_TURN_STEER, card_for
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
 )
@@ -197,6 +198,14 @@ PI_ACP_TESTED_RANGE = ((0, 0, 34), (0, 0, 35))
 #: reds that test until this moves with it.
 KIRO_CLI_TESTED_RANGE = ((2, 27, 0), (4, 0, 0))
 
+#: The dsh release the same lane pins (``@deepseek-ai/dsh``), which the install command
+#: (``agent_sdk/backends_launch.py``) installs. Its releases are 0.x, where each minor
+#: line can break, so the range is 0.2.x. Read from dsh's own npm manifest at spawn
+#: (:data:`TESTED_VERSION_READ_AT_SPAWN`), because dsh-acp's handshake reports
+#: ``agentInfo.version`` 0.0.1 on every release.
+DEEPSEEK_DSH_TESTED_VERSION = "0.2.0-rc.2"
+DEEPSEEK_DSH_TESTED_RANGE = ((0, 2, 0), (0, 3, 0))
+
 #: Per backend: the tested range and the command that installs the tested release.
 #: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`.
 _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], str]] = {
@@ -222,7 +231,18 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
     ),
     # kiro-cli installs no chosen release, so an older one is told to update.
     ACP_BACKEND_KIRO: (KIRO_CLI_TESTED_RANGE, "kiro-cli update"),
+    ACP_BACKEND_DEEPSEEK: (
+        DEEPSEEK_DSH_TESTED_RANGE,
+        ACP_BACKEND_LAUNCH[ACP_BACKEND_DEEPSEEK].install_command,
+    ),
 }
+
+#: Backends whose handshake version names no release, so the tested range is read
+#: against the version their spawn read off disk (``harness_installed_version``).
+#: shortcut: only the per-session client records it, so a deepseek chat on the shared
+#: runtime (the chat runtime sharing preview, off by default) gets no notice; carry it
+#: on the session handle if that preview turns on by default.
+TESTED_VERSION_READ_AT_SPAWN: frozenset[str] = frozenset({ACP_BACKEND_DEEPSEEK})
 
 #: What a release above the range is told instead of the install command, for a
 #: harness whose installer cannot go back to a tested release.
