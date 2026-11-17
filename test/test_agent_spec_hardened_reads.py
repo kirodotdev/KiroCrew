@@ -1517,6 +1517,9 @@ _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The file a path reader and the pooled overlay follow for a pinned name.
     "kiro_crew/agent_parts/spec_lookup.py": [("session_agent_spec_path", "unknown")],
     "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_pin", "unknown")],
+    # The start refusal for a contested name on the hosts that read their servers
+    # from the session MCP read (R-SPEC-13).
+    "kiro_crew/acp/session_mcp.py": [("session_start_spec_check", "acp")],
 }
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "declared_spec_claim": _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS,
