@@ -396,6 +396,12 @@ _CONSUMER_OUTPUT = {
 }
 
 
+@pytest.fixture(scope="module")
+def ci_workflow() -> dict:
+    """``ci.yml`` parsed once for the cases below, which only read it."""
+    return yaml.safe_load((parity._WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize(
     "job_id,os_leg,output",
     [
@@ -408,15 +414,16 @@ _CONSUMER_OUTPUT = {
         ("e2e-boot-matrix", "windows-latest", "windows_runner"),
     ],
 )
-def test_a_rerun_consumer_asks_for_its_own_attempts_fleet_label(job_id, os_leg, output):
+def test_a_rerun_consumer_asks_for_its_own_attempts_fleet_label(
+    ci_workflow, job_id, os_leg, output
+):
     """Re-running one job is a new attempt that does not re-run `changes`.
 
     The resolver's outputs still name an earlier attempt, whose label CodeBuild does
     not reliably serve. At the resolver's own attempt a consumer asks for exactly
     what it emitted, size suffix included; at a later one, only the attempt moves.
     """
-    workflow = yaml.safe_load((parity._WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
-    runs_on = workflow["jobs"][job_id]["runs-on"]
+    runs_on = ci_workflow["jobs"][job_id]["runs-on"]
     outputs = {
         "linux_runner": "codebuild-kirocrew-gha-linux-456-1",
         "linux_runner_large": "codebuild-kirocrew-gha-linux-456-1 instance-size:large",
