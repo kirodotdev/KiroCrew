@@ -31,6 +31,11 @@ from kiro_crew.security.call_views import _CALL_VIEWS, sharing_views
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
+# A long PR or commit body (about 2,600 characters): one printf/echo operand
+# whose ``* `` bullets and ``rsync`` word name ssh-family verbs, but whose
+# operators are all quoted, so bash runs no list.
+_LONG_MARKDOWN_BODY = "## Summary\n" + "* keep the rsync mirror in step with main\n" * 60
+
 
 class TestSandboxEscapeSshSelf:
     """``ssh localhost`` re-enters this machine OUTSIDE the sandbox.
@@ -690,6 +695,305 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh `echo localhost` id") == self._RULE
         assert _denied_by("ssh local$(printf host) id") == self._RULE
         assert _denied_by("ssh $(printf remote.example.com) id") is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo $(echo hi; ssh -p 22 localhost id)",
+            "echo $(echo hi && ssh -p 22 localhost id)",
+            "echo $(echo hi || ssh -p 22 localhost id)",
+            "echo $(echo hi | ssh -p 22 localhost id)",
+            "echo $(echo hi\nssh -p 22 localhost id)",
+            "echo `echo hi; ssh -p 22 localhost id`",
+            "echo `printf hi && ssh -p 22 localhost id`",
+            "echo `date` `ssh -p 22 localhost id`",
+            'echo "$(echo hi; ssh -p 22 localhost id)"',
+            "ssh $(echo localhost; true) id",
+            "echo '`'; s``sh -p 22 localhost id",
+            "# `\ns``sh -p 22 localhost id",
+            "# x\n`date` `ssh -p 22 localhost id`",
+            "true # x\necho $(echo a; ssh -p 22 localhost id)",
+            "cat <<EOF\n$(echo a; ssh -p 22 localhost id)\nEOF",
+            "cat <<EOF\n`date` `ssh -p 22 localhost id`\nEOF",
+            "echo $(echo a; bash <<EOF\nssh -p 22 localhost id\nEOF\n)",
+            "echo $(echo a; sh <<EOF\nssh -p 22 localhost id\nEOF\n)",
+            "echo $(echo a; bash <<'EOF'\nssh -p 22 localhost id\nEOF\n)",
+            "bash -c 'echo $(echo hi; ssh -p 22 localhost id)'",
+            "eval 'echo $(echo hi; ssh -p 22 localhost id)'",
+            "bash -c 'echo $(echo hi; s$()sh -p 22 localhost id)'",
+            "eval 'echo $(echo hi; s$()sh -p 22 localhost id)'",
+            "bash -c 'echo $(echo hi; s``sh -p 22 localhost id)'",
+            'echo "$(echo `date` `ssh -p 22 localhost id`)"',
+            'echo "$(echo `date`\n`ssh -p 22 localhost id`)"',
+            'echo "$(echo `date` `s$()sh -p 22 localhost id`)"',
+            "echo \\$$(echo hi; ssh -p 22 localhost id)",
+            'echo "\\$$(echo hi; ssh -p 22 localhost id)"',
+            "echo \\\\\\$$(echo hi; ssh -p 22 localhost id)",
+            "echo \\$$$$(echo hi; ssh -p 22 localhost id)",
+            "echo \\\\`echo hi; ssh -p 22 localhost id`",
+            "echo \\` `ssh -p 22 localhost id`",
+            "echo \\`date\\` `ssh -p 22 localhost id`",
+            "echo `date` \\` `ssh -p 22 localhost id`",
+            "echo \\` `echo hi; ssh -p 22 localhost id`",
+            "echo \\``echo hi; ssh -p 22 localhost id`",
+            "echo `echo hi; ssh -p 22 localhost id` \\`",
+            'echo "\\`" `echo hi; ssh -p 22 localhost id`',
+            "echo \\`echo hi; ssh -p 22 localhost id\\`",
+            "echo \\`echo hi; ssh -p 22 localhost 'cmd #'\\`",
+            "echo \\`date\\`; ssh -p 22 localhost id",
+            'eval "ssh -p 22 \\`printf localhost\\`"',
+            "eval ssh -p 22 \\`printf localhost\\`",
+            'sh -c "ssh -p 22 \\`echo localhost\\`"',
+            "echo $(echo hi; ssh -p 22 localhost 'id)')",
+            'echo $(echo hi; ssh -p 22 localhost "id)")',
+            "echo $(echo hi; ssh -p 22 localhost id \\))",
+            "echo $(echo " + "a" * 2050 + "; ssh -p 22 localhost id)",
+            "echo $(echo " + "x" * 2020 + "; true) $(echo hi; ssh -p 22 localhost id)",
+            "echo $(echo "
+            + "a" * 1010
+            + "; true) $(echo "
+            + "b" * 1010
+            + "; true) $(echo hi; ssh -p 22 localhost id)",
+            "echo " + "`date` " * 32 + "`date` `ssh -p 22 localhost id`",
+            "echo $(echo "
+            + "a" * 1500
+            + "; true) $(echo "
+            + "b" * 1000
+            + "; true) $(echo hi; ssh -p 22 localhost id)",
+            "echo $(echo " + "a" * 2100 + "; true) $(echo hi; ssh -p 22 localhost id)",
+            "bash -c 'ssh -p 22 $(printf localhost) id'",
+            "eval 'ssh $(printf localhost) id'",
+            "sh -c 'ssh -p 22 `printf localhost` id'",
+            "bash <<< 'ssh -p 22 $(printf localhost) id'",
+            "echo $(date)#$(echo hi; ssh -p 22 localhost id)",
+            "echo `date`#`echo hi; ssh -p 22 localhost id`",
+            "echo x$(date)#$(echo hi; ssh -p 22 localhost id)",
+            "echo \\#$(echo hi; ssh -p 22 localhost id)",
+            "echo a \\#; echo $(echo hi; ssh -p 22 localhost id)",
+            "echo \\#`echo hi; ssh -p 22 localhost id`",
+            "bash -c 'echo $(echo hi; s$(printf s)h -p 22 localhost id)'",
+            "eval 'echo $(echo hi; s$(printf s)h -p 22 localhost id)'",
+            'eval "x=\\$(echo hi; ssh -p 22 \\`printf local\\`host id)"',
+            'bash -c "x=\\$(echo hi; ssh -p 22 \\`printf local\\`host id)"',
+            'eval "y=1; x=\\$(echo hi; ssh -p 22 \\`printf local\\`host id)"',
+            'eval "x=\\$(echo hi; ssh -p 22 \\`echo local\\`host id)"',
+            'eval "x=\\$(echo hi && ssh -p 22 \\`printf local\\`host id)"',
+            'eval "x=\\$(echo hi; s\\`printf s\\`h -p 22 localhost id)"',
+            "bash -c 'a=x; echo $(echo hi; ssh -p 22 localhost id)'",
+            "sh -c 'a=x; echo $(echo hi; ssh -p 22 localhost id)'",
+            "bash -c 'a=x && echo $(echo hi; ssh -p 22 localhost id)'",
+            "bash -c 'a=x; echo `echo hi; ssh -p 22 localhost id`'",
+            "bash -c 'a=x; echo \"$(echo hi; ssh -p 22 localhost id)\"'",
+            "echo $(echo hi; ssh -p 22 localhost id) bash -c 'echo hi; ssh -p 22 localhost id'",
+            "x=$(echo hi; ssh -p 22 localhost id) && echo eval 'echo hi; ssh -p 22 localhost id'",
+            "echo `echo hi; ssh -p 22 localhost id` sh -c 'echo hi; ssh -p 22 localhost id'",
+            "echo \"$(echo hi; ssh -p 22 localhost id)\" bash -c 'echo hi; ssh -p 22 localhost id'",
+        ],
+    )
+    def test_every_command_of_a_substitution_list_is_judged(self, cmd):
+        # bash runs every command of a substitution body, so an ``echo`` first
+        # command must not stand in for the whole body, and the gap between two
+        # backtick spans is not an empty span.  A quoted or commented backtick
+        # must not shift the pairing off an empty-span splice either.  Padding
+        # before the list changes nothing, and a static splice inside a nested
+        # shell payload still names the host.  ``-p 22`` keeps the catalog
+        # pattern off, so the argv floor alone decides.
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        ("cmd", "body"),
+        [
+            (
+                "echo $(echo hi ;echo ssh -p 22 localhost id)",
+                "echo hi ;echo ssh -p 22 localhost id",
+            ),
+            (
+                "echo $(echo a # ; ssh -p 22 localhost id\n)",
+                "echo a # ; ssh -p 22 localhost id\n",
+            ),
+            (
+                "echo $(echo a; cat <<EOF\nssh -p 22 localhost id\nEOF\n)",
+                "echo a; cat <<EOF\nssh -p 22 localhost id\nEOF\n",
+            ),
+            (
+                "echo `echo\\;echo ssh -p 22 localhost id`",
+                "echo\\;echo ssh -p 22 localhost id",
+            ),
+            ("echo $(sudo -H ls s* l*)", "sudo -h ls s* l*"),
+        ],
+    )
+    def test_known_fail_closed_residuals_are_refused(self, cmd, body):
+        """Bash runs no ssh in these, yet the floor refuses them: it fails closed.
+
+        Each substitution body, typed as a plain command line, is already refused
+        on main: the floor reads a glued ``;echo``, a ``#`` comment, the text a
+        ``cat`` prints from an unquoted-tag heredoc, and an escaped ``\\;`` as
+        commands.  A substitution body is judged as such a line, so it inherits
+        the same refusal.  A fix to that reading flips this test on purpose.
+        """
+        assert _denied_by(cmd) == self._RULE
+        assert _denied_by(body) == self._RULE
+
+    def test_nested_substitution_work_grows_linearly(self):
+        # Each nested body is judged once, with the deeper bodies replaced by
+        # one word, so the text judged grows linearly with the nesting depth.
+        # Judging each whole body would re-read every deeper level once per
+        # level: about 3,700 characters judged at depth 40 instead of 260.
+        def judged(depth: int) -> "tuple[int, int]":
+            cmd = "echo " + "$(" * depth + "ssh -p 22 remote.example.com id" + ")" * depth
+            real = _argv_floor._is_ssh_to_self
+            chars = [0]
+
+            def counting(text, *args, **kwargs):
+                chars[0] += len(text)
+                return real(text, *args, **kwargs)
+
+            with patch.object(_argv_floor, "_is_ssh_to_self", counting):
+                assert _argv_floor._reaches_self_over_ssh(cmd) is False
+            return chars[0], len(cmd)
+
+        for depth in (20, 40):
+            chars, length = judged(depth)
+            assert chars <= 3 * length, (depth, chars, length)
+
+    @pytest.mark.parametrize("count", [200, 400])
+    def test_repeated_eval_substitution_work_grows_linearly(self, count):
+        from kiro_crew.security import argv_floor_ssh_bodies as bodies
+
+        cmd = "eval " * count + "echo $(echo ssh)"
+        real = bodies._self_tokens
+        chars = 0
+
+        def counting(text):
+            nonlocal chars
+            chars += len(text)
+            return real(text)
+
+        with patch.object(bodies, "_self_tokens", counting):
+            assert _denied_by(cmd) is None
+        # One joined frame may be read, but not re-joined into shrinking suffixes.
+        assert 0 < chars <= 3 * len(cmd), (count, chars, len(cmd))
+
+    @pytest.mark.parametrize(
+        "body",
+        ["a $(ssh -p 22 localhost id) b", "`ssh localhost id` c", "\\$(not run) `x`", "$(open"],
+    )
+    def test_heredoc_bodies_come_from_the_reader_scan(self, body):
+        # The ssh floor and read_commands take an unquoted heredoc body's substitutions
+        # from one scan, so a fix to it reaches both.
+        from kiro_crew.security import argv_floor_ssh_bodies as bodies
+        from kiro_crew.security import shell_commands
+
+        assert not hasattr(bodies, "_heredoc_substitutions")
+        text = "cat <<EOF\n" + body + "\nEOF\n"
+        commands = shell_commands.read_commands(text, heredocs=True)
+        doc = commands[0].heredocs[0]
+        scan = shell_commands._heredoc_body_substitutions(doc.body)
+        assert scan
+        assert bodies._live_substitutions(text) == [
+            (doc.start + s, doc.start + e, inner) for s, e, _, inner in scan
+        ]
+        expected = [
+            c
+            for _, _, at, inner in scan
+            for c in shell_commands.read_commands(inner, True, doc.start + at, heredocs=True)
+        ]
+        assert commands[1 : 1 + len(expected)] == expected
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo $(echo hi; echo ssh -p 22 localhost id)",
+            "cat <<'EOF'\n`date` `ssh -p 22 localhost id`\nEOF",
+            "bash -c 'echo $(echo hi; echo ssh -p 22 localhost id)'",
+            "bash -c 'echo $(echo hi; echo s$()sh -p 22 localhost id)'",
+            'echo "$(echo `date` `whoami`)"',
+            'git commit -m "$(echo `date`) ssh -p 22 localhost id"',
+            "echo '$(echo hi; ssh -p 22 localhost id)'",
+            "echo '`echo hi; ssh -p 22 localhost id`'",
+            "echo $(echo hi; ssh -p 22 remote.example.com id)",
+            "echo `date` `whoami`",
+            "echo $(echo a; true) ssh -p 22 localhost",
+            "cat `echo a; true` ssh -p 22 localhost",
+            "$(echo echo; true) ssh -p 22 localhost",
+            "git commit -m 'use `date` `ssh -p 22 localhost id` here'",
+            "echo `echo hi; s` `sh -p 22 localhost id`",
+            "echo '`' \"`date`echo q; ssh -p 22 localhost id`whoami`\"",
+            "true # $(echo a; ssh -p 22 localhost id)",
+            "cat <<'EOF'\n$(echo a; ssh -p 22 localhost id)\nEOF",
+            "echo $(echo a; cat <<'E'\nssh -p 22 localhost id\nE\n)",
+            "echo $(echo a; bash <<EOF\necho ssh -p 22 localhost id\nEOF\n)",
+            "cat <<'E' # note\n$(echo a; ssh -p 22 localhost id)\nE",
+            'echo "$$(echo hi; ssh -p 22 localhost id)"',
+            "echo $$(echo hi; ssh -p 22 localhost id)",
+            "echo \\$(echo hi; ssh -p 22 localhost id)",
+            "echo \\\\\\$(echo hi; ssh -p 22 localhost id)",
+            "echo \\`echo hi; echo ssh -p 22 localhost id\\`",
+            "echo '\\`echo hi; ssh -p 22 localhost id\\`'",
+            "echo \\`date\\` \\`whoami\\`",
+            'eval "echo \\`printf localhost\\`"',
+            'echo "ssh -p 22 \\`printf localhost\\`"',
+            "echo \\`echo hi; echo " + "a" * 2100 + "; ssh -p 22 remote.example.com id; \\`",
+            "echo " + '"$(' * 32 + "echo a; true" + ')"' * 32,
+            "echo $(echo hi; echo 'ssh -p 22 localhost id)')",
+            "echo $(echo " + "a" * 3000 + "; true)",
+            "echo $(echo " + "a" * 1010 + "; true) $(echo " + "b" * 1010 + "; true) ok",
+            "echo " + "`date` " * 40 + "done",
+            "eval 'echo $(true)'; " * 34 + "echo done",
+            "eval 'echo $(true)'; " * 34 + "echo ssh",
+            "echo $(echo " + "a" * 2030 + "; echo b; echo c ')') $(echo c; echo rsync ok)",
+            "gh pr create --title t --body \"$(printf '%s' '" + _LONG_MARKDOWN_BODY + "')\"",
+            "git commit -m \"$(echo '" + _LONG_MARKDOWN_BODY + "')\"",
+            "echo $(date) #$(echo hi; ssh -p 22 localhost id)",
+            "echo $(date); #$(echo hi; ssh -p 22 localhost id)",
+            "bash -c 'a=x; echo $(echo hi; echo ssh -p 22 localhost id)'",
+        ],
+    )
+    def test_a_substitution_list_that_reaches_no_self_host_stays_allowed(self, cmd):
+        # Padding or a long single-command body changes nothing: bash runs no
+        # ssh to this host here, so its ssh-family words are data.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo '$(echo $(echo hi; ssh -p 22 localhost id))'",
+            "git commit -m 'see $(echo $(echo hi; ssh -p 22 localhost id))'",
+            "echo '$(bash -c \"echo hi; ssh -p 22 localhost id\")'",
+            "cat <<'EOF'\n$(echo $(echo hi; ssh -p 22 localhost id))\nEOF",
+        ],
+    )
+    def test_literal_nested_substitution_payload_stays_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "bash -c 'echo $(echo hi; ssh -p 22 localhost id)'",
+            "eval 'echo $(echo hi; ssh -p 22 localhost id)'",
+            'echo "$(echo $(echo hi; ssh -p 22 localhost id))"',
+        ],
+    )
+    def test_live_nested_substitution_payload_is_judged(self, cmd):
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo $(echo hi; s?h local* id)",
+            "echo `echo hi; s?h local* id`",
+            'echo "$(echo hi; s?h local* id)"',
+            "bash -c 'echo $(echo hi; s?h local* id)'",
+        ],
+    )
+    def test_glob_verb_in_a_later_body_command_is_judged(self, cmd):
+        # The body check reads a glob verb the way the line's own floor does: bash
+        # runs ``s?h`` there, so its ``local*`` operand keeps host glob matching.
+        assert _denied_by(cmd) == self._RULE
+
+    def test_glob_word_in_a_later_body_command_operand_stays_allowed(self):
+        assert _denied_by("echo $(echo hi; tar cf x.tar s* l*)") is None
+        assert _denied_by("echo $(echo hi; s?h remote.example.com id)") is None
 
     def test_here_string_fed_xargs_is_judged_as_the_rebuilt_command(self):
         # bash strips ``<<< word`` from argv and delivers the
@@ -1651,7 +1955,9 @@ class TestSshFloorNestingDepth:
             return real(text)
 
         with patch.object(ssh, "_double_quoted_substitution_bodies", counting):
-            assert ssh._reaches_self_over_ssh(_nested_double_quoted(200, "echo ssh")) is True
+            assert (
+                _argv_floor._reaches_self_over_ssh(_nested_double_quoted(200, "echo ssh")) is True
+            )
         assert deepest[0] == ssh._MAX_SSH_READING_DEPTH
         assert ssh._ssh_reading_depth.get() == 0
 

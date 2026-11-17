@@ -31,7 +31,8 @@ Each family lives in an owner module beside this one, and this module is the
 import path of every name they define: ``argv_floor_git`` holds release
 detection, ``argv_floor_self`` the subcommand floors and the credential-mint
 predicates, ``argv_floor_ssh`` the ssh self-target floor, ``argv_floor_ssh_gate`` the
-gate that decides whether a line can run an ssh verb, and
+gate that decides whether a line can run an ssh verb, ``argv_floor_ssh_bodies`` that
+floor's reading of substitution bodies, and
 ``argv_floor_hosts`` the names and addresses that floor counts as this host.
 A read through this module answers with the owner's object, and a write
 reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
@@ -77,6 +78,7 @@ logger = logging.getLogger(__name__)
 #   ``argv_floor_hosts`` -- the names and addresses the ssh floor counts as this host
 #   ``argv_floor_ssh_gate`` -- the gate that decides whether a line can run an ssh verb
 #   ``argv_floor_ssh`` -- the ssh self-target floor
+#   ``argv_floor_ssh_bodies`` -- the ssh floor's reading of substitution bodies
 #   ``argv_floor_git`` -- release detection and the protected-branch push target
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
@@ -84,6 +86,7 @@ _OWNERS = (
     "kiro_crew.security.argv_floor_hosts",
     "kiro_crew.security.argv_floor_ssh_gate",
     "kiro_crew.security.argv_floor_ssh",
+    "kiro_crew.security.argv_floor_ssh_bodies",
     "kiro_crew.security.argv_floor_git",
 )  # the loop below imports them in this order
 for _owner in _OWNERS:
@@ -244,21 +247,29 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _brace_alternatives,
         _brace_expansions,
         _command_value_names_self_endpoint,
+        _escaped,
         _function_call_binds_self,
         _is_ssh_to_self,
         _judge_ssh_to_self,
         _mask_quoted_separators,
+        _may_name_ssh_verb,
         _operand_targets_self,
         _proxyjump_value_targets_self,
-        _reaches_self_over_ssh,
         _remote_forward_value_targets_self,
         _resolve_line_assignments,
         _routing_option_key_value_targets_self,
         _routing_option_value_targets_self,
+        _splice_static_substitutions,
         _ssh_family_verb,
         _ssh_reading_depth,
         _ssh_verb_basename,
         _unmask_separators,
+    )
+    from kiro_crew.security.argv_floor_ssh_bodies import (  # noqa: F401
+        _line_may_name_ssh_verb,
+        _live_substitutions,
+        _reaches_self_over_ssh,
+        _substitution_reaches_self,
     )
     from kiro_crew.security.argv_floor_ssh_gate import (  # noqa: F401
         _GATE_WORD_SEPARATORS,
@@ -295,8 +306,11 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     )
     from kiro_crew.security.shell_commands import (  # noqa: F401
         _double_quoted_substitution_bodies,
+        _heredoc_body_substitutions,
         _proven_body_spans,
+        _without_quoted_heredoc_text,
         heredoc_text_spans,
+        read_commands,
     )
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
@@ -322,12 +336,14 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _matching_close_paren,
         _nested_shell_payloads,
         _only_single_quoted_openers,
+        _opens_comment,
         _program_basename,
         _push_option_matches,
         _push_token_redirection,
         _push_token_shell_read,
         _redirect_consumes_next,
         _resolve_param_defaults,
+        _self_tokens,
         _shell_join_continuations,
         _shell_payload_walk,
         _shell_quote_walk,
