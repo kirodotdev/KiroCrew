@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
+import { Upload, Circle, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../../api/client'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import BedrockKbLiveChip from './BedrockKbLiveChip'
@@ -1104,9 +1104,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     {s.source_type}{s.uri ? ` · ${s.uri}` : ''}
                   </span>
                   {s.source_type === 'local_file'
-                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
+                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} />{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
-                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
+                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} />{isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
                     : isLiveSource
                     ? <BedrockKbLiveChip source={s} onReviewConsent={openKbConsent} />
                     : s.source_type === 'agent'
@@ -1114,7 +1114,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     // so it comes from the row's type; "manual" would point at a Sync
                     // button the gateway does not offer here.
                     ? <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.updates_when_the_agent_adds_a_document')}>{i18nT('pages.knowledge.sourcesList.added_by_agent')}</span>
-                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
+                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}><Circle className="lucide-inline scale-75" />{i18nT('pages.knowledge.sourcesList.manual')}</span>}
                   {/* The count names a problem whose detail (which files, and why)
                       lives in the row's expanded view, so on folder rows it is the
                       way in rather than inert text. It lives on this meta line — a

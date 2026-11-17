@@ -1907,7 +1907,7 @@ describe('SecretsPanel on an expired session', () => {
     // and emits `mc-auth-cleared` -- it never calls `removeAuthBanner`, so no
     // `mc-auth-recovered` is emitted and nothing has authenticated.
     const dismiss = Array.from(banner()?.querySelectorAll('button') ?? []).find(
-      b => b.textContent === '✕',
+      b => b.querySelector('svg.lucide-x') !== null,
     )
     expect(dismiss).toBeDefined()
     await act(async () => {

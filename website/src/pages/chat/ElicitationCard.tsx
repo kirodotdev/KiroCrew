@@ -1,6 +1,6 @@
-import { memo, useContext, useId, useState } from 'react'
+import { Fragment, memo, useContext, useId, useState, type ReactNode } from 'react'
 import { ReactReduxContext } from 'react-redux'
-import { Ban, CheckCircle, Clock, ExternalLink, Loader2, MessageSquareMore, X } from 'lucide-react'
+import { Ban, Check, CheckCircle, Clock, ExternalLink, Loader2, MessageSquareMore, X } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import { approvalBtnClass } from '../../components/chat-input/approval'
@@ -272,18 +272,22 @@ function FieldControl({ field, value, onChange, disabled }: {
   )
 }
 
-/** What an accepted form sent, one `label: value` per answered field, in field order. */
-export function answerSummary(fields: ElicitationField[], answer: Record<string, unknown> | undefined): string {
-  if (!answer) return ''
-  const parts: string[] = []
+/** What an accepted form sent, one `label: value` per answered field, in field order; null when nothing was answered. */
+export function answerSummary(fields: ElicitationField[], answer: Record<string, unknown> | undefined): ReactNode {
+  if (!answer) return null
+  const parts: ReactNode[] = []
   for (const f of fields) {
     if (!Object.hasOwn(answer, f.name)) continue
     const v = answer[f.name]
     const label = (value: unknown) => f.options?.find(o => o.value === value)?.label ?? String(value)
-    const shown = Array.isArray(v) ? v.map(label).join(', ') : typeof v === 'boolean' ? (v ? '✓' : '✗') : label(v)
-    parts.push(`${f.title || f.name}: ${shown}`)
+    const shown = Array.isArray(v) ? v.map(label).join(', ')
+      : typeof v === 'boolean'
+        ? (v ? <Check className="lucide-inline" role="img" aria-label={i18nT('pages.chat.elicitationCard.answer_yes')} />
+          : <X className="lucide-inline" role="img" aria-label={i18nT('pages.chat.elicitationCard.answer_no')} />)
+        : label(v)
+    parts.push(<Fragment key={f.name}>{parts.length ? ' · ' : ''}{`${f.title || f.name}: `}{shown}</Fragment>)
   }
-  return parts.join(' · ')
+  return parts.length ? parts : null
 }
 
 /**
@@ -335,6 +339,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
   const [hint, setHint] = useState<string | null>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
   const resolved = meta.resolved
+  const summary = resolved === 'accept' ? answerSummary(fields, meta.answer) : null
   const asker = askerOf(meta)
   const host = linkHost(meta.url)
   const requestId = meta.approval_id
@@ -460,8 +465,8 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
                   : <Ban size={12} className="shrink-0 mt-0.5" />}
               <span className="min-w-0 break-words">
                 {resolvedLabel(resolved)}
-                {resolved === 'accept' && answerSummary(fields, meta.answer) && (
-                  <span className="text-text">{': '}{answerSummary(fields, meta.answer)}</span>
+                {resolved === 'accept' && summary != null && (
+                  <span className="text-text">{': '}{summary}</span>
                 )}
               </span>
             </span>
