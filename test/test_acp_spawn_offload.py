@@ -551,6 +551,10 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         mock_proc.stderr = None
 
         with (
+            # subprocess_executor() is shared by every test on this xdist worker: one
+            # still holding all of its workers would keep this spawn past its bound.
+            ThreadPoolExecutor(max_workers=1) as pool,
+            patch.object(client_mod, "subprocess_executor", lambda: pool),
             patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
             patch.object(client_mod, "ensure_agent_materialized"),
             patch(
