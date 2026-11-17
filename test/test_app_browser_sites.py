@@ -671,7 +671,8 @@ async def test_a_state_poll_writes_no_audit_row(monkeypatch: pytest.MonkeyPatch)
         assert rows == []
         # A POST is an action: ``state`` is refused there, so no poll goes that way.
         resp = await client.post(
-            "/api/browser/media", json={"session_key": "app-tunes-1", "action": "state"}
+            "/api/browser/media",
+            json={"session_key": "app-tunes-1", "action": "state"},
         )
         assert resp.status == 400 and (await resp.json())["code"] == "bad_action"
         resp = await client.get("/api/browser/media", params={"session_key": "chat-9"})
@@ -713,7 +714,12 @@ async def test_the_media_route_runs_on_the_sessions_own_tab(
     hub_mod.get_live_hub().bind_target("app-tunes-1", "T7")
     async with TestClient(TestServer(_media_app("owner"))) as client:
         resp = await client.post(
-            "/api/browser/media", json={"session_key": "app-tunes-1", "action": "seek", "value": 42}
+            "/api/browser/media",
+            json={
+                "session_key": "app-tunes-1",
+                "action": "seek",
+                "value": 42,
+            },
         )
         body = await resp.json()
     assert resp.status == 200 and body["ok"] is True
@@ -733,7 +739,8 @@ async def test_the_media_route_refuses_a_tab_the_browser_no_longer_has(
     hub_mod.get_live_hub().bind_target("app-tunes-1", "T7")
     async with TestClient(TestServer(_media_app("owner"))) as client:
         resp = await client.post(
-            "/api/browser/media", json={"session_key": "app-tunes-1", "action": "pause"}
+            "/api/browser/media",
+            json={"session_key": "app-tunes-1", "action": "pause"},
         )
         body = await resp.json()
     assert body["code"] == "no_tab" and tab.helpers == []
@@ -756,7 +763,8 @@ async def test_a_failing_media_action_answers_a_code(
     monkeypatch.setattr(browser_media, "_run", fails)
     async with TestClient(TestServer(_media_app("owner"))) as client:
         resp = await client.post(
-            "/api/browser/media", json={"session_key": "app-tunes-1", "action": "pause"}
+            "/api/browser/media",
+            json={"session_key": "app-tunes-1", "action": "pause"},
         )
         body = await resp.json()
     assert resp.status == 200 and body["ok"] is False and body["code"] == code
@@ -856,3 +864,76 @@ async def test_the_unlock_click_never_lands_on_a_page_that_moved_off_the_list() 
     result = await media.control(_ctx(tab), "play")
     assert result["code"] == "redirect_refused"
     assert tab.clicked == 0 and tab.url == "about:blank"
+
+
+@pytest.mark.asyncio
+async def test_a_browse_denied_media_action_is_audited_and_a_poll_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[bool] = []
+
+    async def denied(*, audit: bool = True, **_kw: Any) -> web.Response:
+        asked.append(audit)
+        return web.json_response({"code": "policy_denied"}, status=403)
+
+    monkeypatch.setattr(browser_media, "browse_refusal", denied)
+    async with TestClient(TestServer(_media_app("owner"))) as client:
+        post = await client.post(
+            "/api/browser/media",
+            json={"session_key": "app-tunes-1", "action": "pause"},
+        )
+        get = await client.get("/api/browser/media", params={"session_key": "app-tunes-1"})
+    assert post.status == get.status == 403
+    assert asked == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_held_slot_says_its_sites_were_withdrawn_and_how_to_recover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    browser_sites.note_granted_session("app-tunes-1")
+    monkeypatch.setattr(ops_route, "app_browser_sites", lambda app: ())
+    resp = await ops_route.api_browser_op(
+        _op_request(
+            {
+                "op": "navigate",
+                "args": {"url": "https://www.example.com/watch"},
+                "session_key": "dashboard:app-tunes-1",
+            },
+            "tunes",
+        )
+    )
+    body = json.loads(resp.body)
+    assert body["code"] == "site_not_allowed"
+    assert body["error"] == ops_route.SITES_REVOKED_TEXT
+    assert "approve its sites again" in body["error"]
+    async with TestClient(TestServer(_media_app("owner"))) as client:
+        media_resp = await client.post(
+            "/api/browser/media",
+            json={"session_key": "app-tunes-1", "action": "pause"},
+        )
+        media_body = await media_resp.json()
+    assert media_resp.status == 403 and media_body["error"] == ops_route.SITES_REVOKED_TEXT
+
+
+@pytest.mark.asyncio
+async def test_a_held_slots_blanked_page_names_the_withdrawal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    browser_sites.note_granted_session("app-tunes-1")
+    monkeypatch.setattr(ops_route, "app_browser_sites", lambda app: ())
+    monkeypatch.setattr(ops_route, "_supervisor", lambda *_a: _async_value(SimpleNamespace()))
+
+    async def fenced(*_a: Any, **_kw: Any) -> Any:
+        return harness_ops.refusal("redirect_refused", "the page redirected")
+
+    monkeypatch.setattr(ops_route, "_fenced_op", fenced)
+    resp = await ops_route.api_browser_op(
+        _op_request({"op": "snapshot", "args": {}, "session_key": "dashboard:app-tunes-1"}, "tunes")
+    )
+    body = json.loads(resp.body)
+    assert body["code"] == "redirect_refused" and body["error"] == ops_route.SITES_REVOKED_TEXT
+
+
+async def _async_value(value: Any) -> Any:
+    return value
