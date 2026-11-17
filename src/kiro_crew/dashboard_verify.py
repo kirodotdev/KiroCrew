@@ -868,7 +868,9 @@ class _Collector:
         if isinstance(description, str) and description:
             message = description.split("\n", 1)[0]
         elif "value" in exception:
-            message = f"{text} {exception['value']}"
+            value = exception["value"]
+            shown = value if isinstance(value, str) else json.dumps(value, default=str)
+            message = f"{text} {shown}"
         else:
             message = text
         line, column, url = _first_frame(details.get("stackTrace"))
