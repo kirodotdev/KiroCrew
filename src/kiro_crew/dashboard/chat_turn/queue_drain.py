@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import (
         _actor_for_queue_items,
         _drop_stale_admissions,
+        _person_paths_actor_for_queue_items,
     )
     from kiro_crew.dashboard.chat_turn.superseded_steer import (
         _carry_superseded_steer_meta,
@@ -1495,6 +1496,9 @@ async def _start_next_queued_turn(
     _queue_actor = _actor_for_queue_items(consumed)
     if _queue_actor:
         _run_kwargs["_turn_actor"] = _queue_actor
+    _paths_actor = _person_paths_actor_for_queue_items(consumed)
+    if _paths_actor:
+        _run_kwargs["_person_paths_actor"] = _paths_actor
     # Provenance this process did not establish. A restored entry has no actor by
     # construction (`sanitize_restored_queue` drops the stamp with the directive
     # flags), and an absent actor reads as `user` below -- so without this the one

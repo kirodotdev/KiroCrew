@@ -398,16 +398,25 @@ async def _deliver_peer(
         if outcome == STEER_REQUEUED:
             return DELIVERED_REQUEUED
         return NOT_DELIVERED
+    from kiro_crew.dashboard.chat_delivery import QUEUE_PRODUCER_META_KEY, TURN_ACTOR_META_KEY
     from kiro_crew.dashboard.chat_runner import _run_chat
     from kiro_crew.tracing import steps as trace_steps
 
+    # Another session's agent wrote this text, so a queued delivery runs as actor
+    # `other` and ends a merge of the person's queued messages. The `peer` mark
+    # keeps the refusal fallback and the `model.route` decision on its turn.
+    queue_meta = {
+        **(queue_meta or {}),
+        TURN_ACTOR_META_KEY: "other",
+        QUEUE_PRODUCER_META_KEY: "peer",
+    }
     # The turn this starts, now or at its drain, links to the sender's (tracing/steps.py).
     with trace_steps.sending(origin.sender) as sender_meta:
         started = slot.enqueue_or_run_prompt(
             text,
             _run_chat,
             state,
-            extra_meta={**(queue_meta or {}), **sender_meta} or queue_meta,
+            extra_meta={**queue_meta, **sender_meta},
             relay_meta=relay_meta,
         )
     return DELIVERED_TURN if started else DELIVERED_QUEUED
