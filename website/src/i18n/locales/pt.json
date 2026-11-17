@@ -12236,6 +12236,7 @@
       "grants_reconsent_link_full_url": "Endereços de link completos: os cartões do app também veem a parte de um link depois de ? ou #, que pode conter um código de login.",
       "grants_reconsent_message_actions": "Ações de mensagem: o que os itens de menu do app nas mensagens do chat podem ler.",
       "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las.",
+      "grants_reconsent_browser_sites": "Sites de navegação: o agente do próprio app pode abrir, ler, digitar e clicar nestas páginas no seu navegador, com a sua sessão, sem perguntar a cada vez.",
       "grants_reconsent_frame_sources": "Sites incorporados: permite que as páginas do app mostrem estes sites dentro do painel.",
       "grants_reconsent_link_open_hosts": "Links abertos: permite que o app abra links para estes sites quando você clica em um deles numa mensagem do chat.",
       "grants_reconsent_link_open_full_url": "Endereços completos dos links abertos: o app também vê a parte de um link depois de ? ou #, que pode conter um código de login.",

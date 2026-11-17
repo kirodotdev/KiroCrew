@@ -1141,7 +1141,8 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: Families an install or a first registration never approves on its own: the install
 #: prompt does not show them, so they wait for the owner on the app's page like an
 #: update's new entries. ``bots``: the owner decides which Bots an app reaches.
-_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY,)
+#: ``browserSites``: the pages the app's own agent drives the browser on unasked.
+_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites")
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:

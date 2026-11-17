@@ -693,6 +693,14 @@ class AppManifest:
 
         # UI overlay validation
         errors.extend(self.ui.frame_source_errors())
+        # Deferred: browser_sites stays off an MCP server's pre-list import budget.
+        from kiro_crew.apps.browser_sites import browser_site_errors  # noqa: PLC0415
+
+        errors.extend(
+            ["permissions.browserSites must be an array of strings"]
+            if self.permissions.bad_browser_sites
+            else browser_site_errors(self.permissions.browserSites)
+        )
         seen_overlay_ids: set[str] = set()
         for overlay in self.ui.overlays:
             if not overlay.id:

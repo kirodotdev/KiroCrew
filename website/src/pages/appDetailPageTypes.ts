@@ -84,6 +84,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   desktopCapabilitiesGrant?: { approved: string[]; staged: string[] }
   /** `ui.frameSources` origins the owner approved, and the ones an update or edit holds back; absent when undeclared. */
   frameSourcesGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.browserSites` pages the owner approved, and the ones waiting; absent when undeclared. */
+  browserSitesGrant?: { approved: string[]; staged: string[] }
   managed?: string
   source?: string
   installedAt?: string

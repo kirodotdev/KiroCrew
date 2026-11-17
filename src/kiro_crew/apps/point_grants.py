@@ -213,6 +213,17 @@ from kiro_crew.apps.manifest_sections import (  # noqa: E402
 register_permission_grants(BOT_GRANT_FAMILIES, bot_grant_entries, explicit_only=True)
 
 
+def _browser_site_grant_entries(permissions: Any) -> dict[str, list[str]]:
+    # Deferred, like ``frame_sources`` below: off the MCP server's pre-list budget.
+    from kiro_crew.apps.browser_sites import browser_site_grant_entries  # noqa: PLC0415
+
+    return browser_site_grant_entries(permissions)
+
+
+#: ``browser_sites.GRANT_FAMILY``, named here so registering it imports nothing.
+register_permission_grants(("browserSites",), _browser_site_grant_entries, explicit_only=True)
+
+
 def _frame_source_grant_entries(ui: Any) -> dict[str, list[str]]:
     # Deferred: ``frame_sources`` stays off the path an MCP server walks before its
     # tool list, which has a module budget (``test_mcp_listing_import_budget``).

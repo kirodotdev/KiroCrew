@@ -11975,6 +11975,7 @@
       "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
       "grants_reconsent_message_actions": "Nachrichtenaktionen: was die Menüeinträge der App an Chatnachrichten lesen können.",
       "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen.",
+      "grants_reconsent_browser_sites": "Besuchte Websites: Der eigene Agent der App kann diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen.",
       "grants_reconsent_frame_sources": "Eingebettete Websites: Erlaubt den Seiten der App, diese Websites im Dashboard anzuzeigen.",
       "grants_reconsent_link_open_hosts": "Geöffnete Links: erlaubt der App, Links zu diesen Seiten zu öffnen, wenn du in einer Chat-Nachricht auf einen klickst.",
       "grants_reconsent_link_open_full_url": "Vollständige Adressen geöffneter Links: Die App sieht auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
