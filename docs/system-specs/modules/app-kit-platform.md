@@ -2663,8 +2663,10 @@ counts-and-environment only. The `cron_jobs` and `lessons` counts are nullable:
 zero — app consumers must treat `null` as "no data", not `0`. The checkout's `branch`/`commit` are stripped for app
 tokens (they say what the operator is working on and have no consumer outside the
 owner surfaces), and so is `update_policy_file`, a path in the operator's home
-directory; `/api/status` and the SSE stream run on dashboard-user tokens and
-keep the full snapshot. The live auto-approve grant (`yolo`, `yolo_expires_at` and the
+directory; both doors strip them through one helper
+(`ws_event_scope.strip_owner_only_status`), and the SSE stream audits each
+status-frame grant as `_push_status` does. `/api/status` runs on dashboard-user
+tokens and keeps the full snapshot. The live auto-approve grant (`yolo`, `yolo_expires_at` and the
 rest of `status_counts.yolo_grant_fields`) joins only a dashboard user's frame; an app
 socket's frame never carries it. Moving the whole frame behind a declaration was rejected:
 every client needs its `version` to force a reload across a gateway upgrade, so
@@ -3394,6 +3396,41 @@ declaration that gates `yolo_expired`, and `channelTrusted` is withheld from app
 tokens outright. A withheld field is OMITTED, never sent as `false`, because a
 falsy default still answers a question the app must not ask.
 
+`GET /api/stream` gets the same raw note on every SSE queue, so for an app-token
+reader (`request["app"]` set, not a dashboard user) `api_stream` passes each note
+through `dashboard/sse_event_scope.scope_note_for_app`, which reuses
+`ws_event_allowed` and `filter_slots_for_app` on the scopes read at connect
+(`load_declared_events_for_connect`, intersected per note by
+`effective_allowed_events`): a `slots` frame carries only the rows in scope and is
+not sent when none are, `slot_title` and `chat_message` go out only for a visible
+slot, other notes take the WebSocket's allow or deny, and a disabled app is
+refused with the middleware's 403 before the stream starts, as `api_ws` closes it.
+The SSE doors read the declarations with `load_declared_events_checked`, which
+counts a set as read only when the manifest's entries were actually returned to
+`staged_app_grants`, and reports any other outcome (the enablement or manifest
+read raised, `app.json` is missing or does not parse, or `staged_app_grants`
+returned before reading it, as during an update's tree swap) as `None`, distinct
+from a read set that declares nothing; `/api/stream` then sends Tier 0 frames
+only, stricter than the WebSocket, which maps the same failure to the empty set
+and so still sends the app its own slots. The declaration cache keeps that
+marker in its own field beside the WebSocket's mapping, and both SSE doors check
+it (`declared_events_unreadable`) before each live decision, so a later read
+that finds readable declarations unreadable drops an open stream to Tier 0 and
+ends a log tail, audited `declarations_unreadable`. A dashboard user keeps
+the full stream (`test/test_sse_stream_app_scope.py`). `GET /api/logs` admits an
+app token only with `log` or `log:all` declared and the app enabled, read at
+connect and re-read before each replayed and each live entry as `subscribe_logs`
+and `_safe_ws_send` read it, so a revocation ends the stream; an undeclared
+scope or unreadable declarations answer the middleware's 403 (`code: forbidden`)
+before the stream starts. Every grant, denial and Tier 0 send on these paths
+goes through the deduplicated `_audit_allow` / `_audit_deny` records
+(`scope_check_exception`, `declarations_unreadable`, `app_disabled`,
+`log_scope_not_granted`); a dashboard user's `/api/logs` read records its `log`
+grant under `<dashboard-user>`, as `subscribe_logs` does on its socket. Both SSE
+routes refuse with the same 403 a reader the auth middleware
+marked neither `is_dashboard_user` nor with an app claim (`api_ws` admits such a
+socket and its chokepoint grants it nothing; an SSE queue has no chokepoint).
+
 `_APP_TOKEN_IMPLICIT_ALLOW` holds `/api/ws` alone. An endpoint belongs there only
 with a compensating per-response control — event scoping is that control for
 `/api/ws` — so `/api/status` is not in it despite being a liveness probe: it
@@ -3448,7 +3485,8 @@ already-published one. The two sets are duplicated rather than shared to avoid a
 `manifest` <-> `token_auth` import cycle and must stay in sync with the
 `/api/apps/` literal routes in `apps/routes.py`.
 
-Writers: `dashboard/ws_event_scope.py`, `dashboard/ws.py` (connect-time scope
+Writers: `dashboard/ws_event_scope.py`, `dashboard/sse_event_scope.py` (the
+`/api/stream` and `/api/logs` app-token gates), `dashboard/ws.py` (connect-time scope
 resolution), `dashboard/state_parts/slots_push.py` (`_send_ws_all`, `_ws_client_allowed`,
 `_serialize_for_client`), `dashboard/state_parts/slot_directory.py` (`SlotOrigin`),
 `dashboard/token_auth_app_scope.py`
