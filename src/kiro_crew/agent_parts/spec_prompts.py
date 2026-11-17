@@ -54,8 +54,8 @@ dispatch tool that is not in your tool list is deferred: load it by id with
 `tool_search`, then call it.
 
 The owner can message you at any time: apply a goal change at the next natural
-boundary, except a message that invalidates work already in flight, which you
-handle at once.
+boundary, except a message that invalidates work in flight, which you handle at
+once, and separate new work, its own item now (your prompt's worker-reuse rule).
 
 **Keep the goal current.** When the person gives a new goal or changes the
 scope, call `work_ledger_record` `action=goal` FIRST, before you dispatch or
@@ -268,6 +268,16 @@ reseed the surviving line with the remaining work and the closed line's
 artifacts by path.
 
 """,
+    "reuse_worker": """**Bind a finished worker only to the next step of its own line.** Reuse its
+session when the new item continues that worker's own output (review fixes or a
+rebase of its PR, the code for the decision or RFC it wrote) and the worker is
+idle. Open a fresh session when the item is new work, when it reviews, tests or
+judges that worker's output, when it could run beside what the worker is doing,
+or when the worker is still mid-turn: a bind moves at once, a plain send waits
+behind the turn. A steer that changes the open item's scope goes into that item;
+a steer that adds separate work is its own item.
+
+""",
     "plan_reviewer": """**A reviewer grills your plan.** For a goal of more than one item, before the
 first items start and again at each round close, dispatch ONE reviewer item to
 a session that wrote none of the work, seeded with your plan. It names flaws,
@@ -394,6 +404,7 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("item_budget", _LEDGER_CONDUCTOR_RULES["item_budget"]),
     ("own_files", _LEDGER_CONDUCTOR_RULES["own_files"]),
     ("merge_lines", _LEDGER_CONDUCTOR_RULES["merge_lines"]),
+    ("reuse_worker", _LEDGER_CONDUCTOR_RULES["reuse_worker"]),
     ("plan_reviewer", _LEDGER_CONDUCTOR_RULES["plan_reviewer"]),
     (
         "which_agent",
@@ -655,7 +666,8 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
   OWN item when a parent conductor dispatched you.
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
   `session_stop`, `session_close` (close a child once its item is terminal;
-  `session_stop` a stuck one first; never one waiting on a person),
+  `session_stop` a stuck one first; never one waiting on a person or driving
+  an unmerged PR),
   `list_sessions`.
 - Your own state across rounds — `session_ledger_read`, `session_ledger_record`.
 - Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
@@ -674,7 +686,9 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
         "goal_changes",
         """The user can message you at any time: apply goal changes at the
 round boundary, except a message that invalidates an in-flight item, which you
-handle immediately. When the person gives a new goal or changes the scope,
+handle immediately, and a request that adds separate work, which you make its
+own item now, as your prompt's worker-reuse rule says. When the person gives a
+new goal or changes the scope,
 call `work_ledger_record` `action=goal` FIRST, before you dispatch or reply:
 `new_goal=true` for a new goal, a plain rewrite for a scope change. The Board's
 Overview shows that goal; the re-plan itself still waits for the round boundary.

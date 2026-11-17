@@ -646,12 +646,12 @@ def test_the_ledger_preview_fixture_renders_the_patrol_cleanly() -> None:
 
 def test_how_you_work_tells_the_bot_to_close_a_finished_one_off_worker() -> None:
     """A Bot opens one worker per task; without a close rule the finished
-    workers pile up in its panel as WAITING. The rule keeps a worker the Bot
-    will send to again (a standing scanner) open."""
+    workers pile up in its panel as WAITING. The rule keeps open only a worker
+    that gets the next step of its own task (a standing scanner)."""
     words = " ".join(crewmate_prompts.text("conductor.how_you_work").split())
     assert "once a one-off worker's report is handled" in words.lower()
     assert "close it with session_close" in words
-    assert "keep open only a worker you will send to again" in words
+    assert "keep open only a worker that will get the next step of its own task" in words
     assert "never close a worker that waits on the user" in words.lower()
     # The report turn names the worker's key, so the Bot can close it directly.
     assert "{key}" in crewmate_prompts.text("worker_report.session")
