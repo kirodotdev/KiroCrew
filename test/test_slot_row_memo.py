@@ -146,6 +146,10 @@ def test_memoized_frames_equal_unmemoized_frames_across_mutations(
 
     steps: list[tuple[str, Any]] = [
         ("append", lambda: a.append("assistant", "and https://github.com/acme/x/issues/9", "msg")),
+        (
+            "posted note",
+            lambda: a.append("inject", "queue moved", "reconcile-note", meta={"noteSession": "a"}),
+        ),
         ("in-place edit", lambda: b.messages[-1].update(content="now [OPTIONS: left | right]")),
         ("title", lambda: _retitle(c, "Renamed chat")),
         ("question", lambda: setattr(c, "_question_pending", True)),

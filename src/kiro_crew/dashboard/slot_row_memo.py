@@ -113,6 +113,23 @@ class RowSummary(NamedTuple):
     last_agent_ts: str
 
 
+def is_posted_note_row(row: Any) -> bool:
+    """Whether *row* is the visible line a ``POST .../note`` wrote.
+
+    Both writers (the immediate append and the held-note flush) stamp
+    ``meta.noteSession`` on the row, and that stamp is what reaches disk; the
+    ``reconcile-note`` class lives only on the in-memory row. Other ``inject``
+    rows (hook continuations, recovery prompts, cron and tool-block notices)
+    carry neither, so ``role == "inject"`` alone would let them through.
+    """
+    if not isinstance(row, dict) or row.get("role") != "inject":
+        return False
+    meta = row.get("meta")
+    return "reconcile-note" in str(row.get("cls") or "") or (
+        isinstance(meta, dict) and bool(meta.get("noteSession"))
+    )
+
+
 def summarize_rows(
     rows: Sequence[Any],
     *,
@@ -187,6 +204,12 @@ def summarize_rows(
                     # before redacting so markdown cannot split a credential
                     # signature and then rejoin it on the wire.
                     last_msg = last_message_preview(text)
+        elif not last_msg and is_posted_note_row(message):
+            # Preview text only: a note is not the agent speaking, so it moves
+            # neither ``last_conv_role`` nor the options ask.
+            text = message.get("content") or ""
+            if text:
+                last_msg = last_message_preview(text)
         # An agent row is durable and not a notice, so once `last_agent_ts`
         # is set `last_activity_ts` is too.
         if found_conv and last_msg and last_agent_ts:

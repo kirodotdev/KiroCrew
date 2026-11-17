@@ -44,6 +44,7 @@ from kiro_crew.crew_log.entry_types import (
     CREWMATE_TEXT_LIMIT,
     CREWMATE_WAITING_LIMIT,
 )
+from kiro_crew.dashboard.slot_row_memo import is_posted_note_row
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_MESSAGE_KINDS
 
@@ -199,9 +200,7 @@ def pending_options(rows: list[dict[str, Any]]) -> str | None:
         # A live Stop card carries its kind only in ``cls``; the shared check reads both.
         if role in ("user", "queued") or is_stop_event_row(row):
             return ""
-        note = role == "inject" and (
-            "reconcile-note" in str(row.get("cls") or "") or bool(meta.get("noteSession"))
-        )
+        note = is_posted_note_row(row)
         speech = role == "assistant" and not is_system_notice(role, meta)
         if not (note or speech) or meta.get("kind") in WARM_TASK_BRIEF_MESSAGE_KINDS:
             continue
