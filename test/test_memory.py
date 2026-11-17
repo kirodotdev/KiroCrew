@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import source_corpus
 from source_corpus import iter_source_texts
 
 from conftest import make_dir_link, plant_day_link
@@ -838,15 +839,16 @@ class TestHistoryDecayWording:
         documents = {repo / "src" / "kiro_crew" / "docs" / "configuration.md"}
         documents.update((repo / "docs").rglob("*.md"))
 
-        copies = [
-            (path.relative_to(repo).as_posix(), copy)
-            for path, copy in _source_decay_copies(iter_source_texts(), len(self.PHRASE))
-        ]
-        copies.extend(
-            (path.relative_to(repo).as_posix(), copy)
-            for path in sorted(documents)
-            for copy in _decay_copies(path.read_text(encoding="utf-8"), len(self.PHRASE))
-        )
+        with source_corpus.untraced():
+            copies = [
+                (path.relative_to(repo).as_posix(), copy)
+                for path, copy in _source_decay_copies(iter_source_texts(), len(self.PHRASE))
+            ]
+            copies.extend(
+                (path.relative_to(repo).as_posix(), copy)
+                for path in sorted(documents)
+                for copy in _decay_copies(path.read_text(encoding="utf-8"), len(self.PHRASE))
+            )
 
         assert copies, "no history decay descriptions found"
         assert all(copy == self.PHRASE for _, copy in copies), copies
