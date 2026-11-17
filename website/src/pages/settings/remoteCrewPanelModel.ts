@@ -105,21 +105,23 @@ export interface SizeTier {
   vcpu: number
   ramGb: number
   diskGb: number
+  /** sizes.py's `approx_usd_per_hr`: the PRICE_REGION on-demand rate, display only. */
+  approxUsdPerHr: number
   subagents: number
   recommended?: boolean
 }
 export const SIZE_TIERS: SizeTier[] = [
-  { key: 'light', family: 'light', arch: 'arm64', instanceType: 't4g.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, subagents: 3 },
-  { key: 'balanced', family: 'balanced', arch: 'arm64', instanceType: 'm7g.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, subagents: 6, recommended: true },
-  { key: 'power', family: 'power', arch: 'arm64', instanceType: 'm7g.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, subagents: 12 },
+  { key: 'light', family: 'light', arch: 'arm64', instanceType: 't4g.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, approxUsdPerHr: 0.134, subagents: 3 },
+  { key: 'balanced', family: 'balanced', arch: 'arm64', instanceType: 'm7g.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, approxUsdPerHr: 0.326, subagents: 6, recommended: true },
+  { key: 'power', family: 'power', arch: 'arm64', instanceType: 'm7g.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, approxUsdPerHr: 0.653, subagents: 12 },
 ]
 // The x86_64 lane, shown only when the disclosure is expanded. It exists because
 // some images and toolchains are still amd64-only; the shapes mirror the arm64
 // ladder so the sub-agent counts match. Keys match cloud/sizes.py's x86 lane.
 export const X86_TIERS: SizeTier[] = [
-  { key: 'light-x86', family: 'light', arch: 'x86_64', instanceType: 't3.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, subagents: 3 },
-  { key: 'balanced-x86', family: 'balanced', arch: 'x86_64', instanceType: 'm7i.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, subagents: 6 },
-  { key: 'power-x86', family: 'power', arch: 'x86_64', instanceType: 'm7i.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, subagents: 12 },
+  { key: 'light-x86', family: 'light', arch: 'x86_64', instanceType: 't3.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, approxUsdPerHr: 0.166, subagents: 3 },
+  { key: 'balanced-x86', family: 'balanced', arch: 'x86_64', instanceType: 'm7i.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, approxUsdPerHr: 0.403, subagents: 6 },
+  { key: 'power-x86', family: 'power', arch: 'x86_64', instanceType: 'm7i.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, approxUsdPerHr: 0.806, subagents: 12 },
 ]
 
 // Full literal keys per tier so the i18n key-reference gate can verify them
@@ -138,6 +140,13 @@ export const tierWhy = (key: SizeTier['family']) =>
       : i18nT('pages.settings.remoteCrewPanel.tier_power_why')
 
 export const PRICING_CALCULATOR_URL = 'https://calculator.aws'
+/** The Region `approxUsdPerHr` was read for: sizes.py's PRICE_REGION. */
+export const PRICE_REGION = 'us-east-1'
+/** Hours in sizes.py's `monthly_estimate` month: 24 a day for 30 days. */
+export const HOURS_PER_MONTH = 24 * 30
+/** The CLI flag a size card names. It is typed into a terminal, so it is a code
+ *  constant rendered verbatim, never a catalog value a translation could change. */
+export const SIZE_FLAG = '--size'
 // NOTE: the session-manager-plugin install command is NOT hardcoded here. It has to
 // match the platform of the machine running the gateway — which may be a Linux host
 // while this dashboard is open on a Mac — so the preflight response carries it.
