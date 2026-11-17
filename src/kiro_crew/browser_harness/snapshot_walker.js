@@ -625,11 +625,13 @@
     return null;
   }
 
-  // The frames (`iframe`, `frame`, `object`, `embed`) one walk of the top
-  // document reaches through open shadow roots and readable frames: how many,
-  // and how many of them have a document this world cannot read. Past depth 8
-  // the walk stops and counts one unreadable, so a guard refuses.
-  function scanFrames() {
+  // The frames (`iframe`, `frame`, `object`, `embed`) one walk from `start`
+  // (the top document by default; an element counts itself) reaches through open
+  // shadow roots and readable frames: how many, and how many of them have a
+  // document this world cannot read. Past depth 8 the walk stops and counts one
+  // unreadable, so a guard refuses. `onRoot`, when given, is called with each
+  // open shadow root and each readable iframe or frame document the walk enters.
+  function scanFrames(start, onRoot) {
     var n = 0;
     var seen = 0;
     function embeds(el) {
@@ -640,7 +642,8 @@
       try { return el.contentDocument || null; } catch (e) { return null; }
     }
     function walkRoot(root, d) {
-      var all = root.querySelectorAll("*");
+      var all = Array.prototype.slice.call(root.querySelectorAll("*"));
+      if (root.nodeType === 1) all.unshift(root);
       for (var j = 0; j < all.length; j++) {
         var el = all[j];
         var inner = embeds(el) ? innerDoc(el) : null;
@@ -651,12 +654,196 @@
         if (!el.shadowRoot && !inner) continue;
         // Too deep to look: count it, so the guard refuses rather than passes.
         if (d >= 8) { n++; return; }
-        if (el.shadowRoot) walkRoot(el.shadowRoot, d + 1);
-        if (inner) walkRoot(inner, d + 1);
+        if (el.shadowRoot) {
+          if (onRoot) onRoot(el.shadowRoot);
+          walkRoot(el.shadowRoot, d + 1);
+        }
+        if (inner) {
+          if (onRoot && isFrame(el)) onRoot(inner);
+          walkRoot(inner, d + 1);
+        }
       }
     }
-    walkRoot(document, 0);
+    walkRoot(start || document, 0);
     return { unreadable: n, seen: seen };
+  }
+
+  // -- the `read` op: the page's content as text or HTML ------------------------
+
+  // The gateway pages the result; past this the page side stops, so a huge page
+  // cannot make the worker's reply line unbounded.
+  var READ_PAGE_CAP = 2000000;
+  // The worker refuses a reply whose JSON passes 4 MiB (helper_worker
+  // REPLY_CAP_BYTES), and JSON escapes each non-ASCII UTF-16 unit as 6 bytes, so
+  // the content is cut by its escaped size, with headroom for the envelope.
+  var READ_JSON_BUDGET = 3670016;
+  // Form controls are left out like `innerText` leaves them out of the light DOM.
+  var READ_SKIP = { script: 1, style: 1, template: 1, noscript: 1, textarea: 1, input: 1, select: 1 };
+
+  // The longest prefix of `s` whose JSON-escaped size fits `budget` bytes.
+  function capJsonSize(s, budget) {
+    var used = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      used += (c > 0x7e || c < 0x20) ? 6 : (c === 0x22 || c === 0x5c) ? 2 : 1;
+      if (used > budget) {
+        if (i > 0 && c >= 0xdc00 && c <= 0xdfff) i--;
+        return s.slice(0, i);
+      }
+    }
+    return s;
+  }
+
+  // What select-all + copy gives for one node, the whole page and not only the
+  // viewport. An element with a box gives its `innerText`, which leaves out
+  // input values and what is not rendered. Any other element, and a shadow root,
+  // has no `innerText` to trust (it falls back to `textContent`, script bodies
+  // included), so its child nodes are read one by one. A text node is read only
+  // when it draws a box: that covers `display: contents`, hidden ancestors and
+  // unassigned slottables without walking up the tree.
+  function renderedText(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) {
+      var doc = node.ownerDocument || document;
+      var range = doc.createRange ? doc.createRange() : null;
+      if (!range || !range.getClientRects) return "";
+      range.selectNodeContents(node);
+      return range.getClientRects().length > 0 ? (node.textContent || "") : "";
+    }
+    if (node.nodeType === 1) {
+      if (READ_SKIP[(node.tagName || "").toLowerCase()]) return "";
+      if (node.getClientRects && node.getClientRects().length > 0) {
+        return typeof node.innerText === "string" ? node.innerText : (node.textContent || "");
+      }
+    } else if (node.nodeType !== 11) {
+      return "";
+    }
+    var parts = [];
+    for (var i = 0; i < node.childNodes.length; i++) {
+      var text = renderedText(node.childNodes[i]).trim();
+      if (text) parts.push(text);
+    }
+    return parts.join("\n");
+  }
+
+  // The root's text, then the text of every open shadow root and same-origin
+  // frame under it, which `innerText` does not enter. A frame this world cannot
+  // read (cross-origin, or an `object` / `embed`) is counted, never read.
+  function readText(root) {
+    var parts = [], size = 0;
+    function add(node) {
+      // Past the cap, not at it: one more root makes the content longer than the
+      // cap, so `read` cuts it and says `truncated` instead of dropping it silently.
+      if (size > READ_PAGE_CAP) return;
+      var text = renderedText(node.nodeType === 9 ? node.body : node).trim();
+      if (text) { parts.push(text); size += text.length; }
+    }
+    add(root);
+    var scan = scanFrames(root, add);
+    return { content: parts.join("\n\n"), skippedFrames: scan.unreadable };
+  }
+
+  // A query or fragment parameter that can carry a credential: a signed URL's
+  // signature, a session, an OAuth code, an API key.
+  function secretParam(name) {
+    var n = String(name);
+    if (SECRET_NAME_RE.test(n) || SECRET_NAME_RE.test(splitCamel(n))) return true;
+    if (/csrf|signature|credential|auth|session|^x-amz-/i.test(n)) return true;
+    var words = splitCamel(n).toLowerCase().split(/[^a-z0-9]+/);
+    return words.indexOf("sig") !== -1 || words.indexOf("key") !== -1 || words.indexOf("code") !== -1;
+  }
+
+  // `k=v&k=v` with the value of each credential-carrying parameter blanked.
+  function scrubParams(params) {
+    return params.split("&").map(function (pair) {
+      var eq = pair.indexOf("=");
+      if (eq === -1) return pair;
+      var key = pair.slice(0, eq), decoded = key;
+      try { decoded = decodeURIComponent(key.replace(/\+/g, " ")); } catch (e) {}
+      return secretParam(decoded) ? key + "=" : pair;
+    }).join("&");
+  }
+
+  // A URL with credential-carrying query and fragment parameters blanked; the
+  // rest of it is kept, so a link still says where it goes.
+  function scrubUrl(url) {
+    var hash = url.indexOf("#");
+    var frag = hash === -1 ? "" : url.slice(hash + 1);
+    var rest = hash === -1 ? url : url.slice(0, hash);
+    var q = rest.indexOf("?");
+    var out = q === -1 ? rest : rest.slice(0, q + 1) + scrubParams(rest.slice(q + 1));
+    if (hash !== -1) out += "#" + (frag.indexOf("=") === -1 ? frag : scrubParams(frag));
+    return out;
+  }
+
+  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, poster: 1, data: 1 };
+  var VALUE_KEPT_TYPES = { submit: 1, button: 1, reset: 1, checkbox: 1, radio: 1, image: 1 };
+  // Attribute names reach the scrub lowercased, so a secret word is matched
+  // anywhere in the name once separators are dropped: `data-apitoken` has no
+  // boundary to split on, and `data-api-key` reads as `dataapikey`.
+  var SECRET_ATTR_RE = /password|passwd|pwd|otp|totp|mfa|cvv|cvc|secret|token|apikey|csrf|credential|session/;
+  // `meta` content is kept only for names that describe the page; any other name
+  // (`apiToken`, `x-session`, a vendor key) may carry a credential, however spelt.
+  var PUBLIC_META_RE = /^(description|keywords|author|viewport|robots|googlebot|theme-color|color-scheme|referrer|generator|application-name|format-detection|og:.*|twitter:.*|article:.*|content-type|content-language|default-style|x-ua-compatible)$/i;
+  function publicMeta(el) {
+    var keys = ["name", "property", "http-equiv", "itemprop"], named = false;
+    for (var k = 0; k < keys.length; k++) {
+      var v = el.getAttribute(keys[k]);
+      if (v == null) continue;
+      named = true;
+      if (!PUBLIC_META_RE.test(v.trim())) return false;
+    }
+    return named;
+  }
+
+  // Scrub one copied subtree in place: what a person typed, credentials in
+  // `meta`, in attributes named for a secret and in URLs, script and style
+  // bodies, comments, and the same inside every `template`'s content.
+  function scrubCopy(top) {
+    var els = Array.prototype.slice.call(top.querySelectorAll("*"));
+    if (top.nodeType === 1) els.unshift(top);
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], tag = (el.tagName || "").toLowerCase();
+      // React mirrors a typed value into the attribute, so every field's goes.
+      if (tag === "input" && !VALUE_KEPT_TYPES[inputType(el)] && el.hasAttribute("value")) {
+        el.setAttribute("value", "");
+      }
+      if (tag === "textarea" || tag === "script" || tag === "style") el.textContent = "";
+      if (tag === "meta") {
+        if (!publicMeta(el) && el.hasAttribute("content")) el.setAttribute("content", "");
+      }
+      var attrs = Array.prototype.slice.call(el.attributes || []);
+      for (var a = 0; a < attrs.length; a++) {
+        var name = attrs[a].name.toLowerCase();
+        if (SECRET_ATTR_RE.test(name.replace(/[-_.:]/g, ""))) el.setAttribute(attrs[a].name, "");
+        // A frame's own document is out of the HTML read, `srcdoc` included: the
+        // markup in it is never scrubbed field by field.
+        else if (name === "srcdoc") el.setAttribute(attrs[a].name, "");
+        else if (URL_ATTRS[name]) el.setAttribute(attrs[a].name, scrubUrl(attrs[a].value));
+        else if (name === "srcset") {
+          el.setAttribute(attrs[a].name, attrs[a].value.split(",").map(function (c) {
+            var m = /^(\s*)(\S+)(.*)$/.exec(c);
+            return m ? m[1] + scrubUrl(m[2]) + m[3] : c;
+          }).join(","));
+        }
+      }
+      if (tag === "template" && el.content) scrubCopy(el.content);
+    }
+    var doc = top.ownerDocument || top;
+    var comments = [], walk = doc.createTreeWalker(top, 128);
+    while (walk.nextNode()) comments.push(walk.currentNode);
+    for (var c = 0; c < comments.length; c++) comments[c].parentNode.removeChild(comments[c]);
+  }
+
+  // The root serialized from a copy in a document with no window: nothing in the
+  // copy loads, runs or upgrades, and the live DOM is never touched. The copy is
+  // scrubbed first (`scrubCopy`). It is the light DOM of one document: shadow
+  // roots and frame documents are not in it, and `skippedFrames` counts the
+  // frames left out.
+  function readHtml(root) {
+    var copy = document.implementation.createHTMLDocument("").importNode(root, true);
+    scrubCopy(copy);
+    return { content: copy.outerHTML || "", skippedFrames: scanFrames(root).seen };
   }
 
   var api = {
@@ -748,6 +935,25 @@
       var result = { url: location.href, title: document.title, nodes: out };
       if (truncated) result.error = "page has more than " + limit + " elements; the outline stops there";
       return result;
+    },
+
+    // The page's content for the `read` op: `format` "html" or text, scoped to
+    // `ref` when one is given. `skippedFrames` counts the frames left out.
+    read: function (ref, format) {
+      var root = null;
+      if (ref) {
+        root = lookup(ref);
+        if (!root) return { ok: false, code: "ref_stale" };
+      }
+      var html = format === "html";
+      if (!root) root = html ? document.documentElement : (document.body || document.documentElement);
+      var read = html ? readHtml(root) : readText(root);
+      var out = { ok: true, url: String(location.href), title: String(document.title), skippedFrames: read.skippedFrames };
+      var capped = read.content.length > READ_PAGE_CAP ? read.content.slice(0, READ_PAGE_CAP) : read.content;
+      capped = capJsonSize(capped, READ_JSON_BUDGET);
+      out.content = capped;
+      if (capped.length < read.content.length) out.truncated = true;
+      return out;
     },
 
     // Scroll a ref into view (unless `scroll` is false) and return its centre in CSS pixels.
