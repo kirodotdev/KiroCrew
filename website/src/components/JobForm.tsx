@@ -10,7 +10,7 @@ import SegmentedControl from './SegmentedControl'
 import SimpleSelect from './SimpleSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
-import { isMateManaged } from '../utils/mateFolders'
+import { mateHomeOf } from '../utils/mateFolders'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
@@ -256,6 +256,9 @@ interface Props {
   lockedAgent?: string
   /** Durable member identity, distinct from its provider template. */
   memberId?: string
+  /** The memory store of the Bot `memberId` names, read by the host; a new job
+   *  for that Bot may then be filed in the Bot's home folder. */
+  memberStore?: string
   /** The host's own noun for the pinned identity: set it where the surface
    *  says "member" throughout (the Crew Members drawer), so the pinned-value
    *  hint speaks the reader's noun. Left unset, the hint keeps "crew" — the
@@ -304,7 +307,7 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberNoun, lockedAgentHint, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberStore, memberNoun, lockedAgentHint, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
   // "" and undefined both mean unlocked, so render and submit share one truth.
   const boundMember = job?.member_id || memberId
   const privateMember = !!boundMember && boundMember !== 'default'
@@ -540,16 +543,24 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  of them at once.
    *
    *  A mate's home and the folders inside it are left out: they hold only that
-   *  mate's sessions, so the save would be refused. The job's own saved folder
-   *  stays listed, so an existing value is still shown as it is. */
+   *  mate's sessions, so the save would be refused. The one exception is the
+   *  home of the Bot the job runs as, whose store the save route lets in. The
+   *  job's own saved folder stays listed, so an existing value is still shown
+   *  as it is. */
   const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
   const savedChatFolderId = job?.chat_folder_id || ''
+  const botStore = job
+    ? (job.member_id && job.memory_store) || ''
+    : privateMember
+      ? memberStore || ''
+      : runsAs === 'member' ? crewmates.find(a => a.name === agent)?.memory_store || '' : ''
   const folderOptions = useMemo(() => {
-    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode).filter(
-      f => f.folder.id === savedChatFolderId || !isMateManaged(f.folder, chatFolders),
-    )
+    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode).filter(f => {
+      const home = mateHomeOf(f.folder, chatFolders)
+      return f.folder.id === savedChatFolderId || !home || (!!botStore && home.owner_app === `member:${botStore}`)
+    })
     return { values: ordered.map(f => f.folder.id), labels: ordered.map(f => f.path) }
-  }, [chatFolders, folderSortMode, savedChatFolderId])
+  }, [chatFolders, folderSortMode, savedChatFolderId, botStore])
   /** `hide_in_chat` is the explicit "this job gets no tab" opt-out, and a run with
    *  no tab has nothing to file -- so with it on the picker cannot do anything.
    *  Saying that and refusing input beats accepting a setting whose only

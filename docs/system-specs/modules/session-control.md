@@ -742,8 +742,8 @@ in a Bot's home the forker does not own (the person's Fork, or `session_fork`
 by anyone but that Bot) is left unfiled (`inherited_folder`), a scheduled job
 is saved with a chat folder there only when it runs on that Bot's store (the
 cron create and update routes refuse it `mate_home_locked` (403) and record the
-denial in the security event log, the Schedule form does not offer such a
-folder, and the tab placement re-checks it at run time and records a refusal
+denial in the security event log, the Schedule form offers such a folder only
+for a job that runs as that Bot, and the tab placement re-checks it at run time and records a refusal
 the same way), and the name lookups that adopt an existing
 folder (a channel's `session_folder`, the import arrival folder, Code Review
 Sage's follow-up folder) never adopt one. Every route that refiles an EXISTING
