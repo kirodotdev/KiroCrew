@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { markCrewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
 import { setActiveId } from '../store/instancesSlice'
 import type { RootState } from '../store'
+import { reduceMotion } from './approvalCardFixtures'
 
 vi.mock('../api/client', () => {
   class MockApiError extends Error {
@@ -171,6 +172,25 @@ describe('rejectPendingApproval', () => {
     expect(hits).toEqual(['second'])
   })
 
+  it('still refuses on a card that holds Allow once but keeps Reject (a cramped card)', () => {
+    const pane = buildPane('focused', [{ text: 'Reject' }, { text: 'Trust', disabled: true }, { text: 'Allow once', disabled: true }])
+    pane.querySelectorAll('button')[2].setAttribute('data-approval-primary', '')
+    const hits: string[] = []
+    pane.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('row'))
+    pane.querySelector('textarea')!.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual(['row'])
+  })
+
+  it('sends nothing while every control in the row is held for a decision in flight', () => {
+    const pane = buildPane('focused', [{ text: 'Reject', disabled: true }, { text: 'Allow once', disabled: true }])
+    const hits: string[] = []
+    pane.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('row'))
+    pane.querySelector('textarea')!.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual([])
+  })
+
   it('sends nothing while the side chat composer has focus', () => {
     // The side chat has no approval row of its own, so the lookup would fall
     // back to the main conversation's prompt and refuse it from another chat.
@@ -186,6 +206,79 @@ describe('rejectPendingApproval', () => {
     sideComposer.focus()
     rejectPendingApproval()
     expect(hits).toEqual([])
+  })
+})
+
+describe('approval chords ignore markers a message forges', () => {
+  // Rendered markdown keeps data attributes, so a message an agent or a channel
+  // wrote can carry the approval row's own markers. Each case puts the forgery
+  // in a message ahead of the real card, where a plain document-order lookup
+  // would take it.
+  afterEach(() => {
+    for (const el of Array.from(document.querySelectorAll('[data-chat-pane]'))) el.remove()
+  })
+
+  /** An element with *attrs* and *kids*, as a message's markdown would render it. */
+  function el(tag: string, attrs: Record<string, string>, ...kids: Array<Node | string>): HTMLElement {
+    const e = document.createElement(tag)
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v)
+    e.append(...kids)
+    return e
+  }
+
+  /** A rendered message (the markdown renderer's untrusted root) at the top of *pane*. */
+  function messageIn(pane: HTMLElement, content: HTMLElement): HTMLElement {
+    const message = el('div', { 'data-guide-untrusted': '' }, content)
+    pane.prepend(message)
+    return message
+  }
+
+  const forgedRow = () => el('div', { 'data-approval-actions': '' }, el('button', {}, 'Copy table'))
+
+  /** A card whose last control is its primary, as the approval card renders it. */
+  function cardPane(marker: string): HTMLElement {
+    const pane = buildPane(marker, [{ text: 'Reject' }, { text: 'Trust' }, { text: 'Allow once' }])
+    pane.querySelectorAll('button')[2].setAttribute('data-approval-primary', '')
+    return pane
+  }
+
+  it('the focus chord lands on the real Allow once, not a forged primary', () => {
+    const pane = cardPane('focused')
+    messageIn(pane, el('div', { 'data-approval-actions': '' },
+      el('details', {}, el('summary', { 'data-approval-primary': '' }, 'open me'))))
+    expect(queryPendingApprovalAction()?.textContent).toBe('Allow once')
+  })
+
+  it('the focus chord falls back to the real row, not buttons under a forged row', () => {
+    // A security-rule override card marks no primary, so the chord takes the
+    // row's first enabled control; a table renderer's copy button sits ahead of it.
+    const pane = buildPane('focused', [{ text: 'Review rule' }])
+    messageIn(pane, forgedRow())
+    expect(queryPendingApprovalAction()?.textContent).toBe('Review rule')
+  })
+
+  it('the reject chord answers through the real row, never a forged one', () => {
+    const pane = cardPane('focused')
+    const message = messageIn(pane, forgedRow())
+    const hits: string[] = []
+    message.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('forged'))
+    pane.querySelector(':scope > [data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('real'))
+    rejectPendingApproval()
+    expect(hits).toEqual(['real'])
+  })
+
+  it('focus on a link inside a forged pane still resolves the real pane', () => {
+    const pane = cardPane('first')
+    const message = messageIn(pane, el('div', { 'data-chat-pane': 'x' }, el('a', { href: '#n' }, 'a link')))
+    message.querySelector('a')!.focus()
+    expect(queryPendingApprovalAction()?.textContent).toBe('Allow once')
+  })
+
+  it('a forged grid-focused marker does not hide the real focused pane', () => {
+    messageIn(buildPane('other', []), el('div', { 'data-chat-pane': 'focused' }))
+    cardPane('focused')
+    document.body.focus()
+    expect(queryPendingApprovalAction()?.textContent).toBe('Allow once')
   })
 })
 
@@ -248,6 +341,9 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
   beforeEach(() => { vi.clearAllMocks(); localStorage.clear() })
 
   it('lands on the row first control', () => {
+    // No fade, so the card takes focus from its first frame (the fade-in lock
+    // has its own tests in ChatInput.approvalTrust.test.tsx).
+    reduceMotion()
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     const allow = screen.getByRole('button', { name: /Allow once/ })
     pressChord()
@@ -259,6 +355,7 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     // exemption ("works even from other inputs") and Alt+Shift+M states the
     // reason: a chord you reach for mid-sentence is dead if it bails out in the
     // composer. Safe here only because the chord moves focus and nothing else.
+    reduceMotion()
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     const composer = document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!
     act(() => { composer.focus() })
