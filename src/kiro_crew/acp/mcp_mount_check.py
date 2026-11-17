@@ -79,7 +79,7 @@ def _env_token(element: dict[str, Any]) -> str:
     return ""
 
 
-def _stub_server(element: dict[str, Any]) -> str:
+def stub_server(element: dict[str, Any]) -> str:
     """The ``--server`` a broker-stub element registers under, or ``""``."""
     args = element.get("args")
     if not isinstance(args, list):
@@ -124,7 +124,7 @@ def broker_stub_roster(servers: Any) -> Roster:
     for element in servers if isinstance(servers, list) else ():
         if not isinstance(element, dict):
             continue
-        server = _stub_server(element)
+        server = stub_server(element)
         element_token = _env_token(element)
         if not server or not element_token:
             continue
