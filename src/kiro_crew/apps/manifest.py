@@ -276,6 +276,7 @@ def cron_permission_error(manifest: AppManifest) -> str:
 #:   ``bot-grants``
 #: * ``dashboard/routes/system.py`` -- ``token``
 #: * ``apps/job_routes.py`` -- ``_jobs``
+#: * ``apps/sel_routes.py`` -- ``_sel``
 #:
 #: A NEW core route mounted under ``/api/apps/{name}/`` MUST be added here in the same
 #: commit, or an app can claim it; ``test_file_menu_items.py`` scans those sources and
@@ -285,6 +286,7 @@ def cron_permission_error(manifest: AppManifest) -> str:
 CORE_APP_ROUTE_SEGMENTS = frozenset(
     {
         "_jobs",
+        "_sel",
         "bot-grants",
         "config",
         "dev",
