@@ -5667,6 +5667,7 @@
       "file_status_removed": "Removed",
       "file_status_renamed": "Renamed",
       "file_status_unchanged": "Unchanged",
+      "file_symlink": "Symlink",
       "kiro_crew_uses_your_local_provider_cli_to_load_p": "{{productName}} uses your local provider CLI to load pull requests. Run this command in your terminal, then retry.",
       "loading_diff": "Loading diff…",
       "loading_source_provider": "Loading source provider…",

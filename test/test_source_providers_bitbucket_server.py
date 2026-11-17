@@ -455,6 +455,8 @@ async def test_the_panel_reads_a_listed_instance_with_its_own_token(
     files = {row["path"]: row for row in payload["files"]}
     assert files["src/cache.py"]["status"] == "added"
     assert files["src/cache.py"]["patch"] == "@@ -0,0 +1,2 @@\n+CACHE = {}\n+"
+    # The changes page carries no file mode, so no row can be reported as a link.
+    assert [row.get("symlink") for row in files.values()] == [False] * len(files)
     assert files["src/app.py"]["patch"] == (
         "@@ -1,2 +1,2 @@\n import os\n-cache = None\n+from cache import CACHE"
     )

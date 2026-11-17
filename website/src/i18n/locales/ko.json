@@ -8837,6 +8837,7 @@
       "file_status_removed": "제거됨",
       "file_status_renamed": "이름 변경됨",
       "file_status_unchanged": "변경 없음",
+      "file_symlink": "심볼릭 링크",
       "files_changed_other": "변경된 파일 {{count}}개",
       "github_cli_login_required": "GitHub CLI 로그인 필요",
       "github_merges_this_pull_request_automatically_on": "필수 검사와 리뷰가 통과하면 GitHub이 이 풀 리퀘스트를 자동으로 병합합니다",

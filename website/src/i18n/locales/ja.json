@@ -8837,6 +8837,7 @@
       "file_status_removed": "削除",
       "file_status_renamed": "名前変更",
       "file_status_unchanged": "変更なし",
+      "file_symlink": "シンボリックリンク",
       "files_changed_other": "{{count}}個のファイルが変更",
       "github_cli_login_required": "GitHub CLIログインが必要",
       "github_merges_this_pull_request_automatically_on": "GitHub は必須チェックとレビューが合格したら、このプルリクエストを自動的にマージします",

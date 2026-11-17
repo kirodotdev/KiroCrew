@@ -385,6 +385,8 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
                 "additions": item.get("additions") or 0,
                 "deletions": item.get("deletions") or 0,
                 "patch": item.get("patch") or "",
+                # The REST files listing carries no file mode.
+                "symlink": False,
             }
         )
 
