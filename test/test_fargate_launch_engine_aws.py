@@ -397,6 +397,36 @@ def test_teardown_over_an_empty_cluster_confirms_and_stops_nothing(monkeypatch) 
     assert double.stops == []
 
 
+@pytest.mark.parametrize(
+    ("tasks", "says", "never_says", "stops"),
+    [
+        ([], "was never created, so it is not billing", "was removed", []),
+        ([_our_task()], "was removed so it stops billing", "never created", [ARN]),
+    ],
+    ids=["no-task-started", "our-task-running"],
+)
+def test_a_failed_provision_rollback_says_whether_a_task_existed(
+    monkeypatch, tmp_path, tasks, says, never_says, stops
+) -> None:
+    """The rollback reads the same task lookup teardown uses, so a setup that started
+    no task is not reported as a removal, and one that did still is."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = tasks
+    _patch_aws(monkeypatch, double)
+    store = lj.LaunchJobStore(root=tmp_path / "launch-jobs")
+    job = store.create(
+        profile="p", region="us-west-2", size_key="1024/2048", provider_id="aws_fargate"
+    )
+    job.tag = TAG
+    job.error = "Setup failed: boom."
+
+    lj._rollback_failed_provision(job, store, FargateLaunchEngine(_spec()))
+
+    assert says in job.error, job.error
+    assert never_says not in job.error, job.error
+    assert double.stops == stops
+
+
 def test_teardown_refuses_an_unmarked_task_we_started(monkeypatch) -> None:
     """An unmarked task this launcher started returns unconfirmed and stops
     nothing — the ownership rule refuses to delete on a startedBy guess."""
