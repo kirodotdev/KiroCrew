@@ -975,7 +975,23 @@ def _handle_app(args: argparse.Namespace) -> None:
             print(f"Done: {args.name} is now in dev mode")
             print("   UI files served with no-store; edits under ui/ trigger a live reload")
             print("   in the dashboard within ~1s (picked up by the gateway watcher).")
-            print("   Tip: symlink the installed ui/ to your source tree for zero-copy edits.")
+            if sys.platform == "win32":
+                # A directory symlink on Windows needs Developer Mode or an
+                # elevated shell; a junction needs neither.
+                from kiro_crew.apps.manager import apps_dir
+
+                ui_path = apps_dir() / args.name / "ui"
+                print("   Tip: link the installed ui/ to your source tree for zero-copy edits.")
+                print("   On Windows use a directory junction (no admin needed), from cmd:")
+                print(f'     ren "{ui_path}" ui.bak')
+                print(f'     mklink /J "{ui_path}" "<source>\\ui"')
+                print(f"     kirocrew app dev {args.name} --confirm-out-of-install-root")
+                print("   The installed ui/ is kept as ui.bak. The last step binds the dev")
+                print("   grant to the link target. The junction target must be a")
+                print("   local absolute path. A directory symlink there needs")
+                print("   Developer Mode or an elevated shell.")
+            else:
+                print("   Tip: symlink the installed ui/ to your source tree for zero-copy edits.")
             print(f"   Turn off with: kirocrew app dev {args.name} --off")
         else:
             print(f"Done: {args.name} dev mode off (normal caching restored)")
