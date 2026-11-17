@@ -242,7 +242,9 @@ function DisclosureSection({
  * recording state when the caller has read it; left undefined (still loading,
  * or the read failed) the local-data line states the default instead.
  */
-export function PrivacyDisclosureSections({ recordingOn }: { recordingOn?: boolean } = {}) {
+/** `shared`: the reader is a teammate on someone else's Crew, so the records stay
+ *  on the Crew's computer, not on their device. */
+export function PrivacyDisclosureSections({ recordingOn, shared = false }: { recordingOn?: boolean; shared?: boolean } = {}) {
   return (
     <div className="flex flex-col gap-5">
       <div>
@@ -279,13 +281,19 @@ export function PrivacyDisclosureSections({ recordingOn }: { recordingOn?: boole
       />
       <DisclosureSection
         icon={<HardDrive className="lucide-inline" aria-hidden="true" />}
-        title={i18nT('privacyDisclosure.localDataTitle')}
+        title={shared ? i18nT('privacyDisclosure.localDataTitleShared') : i18nT('privacyDisclosure.localDataTitle')}
         body={
-          recordingOn === true
-            ? i18nT('privacyDisclosure.localDataBodyOn')
-            : recordingOn === false
-              ? i18nT('privacyDisclosure.localDataBodyOff')
-              : i18nT('privacyDisclosure.localDataBody')
+          shared
+            ? recordingOn === true
+              ? i18nT('privacyDisclosure.localDataBodyOnShared')
+              : recordingOn === false
+                ? i18nT('privacyDisclosure.localDataBodyOffShared')
+                : i18nT('privacyDisclosure.localDataBodyShared')
+            : recordingOn === true
+              ? i18nT('privacyDisclosure.localDataBodyOn')
+              : recordingOn === false
+                ? i18nT('privacyDisclosure.localDataBodyOff')
+                : i18nT('privacyDisclosure.localDataBody')
         }
       />
     </div>

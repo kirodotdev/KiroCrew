@@ -356,7 +356,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "Las notas de la versión {{release}} aún no se han publicado. Se muestran en su lugar las notas de {{shown}}.",
     "titlebar_menu_disabled_footer": "Algunos elementos no están disponibles aquí. Los atajos que se muestran siguen funcionando.",
-    "titlebar_menu_refused_notice": "\"{{item}}\" no se ejecutó. Este comando no está disponible aquí en este momento."
+    "titlebar_menu_refused_notice": "\"{{item}}\" no se ejecutó. Este comando no está disponible aquí en este momento.",
+    "relay_remote_control_off": "El acceso remoto a esta Crew está desactivado",
+    "relay_remote_control_off_detail": "El propietario de la Crew desactivó el acceso remoto. Solo él puede volver a activarlo, desde el equipo de la Crew.",
+    "relay_remote_control_off_waits": "Esta página se volverá a conectar sola cuando se active de nuevo.",
+    "terminal_owner_only": "Solo el propietario de la Crew puede usar el terminal."
   },
   "appSdk": {
     "chatSession": {
@@ -7958,7 +7962,8 @@
       "opens_own_window": "Se abre en su propia ventana",
       "new_crew": "Nuevo",
       "seen_not_saved": "No se pudo guardar que ya lo viste. Volverá a aparecer como nuevo.",
-      "open_crew_failed": "No se pudo abrir {{name}}."
+      "open_crew_failed": "No se pudo abrir {{name}}.",
+      "sign_in": "Iniciar sesión en Kiro"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -11904,7 +11909,8 @@
         "reason_work": "Todavía tiene trabajo en curso. Cerrar detiene ese trabajo.",
         "reason_setting": "No hay nada en ejecución. Se te pregunta porque “{{setting}}” está activado en Ajustes.",
         "actions": "La conversación y el borrador de tu cuadro de mensaje se conservan, y puedes reabrir la sesión más tarde.",
-        "confirm": "Cerrar la sesión"
+        "confirm": "Cerrar la sesión",
+        "reason_other_starter": "{{name}} inició este chat. Si lo cierras, se cierra para todas las personas de este Crew."
       },
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "duplicate_unreachable": "No se pudo duplicar esta sesión. No se pudo contactar con {{productName}}. Comprueba tu conexión e inténtalo de nuevo.",
@@ -14894,7 +14900,8 @@
       "jump_to_new_one": "{{count}} nuevo · Ir al final",
       "jump_to_new_other": "{{count}} nuevos · Ir al final",
       "jump_to_new_many": "{{count}} nuevos · Ir al final",
-      "could_not_repair_images": "No se pudieron reparar las imágenes"
+      "could_not_repair_images": "No se pudieron reparar las imágenes",
+      "session_closed_elsewhere": "Este chat se cerró fuera de esta ventana."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -19822,7 +19829,9 @@
         "needs_setup": "Requiere configuración",
         "not_connected": "No conectado",
         "off_by_admin": "Desactivado por el administrador",
-        "status_unavailable": "Estado no disponible"
+        "status_unavailable": "Estado no disponible",
+        "not_set_up": "Sin configurar",
+        "owner_only": "Solo el propietario de la Crew puede conectar o cambiar canales."
       },
       "chatPanel": {
         "advanced": "Avanzado",
@@ -20222,7 +20231,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "En Windows, las pulsaciones de teclas toman el foco del teclado y los clics por coordenadas mueven el cursor real: en esta plataforma no existe una vía de entrada por aplicación.",
         "the_app_lists_in_computer_use_json_could_not_be": "No se pudieron leer las listas de aplicaciones de computer_use.json, así que aquí se muestran vacías. El agente sigue rechazando toda acción que dependa de ellas hasta que el archivo sea JSON válido.",
         "your_chat_sessions_were_restarted_so_this_takes": "Tus sesiones de chat se reiniciaron para que esto surta efecto de inmediato — Kiro lee su lista de herramientas una vez por sesión, así que un chat abierto no lo habría detectado de otro modo. Tus mensajes siguen ahí; el agente vuelve a leer su contexto en tu siguiente mensaje.",
-        "your_chat_sessions_were_restarted": "Tus sesiones de chat se reiniciaron. Tus mensajes siguen ahí."
+        "your_chat_sessions_were_restarted": "Tus sesiones de chat se reiniciaron. Tus mensajes siguen ahí.",
+        "linux_unsupported": "Computer Use no está disponible en Linux en esta versión."
       },
       "crewmatesSection": {
         "reply_threads": "Hilos de respuesta en los mensajes del chat de un Bot",
@@ -20620,7 +20630,8 @@
         "warm_cap_tune_with_many": "Hasta {{count}} crews remotos se mantienen calientes (túnel activo) a la vez; el resto se reconecta cuando se necesita. Ajústalo con <setting/>.",
         "warm_cap_tune_with_other": "Hasta {{count}} crews remotos se mantienen calientes (túnel activo) a la vez; el resto se reconecta cuando se necesita. Ajústalo con <setting/>.",
         "remote_port_value": "· puerto remoto {{port}}",
-        "filled_in_from_a_link": "Rellenado desde un enlace. Comprueba que el host SSH sea una máquina que usas y luego añádelo."
+        "filled_in_from_a_link": "Rellenado desde un enlace. Comprueba que el host SSH sea una máquina que usas y luego añádelo.",
+        "owner_only": "Solo el propietario de la Crew puede gestionar las crews remotas."
       },
       "notificationsPanel": {
         "deliver_floor_all": "Todas las prioridades",
@@ -21796,7 +21807,8 @@
         "recheck": "Comprobar de nuevo",
         "language": "Idioma",
         "language_for_spoken_replies": "Idioma de las respuestas leídas",
-        "language_provider_default": "Predeterminado del proveedor"
+        "language_provider_default": "Predeterminado del proveedor",
+        "no_engine_teammate": "El equipo de la Crew no tiene un motor de voz integrado. Elige otro proveedor o pide al propietario de la Crew que instale uno."
       },
       "weComPanel": {
         "allow_all_bypass_note": "La opción de permitir a todos está activada: se omite la lista de userid de arriba. Se conserva para cuando vuelvas a desactivarla.",
@@ -21994,7 +22006,9 @@
         "turn_off_disconnects": "Al desactivarlo, tus otros dispositivos se desconectan en unos segundos.",
         "turn_off_needs_terminal": "Para volver a activarlo más adelante, ejecuta <command/> en una terminal de la máquina que ejecuta {{productName}} y luego reinicia {{productName}}.",
         "turn_off_failed": "No se pudo desactivar el control remoto",
-        "load_failed": "No se pudo leer la configuración del control remoto"
+        "load_failed": "No se pudo leer la configuración del control remoto",
+        "on_teammate": "El control remoto está activado. Las personas con acceso pueden llegar a esta Crew a través del relay de Kiro.",
+        "owner_only": "Solo el propietario de la Crew puede desactivar el control remoto."
       },
       "remoteCrewPanel": {
         "added_by_you": "Añadido por ti",
@@ -23331,7 +23345,11 @@
     "envOverrideWithSettingRef": "El heartbeat está desactivado porque <settingRef/> está configurada en este entorno. Desactívala para gestionar la telemetría aquí.",
     "localDataBodyOn": "Registros de uso y contexto. Las métricas de rendimiento se están registrando ahora en este dispositivo.",
     "localDataBodyOff": "Registros de uso y contexto. Las métricas de rendimiento no se están registrando ahora en este dispositivo.",
-    "doNotTrackCaption": "Definir DO_NOT_TRACK=1 desactiva las métricas de rendimiento y la señal."
+    "doNotTrackCaption": "Definir DO_NOT_TRACK=1 desactiva las métricas de rendimiento y la señal.",
+    "localDataTitleShared": "Se queda en el equipo de la Crew",
+    "localDataBodyShared": "Registros de uso y contexto. Las métricas de rendimiento se registran en el equipo de la Crew de forma predeterminada. El interruptor «Registrar métricas» en Configuración > Privacidad muestra si están activadas ahora.",
+    "localDataBodyOnShared": "Registros de uso y contexto. Las métricas de rendimiento se están registrando ahora en el equipo de la Crew.",
+    "localDataBodyOffShared": "Registros de uso y contexto. Las métricas de rendimiento no se están registrando ahora en el equipo de la Crew."
   },
   "settings": {
     "advanced": {
@@ -23498,7 +23516,7 @@
       "wakatime_api_key_description": "Autentica la sincronización de actividad de programación cuando WakaTime está habilitado.",
       "custom_title": "Secretos personalizados",
       "custom_description": "Claves cifradas para servidores MCP y ajustes .env. Haz referencia a una como secret://YOUR_KEY; el valor nunca se muestra en el chat.",
-      "custom_authorize": "Para que un agente en un chat de miembro llame a una API aprobada con un secreto, concede al agente {{server}} y luego ejecuta el comando de abajo en una shell o en la página Terminal.",
+      "custom_authorize": "Para que un agente en un chat de miembro llame a una API aprobada con un secreto, concede al agente {{server}} y luego ejecuta el comando de abajo en una shell del equipo donde se ejecuta la Crew.",
       "custom_empty": "Todavía no hay secretos personalizados almacenados. Añade uno para hacerle referencia desde un servidor MCP como secret://YOUR_KEY.",
       "managed_config_error": "Algunas credenciales automáticas están ocultas porque no se pudo leer $KIROCREW_HOME/config.json (predeterminado: ~/.kiro/crew/config.json).",
       "managed_name_hint": "Al guardar aquí se actualiza {{name}} en la sección de credenciales automáticas. — {{productName}}",
@@ -23579,7 +23597,9 @@
       "use_in_tool_title": "Usar en una herramienta",
       "use_in_tool_tip": "Pégalo en la configuración de una herramienta, como el entorno de un servidor MCP. La herramienta recibe el valor al ejecutarse; el valor nunca aparece allí.",
       "advanced_title": "Avanzado",
-      "api_call_label": "Llamada a la API"
+      "api_call_label": "Llamada a la API",
+      "owner_only": "Solo el propietario de la Crew puede ver o cambiar los secretos.",
+      "relay_unavailable": "Los secretos solo se pueden ver y cambiar en el equipo de la Crew, no a través de Remote Control."
     }
   },
   "store": {
@@ -24640,7 +24660,8 @@
     "preview_save_failed": "No se pudo guardar el ajuste de Crew compartida.",
     "preview_restart_failed": "No se pudo reiniciar el gateway.",
     "raised_by": "Iniciado por {{name}}",
-    "take_over_keeps_draft": "Toma el control para escribir. El borrador de {{name}} se conserva."
+    "take_over_keeps_draft": "Toma el control para escribir. El borrador de {{name}} se conserva.",
+    "hero_shared_team": "Compartido con tu equipo"
   },
   "milestone": {
     "pr_watch": {

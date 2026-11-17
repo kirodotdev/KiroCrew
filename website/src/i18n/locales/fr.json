@@ -356,7 +356,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "Les notes de version de {{release}} ne sont pas encore publiées. Affichage des notes de {{shown}} à la place.",
     "titlebar_menu_disabled_footer": "Certains éléments ne sont pas disponibles ici. Les raccourcis affichés fonctionnent toujours.",
-    "titlebar_menu_refused_notice": "« {{item}} » ne s'est pas exécuté. Cette commande n'est pas disponible ici pour le moment."
+    "titlebar_menu_refused_notice": "« {{item}} » ne s'est pas exécuté. Cette commande n'est pas disponible ici pour le moment.",
+    "relay_remote_control_off": "L'accès à distance à cette Crew est désactivé",
+    "relay_remote_control_off_detail": "Le propriétaire de la Crew a désactivé l'accès à distance. Lui seul peut le réactiver, depuis l'ordinateur de la Crew.",
+    "relay_remote_control_off_waits": "Cette page se reconnectera d'elle-même dès qu'il sera réactivé.",
+    "terminal_owner_only": "Seul le propriétaire de la Crew peut utiliser le terminal."
   },
   "appSdk": {
     "chatSession": {
@@ -7958,7 +7962,8 @@
       "opens_own_window": "S'ouvre dans sa propre fenêtre",
       "new_crew": "Nouveau",
       "seen_not_saved": "Impossible d’enregistrer que tu l’as vu. Il apparaîtra de nouveau comme nouveau.",
-      "open_crew_failed": "Impossible d’ouvrir {{name}}."
+      "open_crew_failed": "Impossible d’ouvrir {{name}}.",
+      "sign_in": "Se connecter à Kiro"
     },
     "instancesViewport": {
       "connecting": "Connexion…",
@@ -11904,7 +11909,8 @@
         "reason_work": "Du travail y est encore en cours. La fermer arrête ce travail.",
         "reason_setting": "Rien n’y est en cours. Cette question s’affiche parce que « {{setting}} » est activé dans les Paramètres.",
         "actions": "La conversation et le brouillon de ta zone de message sont conservés, et tu peux rouvrir la session plus tard.",
-        "confirm": "Fermer la session"
+        "confirm": "Fermer la session",
+        "reason_other_starter": "{{name}} a lancé ce chat. Le fermer le ferme pour tout le monde dans ce Crew."
       },
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "duplicate_unreachable": "Impossible de dupliquer cette session. {{productName}} est injoignable. Vérifie ta connexion et réessaie.",
@@ -14894,7 +14900,8 @@
       "jump_to_new_one": "{{count}} nouveau · Aller en bas",
       "jump_to_new_other": "{{count}} nouveaux · Aller en bas",
       "jump_to_new_many": "{{count}} nouveaux · Aller en bas",
-      "could_not_repair_images": "Impossible de réparer les images"
+      "could_not_repair_images": "Impossible de réparer les images",
+      "session_closed_elsewhere": "Cette conversation a été fermée en dehors de cette fenêtre."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -16375,17 +16382,17 @@
         "bridge_approvals_desc": "Quand une approbation d'outil s'ouvre, {{productName}} envoie une note à son sujet aux apps de chat que dessert le pont de notifications. La cloche du tableau de bord ne sonne pas pour elle et la note n'a pas encore de boutons : réponds donc à l'approbation dans le tableau de bord.",
         "bridge_approvals_desc_summary": "Prévient une app de chat connectée quand un outil a besoin d'une approbation.",
         "chat_runtime_sharing": "Partage du runtime ACP",
-        "chat_runtime_sharing_desc": "Les chats dont l'interrupteur ci-dessous est activé partagent un programme en arrière-plan et répondent en même temps\u202f: une longue réponse dans un chat ne fait jamais attendre les autres. Si le programme partagé s'arrête, tous ses chats redémarrent. Les chats ne voient jamais les messages des autres. Un programme exécute jusqu'à 10 chats par défaut. Les chats Kiro CLI, les chats KAS sur un moteur plus ancien et les chats dont l'interrupteur est désactivé gardent chacun leur programme. S'applique aux chats démarrés après le changement. Désactivé, chaque nouveau chat lance son propre programme, qui utilise plus de mémoire.",
+        "chat_runtime_sharing_desc": "Les chats dont l'interrupteur ci-dessous est activé partagent un programme en arrière-plan et répondent en même temps : une longue réponse dans un chat ne fait jamais attendre les autres. Si le programme partagé s'arrête, tous ses chats redémarrent. Les chats ne voient jamais les messages des autres. Un programme exécute jusqu'à 10 chats par défaut. Les chats Kiro CLI, les chats KAS sur un moteur plus ancien et les chats dont l'interrupteur est désactivé gardent chacun leur programme. S'applique aux chats démarrés après le changement. Désactivé, chaque nouveau chat lance son propre programme, qui utilise plus de mémoire.",
         "chat_runtime_sharing_harness_kas": "Discussions avec Kiro Agent",
-        "chat_runtime_sharing_harness_kas_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_kas_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_codex": "Discussions avec OpenAI Codex",
-        "chat_runtime_sharing_harness_codex_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_codex_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_claude": "Discussions avec Claude Code",
-        "chat_runtime_sharing_harness_claude_desc": "Activé\u202f: elles partagent un programme et utilisent moins de mémoire. Désactivé\u202f: chaque nouvelle discussion a le sien.",
+        "chat_runtime_sharing_harness_claude_desc": "Activé : elles partagent un programme et utilisent moins de mémoire. Désactivé : chaque nouvelle discussion a le sien.",
         "chat_runtime_sharing_harness_goose": "Discussions avec Goose",
-        "chat_runtime_sharing_harness_goose_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_goose_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_deepseek": "Discussions avec DeepSeek Harness",
-        "chat_runtime_sharing_harness_deepseek_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_deepseek_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_save_failed": "Impossible d’enregistrer l’interrupteur. Réessaie.",
         "chat_runtime_sharing_harness_load_failed": "Impossible de charger ces interrupteurs.",
         "chat_runtime_sharing_desc_summary": "Économise la mémoire de l'ordinateur en exécutant plusieurs chats dans un même programme en arrière-plan. Tu choisis quels types de chat le partagent. Ils répondent en même temps et ne voient pas les messages des autres. Désactivé, chaque nouveau chat retrouve son propre programme.",
@@ -19822,7 +19829,9 @@
         "needs_setup": "Configuration requise",
         "not_connected": "Non connecté",
         "off_by_admin": "Désactivé par l'admin",
-        "status_unavailable": "Statut indisponible"
+        "status_unavailable": "Statut indisponible",
+        "not_set_up": "Non configuré",
+        "owner_only": "Seul le propriétaire de la Crew peut connecter ou modifier les canaux."
       },
       "chatPanel": {
         "advanced": "Avancé",
@@ -20222,7 +20231,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Sous Windows, les frappes prennent le focus du clavier et les clics par coordonnées déplacent votre curseur réel — cette plateforme n'a aucune voie d'entrée par application.",
         "the_app_lists_in_computer_use_json_could_not_be": "Les listes d’applications de computer_use.json n’ont pas pu être lues, elles apparaissent donc vides ici. L’agent continue de refuser toute action qui en dépend jusqu’à ce que le fichier soit du JSON valide.",
         "your_chat_sessions_were_restarted_so_this_takes": "Tes sessions de chat ont été redémarrées pour que cela prenne effet immédiatement — Kiro lit sa liste d’outils une seule fois par session, sinon un chat ouvert ne l’aurait pas prise en compte. Tes messages sont toujours là ; l’agent relit son contexte à ton prochain message.",
-        "your_chat_sessions_were_restarted": "Tes sessions de chat ont été redémarrées. Tes messages sont toujours là."
+        "your_chat_sessions_were_restarted": "Tes sessions de chat ont été redémarrées. Tes messages sont toujours là.",
+        "linux_unsupported": "Computer Use n'est pas disponible sous Linux dans cette version."
       },
       "crewmatesSection": {
         "reply_threads": "Fils de réponse sur les messages du chat d'un Bot",
@@ -20620,7 +20630,8 @@
         "warm_cap_tune_with_many": "Jusqu'à {{count}} crews distantes restent chaudes (tunnel actif) à la fois ; les autres se reconnectent à la demande. À régler avec <setting/>.",
         "warm_cap_tune_with_other": "Jusqu'à {{count}} crews distantes restent chaudes (tunnel actif) à la fois ; les autres se reconnectent à la demande. À régler avec <setting/>.",
         "remote_port_value": "· port distant {{port}}",
-        "filled_in_from_a_link": "Rempli depuis un lien. Vérifie que l’hôte SSH est une machine que tu utilises, puis ajoute-la."
+        "filled_in_from_a_link": "Rempli depuis un lien. Vérifie que l’hôte SSH est une machine que tu utilises, puis ajoute-la.",
+        "owner_only": "Seul le propriétaire de la Crew peut gérer les crews distantes."
       },
       "notificationsPanel": {
         "deliver_floor_all": "Toutes les priorités",
@@ -21796,7 +21807,8 @@
         "recheck": "Vérifier à nouveau",
         "language": "Langue",
         "language_for_spoken_replies": "Langue des réponses vocales",
-        "language_provider_default": "Valeur par défaut du fournisseur"
+        "language_provider_default": "Valeur par défaut du fournisseur",
+        "no_engine_teammate": "L’ordinateur de la Crew n’a pas de moteur vocal intégré. Choisis un autre fournisseur ou demande au propriétaire de la Crew d’en installer un."
       },
       "weComPanel": {
         "allow_all_bypass_note": "L’autorisation générale est activée : la liste de userid ci-dessus est ignorée. Elle est conservée pour ton retour en arrière.",
@@ -21994,7 +22006,9 @@
         "turn_off_disconnects": "Le désactiver déconnecte tes autres appareils en quelques secondes.",
         "turn_off_needs_terminal": "Pour le réactiver plus tard, exécute <command/> dans un terminal de la machine qui exécute {{productName}}, puis redémarre {{productName}}.",
         "turn_off_failed": "Impossible de désactiver le contrôle à distance",
-        "load_failed": "Impossible de lire le réglage du contrôle à distance"
+        "load_failed": "Impossible de lire le réglage du contrôle à distance",
+        "on_teammate": "Le contrôle à distance est activé. Les personnes qui ont accès peuvent rejoindre cette Crew via le relais Kiro.",
+        "owner_only": "Seul le propriétaire de la Crew peut désactiver le contrôle à distance."
       },
       "remoteCrewPanel": {
         "added_by_you": "Ajoutée par toi",
@@ -22932,7 +22946,7 @@
       "profile_autocompact": "Résumer les anciens messages à",
       "profile_autocompact_inherited_hint": "Suit la valeur par défaut dans Réglages → Chat, actuellement {{pct}}",
       "profile_autocompact_inherited_harness": "{{backend}} résume ces chats selon son propre calendrier. Choisis un pourcentage pour résumer plus tôt.",
-      "profile_autocompact_hint": "Quand les chats de {{name}} remplissent cette part de la fenêtre de contexte du modèle, les anciens messages sont résumés. Plus bas coûte moins à chaque exécution de {{name}}\u202f; plus haut garde plus de détails.",
+      "profile_autocompact_hint": "Quand les chats de {{name}} remplissent cette part de la fenêtre de contexte du modèle, les anciens messages sont résumés. Plus bas coûte moins à chaque exécution de {{name}} ; plus haut garde plus de détails.",
       "profile_autocompact_thread_override": "Ce chat a son propre seuil, {{pct}}, qui reste en vigueur ici.",
       "profile_autocompact_read_failed": "Impossible de lire la valeur par défaut actuelle de ce chat.",
       "profile_autocompact_inherited_default": "Suit la valeur par défaut dans Réglages → Chat",
@@ -23331,7 +23345,11 @@
     "envOverrideWithSettingRef": "Le heartbeat est désactivé car <settingRef/> est définie dans cet environnement. Supprimez-la pour gérer la télémétrie ici.",
     "localDataBodyOn": "Journaux d’usage et de contexte. Les métriques de performance sont enregistrées sur cet appareil en ce moment.",
     "localDataBodyOff": "Journaux d’usage et de contexte. Les métriques de performance ne sont pas enregistrées sur cet appareil en ce moment.",
-    "doNotTrackCaption": "Définir DO_NOT_TRACK=1 désactive les métriques de performance et le signal ."
+    "doNotTrackCaption": "Définir DO_NOT_TRACK=1 désactive les métriques de performance et le signal .",
+    "localDataTitleShared": "Reste sur l’ordinateur de la Crew",
+    "localDataBodyShared": "Journaux d’usage et de contexte. Les métriques de performance sont enregistrées sur l’ordinateur de la Crew par défaut. L'interrupteur « Enregistrer les métriques » dans Paramètres > Confidentialité indique si elles sont activées en ce moment.",
+    "localDataBodyOnShared": "Journaux d’usage et de contexte. Les métriques de performance sont enregistrées sur l’ordinateur de la Crew en ce moment.",
+    "localDataBodyOffShared": "Journaux d’usage et de contexte. Les métriques de performance ne sont pas enregistrées sur l’ordinateur de la Crew en ce moment."
   },
   "settings": {
     "advanced": {
@@ -23498,7 +23516,7 @@
       "wakatime_api_key_description": "Authentifie la synchronisation de l’activité de programmation lorsque WakaTime est activé.",
       "custom_title": "Secrets personnalisés",
       "custom_description": "Clés chiffrées pour les serveurs MCP et les paramètres .env. Référence-en une sous la forme secret://YOUR_KEY ; la valeur n’est jamais affichée dans le chat.",
-      "custom_authorize": "Pour permettre à un agent d’un chat de membre d’appeler une API approuvée avec un secret, accorde à l’agent {{server}}, puis lance la commande ci-dessous dans un shell ou sur la page Terminal.",
+      "custom_authorize": "Pour permettre à un agent d’un chat de membre d’appeler une API approuvée avec un secret, accorde à l’agent {{server}}, puis lance la commande ci-dessous dans un shell sur l’ordinateur qui exécute la Crew.",
       "custom_empty": "Aucun secret personnalisé stocké pour l'instant. Ajoutez-en un pour le référencer depuis un serveur MCP sous la forme secret://YOUR_KEY.",
       "managed_config_error": "Certains identifiants automatiques sont masqués, car $KIROCREW_HOME/config.json (par défaut : ~/.kiro/crew/config.json) n’a pas pu être lu.",
       "managed_name_hint": "Enregistrer ici met à jour {{name}} dans la section des identifiants automatiques. — {{productName}}",
@@ -23577,9 +23595,11 @@
       "usage_kind_browser_signin": "Connexion dans le navigateur",
       "usage_signs_in_at": "Te connecte sur {{host}}",
       "use_in_tool_title": "Utiliser dans un outil",
-      "use_in_tool_tip": "Colle ceci dans les réglages d’un outil, par exemple l’environnement d’un serveur MCP. L’outil reçoit la valeur quand il s’exécute\u202f; la valeur elle-même n’y apparaît jamais.",
+      "use_in_tool_tip": "Colle ceci dans les réglages d’un outil, par exemple l’environnement d’un serveur MCP. L’outil reçoit la valeur quand il s’exécute ; la valeur elle-même n’y apparaît jamais.",
       "advanced_title": "Avancé",
-      "api_call_label": "Appel d’API"
+      "api_call_label": "Appel d’API",
+      "owner_only": "Seul le propriétaire de la Crew peut voir ou modifier les secrets.",
+      "relay_unavailable": "Les secrets ne peuvent être consultés et modifiés que sur l'ordinateur de la Crew, pas via Remote Control."
     }
   },
   "store": {
@@ -24640,7 +24660,8 @@
     "preview_save_failed": "Impossible d’enregistrer le réglage de Crew partagée.",
     "preview_restart_failed": "Impossible de redémarrer la passerelle.",
     "raised_by": "Lancé par {{name}}",
-    "take_over_keeps_draft": "Prends la main pour écrire. Le brouillon de {{name}} lui reste."
+    "take_over_keeps_draft": "Prends la main pour écrire. Le brouillon de {{name}} lui reste.",
+    "hero_shared_team": "Partagé avec ton équipe"
   },
   "milestone": {
     "crew_mode": {

@@ -292,6 +292,7 @@ describe('KiroSignInCard', () => {
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
     queryClient.setQueryData(['kiro-usage'], ADA)
+    queryClient.setQueryData(['relay-viewer', 'crews'], { crews: [{ endpointId: 'e1', name: 'Team Crew' }] })
     const reset = vi.spyOn(queryClient, 'resetQueries')
     const summary = await screen.findByTestId('kiro-sign-in-summary')
     expect(summary).toHaveAttribute('data-lapsed', 'false')
@@ -312,6 +313,8 @@ describe('KiroSignInCard', () => {
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
     // Its usage reading names it, so that drops too (#36156): no stale name on the next sign-in.
     expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
+    // The Team Crews list was the signed-out account's: it is not shown as online any longer.
+    expect(queryClient.getQueryData(['relay-viewer', 'crews'])).toBeUndefined()
     // The status re-read now says signed out, which unmounts the summary; the
     // "applies to processes started from now on" note lives on the card, so
     // it is still there beside the chooser the user now sees.

@@ -110,6 +110,11 @@ UsageSource = Callable[[], Mapping[str, Mapping[str, int]]]
 _usage_source: UsageSource | None = None
 
 
+class UsageOff(LookupError):
+    """Raised by a usage source when per-person work is not counted at all (fair
+    admission off), as opposed to a reader that failed."""
+
+
 def observe(principal: Principal, device: str = "") -> None:
     _REGISTRY.observe(principal, device)
 
@@ -194,9 +199,13 @@ def people_view(
     local_ids = local_owner_principal_ids(owner_id)
     viewer_is_owner = not viewer.is_unknown and viewer.id in owner_ids
     usage: Mapping[str, Mapping[str, int]] | None = None
+    # No counter at all is a setting, not a fault, so the page says nothing about it.
+    usage_off = _usage_source is None
     if _usage_source is not None:
         try:
             usage = _usage_source()
+        except UsageOff:
+            usage, usage_off = None, True
         except Exception:
             usage = None
     rows: list[dict[str, Any]] = []
@@ -302,5 +311,6 @@ def people_view(
         "directory": {"state": "unavailable"},
         "observed_since": reg.started_at,
         "usage_available": usage is not None,
+        "usage_off": usage_off,
         "people": rows,
     }

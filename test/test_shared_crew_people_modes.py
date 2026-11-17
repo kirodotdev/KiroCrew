@@ -118,6 +118,22 @@ class TestModes:
         assert invalid["mode"] == "invalid"
         assert invalid["team_config"]["reason"] == "network_identity_config_unreadable"
 
+    def test_mode_view_names_every_id_the_owner_writes_under(self):
+        """The owner opened from the startup link closes a chat the desktop app
+        started: both ids are theirs, so the page must not read it as another
+        person's chat."""
+        from kiro_crew.shared_crew import owner
+
+        viewer = local_operator_principal("local-startup")
+        body = crew_mode.mode_view(viewer, [], setup_paths=NO_PATHS, crew_id="g1")
+        assert set(owner.owner_principal_ids()) <= set(body["viewer_ids"])
+        assert local_operator_principal("local-app").id in body["viewer_ids"]
+        assert viewer.id in body["viewer_ids"]
+
+    def test_mode_view_names_only_a_teammates_own_id(self):
+        body = crew_mode.mode_view(ALICE, [], setup_paths=NO_PATHS, crew_id="g1")
+        assert body["viewer_ids"] == [ALICE.id]
+
 
 # ── the gate refuses shared access while the team setup is invalid ──
 

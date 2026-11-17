@@ -281,11 +281,22 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
   // `origin` passed crewOrigin(), so it always starts with https:.
   const wssOrigin = "wss:" + origin.slice("https:".length);
   const watched = { urls: [`${origin}/*`, `${wssOrigin}/*`] };
+  // Whether the current main-frame load was already reported, so a load seen by
+  // both the network hook and `did-navigate`, in either order, raises one notice.
+  let mainFrameReported = false;
+  const reportMainFrame = (code) => {
+    if (mainFrameReported) return;
+    mainFrameReported = true;
+    unreachable(`main frame ${code}`);
+  };
+  // The status the page on screen was served with: 0 before the first answer.
+  let lastMainFrameStatus = 0;
   ses.webRequest.onCompleted(watched, (details) => {
     if (details.resourceType === "mainFrame") {
+      lastMainFrameStatus = details.statusCode;
       if (details.statusCode >= 400) log(`main frame ${details.statusCode}`);
       notify(statusListeners, details.statusCode);
-      if (details.statusCode >= 500) unreachable(`main frame ${details.statusCode}`);
+      if (details.statusCode >= 500) reportMainFrame(details.statusCode);
       return;
     }
     if (!retryPath(origin, details.url)) {
@@ -298,6 +309,21 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     if (details.statusCode === 101) return;
     if (details.statusCode >= 400) failedAttempt(relayError(details.responseHeaders) === CREW_NOT_CONNECTED);
     else watch.ok();
+  });
+  // A reload the page's service worker answers never reaches the network hook as a
+  // main-frame request, so the relay's 503 would render as its bare JSON body.
+  // `did-navigate` reports the status the document was served with either way.
+  // Only a new document from the Crew starts a new load: the notice's own
+  // about:blank, and a same-document navigation, keep the current report.
+  view.webContents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
+    if (isMainFrame !== false && !inPlace && String(url || "").startsWith(origin)) mainFrameReported = false;
+  });
+  view.webContents.on("did-navigate", (_event, url, code) => {
+    if (!String(url || "").startsWith(origin)) return;
+    if (code > 0) lastMainFrameStatus = code;
+    if (!(code >= 500)) return;
+    log(`main frame ${code}`);
+    reportMainFrame(code);
   });
   ses.webRequest.onErrorOccurred(watched, (details) => {
     if (details.error === ABORTED) return;
@@ -341,6 +367,7 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     reload: () => {
       if (closed) return;
       watch.reset();
+      lastMainFrameStatus = 0;
       if (!noticeView) { view.webContents.reload(); return; }
       removeNotice();
       Promise.resolve(view.webContents.loadURL(`${origin}/`)).catch(() => log("load failed"));
@@ -360,6 +387,9 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
         .catch(() => log("notice failed to load"));
     },
     isClosed: () => closed,
+    // Whether the page on screen is an error the relay answered rather than the
+    // Crew (a 4xx or 5xx document, or a notice), so opening it again reloads.
+    showsError: () => noticeView !== null || lastMainFrameStatus >= 400,
     onMainFrameStatus: (cb) => { statusListeners.push(cb); },
     onClosed: (cb) => { closedListeners.push(cb); },
     onVisibilityChange: (cb) => { visibilityListeners.push(cb); },

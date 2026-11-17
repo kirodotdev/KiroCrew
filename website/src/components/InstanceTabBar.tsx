@@ -35,6 +35,7 @@ import { useRelayTabs } from '../lib/relayCrewPanes'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import { isRelayHostOffline } from '../utils/relayHostOffline'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
@@ -1469,7 +1470,8 @@ export default function InstanceTabBar({
   // connected or remembered — unless the list itself could not be read, in
   // which case the bar exists to say so (an empty bar and a failed read used to
   // look identical).
-  const listFailure = !disabled && instancesQuery.error
+  // The relay's host-offline answer is the offline cover's to say, not this bar's.
+  const listFailure = !disabled && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.

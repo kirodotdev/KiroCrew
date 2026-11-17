@@ -56,4 +56,25 @@ describe('useMobileConnect', () => {
     const { container } = render(<MobileConnectDialog mobileConnect={{ ...result.current, mobileConnectOpen: true }} />)
     expect(container).toBeEmptyDOMElement()
   })
+
+  it('a teammate gets no row: pairing a phone is the machine owner\'s', async () => {
+    vi.spyOn(api, 'mobileConnectMethods').mockResolvedValue({ methods: [{ id: 'a', kind: 'login_link' }] } as never)
+    vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(false)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useMobileConnect('k'), {
+      wrapper: ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    // Both reads settled: the methods would draw a row, and the owner check said no.
+    await waitFor(() => expect(result.current.mobileConnectQuery.isSuccess).toBe(true))
+    await waitFor(() => expect(client.isFetching()).toBe(0))
+    expect(result.current.hasRenderableMobileConnect).toBe(false)
+    expect(result.current.mobileConnectKinds).toEqual([])
+  })
+
+  it('the owner keeps the row', async () => {
+    vi.spyOn(api, 'mobileConnectMethods').mockResolvedValue({ methods: [{ id: 'a', kind: 'login_link' }] } as never)
+    vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
+    const { result } = renderHook(() => useMobileConnect('k'), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.hasRenderableMobileConnect).toBe(true))
+  })
 })

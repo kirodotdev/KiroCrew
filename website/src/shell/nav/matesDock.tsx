@@ -7,6 +7,7 @@
  * page and app icons use. Dragging reuses the app list's sortable row and
  * sensors, so the two lists reorder with one gesture.
  */
+import { isRelayHostOffline } from '../../utils/relayHostOffline'
 import { useQuery, useQueryClient, useMutation, type QueryClient } from '@tanstack/react-query'
 import { DndContext, DragOverlay, closestCenter, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -67,7 +68,7 @@ export function useDockMates() {
   const open = useOpenMember()
   const top = ordered.slice(0, DOCK_MATES_LIMIT)
   const pulledIn = open && !top.some(m => m.name === open) ? ordered.filter(m => m.name === open) : []
-  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner, loadError: error, errorUpdatedAt, dataUpdatedAt }
+  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner && !isRelayHostOffline(error), loadError: error, errorUpdatedAt, dataUpdatedAt }
 }
 
 function isNotOwnerRefusal(error: unknown): boolean {

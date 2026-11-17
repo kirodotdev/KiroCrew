@@ -20,6 +20,8 @@ export interface CrewModeResponse {
   /** Keys the remembered list filter; stable for this Crew's data home. */
   crew_id: string
   viewer?: PublicPrincipal
+  /** Every principal id that names the viewer (the owner writes under several). */
+  viewer_ids?: string[]
   team_config: { state: 'not_configured' | 'valid' | 'invalid'; reason: string; capability: string; cause: string }
   /** A Console link the server validated (https, named host). Only in console mode. */
   console: { state: 'available' | 'not_offered' | 'invalid'; url: string }

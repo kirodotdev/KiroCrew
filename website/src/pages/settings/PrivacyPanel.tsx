@@ -12,6 +12,7 @@ import {
 import { isKiroTelemetryRow } from '../../components/privacyNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 
 /** GET /api/telemetry/collection */
 interface CollectionStatus {
@@ -253,10 +254,11 @@ export function PrivacyPanel() {
     queryKey: ['telemetryCollection'],
     queryFn: () => api.collectionStatus(),
   })
+  const { notOwner } = useViewerIsNotOwner()
   return (
     <div aria-label={i18nT('privacyDisclosure.settingsLabel')}>
       <Card>
-        <PrivacyDisclosureSections recordingOn={statusQ.data?.enabled} />
+        <PrivacyDisclosureSections recordingOn={statusQ.data?.enabled} shared={notOwner} />
       </Card>
 
       <Card>

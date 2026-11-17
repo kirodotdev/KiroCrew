@@ -109,11 +109,18 @@ export function isRelayCrewOnline(entry: RelayCrewEntry): boolean {
 /** Presence that means the host still renews its lease, so its tunnel is probably coming back. */
 const RECONNECTING_PRESENCE = new Set(['CONNECTED', 'HEARTBEAT_LATE'])
 
+/** How long after its last lease renewal a Crew with no tunnel still reads as
+ *  reconnecting. A host renews about once a minute, so two missed renewals mean it
+ *  stopped (it was shut down, or its owner turned Remote Control off) even while
+ *  presence has not caught up. */
+export const RELAY_CREW_RECONNECTING_FOR_MS = 2 * 60_000
+
 /** A row's status words. A row that can't be opened takes its words from presence, and
  *  adds when the Crew was last seen when the control plane gave a time (as Kiro Mobile does). */
-export function relayCrewStatusText(entry: RelayCrewEntry): string {
+export function relayCrewStatusText(entry: RelayCrewEntry, now: number = Date.now()): string {
   if (isRelayCrewOnline(entry)) return i18nT('components.relayCrews.online')
-  const words = RECONNECTING_PRESENCE.has((entry.presence || '').toUpperCase())
+  const stale = !!entry.lastSeenAt && now - entry.lastSeenAt * 1000 > RELAY_CREW_RECONNECTING_FOR_MS
+  const words = RECONNECTING_PRESENCE.has((entry.presence || '').toUpperCase()) && !stale
     ? i18nT('components.relayCrews.reconnecting')
     : i18nT('components.relayCrews.offline')
   if (!entry.lastSeenAt) return words

@@ -1010,8 +1010,11 @@ export default function ChatPane({
               // at scroll top and pass under it once the reader scrolls. The
               // dock floats over the scroller's bottom edge, so the scroller
               // pays for that strip too, plus the same clearance ChatPage keeps
-              // between its last line and the glass.
-              scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0 },
+              // between its last line and the glass. The same two strips are the
+              // scroller's scroll padding, so a control the keyboard or a
+              // `scrollIntoView` brings into view (a card's buttons) lands clear
+              // of both bands instead of under the glass.
+              scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0, scrollPaddingTop: 12 + topInset, scrollPaddingBottom: dockH + DOCK_CLEARANCE_PX },
               // handOff off, like the list's own notices (see `handOff` above).
               earlier: pagesActiveSlot
                 ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }

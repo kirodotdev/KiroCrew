@@ -1203,7 +1203,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           <ChatEmptyState
             mode={mode} dispatch={dispatch} pendingAgent={pendingAgent} pendingAgentKindRef={pendingAgentKindRef} pendingModel={pendingModel} newSessionRef={newSessionRef}
             newSlotFailed={newSlotFailed} newSlotMutation={newSlotMutation} setNewSlotFailed={setNewSlotFailed} setSidError={setSidError}
-            closedElsewhere={!!popout && !!ownChatClosedElsewhere}
+            closedElsewhere={!!ownChatClosedElsewhere} inPopout={!!popout}
           />
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>

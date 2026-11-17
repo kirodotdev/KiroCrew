@@ -28,6 +28,7 @@ import {
   type SecretsListResponse,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { SecretsOwnerOnlyNotice, useSecretsOwnerOnly } from './secretsOwnerOnly'
 import { fmtDateTime } from '../../i18n/format'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
@@ -1031,6 +1032,7 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
       return api.secretsList()
     },
   })
+  const ownerOnly = useSecretsOwnerOnly(listError)
 
   const names = useMemo(() => data?.names ?? [], [data?.names])
   const managed = useMemo(() => data?.managed ?? [], [data?.managed])
@@ -1129,6 +1131,8 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
       {data?.managed_error && <ErrorNotice variant="inline" askAgent={!hasAnyDraft} message={i18nT('settings.secrets.managed_config_error')} />}
     </div>
   ) : undefined
+
+  if (ownerOnly) return <SecretsOwnerOnlyNotice held={ownerOnly} error={listError} />
 
   if (isLoading) {
     return <p className="text-sm text-muted">{i18nT('settings.secrets.loading')}</p>

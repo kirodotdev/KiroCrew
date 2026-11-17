@@ -326,7 +326,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。",
     "titlebar_menu_disabled_footer": "一部の項目はここでは利用できません。表示されているショートカットは引き続き使用できます。",
-    "titlebar_menu_refused_notice": "「{{item}}」は実行されませんでした。このコマンドは現在ここでは利用できません。"
+    "titlebar_menu_refused_notice": "「{{item}}」は実行されませんでした。このコマンドは現在ここでは利用できません。",
+    "relay_remote_control_off": "この Crew へのリモートアクセスはオフです",
+    "relay_remote_control_off_detail": "Crew のオーナーがリモートアクセスをオフにしました。オンに戻せるのはオーナーだけで、Crew のコンピューターから操作します。",
+    "relay_remote_control_off_waits": "オンに戻ると、このページは自動的に再接続します。",
+    "terminal_owner_only": "ターミナルを使えるのは Crew のオーナーだけです。"
   },
   "appSdk": {
     "chatSession": {
@@ -7542,7 +7546,8 @@
       "opens_own_window": "専用のウィンドウで開きます",
       "new_crew": "新規",
       "seen_not_saved": "確認済みとして保存できませんでした。また新規として表示されます。",
-      "open_crew_failed": "{{name}} を開けませんでした。"
+      "open_crew_failed": "{{name}} を開けませんでした。",
+      "sign_in": "Kiro にサインイン"
     },
     "instancesViewport": {
       "connecting": "接続中…",
@@ -11384,7 +11389,8 @@
         "reason_work": "まだ実行中の作業があります。閉じるとその作業は停止します。",
         "reason_setting": "実行中のものはありません。設定で「{{setting}}」がオンになっているため確認しています。",
         "actions": "会話とメッセージ欄の下書きは保持され、後でセッションを再び開けます。",
-        "confirm": "セッションを閉じる"
+        "confirm": "セッションを閉じる",
+        "reason_other_starter": "このチャットは {{name}} さんが始めました。閉じると、この Crew の全員に対して閉じられます。"
       },
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "duplicate_unreachable": "このセッションを複製できませんでした。{{productName}} に接続できませんでした。接続を確認してもう一度お試しください。",
@@ -14210,7 +14216,8 @@
       "comments_sent_other": "{{count}}件のコメントを送信しました",
       "your_crewmate": "あなたの Bot",
       "jump_to_new_other": "新着 {{count}} 件 · 最新へ",
-      "could_not_repair_images": "画像を修復できませんでした"
+      "could_not_repair_images": "画像を修復できませんでした",
+      "session_closed_elsewhere": "このチャットはこのウィンドウの外で閉じられました。"
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -18800,7 +18807,9 @@
         "needs_setup": "セットアップが必要",
         "not_connected": "接続されていません",
         "off_by_admin": "管理者により無効",
-        "status_unavailable": "ステータスが利用不可"
+        "status_unavailable": "ステータスが利用不可",
+        "not_set_up": "未設定",
+        "owner_only": "チャンネルを接続または変更できるのは Crew のオーナーだけです。"
       },
       "chatPanel": {
         "advanced": "詳細設定",
@@ -19192,7 +19201,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Windows では、キー入力はキーボードフォーカスを奪い、座標クリックは実際のカーソルを動かします。このプラットフォームにはアプリ単位の入力経路がありません。",
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json のアプリリストが読み取れなかったため、ここに空で表示されています。ファイルが有効な JSON になるまで、エージェントはそれらに依存するすべてのアクションを拒否します。",
         "your_chat_sessions_were_restarted_so_this_takes": "チャットセッションが再起動されたため、すぐに反映されます。Kiro はセッションごとにツールリストを一度だけ読み取るため、オープンなチャットではそれを取得できなかったはずです。メッセージはまだそこにあります。エージェントは次のメッセージでコンテキストを再度読み取ります。",
-        "your_chat_sessions_were_restarted": "チャットセッションを再起動しました。メッセージはそのまま残っています。"
+        "your_chat_sessions_were_restarted": "チャットセッションを再起動しました。メッセージはそのまま残っています。",
+        "linux_unsupported": "このリリースでは、Computer Use は Linux で利用できません。"
       },
       "crewmatesSection": {
         "reply_threads": "Bot のチャットメッセージへの返信スレッド",
@@ -19588,7 +19598,8 @@
         "remote_port_ttl": "· リモートポート {{port}} · ttl {{ttl}}",
         "warm_cap_tune_with_other": "最大 {{count}} 件のリモートクルーが同時にウォーム状態（ライブトンネル）を保ちます。残りはオンデマンドで再接続します。<setting/> で調整できます。",
         "remote_port_value": "· リモートポート {{port}}",
-        "filled_in_from_a_link": "リンクから入力されました。SSH ホストが自分の使っているマシンか確認してから追加してください。"
+        "filled_in_from_a_link": "リンクから入力されました。SSH ホストが自分の使っているマシンか確認してから追加してください。",
+        "owner_only": "リモートのクルーを管理できるのは Crew のオーナーだけです。"
       },
       "notificationsPanel": {
         "deliver_floor_all": "すべての優先度",
@@ -20730,7 +20741,8 @@
         "recheck": "再確認",
         "language": "言語",
         "language_for_spoken_replies": "音声で読み上げる返信の言語",
-        "language_provider_default": "プロバイダーの既定"
+        "language_provider_default": "プロバイダーの既定",
+        "no_engine_teammate": "Crew のコンピューターには組み込みの音声エンジンがありません。別のプロバイダーを選ぶか、Crew のオーナーにインストールを依頼してください。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "すべて許可がオンになっています。上記のユーザーIDリストはスキップされます。戻すときのために保持されています。",
@@ -20928,7 +20940,9 @@
         "turn_off_disconnects": "オフにすると、ほかのデバイスは数秒以内に切断されます。",
         "turn_off_needs_terminal": "あとで再度オンにするには、{{productName}} が実行されているマシンのターミナルで <command/> を実行し、{{productName}} を再起動してください。",
         "turn_off_failed": "リモートコントロールをオフにできませんでした",
-        "load_failed": "リモートコントロールの設定を読み込めませんでした"
+        "load_failed": "リモートコントロールの設定を読み込めませんでした",
+        "on_teammate": "リモートコントロールはオンです。アクセス権のある人は Kiro リレー経由でこの Crew にアクセスできます。",
+        "owner_only": "リモートコントロールをオフにできるのは Crew のオーナーだけです。"
       },
       "remoteCrewPanel": {
         "added_by_you": "自分で追加",
@@ -22209,7 +22223,11 @@
     "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。",
     "localDataBodyOn": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在このデバイスに記録されています。",
     "localDataBodyOff": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在このデバイスに記録されていません。",
-    "doNotTrackCaption": "DO_NOT_TRACK=1 を設定すると、パフォーマンスメトリクスとハートビートがオフになります。"
+    "doNotTrackCaption": "DO_NOT_TRACK=1 を設定すると、パフォーマンスメトリクスとハートビートがオフになります。",
+    "localDataTitleShared": "Crew のコンピューターに保持",
+    "localDataBodyShared": "使用状況とコンテキスト記録。パフォーマンスメトリクスは既定で Crew のコンピューターに記録されます。現在オンかどうかは［設定 > プライバシー］の「メトリクスを記録」スイッチで確認できます。",
+    "localDataBodyOnShared": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在 Crew のコンピューターに記録されています。",
+    "localDataBodyOffShared": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在 Crew のコンピューターに記録されていません。"
   },
   "settings": {
     "advanced": {
@@ -22376,7 +22394,7 @@
       "wakatime_api_key_description": "WakaTime が有効な場合にコーディングアクティビティの同期を認証します。",
       "custom_title": "カスタムシークレット",
       "custom_description": "MCP サーバーと .env 設定用の暗号化されたキーです。secret://YOUR_KEY として参照します。値がチャットに表示されることはありません。",
-      "custom_authorize": "メンバーチャットのエージェントがシークレットを使って承認済みの API を 1 つ呼び出せるようにするには、エージェントに {{server}} を付与してから、シェルまたはターミナルページで下のコマンドを実行します。",
+      "custom_authorize": "メンバーチャットのエージェントがシークレットを使って承認済みの API を 1 つ呼び出せるようにするには、エージェントに {{server}} を付与してから、Crew を実行しているコンピューターのシェルで下のコマンドを実行します。",
       "custom_empty": "カスタムシークレットはまだ保存されていません。追加すると、MCP サーバーから secret://YOUR_KEY として参照できます。",
       "managed_config_error": "$KIROCREW_HOME/config.json（既定: ~/.kiro/crew/config.json）を読み取れなかったため、一部の自動認証情報が非表示です。",
       "managed_name_hint": "ここに保存すると、自動認証情報セクションの {{name}} が更新されます。 — {{productName}}",
@@ -22457,7 +22475,9 @@
       "use_in_tool_title": "ツールで使う",
       "use_in_tool_tip": "これをツールの設定（MCP サーバーの環境変数など）に貼り付けます。ツールは実行時に値を受け取り、値そのものがそこに表示されることはありません。",
       "advanced_title": "詳細",
-      "api_call_label": "API 呼び出し"
+      "api_call_label": "API 呼び出し",
+      "owner_only": "シークレットを表示または変更できるのは Crew のオーナーだけです。",
+      "relay_unavailable": "シークレットの表示と変更は Crew のコンピューター上でのみ行えます。Remote Control からはできません。"
     }
   },
   "store": {
@@ -23512,7 +23532,8 @@
     "preview_save_failed": "共有 Crew の設定を保存できませんでした。",
     "preview_restart_failed": "ゲートウェイを再起動できませんでした。",
     "raised_by": "{{name}} さんの操作",
-    "take_over_keeps_draft": "引き継いで入力できます。{{name}} さんの下書きはそのまま残ります。"
+    "take_over_keeps_draft": "引き継いで入力できます。{{name}} さんの下書きはそのまま残ります。",
+    "hero_shared_team": "チームと共有中"
   },
   "milestone": {
     "pr_watch": {

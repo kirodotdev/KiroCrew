@@ -34,6 +34,7 @@ from kiro_crew.shared_crew.codec import SCHEMA_VERSION
 from kiro_crew.shared_crew.contracts import CapabilityState, Principal, PrincipalKind, Provenance
 from kiro_crew.shared_crew.identity import PROVIDER_LOCAL, local_operator_principal
 from kiro_crew.shared_crew.owner import LOCAL_BOOTSTRAP_SUBJECTS
+from kiro_crew.shared_crew.owner import viewer_ids as owner_viewer_ids
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,9 @@ def mode_view(
         "mode": mode,
         "crew_id": crew_id,
         "viewer": viewer.to_public_dict(),
+        # Every principal id that names the viewer: the owner is one person under
+        # each id in ``owner.owner_principal_ids``, anyone else has only their own.
+        "viewer_ids": sorted({viewer.id} | owner_viewer_ids(viewer, owner_id)),
         "team_config": team,
         "console": {"state": "not_offered", "url": ""},
         "adapters": {k: dict(v) for k, v in setup_paths.items() if isinstance(v, Mapping)},

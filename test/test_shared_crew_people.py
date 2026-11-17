@@ -75,6 +75,7 @@ def test_the_view_joins_observed_people_with_session_creators():
     assert bob["sessions_created"] == 2 and bob["first_seen_at"] is None
     assert view["directory"] == {"state": "unavailable"}
     assert view["usage_available"] is False and alice["usage"] is None
+    assert view["usage_off"] is True
 
 
 def test_an_unknown_viewer_is_never_marked_as_a_row():
@@ -98,4 +99,17 @@ def test_usage_is_reported_when_a_source_is_wired_and_unavailable_when_it_fails(
     people.register_usage_source(_broken)
     view = people.people_view(ALICE, [])
     assert view["usage_available"] is False
+    assert view["usage_off"] is False, "a reader that failed is not usage switched off"
     assert view["people"][0]["usage"] is None
+
+
+def test_usage_switched_off_is_not_a_failure():
+    people.observe(ALICE)
+
+    def _off() -> dict[str, dict[str, int]]:
+        raise people.UsageOff("fair admission is off")
+
+    people.register_usage_source(_off)
+    view = people.people_view(ALICE, [])
+    assert view["usage_available"] is False
+    assert view["usage_off"] is True

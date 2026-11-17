@@ -1037,8 +1037,10 @@ export default function NewCrewmateDialog({
             refuses a second submit. The `aria-disabled:` classes mirror the
             `disabled:` look so the held button is pixel-for-pixel the same.
             `wsModalOpen` keeps its native lock: the panel is inert then and
-            focus is in the nested dialog, so nothing here is focused. */}
-        <Btn primary type="submit" disabled={wsModalOpen} aria-disabled={busy || undefined} aria-busy={busy || undefined} className="min-h-11 w-full justify-center sm:min-h-9 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
+            focus is in the nested dialog, so nothing here is focused. An
+            empty name holds it the same way: pressing it still says why
+            (`create_name_required`) instead of doing nothing. */}
+        <Btn primary type="submit" disabled={wsModalOpen} aria-disabled={busy || !name.trim() || undefined} aria-busy={busy || undefined} className="min-h-11 w-full justify-center sm:min-h-9 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
           {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
         </Btn>
       </div>

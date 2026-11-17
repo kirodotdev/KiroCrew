@@ -85,6 +85,15 @@ describe('PrivacyPanel metric-recording switch', () => {
     expect(await screen.findByText('Usage and context records. Performance metrics are not being recorded on this device now.')).toBeInTheDocument()
   })
 
+  it('tells a teammate the records stay on the Crew\'s computer, not their device', async () => {
+    const owner = vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(false)
+    mount({ enabled: true })
+    expect(await screen.findByText("Stays on the Crew's computer")).toBeInTheDocument()
+    expect(await screen.findByText("Usage and context records. Performance metrics are being recorded on the Crew's computer now.")).toBeInTheDocument()
+    expect(screen.queryByText('Stays on your device')).not.toBeInTheDocument()
+    owner.mockRestore()
+  })
+
   it('says what DO_NOT_TRACK turns off above its shell lines', async () => {
     mount()
     expect(

@@ -20,8 +20,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
-import { useSearchParams } from 'react-router-dom'
-import { ExternalLink } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { ExternalLink, LogIn } from 'lucide-react'
 import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
 import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
@@ -35,6 +35,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { joinSentences } from '../i18n/format'
 import { accountProviderLabel } from './kasProviderLabel'
+import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 
 /** One Team Crew. A failed Open keeps the menu open and shows why under the row.
  *  The agent hand-off is a sibling menu item, so the keyboard reaches it. */
@@ -110,6 +111,7 @@ function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
   retrying: boolean
 }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const { retryAt } = refusal
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -126,6 +128,14 @@ function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
       <div className="px-3 pb-1">
         <ErrorNotice id="relay-crews-list-refusal" variant="inline" message={refusal.text} testId="relay-crews-list-refusal" />
       </div>
+      {/* Signed out of Kiro: Sign in first. The agent hand-off stays too, since a
+          backend that does not run on the Kiro sign-in can still take it. */}
+      {refusal.code === 'SIGNED_OUT' && (
+        <DropdownMenuItem data-testid="relay-crews-list-sign-in" aria-describedby="relay-crews-list-refusal" onSelect={() => navigate(KIRO_SIGN_IN_PATH)}>
+          <LogIn size={14} aria-hidden="true" />
+          {t('components.relayCrews.sign_in')}
+        </DropdownMenuItem>
+      )}
       <ErrorNoticeMenuItem Item={DropdownMenuItem} message={refusal.text} describedBy="relay-crews-list-refusal" />
       {refusal.requestId && (
         <div className="px-3 pb-1 text-[11px] text-muted font-mono select-all" data-testid="relay-crews-list-details">
