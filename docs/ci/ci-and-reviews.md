@@ -4743,27 +4743,31 @@ Two subtleties:
   earlier.
 
   Two limits keep the sweep's dispatches from draining that REST budget (#34120). A
-  pending or failure re-fire waits while another check-run on the head is still queued
-  or in progress, because the next completion re-opens it; the last completion
-  re-fires once, and a check-run still running `STALE_MINUTES` past the newest
-  completion stops holding it. The green arm is never held, since a stale green permits
+  pending or failure re-fire waits while another check-run of a monitored lane is still
+  queued or in progress on the head, because the next completion re-opens it; the last
+  completion re-fires once, and a check-run still running `STALE_MINUTES` past the
+  newest completion stops holding it. A check-run of a workflow readiness does not
+  monitor (`macOS Tests (on demand)`) never holds it: the scan counts a running
+  check-run only when its workflow is in `pr-readiness.yml`'s `workflow_run` list
+  (`MONITORED_WORKFLOWS`, pinned by `test_readiness_sweep_scan.py`) or it has no
+  workflow run (another app's check). The green arm is never held, since a stale green permits
   a merge. Before dispatching, the sweep reads `/rate_limit` (free) and dispatches only
   as many recomputes as fit above a reserve of `RATE_RESERVE_PERCENT` of the pool's limit
   at `DISPATCH_COST` each; the rest wait for the next tick, oldest first. A stale-green
   rescue is never deferred by the reserve. `test_pr_readiness_sweep_debounce.py` pins both.
 
   One pending is re-fired without check evidence: a re-check hold (`readiness check(s)
-  changed since evaluation; re-checking <lane>`) on a head whose check-runs have all
-  completed, once it is `STALE_MINUTES` old. The hold counts on its lane's completion
-  arriving as evidence, and it can miss it: the hold step may run minutes after its
+  changed since evaluation; re-checking <lane>`) on a head whose check-runs the scan
+  counts have all completed, once it is `STALE_MINUTES` old. The hold counts on its lane's
+  completion arriving as evidence, and it can miss it: the hold step may run minutes after its
   `in_progress` event, after the lane's check-runs finished but before its workflow run
   did, so every completion on the head predates the hold's floor and nothing later
   lands. PR #21258 sat on `re-checking Sensitive Change Review` for 16 days that way,
   every check complete. The recompute replaces the hold's description, so the retry
   fires once; a recompute that writes a hold again (its lane's workflow run is still
   open with no check-run left running) is retried once per `STALE_MINUTES` for as long
-  as that run stays open. A partial rollup read, or any check-run still running, leaves
-  the hold to the evidence
+  as that run stays open. A partial rollup read, or any check-run the scan counts
+  still running, leaves the hold to the evidence
   path. `test_pr_readiness_sweep_recheck_hold.py` pins the rule and the prefix.
 
   `in_progress` stays because it is the one signal completions cannot carry: a monitored
