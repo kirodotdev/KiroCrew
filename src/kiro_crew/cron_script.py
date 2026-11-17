@@ -43,7 +43,6 @@ from kiro_crew.cron_script_child_env import (
     _clean_cron_env,
     _default_temp_dir,
     _discard_unused_cron_scratch,
-    _overlay_job_env,
     _publish_script_session_token,
     _record_cron_scratch_owner,
     _resolve_dial_port,
@@ -51,6 +50,7 @@ from kiro_crew.cron_script_child_env import (
 from kiro_crew.cron_script_grants import (
     GRANT_REAPPROVAL_ERRORS,
     _filter_grant_env,
+    _overlay_job_env,
     _read_script_body,
     _scrub_grant_values,
     _secret_env_precheck,
@@ -451,7 +451,7 @@ def run_script_sandboxed(
         # Build clean env: secrets (Slack tokens, owner id, internal secret)
         # are never inherited; the internal secret is passed via the 0600 file.
         clean_env = _clean_cron_env()
-        _overlay_job_env(clean_env, job_env)
+        _overlay_job_env(clean_env, job_env, granted=stdin_payload is not None, job_id=job_id)
         if cron_scratch is not None:
             # The whole temp triple, not only the keys the gateway carried, so
             # a child under a unit with no TMPDIR stops defaulting to /tmp.
@@ -982,7 +982,7 @@ def run_command_sandboxed(
         )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
-        _overlay_job_env(clean_env, job_env)
+        _overlay_job_env(clean_env, job_env, granted=False, job_id=job_id)
         if cron_scratch is not None:
             # The whole temp triple, not only the keys the gateway carried, so
             # a child under a unit with no TMPDIR stops defaulting to /tmp.
@@ -1140,6 +1140,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
     from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_agents_dir  # noqa: F401
+    from kiro_crew.config.sections_agent_env import _agent_env_denied  # noqa: F401
     from kiro_crew.cron_script_child_env import (  # noqa: F401
         _CRON_ENV_DENY,
         _GRANTED_ENV_KEYS,
