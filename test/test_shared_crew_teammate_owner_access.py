@@ -4,7 +4,8 @@ The rule lives in one place (``shared_crew.teammate_access``, read by
 ``source_providers.is_owner_dashboard_request``), so these tests pin the predicate
 for each sharing path (an SSM invite guest, a Tailscale collaborator, a relay
 teammate), the Terminal exclusion, that every registered Terminal route is excluded,
-and a few owner routes end to end: the Bots roster, Trust and YOLO, the app list.
+and a few owner routes end to end: the Bots roster, Trust and YOLO, the app list, and
+the portability export and import, which stay the owner's.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from kiro_crew.shared_crew.identity import KIRO_ISSUER, PROVIDER_KIRO, ssm_princ
 from kiro_crew.shared_crew.teammate_access import (
     TERMINAL_PATH_PREFIXES,
     is_admission_config_key,
+    is_owner_only_for_teammates,
     is_shared_crew_teammate,
     is_ssm_guest_request,
     is_terminal_request,
@@ -257,6 +259,29 @@ def test_a_credential_that_outlives_access_stays_the_owners(
     """A webhook bearer, an app secret, the vault or a channel's token would survive the
     teammate's access being revoked."""
     assert not is_owner_dashboard_request(_request(who, path, method))
+    assert is_owner_dashboard_request(_request("owner", path, method))
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/portability/export"),
+        ("GET", "/api/portability/export?include_sessions=true"),
+        ("GET", "/api/portability/export/"),
+        ("POST", "/api/portability/import"),
+        ("POST", "/api/portability/import?mode=replace"),
+    ],
+)
+@pytest.mark.parametrize("who", TEAMMATES)
+def test_the_portability_export_and_import_stay_the_owners(
+    who: str, method: str, path: str
+) -> None:
+    """The export hands out the raw config, whose channel tokens and agent env secrets a
+    teammate would keep after their access is revoked, and the import overwrites it."""
+    request = _request(who, path, method)
+    assert is_shared_crew_teammate(request)
+    assert is_owner_only_for_teammates(request)
+    assert not is_owner_dashboard_request(request)
     assert is_owner_dashboard_request(_request("owner", path, method))
 
 
@@ -528,6 +553,72 @@ async def test_the_owner_on_a_tailnet_path_gets_the_terminal_list(state, monkeyp
         body = await resp.json()
     assert resp.status == 200
     assert body.get("enabled") is not False
+
+
+@pytest.fixture
+def portability_reached(monkeypatch) -> list[str]:
+    """Which of the export and the import a request got past the owner gate into.
+
+    Each stops at its first step after the gate, so no archive is built or applied.
+    """
+    from kiro_crew.dashboard.handlers import portability
+
+    reached: list[str] = []
+
+    def _plan_export(**_kwargs: Any) -> Any:
+        reached.append("export")
+        raise RuntimeError("stop before building an archive")
+
+    async def _read_upload_file(_request: web.Request) -> Any:
+        reached.append("import")
+        return None, web.json_response({"error": "stop", "code": "file_field_required"}, status=400)
+
+    monkeypatch.setattr(portability, "plan_export", _plan_export)
+    monkeypatch.setattr(portability, "_read_upload_file", _read_upload_file)
+    monkeypatch.setattr(portability, "_sel", MagicMock)
+    return reached
+
+
+def _portability_app(state, who: str) -> web.Application:
+    from kiro_crew.dashboard.handlers import portability
+
+    @web.middleware
+    async def as_who(request: web.Request, handler):
+        _publish(request, who)
+        return await handler(request)
+
+    app = web.Application(middlewares=[as_who])
+    app["state"] = state
+    app.router.add_get("/api/portability/export", portability.api_portability_export)
+    app.router.add_post("/api/portability/import", portability.api_portability_import)
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", TEAMMATES)
+async def test_a_teammate_is_refused_the_portability_export_and_import(
+    state, portability_reached: list[str], who: str
+) -> None:
+    async with TestClient(TestServer(_portability_app(state, who))) as client:
+        export = await client.get("/api/portability/export")
+        export_body = await export.json()
+        imported = await client.post("/api/portability/import?mode=replace")
+        import_body = await imported.json()
+    assert (export.status, export_body["code"]) == (403, "owner_only")
+    assert (imported.status, import_body["code"]) == (403, "owner_only")
+    assert portability_reached == []
+
+
+@pytest.mark.asyncio
+async def test_the_owner_still_reaches_the_portability_export_and_import(
+    state, portability_reached: list[str]
+) -> None:
+    async with TestClient(TestServer(_portability_app(state, "owner"))) as client:
+        export = await client.get("/api/portability/export")
+        imported = await client.post("/api/portability/import?mode=replace")
+    assert export.status == 500
+    assert imported.status == 400
+    assert portability_reached == ["export", "import"]
 
 
 @pytest.mark.parametrize("who", TEAMMATES)
