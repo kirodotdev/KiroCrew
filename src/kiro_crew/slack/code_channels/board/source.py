@@ -18,7 +18,8 @@ slot itself.
 
 PROJECTION TO THE PUBLISHED SET happens here too: each item becomes a
 :class:`~.model.WorkerRow`, whose fields are exactly what the exemption admits
-into the channel (see :mod:`.model`).
+into the channel (see :mod:`.model`). PR and CI are filled in later by the
+workspace refresh, which owns the forge reads.
 """
 
 from __future__ import annotations
@@ -484,6 +485,7 @@ def project(
                 step=step,
                 turn_started_at=turn_started_at,
                 approval_key=approval_key,
+                pr_number=pr if type(pr := getattr(item, "pr", None)) is int and pr > 0 else 0,
             )
         )
     goal = model.safe_line(

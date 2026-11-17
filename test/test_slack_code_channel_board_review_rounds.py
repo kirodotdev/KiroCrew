@@ -1354,8 +1354,9 @@ def test_a_display_cut_never_shows_part_of_a_path(monkeypatch):
 def test_a_structured_path_is_redacted_whole_before_it_is_shortened(monkeypatch):
     _on_posix(monkeypatch)
     key = SAMPLE_SLACK_BOT_TOKEN
-    step = _published_step(monkeypatch, "read", f"/opt/x/{key}/notes.txt")
-    assert key not in step and key[-8:] not in step and step.startswith("Reading ")
+    # The key in the segment the shortening keeps (M3), so only the redaction removes it.
+    step = _published_step(monkeypatch, "read", f"/opt/x/{key}.txt")
+    assert key not in step and key[-8:] not in step and step.startswith("Reading …/")
 
 
 @pytest.mark.parametrize(
@@ -1373,7 +1374,7 @@ def test_a_published_line_published_again_is_unchanged(monkeypatch, case):
     assert _published(monkeypatch, once, project) == once
 
 
-def test_running_helpers_counts_the_watched_sessions_running_but_the_channels_own(tmp_path):
+def test_running_helpers_names_the_watched_sessions_running_but_the_channels_own(tmp_path):
     h = _Harness(tmp_path)
     h.svc._seen["T1:C1"] = {
         "dashboard_chat-cond": (True, 1),  # the channel's own session
@@ -1381,10 +1382,18 @@ def test_running_helpers_counts_the_watched_sessions_running_but_the_channels_ow
         "chat-w2": (False, 1),  # idle
         "dashboard_chat-w3": (True, 2),
     }
-    assert h.svc.running_helpers(suite._FakeBinding()) == 2
-    assert h.svc.running_helpers(suite._FakeBinding(channel_id="C2")) == 0
+    # The board's titles name them (the reply links each); one with no board row: "".
+    h.svc._boards["T1:C1"] = model.BoardSnapshot(
+        rows=(_row(title="Fix login", session_key="dashboard_chat-w3"),)
+    )
+    h.svc._board_owner["T1:C1"] = "chat-cond"
+    assert h.svc.running_helpers(suite._FakeBinding()) == [
+        ("chat-w1", ""),
+        ("dashboard_chat-w3", "Fix login"),
+    ]
+    assert h.svc.running_helpers(suite._FakeBinding(channel_id="C2")) == []
     source.set_scope_predicate(lambda state, b: False)  # shared: the board withholds them
-    assert h.svc.running_helpers(suite._FakeBinding()) == 0
+    assert h.svc.running_helpers(suite._FakeBinding()) == []
 
 
 def test_a_stop_clears_the_suspended_the_last_turn_left_for_the_worker_status(monkeypatch):

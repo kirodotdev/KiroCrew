@@ -920,10 +920,16 @@ def test_the_redaction_sees_the_raw_text_before_any_rewrite(monkeypatch):
     """A rewrite (here a host name inside a key) must not break a credential's shape first."""
     key = SAMPLE_SLACK_BOT_TOKEN
     monkeypatch.setattr(model, "_host_names", lambda: (key[-8:-4],))
+    seen: list[str] = []
+    real = model._redact
+    monkeypatch.setattr(model, "_redact", lambda text: seen.append(text) or real(text))
     step = model.step_text(
         model.Activity(tool_kind="execute", tool_input=json.dumps({"command": f"aws --key {key}"}))
     )
     assert key[-4:] not in step and key[:8] not in step
+    # M1: the rewrite alone erases this key, so the order is what is checked: the
+    # redactor's first input still holds the key whole, and it took the key out.
+    assert seen and key in seen[0] and key not in real(seen[0])
 
 
 @pytest.mark.parametrize(
@@ -1024,7 +1030,7 @@ def test_the_retry_is_taken_even_when_the_publish_raises(monkeypatch):
 def test_a_huge_command_is_scrubbed_without_quadratic_backtracking(filler):
     """A 80k-character heredoc must not stall the board pass (it was minutes before)."""
     key = SAMPLE_SLACK_BOT_TOKEN
-    command = f"{filler} {key} x.internal"
+    command = f"{key} {filler} x.internal"  # the key inside the cut (M2)
     hits: list[str] = []
     # Bounded by input size, not wall time: the rewrite sees at most 8x the cut.
     original = model._host_paths_out

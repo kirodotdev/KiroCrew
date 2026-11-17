@@ -2313,7 +2313,8 @@ hands each piece to its own worker session through its work ledger; the board ma
 that ledger and those sessions visible without anyone reading a transcript. It is
 published by the workspace's own per-channel refresh (`WorkspaceService.refresh`, which
 `workspace/core.install` builds with `board.read` and `board.publish`), in the same
-pass as the context bar and the Code tab (which show only the channel's own work), read
+pass as the context bar (the channel's own work) and the Code tab (the channel's own
+diff, then each worker's own commits), read
 and published outside the channel lock (held only to merge the refresh's own fields back, as for any refresh), with
 one coalescing worker. No store is added: the board's pointers (`board_ts`,
 `board_digest`, `board_pinned`, `board_alerts`) are fields of the channel's existing
@@ -2372,6 +2373,68 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   screen), then the cut, then the redaction once more, last. Never the acceptance
   bar, the conductor's decision, the event log or any transcript text; `WorkerRow`
   has no field that could carry one.
+- **PR and CI per row (`workspace/worker_prs.py`).** A row's PR number is the one its
+  worker reported (the ledger item's `pr`). Each refresh then reads, for every row
+  the plan or the rows look can show, that PR (`pr.pull_request_by_number`, a URL
+  built from the CHANNEL's own repository, so a number can only name a PR there) or,
+  with no number, the PR of its branch (`find_pull_request`), concurrently, off the
+  channel lock, cached per `(host, repo, branch, number)` for 60 s (900 s once
+  merged or closed); `gh` unavailable keeps the last reading. A worker whose
+  session's project folder names another repository (`origin`, cached 60 s; host and
+  slug compared case-insensitively), or an `origin` the channel cannot compare (a
+  nested group, a path), gets no branch, PR
+  or CI on its row, the Code tab or the wrap-up. A number the forge did
+  not confirm is shown without a link or CI. The row shows `PR #12` (linked when the
+  URL is https and the redaction leaves it whole), its state when not open, and for
+  a live PR its checks as `CI 4/6 passing · 2 running`, read from the internal
+  `ciCounts` marker `chip_refresh._fetch_check_status` adds (passed/total/running,
+  skipped checks not counted; stripped before the dashboard's chip cache). The
+  summary line ends `· N PR(s) open` when any are. A failing forge read leaves the
+  rows without PR and CI; the board still goes out.
+- **Combined Code tab (`workspace/worker_diff.py`, `workspace/code_tab.py`).** With a board, the tab is the
+  channel's own diff under `Channel branch <branch> (conductor)`, then one group per
+  worker with commits of its own under `Helper agent <n> of <total>: <title> · branch
+  <branch> · <PR> · <state>`: `merge-base(channel HEAD, worker branch) .. worker
+  branch`, read from the channel checkout's object database (nothing in the worker's
+  tree is opened), only for a branch name `git_ops.branch_commit` accepts and only
+  when that tip is reachable from the HEAD of the worker's own tree (a branch a worker
+  only claims shows nothing). Each group passes the channel diff's whole-file screen
+  and the outbound redaction (`service._screen_worker`, `_worker_header`). The helper
+  agents' reads share one raw budget (`_SCAN_BYTES`, as large as the channel's own
+  read's, which has its own) and the view's `MAX_VIEW_BYTES`; a worker left out
+  (past a budget, beyond the plan, whose read failed, or every one when git lists no
+  tree) adds the truncation note.
+  The tab is sent only while the board's scope admits the channel: `setView` takes a
+  required `gate` that `CodeChannelsClient._call` asks last, after every await and
+  right before the raw send (one that raises refuses). Refused there, the channel's
+  own diff goes instead. The workspace record notes whether the tab up may carry
+  helper agents (`WorkspaceRecord.diff_workers`, kept across a restart and a rebind,
+  as the tab id is): set before a send built with the board (written to the store
+  first; nothing is sent when that write fails), kept when that send's answer is lost
+  (`maybe_applied`) or the pass is cancelled, and cleared only when a channel-only tab
+  lands (sent even when its digest matches the stored one, which may predate a lost
+  send), a removal is answered, or Slack refused the send (which also undoes its
+  write-ahead on disk). The store's record cap never drops an owed record. A tab whose id was never learned is replaced by `code_tab.WITHDRAWN_TAB`
+  (one fixed line, nothing of the channel's or any helper agent's), whose answered id is
+  then removed; Slack keeps one diff tab per channel. A replacement Slack refuses keeps
+  the record owed, is tried again after 60 s doubling to 30 minutes (not on every
+  refresh), and tells the owner once through a dashboard notice. While the channel's
+  views are off (`slack_off`) nothing can be sent: the flag stays on disk, the pass is
+  not re-armed, and the first pass after the rebind that clears `slack_off` does the
+  takedown. A channel set to Off or Review refuses the board but not Slack writes, so
+  its owed tab comes down in the refresh that finds it so. A channel Slack no longer
+  lists us as the agent of is unbound, and its owed tab is taken down just after the
+  unbind (so no refresh's send gate, which reads the stored binding, admits helper
+  agents' content past it), best effort: Slack may already refuse that write, and nothing retries it while the channel is unbound. While the flag is on disk and
+  the board is refused (Off or Review, or an On channel whose scope refuses it), the
+  watch keeps arming that pass whatever the board message or the workers do, at most
+  once per 60 s doubling to 30 minutes (not while `slack_off`), so a retry chain broken
+  by a restart, a timer let go or an archive is picked up again. When nothing can be built (git unavailable, or a repaired
+  record with no diff base), such a tab is taken down once the scope refuses the
+  board, and kept while it admits it (the pass re-armed until it builds). A tab that
+  carries workers, or must replace one, and did not land (a refusal, a failed or lost
+  send or removal, a build that raised) leaves the pass unsent and re-armed, with or
+  without a board read. The context bar carries no worker.
 - **State mapping.** `accepted` -> done; `rejected`/`abandoned` -> closed; a pending
   tool approval -> waiting on you; a turn in flight or queued -> working; a
   `blocked`/`question` report the conductor already answered (a `decide` at or after
@@ -2441,10 +2504,21 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   fenced by their admission alone, and the next helper-agent turn start or end,
   approval, ledger move or re-arm republishes the board and the needs-you
   replies. A `!stop` while the session is idle but helper agents run
-  answers "This channel's session isn't running, but N helper agents still are",
-  pointing at the work board, where each one's chat has **Stop generation**.
+  answers "This channel's session isn't running, but N helper agents still are" and
+  names them (`render.idle_stop_text` over `BoardCache.running_helpers`): up to
+  `render.STOP_NAMED` (5) by their board title, each linked to its chat with the board's
+  own link builder (no click token; a URL `_linkable` refuses leaves the escaped title
+  in bold), the rest, and any the board has no row for, folded into "and N more" and
+  pointed at the lead session (linked when it can be). With no dashboard origin it
+  names them and says to open them from the lead session in the dashboard. It never
+  sends anyone to the board for a link: there only a waiting-on-you row carries one.
+  Each one's chat has **Stop generation**.
 - **When a board write goes out.** The board's four writes (post, edit, pin and a
-  needs-you reply) are its only writes of the helper agents' content. Each
+  needs-you reply) are its only writes of the helper agents' content, besides the
+  Code tab (gated as above), the wrap-up's outcome lines (below) and the idle
+  `!stop` reply's helper titles, which `_stop_bound` reads under the board's
+  scope check (`BoardCache.running_helpers`) after its last await, right before the
+  send. Each board write
   re-checks the board's scope and the Stop right before its raw send, with no await
   between: the publisher asks `_writable` right before the raw client's call, which
   awaits nothing before its HTTP request. `test_slack_code_channel_commit_point.py`
@@ -2568,7 +2642,13 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   reached the session is disarmed. SEL: `slack.code_channel.command`.
 - **Wrap-up and archive.** `code_channel_wrap_up` (asked for by `/wrap-up`, or by
   the turn-end fallback when that turn ends without the call) posts the summary,
-  the facts the gateway knows (branch, PR, CI, changes, uncommitted work) and an
+  the facts the gateway knows (branch, PR, CI, changes, uncommitted work; in a
+  conductor-led channel one outcome line per helper agent, `board.outcome_lines`:
+  `• Fix login: PR #12 merged`, `rejected, PR #9 closed`, `lost, no PR`, read from
+  the board this process published for this conductor or a fresh scope-checked
+  read filled as a refresh fills it, at most 1,800 characters then `+N more`, and
+  left out when the board's scope refuses the channel at the post or at any re-send
+  of the message) and an
   **Archive channel** button, records it as `code_channel.summary_message`, sets
   `Binding.wrapped_up_at`; an older wrap-up's button goes stale. A click is
   authorized like a message (allowed user, origin admits the bot) and must come

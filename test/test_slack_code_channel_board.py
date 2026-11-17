@@ -31,6 +31,8 @@ from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.code_channels import board as board_pkg
 from kiro_crew.slack.code_channels import surface, surface_store
 from kiro_crew.slack.code_channels.board import model, publisher, render, source
+from kiro_crew.slack.code_channels.client import SCOPE_REFUSED
+from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.store import Binding
 from kiro_crew.slack.code_channels.workspace import git_ops, service
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup
@@ -303,7 +305,7 @@ def test_read_board_projects_only_the_published_set_with_liveness():
     first, second, third, fourth = snap.rows
     assert first.state == model.WAITING_ON_YOU and first.branch == "feat/login"
     assert first.summary == "Which OAuth app?" and "<!here>" not in first.title
-    assert first.session_key == "chat-w1"  # the reported PR number is not shown
+    assert first.pr_number == 12 and first.session_key == "chat-w1"
     assert second.state == model.LOST  # its session is gone and it never said done
     assert second.branch == ""  # an option-shaped branch is never kept
     assert third.state == model.IDLE and third.session_key == ""  # not dispatched yet
@@ -324,6 +326,12 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "step",
         "turn_started_at",
         "approval_key",  # a digest only for the alert token, never rendered
+        # The worker's PR: its reported number, then the channel repository's read.
+        "pr_number",
+        "pr_url",
+        "pr_state",
+        "pr_ci",
+        "pr_checks",
     }
 
 
@@ -500,6 +508,59 @@ def test_needs_you_text_mentions_the_owner_and_links():
     assert text.startswith("<@U0OWNER> *Pick an icon* is waiting on you: Which of the two?")
     assert "Open in dashboard" in text
     assert not render.needs_you_text(row, "", _link).startswith("<@")
+
+
+# ── the idle Stop reply (UX review on 71814c435c) ─────────────────────────────
+
+
+def test_the_idle_stop_reply_links_each_running_helper_and_folds_the_rest():
+    helpers = [(f"chat-w{i}", f"Task {i}") for i in range(1, 8)] + [("chat-x", "")]
+    text = render.idle_stop_text(helpers, _link, "chat-cond")
+    assert text.startswith("This channel's session isn't running, but 8 helper agents still are: ")
+    for i in range(1, render.STOP_NAMED + 1):
+        assert f"<https://dash.example/chat?sid=chat-w{i}|Task {i}>" in text
+    assert "Task 6" not in text and "chat-x" not in text and "Task 5> and 3 more." in text
+    assert "(the rest from <https://dash.example/chat?sid=chat-cond|the lead session>)" in text
+    assert "work board" not in text and text.endswith("press *Stop generation* in its chat.")
+
+
+def test_the_idle_stop_reply_with_every_helper_linked_says_to_open_it():
+    assert render.idle_stop_text([("chat-w1", "Fix login")], _link, "chat-cond") == (
+        "This channel's session isn't running, but 1 helper agent still is: "
+        "<https://dash.example/chat?sid=chat-w1|Fix login>. To stop one, open it and press "
+        "*Stop generation* in its chat."
+    )
+    assert render.idle_stop_text([], _link, "chat-cond") == "Nothing running."
+
+
+def test_the_idle_stop_reply_with_no_dashboard_origin_names_them_and_points_at_the_lead():
+    text = render.idle_stop_text([("chat-w1", "Fix login"), ("chat-w2", "")], lambda k: "", "c")
+    assert text == (
+        "This channel's session isn't running, but 2 helper agents still are: *Fix login* "
+        "and 1 more. To stop one, open it from the lead session in the dashboard and press "
+        "*Stop generation* in its chat."
+    )
+    only_untitled = render.idle_stop_text([("chat-w2", "")], _link, "chat-cond")
+    assert only_untitled == (
+        "This channel's session isn't running, but 1 helper agent still is. To stop one, open "
+        "it from <https://dash.example/chat?sid=chat-cond|the lead session> and press "
+        "*Stop generation* in its chat."
+    )
+
+
+def test_the_idle_stop_reply_escapes_titles_and_links_only_a_linkable_url():
+    urls = {
+        "chat-w1": "https://dash.example/a|b",
+        "chat-w2": f"https://dash.example/?t={SAMPLE_SLACK_BOT_TOKEN}",
+        "chat-w3": "https://dash.example/ok",
+        "chat-w4": "javascript:alert(1)",
+    }
+    helpers = [("chat-w1", "a <b> & c"), ("chat-w2", "<!here>"), ("chat-w3", "x>y")]
+    text = render.idle_stop_text([*helpers, ("chat-w4", "t")], urls.get, "")
+    assert "*a &lt;b&gt; &amp; c*" in text and "*&lt;!here&gt;*" in text and "*t*" in text
+    assert "<https://dash.example/ok|x&gt;y>" in text
+    assert "a|b" not in text and SAMPLE_SLACK_BOT_TOKEN not in text and "javascript" not in text
+    assert "(the rest from the lead session in the dashboard)" in text
 
 
 # ── publisher ───────────────────────────────────────────────────────────────
@@ -728,7 +789,9 @@ class _FakeClient:
     async def set_context_bar(self, channel_id, items):
         self.calls.append(("set_context_bar", {"items": items}))
 
-    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch=""):
+    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch="", gate):
+        if gate is not None and not gate():
+            raise CodeChannelApiError("agents.conversations.setView", SCOPE_REFUSED)
         self.calls.append(("set_diff_view", {"content": content}))
         return "V1"
 
@@ -757,6 +820,10 @@ class _Harness:
             self.pr_queries.append(branch)
             return self.prs.get(branch, PrLookup("none"))
 
+        async def find_pr_number(repo, number):
+            self.pr_queries.append(f"#{number}")
+            return self.prs.get(f"#{number}", PrLookup("unavailable"))
+
         async def read_board(binding):
             return self.snapshot
 
@@ -769,6 +836,7 @@ class _Harness:
             store=WorkspaceStore(tmp_path / "ws.json"),
             set_project=set_project,
             find_pr=find_pr,
+            find_pr_number=find_pr_number,
             read_board=read_board,
             publish_board=publish_board,
         )

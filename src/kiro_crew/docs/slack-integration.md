@@ -323,11 +323,14 @@ exactly as with the switch off, and the page says why under the switch.
   up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),
   then one task per helper agent with Slack's own status mark, what it is doing right
   now (the command it is running or the file it is editing, with secrets and your
-  paths taken out), and how long it has been at it. A helper agent that needs you gets a threaded reply that mentions you, and the
+  paths taken out), how long it has been at it, and its PR with its CI checks. The
+  channel's Code tab shows the channel's own changes, then each helper agent's
+  commits under its name, and the wrap-up lists each helper agent's outcome. A helper agent that needs you gets a threaded reply that mentions you, and the
   channel's status shows it is waiting on you. **Stop** in the channel stops the
   channel's own agent only: its helper agents keep going and keep the board up to
-  date, and you stop one from its chat (each board task links to it) with **Stop
-  generation**. A code channel adds no reactions to your
+  date, and you stop one from its chat with **Stop generation**. A `!stop` while only
+  helper agents run links each one it names to its chat; on the board, a task waiting
+  on you links to its chat. A code channel adds no reactions to your
   messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
   the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,

@@ -89,6 +89,9 @@ class Facts:
     #: None when git could not say.
     uncommitted: bool | None = None
     worktree: str = ""
+    #: One outcome line per worker of a conductor-led channel
+    #: (``• Fix login: PR #12 merged``), already escaped and redacted.
+    workers: tuple[str, ...] = ()
 
 
 def _gather_facts_sync(binding: Binding) -> Facts:
@@ -135,11 +138,29 @@ def _gather_facts_sync(binding: Binding) -> Facts:
     )
 
 
+def _workers_still_admitted(binding: Binding) -> bool:
+    """The board's scope check, asked again just before the wrap-up is posted (fails closed)."""
+    try:
+        from kiro_crew.slack.code_channels.board import source
+
+        return bool(source.scope_admits(surface.dashboard_state(), binding))
+    except Exception:
+        return False
+
+
 async def gather_facts(binding: Binding) -> Facts:
     try:
-        return await asyncio.to_thread(_gather_facts_sync, binding)
+        facts = await asyncio.to_thread(_gather_facts_sync, binding)
     except Exception:
-        return Facts()
+        facts = Facts()
+    try:
+        from kiro_crew.slack.code_channels import board
+
+        lines = await board.outcome_lines(binding)
+    except Exception:
+        logger.debug("code channel %s: worker outcomes unavailable", binding.channel_id)
+        lines = []
+    return replace(facts, workers=tuple(lines)) if lines else facts
 
 
 _PR_WORDS = {"open": "open", "draft": "draft", "merged": "merged", "closed": "closed"}
@@ -164,7 +185,26 @@ def _fact_lines(facts: Facts) -> list[str]:
         lines.append(f"Changed since the branch was cut: {facts.changes}")
     if facts.uncommitted:
         lines.append("⚠️ The worktree has uncommitted changes. Archiving keeps them on disk.")
+    if facts.workers:
+        lines.append("*Helper agents*\n" + _bounded_lines(facts.workers, _MAX_WORKER_CHARS))
     return lines
+
+
+#: Room the worker outcomes may take in the facts block (Slack caps a text at 3,000).
+_MAX_WORKER_CHARS = 1800
+
+
+def _bounded_lines(lines: tuple[str, ...], limit: int) -> str:
+    """*lines* joined, whole lines only, within *limit* characters, then ``+N more``."""
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > limit:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    rest = len(lines) - len(kept)
+    return "\n".join(kept + ([f"+{rest} more"] if rest else []))
 
 
 def _redact(text: str) -> str:
@@ -223,23 +263,61 @@ def _retired_blocks(blocks: list[dict[str, Any]], note: str) -> list[dict[str, A
     return kept
 
 
+_WORKERS_HEAD = "*Helper agents*\n"
+
+
+def _shown(binding: Binding, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*blocks* as they may be sent now: the helper agents' outcome lines only in scope.
+
+    The send gate of every re-send of a wrap-up (asked right before it, no await
+    between): a channel that turned shared, or set to Off or Review, since the
+    wrap-up was posted gets the message again without those lines.
+    """
+    if _workers_still_admitted(binding):
+        return blocks
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        elements = block.get("elements") if block.get("type") == "context" else None
+        if not isinstance(elements, list):
+            out.append(block)
+            continue
+        kept = []
+        for element in elements:
+            text = str(element.get("text") or "") if isinstance(element, dict) else ""
+            if _WORKERS_HEAD in text:
+                text = text.split(_WORKERS_HEAD, 1)[0].rstrip("\n")
+                element = {**element, "text": text}
+            if not isinstance(element, dict) or element.get("text"):
+                kept.append(element)
+        if kept:
+            out.append({**block, "elements": kept})
+    return out
+
+
 UNRECORDED_NOTE = "This wrap-up wasn't saved, so it can't archive the channel. Run /wrap-up again."
 
 
-async def _retire_unrecorded(slack: Any, channel: str, ts: str, blocks: list[dict]) -> None:
+async def _retire_unrecorded(
+    slack: Any, channel: str, ts: str, blocks: list[dict], binding: Binding
+) -> None:
     """Take the Archive button off a posted wrap-up whose ts could not be stored.
 
     Its click would only ever answer "out of date", so the message says why
     instead. Not after a Stop: then the button stays and answers that itself.
     """
-    if not surface.commit_if_not_stopped(channel):
-        return
-    try:
-        await asyncio.shield(
-            slack.update_message(
-                channel, ts, "Wrap-up", blocks=_retired_blocks(blocks, UNRECORDED_NOTE)
-            )
+
+    async def _retire() -> None:
+        # Asked inside the shielded task, right before the send: that task starts
+        # a loop pass after it is made, and a Stop or a sharing change can land there.
+        if not surface.commit_if_not_stopped(channel):
+            return
+        shown = _shown(binding, blocks)
+        await slack.update_message(
+            channel, ts, "Wrap-up", blocks=_retired_blocks(shown, UNRECORDED_NOTE)
         )
+
+    try:
+        await asyncio.shield(_retire())
     except Exception:
         logger.warning("code channel %s: unsaved wrap-up not retired", channel, exc_info=True)
 
@@ -410,6 +488,12 @@ async def _post_wrap_up(
             channel, operation="slack.code_channel.wrap_up", caller=caller
         ):
             return ""  # again at the commit point, after the facts and the lock
+        if facts.workers and not _workers_still_admitted(binding):
+            # The lock wait and the archive check can outlast a change of the
+            # channel's sharing or activation: the outcomes the board read
+            # admitted earlier are left out, and the rest is posted as before.
+            facts = replace(facts, workers=())
+            blocks = wrap_up_blocks(summary, facts, channel)
         if not surface.commit_if_not_stopped(channel):
             # A Stop landed during the lock wait: post nothing (no await since).
             surface.audit(
@@ -458,7 +542,7 @@ async def _post_wrap_up(
                 channel,
                 exc_info=None if recorded.cancelled() else recorded.exception(),
             )
-            await _retire_unrecorded(slack, channel, ts, blocks)
+            await _retire_unrecorded(slack, channel, ts, blocks, binding)
             surface.audit(
                 caller, "slack.code_channel.wrap_up", "error", f"channel={channel}", "not stored"
             )
@@ -828,11 +912,12 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         try:
             # Before the archive: an archived channel takes no edits, and the
             # button must be gone before a second click can land.
+            shown = _shown(binding, original)
             await slack.update_message(
                 channel,
                 msg_ts,
                 "Wrap-up (archived)",
-                blocks=_retired_blocks(original, archived_note),
+                blocks=_retired_blocks(shown, archived_note),
             )
         except Exception:
             logger.debug("wrap-up button retire failed", exc_info=True)
@@ -851,7 +936,8 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
                 surface.audit(user, operation, "error", resources, exc.code)
                 if original:
                     try:
-                        await slack.update_message(channel, msg_ts, "Wrap-up", blocks=original)
+                        shown = _shown(binding, original)
+                        await slack.update_message(channel, msg_ts, "Wrap-up", blocks=shown)
                     except Exception:
                         logger.debug("wrap-up button restore failed", exc_info=True)
                 await _ephemeral(channel, user, ARCHIVE_FAILED_TEXT.format(code=exc.code))
