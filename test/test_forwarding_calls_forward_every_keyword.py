@@ -65,14 +65,7 @@ _ALLOWED_DROPS: dict[tuple[str, str, str, str], str] = {
 }
 
 #: Real drops whose fix is open: key -> the issue. Not stale-checked (see module doc).
-_OPEN_BUGS: dict[tuple[str, str, str, str], str] = {
-    (
-        "src/kiro_crew/acp/runtime_session_create.py",
-        "create_session",
-        "_create_session_with_harness_state",
-        "member_context",
-    ): "https://github.com/kirodotdev/KiroCrew/issues/38105",
-}
+_OPEN_BUGS: dict[tuple[str, str, str, str], str] = {}
 
 #: Everything except the test tree (see the module docstring).
 _SKIPPED_TOP = ("test/", "semgrep-tests/")
