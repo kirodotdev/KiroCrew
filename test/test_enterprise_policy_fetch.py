@@ -1233,11 +1233,50 @@ class TestOss:
         assert governance.load_security_policy() is None
         assert cps.requests == []
 
+    def test_oss_ignores_the_batch_one_terms(self, vault, cps):
+        """KGL batch 1 changes nothing in an oss build: no fetch, no policy."""
+        vault()
+        cps.reply = _envelope(
+            "rules:\n"
+            "  - {capability: harness_use, effect: allow}\n"
+            "  - {capability: app_use, effect: deny}\n"
+            "  - {capability: script_hook, effect: allow}\n"
+            "  - {capability: all, effect: allow}\n"
+        )
+        assert governance.load_security_policy() is None
+        assert cps.requests == []
+        assert governance.resolve(None, None, "agent_backend", "codex").permitted
+        assert governance.resolve(None, None, "apps", "file-explorer").permitted
+
     def test_oss_naming_the_scheme_is_a_configuration_error(self, vault, cps, monkeypatch):
         monkeypatch.setenv(pd.POLICY_URL_ENV, pd.ENTERPRISE_POLICY_URL)
         with pytest.raises(PlatformCompositionError, match="only in an LTS build"):
             governance.load_security_policy()
         assert cps.requests == []
+
+
+class TestBatchOneRevision:
+    def test_the_revision_names_the_batch_one_translation(self):
+        assert epf.TRANSLATION_REVISION == "t4"
+
+    def test_a_t3_cache_is_refetched_and_reads_the_new_terms(self, enterprise, vault, cps):
+        """A copy a ``t3`` build wrote is not kept on ``UNCHANGED``: the service answers
+        in full, and the new ``harness_use`` grant applies."""
+        vault()
+        cps.reply = _envelope(
+            "rules:\n  - {capability: harness_use, effect: allow, match: [claude]}\n"
+        )
+        fresh = epf.fetch(_request())
+        scope = fresh.etag.partition(":")[0]
+        t3_etag = f"{scope}:t3/{epf.cached_version(fresh.etag)}"
+        assert epf.cached_version(t3_etag) == ""
+        again = epf.fetch(_request(t3_etag))
+        assert "manifestVersionId" not in cps.payload()
+        assert not again.not_modified
+        assert json.loads(again.body)["agent_backend"] == {
+            "mode": "allow",
+            "allow": ["claude", "kas"],
+        }
 
 
 class TestBootWithoutCompanion:
