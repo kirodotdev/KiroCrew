@@ -221,6 +221,14 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
       + '    });\n'
       + '    ipcRenderer.on("relay-crew:pane-event", handler);\n'
       + '    return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);\n'
+      + '  },\n'
+      + '  // From another dashboard window: open the Crew as a tab in the main window.\n'
+      + '  // `onOpenRequest(cb)` is the main window\'s side, and hears the endpoint ID only.\n'
+      + '  openInMain: (endpointId) => ipcRenderer.invoke("relay-crew:open-in-main", String(endpointId || "")),\n'
+      + '  onOpenRequest: (cb) => {\n'
+      + '    const handler = (_e, id) => cb(String(id || ""));\n'
+      + '    ipcRenderer.on("relay-crew:open-request", handler);\n'
+      + '    return () => ipcRenderer.removeListener("relay-crew:open-request", handler);\n'
       + '  },',
   );
 });
@@ -909,4 +917,25 @@ test("a pane's chord and close reach only the dashboard that opened it, and a wi
   await s.opener.open(ID);
   assert.equal(s.win.opened[0].cbs.chord.length, 0, "a window registers no chord listener");
   assertNoSecrets([...sent.mine]);
+});
+
+test("a pane whose mint lands after its dashboard reloaded opens nothing and stops its renewal", async () => {
+  const { EventEmitter } = require("node:events");
+  for (const event of ["did-navigate", "render-process-gone"]) {
+    const { made, createRenewal } = recordedRenewals();
+    let release;
+    const late = new Promise((resolve) => { release = resolve; });
+    const s = setup({ createRenewal, answers: [late, okFor(TOKEN)] });
+    const dashboard = { webContents: Object.assign(new EventEmitter(), { isDestroyed: () => false, send() {} }) };
+    const opening = s.opener.open(ID, { parent: {}, dashboard, bounds: { x: 0, y: 0, width: 10, height: 10 } });
+    await settle();
+    dashboard.webContents.emit(event);
+    release(okFor(TOKEN));
+    assert.deepEqual(await opening, { ok: false, error: "UNAVAILABLE" }, event);
+    assert.equal(s.panes.opened.length, 0, `${event}: no pane opened`);
+    assert.ok(made.every((r) => r.isStopped()), `${event}: no renewal running`);
+    assert.equal(dashboard.webContents.listenerCount(event), 0, `${event}: no listener left`);
+    assert.deepEqual(await s.opener.open(ID, { parent: {}, dashboard, bounds: { x: 0, y: 0, width: 10, height: 10 } }), { ok: true });
+    assert.equal(s.panes.opened.length, 1, `${event}: the next open from the new page opens`);
+  }
 });

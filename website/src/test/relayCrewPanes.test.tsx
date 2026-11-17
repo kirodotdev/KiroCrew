@@ -5,6 +5,7 @@ import RelayCrewPaneHost from '../components/RelayCrewPaneHost'
 import { RELAY_PANE_WARM_CAP, relayPaneBridge, useRelayTabs, type RelayPaneEvent } from '../lib/relayCrewPanes'
 import { openRelayCrewTab } from '../hooks/useRelayViewerCrews'
 import { NavItem } from '../shell/nav/navRow'
+import { RelayReconnectingView } from '../shell/RelayReconnectingView'
 import { localCovered, relayPaneOpened, setActiveId } from '../store/instancesSlice'
 
 const RECT = { x: 236, y: 42, width: 700, height: 500 }
@@ -125,6 +126,13 @@ describe('relay Crew panes', () => {
     await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
   })
 
+  it('the host-offline cover, outside <main>, hides the pane so the cover shows', async () => {
+    mountMain()
+    const { api } = installBridge()
+    renderWithProviders(<><RelayCrewPaneHost /><RelayReconnectingView cover="host" /></>, { store: storeWith(['r1'], 'r1') })
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', true))
+  })
+
   it('past the warm cap the least recent hidden pane closes and its tab goes with it, so no tab lacks a pane', async () => {
     mountMain()
     const { api, emit } = installBridge()
@@ -172,6 +180,32 @@ describe('relay pane windows, SSH Crews and the local Crew', () => {
     expect(api.openPane).toHaveBeenCalledWith('r1', RECT, { width: window.innerWidth, height: window.innerHeight })
     expect(store.getState().instances.activeId).toBeNull()
     expect(store.getState().instances.relayActive).toBe('r1')
+  })
+
+  it.each([
+    ['a refusal', { ok: false, error: 'CREW_OFFLINE' }],
+    ['a window answer', { ok: true, window: true }],
+  ])('an Open over an SSH Crew that ends in %s puts the SSH Crew back', async (_label, answer) => {
+    const store = createTestStore()
+    mountMain()
+    const { api } = installBridge(answer)
+    act(() => { store.dispatch(setActiveId('ssh-1')) })
+    expect(await openRelayCrewTab('r1', 'One', store.dispatch)).toEqual(answer)
+    expect(api.openPane).toHaveBeenCalledTimes(1)
+    expect(store.getState().instances.activeId).toBe('ssh-1')
+    expect(store.getState().instances.relayTabs ?? []).toEqual([])
+  })
+
+  it('Open in another dashboard window asks main for the tab in the main window, and adds no tab here', async () => {
+    mountMain()
+    const { api } = installBridge({ ok: false, error: 'NOT_MAIN_WINDOW' })
+    const openInMain = vi.fn(async () => ({ ok: true }))
+    Object.assign(api, { openInMain })
+    const store = createTestStore()
+    expect(await openRelayCrewTab('r1', 'One', store.dispatch)).toEqual({ ok: true })
+    expect(openInMain).toHaveBeenCalledWith('r1')
+    expect(api.open).not.toHaveBeenCalled()
+    expect(store.getState().instances.relayTabs ?? []).toEqual([])
   })
 
   it('a <main> with no size opens no pane', async () => {

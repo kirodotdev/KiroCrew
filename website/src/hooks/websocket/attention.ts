@@ -16,6 +16,7 @@ import { subscribeRouteChange } from '../../lib/routeChange'
 import { isMemberThreadSlot } from '../unreadOnAttention'
 import { crewRootOf } from '../../lib/crewMode'
 import { slotLastTsOf } from '../../store/slotLastTs'
+import { localCovered } from '../../store/instancesSlice'
 import type { SocketConnection } from './connection'
 import { appPathname } from '@/lib/basePath'
 import { bindSubagentReplaySender } from '../../lib/subagentReplayScope'
@@ -50,6 +51,11 @@ export function crewWorkerRoot(slot: string): string {
  *  slot, under real focus. */
 const isChatSurfaceVisible = (): boolean =>
   typeof window !== 'undefined' && isChatPath(appPathname())
+
+/** A remote Crew tab, SSH or relay, fills the window. Hiding the local pane
+ *  does not reach the badge, read-relay or reveal readers below, so each
+ *  checks this: nothing local is on screen while it is true. */
+const isLocalCovered = (): boolean => localCovered(store.getState())
 
 /* Split view's own pane focus, as last reported through emitSlotFocused;
    `undefined` while no split view reports one. */
@@ -92,7 +98,7 @@ const hideMayArmWarmBrief = (announced: string | null): boolean => {
  *  then cleared by the page's read effect one render later -- a badge that
  *  lit and vanished on the parent dashboard's crew tab for each message. */
 export const isSlotOnScreen = (slot: string): boolean =>
-  slot === store.getState().chat.activeSlot || slot === getViewedThreadSlot()
+  !isLocalCovered() && (slot === store.getState().chat.activeSlot || slot === getViewedThreadSlot())
 /** The read-relay twin of `isSlotOnScreen`: true when THIS window is rendering
  *  *slot* on a surface the user can see -- a chat route showing the active
  *  slot, or the registered viewed thread (registration already implies a
@@ -102,7 +108,7 @@ export const isSlotOnScreen = (slot: string): boolean =>
  *  it stays lit -- and `chat_done` moves no `last_ts`, so nothing else on the
  *  Members page would ever relay that completion. */
 const isSlotRenderedVisibly = (slot: string): boolean =>
-  isChatSurfaceVisible() || slot === getViewedThreadSlot()
+  !isLocalCovered() && (isChatSurfaceVisible() || slot === getViewedThreadSlot())
 
 /** The arrival rule `chat_message` and `chat_done` share: a transcript event
  *  in a slot the user is not looking at goes to `onOffScreen` (the badge);
@@ -274,7 +280,7 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
       // arrival branches.
       flushSlotActivity()
       const active = store.getState().chat.activeSlot
-      if (active && !socket.reconnectingRef.current && document.hasFocus() && isChatSurfaceVisible()) {
+      if (active && !socket.reconnectingRef.current && document.hasFocus() && isChatSurfaceVisible() && !isLocalCovered()) {
         emitSlotRead(active, slotLastTsOf(store.getState().dashboard, active))
       }
     }
@@ -289,7 +295,17 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
   // flushes buffered activity, and relays the read under the same
   // visible+focused gate.
   window.addEventListener('focus', onVisibility)
+  // Leaving a remote Crew tab reveals the local pane: run the same reveal, or
+  // a badge lit while it was covered stays on the conversation now on screen.
+  let wasCovered = isLocalCovered()
+  const unsubCover = store.subscribe(() => {
+    const covered = isLocalCovered()
+    if (covered === wasCovered) return
+    wasCovered = covered
+    if (!covered && !document.hidden) onVisibility()
+  })
   return () => {
+    unsubCover()
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('focus', onVisibility)
     unsubFocus()

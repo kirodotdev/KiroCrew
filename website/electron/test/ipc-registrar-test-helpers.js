@@ -55,6 +55,7 @@ const SHELL_HANDLES = [
   "pane:clear-http-cache",
   "relay-crew:close-all",
   "relay-crew:open",
+  "relay-crew:open-in-main",
   "relay-crew:open-pane",
   "relay-crew:pane-bounds",
   "relay-crew:pane-close",

@@ -1444,13 +1444,46 @@ function createIpcRegistrar({
       const content = parent.getContentBounds();
       return normalizeBounds(scaleRect(rect, deriveScale(viewport, content)), content);
     };
+    // The top frame of a dashboard window other than the main one (Connection >
+    // New Window), with a main window to send its Crew to.
+    const isOtherDashboardWindow = (event) => {
+      const main = windows.getMainWindow();
+      const owner = windows.windowForWebContents(event.sender);
+      return !!main && !!owner && owner !== main && !!event.senderFrame && event.senderFrame === event.sender.mainFrame;
+    };
+    // A relay Crew opened from another local dashboard window opens as a tab in
+    // the main window, never a window of its own: main brings the main window
+    // forward and hands its dashboard the endpoint ID, which opens it as a
+    // `?relay_crew=` link does (TeamCrewsGroup.tsx useOpenFromNote).
+    ipcMain.handle("relay-crew:open-in-main", async (event, endpointId) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:open-in-main");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      const main = windows.getMainWindow();
+      const wc = isOtherDashboardWindow(event) && main._mcView ? main._mcView.webContents : null;
+      if (!wc || wc.isDestroyed() || !windows.security.isGatewayLocalForWindow(main)) return { ok: false, error: "UNAVAILABLE" };
+      if (main.isMinimized()) main.restore();
+      main.show();
+      main.focus();
+      wc.send("relay-crew:open-request", endpointId);
+      return { ok: true };
+    });
     ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       try {
         await assertLocalDashboard(event, "relay-crew:open-pane");
-        assertMainWindowDashboard(event, "relay-crew:open-pane");
       } catch {
         return { ok: false, error: "UNAVAILABLE" };
+      }
+      try {
+        assertMainWindowDashboard(event, "relay-crew:open-pane");
+      } catch {
+        // Still refused. Another local dashboard window learns why, so it asks
+        // for the tab in the main window instead (relay-crew:open-in-main).
+        return { ok: false, error: isOtherDashboardWindow(event) ? "NOT_MAIN_WINDOW" : "UNAVAILABLE" };
       }
       const parent = windows.getMainWindow();
       const bounds = paneRect(parent, rect, viewport);

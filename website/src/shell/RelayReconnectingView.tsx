@@ -33,6 +33,8 @@ export function RelayReconnectingView({ cover }: { cover: OfflineCover }) {
       role={host ? undefined : 'status'}
       aria-live={host ? undefined : 'polite'}
       data-testid={host ? 'host-offline' : 'relay-reconnecting'}
+      // The host cover sits outside <main>, so a relay tab's pane would hide it: the marker hides the pane instead.
+      data-relay-pane-overlay={host ? '' : undefined}
       className={cover ? 'absolute inset-0 z-40 flex items-center justify-center bg-bg px-6 text-center' : 'sr-only'}
     >
       {cover && (

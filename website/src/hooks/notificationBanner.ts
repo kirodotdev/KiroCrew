@@ -92,6 +92,8 @@ export interface BannerGateContext {
   /** The thread a non-chat surface (the Members page) registered as on screen
    *  (`lib/viewedThread`); registration already implies a focused window. */
   viewedThread?: string | null
+  /** A remote Crew tab covers the local pane (`localCovered`): no local view is on screen. */
+  localCovered?: boolean
 }
 
 /** The channel of a crewmate's message in its DM thread
@@ -113,8 +115,8 @@ export const STOPPED_CHAT_CHANNEL = 'system.turn'
  * is the Members page, which shows one thread at a time, so matching the route
  * would hide every other crewmate's message while the page is open.
  */
-export function targetsCurrentView(n: Notification, ctx: Pick<BannerGateContext, 'pathname' | 'activeSlot' | 'windowFocused' | 'viewedThread'>): boolean {
-  if (!ctx.windowFocused) return false
+export function targetsCurrentView(n: Notification, ctx: Pick<BannerGateContext, 'pathname' | 'activeSlot' | 'windowFocused' | 'viewedThread' | 'localCovered'>): boolean {
+  if (!ctx.windowFocused || ctx.localCovered) return false
   if (n.slot && ctx.activeSlot && n.slot === ctx.activeSlot && isChatPath(ctx.pathname)) return true
   if (n.channel === MEMBER_MESSAGE_CHANNEL) return !!n.slot && n.slot === ctx.viewedThread
   // A stopped-chat alert is view-targeted ONLY by its slot (handled above): its

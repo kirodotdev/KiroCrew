@@ -44,6 +44,8 @@ const RENEWAL_CODE = Object.freeze({ RELAY_VIEWER_OFF: "NOT_SET_UP", UNAVAILABLE
 // Main to the opening dashboard: `{ endpointId, type: "chord", index }` or
 // `{ endpointId, type: "closed" }`. preload.js's `onPaneEvent` listens.
 const PANE_EVENT = "relay-crew:pane-event";
+// A new document in the dashboard starts with no relay tabs.
+const DASHBOARD_RESETS = ["did-navigate", "render-process-gone"];
 
 // `openPane` puts the Crew in the main window instead of a window of its own
 // (the pane in relay-crew-window.js); `open` uses it only when handed a
@@ -137,13 +139,22 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
     const holder = createTokenHolder();
     const crew = { crewUrl: "", relayDomain: "", name: "", signInMarker: null };
     const at = epoch;
+    // A reload of the opening dashboard (or its renderer gone) while the mint is
+    // in flight leaves it with no tab for this pane, and nothing could steer or
+    // close it: open nothing. The pane's own close listens for the same events.
+    const dashboardWc = pane && pane.dashboard ? pane.dashboard.webContents : null;
+    const listens = !!dashboardWc && typeof dashboardWc.once === "function";
+    let navigated = false;
+    const onNavigate = () => { navigated = true; };
+    if (listens) for (const event of DASHBOARD_RESETS) dashboardWc.once(event, onNavigate);
     const { renewal, error } = await startRenewal(endpointId, holder, crew);
+    if (listens) for (const event of DASHBOARD_RESETS) dashboardWc.removeListener(event, onNavigate);
     if (!renewal) {
       say(endpointId, error);
       return { ok: false, error };
     }
-    // Everything closed while the mint was in flight: open nothing.
-    if (epoch !== at) {
+    // Everything closed, or the opening dashboard reloaded, while the mint was in flight: open nothing.
+    if (epoch !== at || navigated) {
       renewal.stop();
       say(endpointId, "UNAVAILABLE");
       return { ok: false, error: "UNAVAILABLE" };

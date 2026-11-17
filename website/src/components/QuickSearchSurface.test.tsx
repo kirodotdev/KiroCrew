@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import QuickSearchSurface from './QuickSearchSurface'
 import type { SlotOwners } from '../apps/overlaySlots'
+import { RELAY_PANE_OVERLAY_SELECTOR } from '../lib/relayCrewPanes'
 
 /**
  * The opt-in guarantee, asserted at the seam: with no app owning `quick-search` the
@@ -267,6 +268,14 @@ describe('QuickSearchSurface', () => {
     expect(catcher.className).not.toContain('sr-only')
     expect(catcher.getAttribute('placeholder')).toBe('Run a command')
     expect(catcher.parentElement?.className).toContain('focus-within:border-accent')
+  })
+
+  it('marks the type-ahead field as an overlay a relay tab\'s pane hides under', () => {
+    // The loaded bar and the palette are dialogs; the field shown while the chunk loads is not.
+    holdChunk()
+    render(<QuickSearchSurface owners={SLOW} open onClose={() => {}} />)
+    const catcher = document.activeElement as HTMLInputElement
+    expect(catcher.closest(RELAY_PANE_OVERLAY_SELECTOR)).not.toBeNull()
   })
 
   it('hands the caught keys to the fallback palette when the chunk fails', async () => {

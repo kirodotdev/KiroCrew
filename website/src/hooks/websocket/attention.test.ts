@@ -6,7 +6,9 @@ import { setActiveSlot } from '../../store/chatSlice'
 import { sseSlots } from '../../store/dashboardSlice'
 import type { ChatSlot } from '../../types'
 import { emitComposeIntent } from '../../lib/composeIntent'
-import { attachFocusRelay, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, endSplitPaneFocus, focusedSlotForCurrentSurface } from './attention'
+import { attachFocusRelay, attendArrival, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, endSplitPaneFocus, focusedSlotForCurrentSurface } from './attention'
+import { relayPaneClosed, relayPaneOpened, setActiveId } from '../../store/instancesSlice'
+import { flushSlotRead } from '../../lib/slotReadRelay'
 import { noteRouteChange } from '../../lib/routeChange'
 import type { SocketConnection } from './connection'
 
@@ -382,5 +384,68 @@ describe('compose intent re-arms the resume prefetch', () => {
     const hiddenBefore = sendIfOpen.mock.calls.length
     act(() => emitComposeIntent('chat-a'))
     expect(sendIfOpen).toHaveBeenCalledTimes(hiddenBefore)
+  })
+})
+
+describe('a remote Crew tab covering the local pane', () => {
+  let hidden: ReturnType<typeof vi.spyOn>
+  let focused: ReturnType<typeof vi.spyOn>
+  let detach: () => void
+  const sendIfOpen = vi.fn()
+  const reads = () => sendIfOpen.mock.calls
+    .map(([frame]) => frame as { type: string; slot?: string })
+    .filter(f => f.type === 'slot_read')
+    .map(f => f.slot)
+
+  beforeEach(() => {
+    hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    focused = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    window.history.pushState({}, '', '/chat')
+    sendIfOpen.mockClear()
+    detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+    act(() => { store.dispatch(setActiveSlot('covered-a')) })
+    act(() => { store.dispatch(relayPaneOpened({ id: 'relay-1', name: 'Relay' })) })
+  })
+
+  afterEach(() => {
+    detach()
+    store.dispatch(relayPaneClosed('relay-1'))
+    store.dispatch(setActiveSlot(null))
+    flushSlotRead()
+    window.history.pushState({}, '', '/')
+    hidden.mockRestore()
+    focused.mockRestore()
+  })
+
+  it('badges a local reply under it and relays no read for it', () => {
+    const onOffScreen = vi.fn()
+    attendArrival('covered-a', '2026-01-01T00:00:01Z', false, onOffScreen)
+    expect(onOffScreen).toHaveBeenCalledWith('covered-a')
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(reads()).toEqual([])
+  })
+
+  it('reads the local conversation once the tab closes', () => {
+    act(() => { store.dispatch(relayPaneClosed('relay-1')) })
+    expect(reads()).toEqual(['covered-a'])
+  })
+
+  it('badges a local reply under an SSH Crew tab too, and relays no read for it', () => {
+    act(() => { store.dispatch(relayPaneClosed('relay-1')) })
+    act(() => { store.dispatch(setActiveId('ssh-1')) })
+    sendIfOpen.mockClear()
+    try {
+      const onOffScreen = vi.fn()
+      attendArrival('covered-a', '2026-01-01T00:00:02Z', false, onOffScreen)
+      expect(onOffScreen).toHaveBeenCalledWith('covered-a')
+      act(() => window.dispatchEvent(new Event('focus')))
+      expect(reads()).toEqual([])
+    } finally {
+      act(() => { store.dispatch(setActiveId(null)) })
+    }
   })
 })

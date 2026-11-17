@@ -30,7 +30,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import instancesReducer from '../store/instancesSlice'
+import instancesReducer, { setActiveId } from '../store/instancesSlice'
 import { store as globalStore } from '../store'
 import { RECONNECT_HEALTHY_MS, useWebSocket } from '../hooks/useWebSocket'
 import { memberProjectionStore } from '../state/memberProjectionStore'
@@ -564,6 +564,24 @@ describe('useWebSocket frame routing trace', () => {
     trace = []
     act(() => { ws.frame({ type: 'chat_done', data: { slot: ACTIVE, ts: TS } }) })
     act(() => { drainFrames() })
+    expect(trace).toContain('query invalidateQueries ["milestones"]')
+  })
+
+  it('a turn that ends under a remote Crew tab skips the Explore refresh, and the next turn end in view runs it', async () => {
+    const { ws } = await mountOpen()
+    qc.setQueryData(['milestones', `dashboard:${ACTIVE}`], { enabled: true })
+    const endTurn = (seq: number) => {
+      act(() => { ws.frame({ type: 'chat_chunk', data: { slot: ACTIVE, seq, content: 'answer' } }) })
+      act(() => { ws.frame({ type: 'chat_done', data: { slot: ACTIVE, ts: TS } }) })
+      act(() => { drainFrames() })
+    }
+    act(() => { testStore.dispatch(setActiveId('ssh-1')) })
+    trace = []
+    endTurn(1)
+    expect(trace).not.toContain('query invalidateQueries ["milestones"]')
+    act(() => { testStore.dispatch(setActiveId(null)) })
+    trace = []
+    endTurn(2)
     expect(trace).toContain('query invalidateQueries ["milestones"]')
   })
 

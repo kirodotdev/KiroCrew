@@ -240,6 +240,13 @@ describe('NotificationBanner: suppression', () => {
     expect(cards()).toHaveLength(1)
   })
 
+  it('banners a note about the local chat while an SSH Crew tab covers it', () => {
+    const { store } = renderBanner({ route: '/chat/abc', activeSlot: 'chat-1' })
+    act(() => { store.dispatch(setActiveId('ssh-1')) })
+    arrive(mkN({ slot: 'chat-1' }))
+    expect(cards()).toHaveLength(1)
+  })
+
   it('banners the active chat when the window is NOT focused', () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     renderBanner({ route: '/chat/abc', activeSlot: 'chat-1' })
@@ -278,6 +285,12 @@ describe('shouldBannerNote / targetsCurrentView (pure)', () => {
     expect(targetsCurrentView(mkN({ url: '/schedule?job=1' }), { pathname: '/schedule', activeSlot: null, windowFocused: true })).toBe(true)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/schedule', activeSlot: null, windowFocused: false })).toBe(false)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/settings', activeSlot: null, windowFocused: true })).toBe(false)
+  })
+  it('banners a local note while a remote Crew tab covers the local pane', () => {
+    const reply = mkN({ slot: 'chat-A', url: '/chat?sid=chat-A' })
+    const onChat = { ...base, pathname: '/chat', activeSlot: 'chat-A' }
+    expect(shouldBannerNote(reply, onChat)).toBe(false)
+    expect(shouldBannerNote(reply, { ...onChat, localCovered: true })).toBe(true)
   })
   it("treats a mate's message as on screen only while its own thread is", () => {
     const ada = mkN({ channel: MEMBER_MESSAGE_CHANNEL, kind: 'agent', slot: 'member-ada', url: '/members?member=Ada', member: { slug: 'ada', name: 'Ada' } })

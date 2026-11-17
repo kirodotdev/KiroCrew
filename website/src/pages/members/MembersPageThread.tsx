@@ -70,6 +70,7 @@ import { type MembersPageNavigation } from './useMembersPageNavigation'
 import { type MembersPageRosterRead, type MembersPageRosterSignals } from './useMembersPageRoster'
 import { type MembersPageTeamsRead, type MembersPageTeamView } from './useMembersPageTeams'
 import { slotRowByKey } from '../../store/slotIndex'
+import { localCovered } from '../../store/instancesSlice'
 
 /** The notice for a refused Fresh start, by the route's refusal code: queued
  *  work says to wait, a turn that would not stop says to stop it first. */
@@ -488,7 +489,9 @@ export function useMembersPageThreadView({
   }, [])
   // The New crewmate card hides the chat while it
   // stays mounted: hidden is not viewed, so it neither reads nor suppresses.
-  const threadShown = pageVisible && !createOpen
+  // Nor is a thread under a remote Crew tab, SSH or relay, which covers the local pane.
+  const covered = useAppSelector(localCovered)
+  const threadShown = pageVisible && !createOpen && !covered
   // What the PANE may count as seen: the thread is shown AND nothing floats
   // over the chat. An overlay side panel (a phone sheet, a desktop overlay
   // under its scrim), a floating Profile card and the phone roster drawer all

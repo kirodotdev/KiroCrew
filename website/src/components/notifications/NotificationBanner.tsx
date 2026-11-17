@@ -4,7 +4,7 @@ import { AnimatePresence, motion, useReducedMotion, type TargetAndTransition } f
 import { i18nT } from '../../i18n/t'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
-import { setActiveId } from '../../store/instancesSlice'
+import { localCovered, setActiveId } from '../../store/instancesSlice'
 import { useLocalCrewHidden } from '../overlayRoot'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
@@ -106,8 +106,9 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
   // Arrival-time context, read by the event listener through refs so the
   // listener subscribes once and still judges each note against the CURRENT
   // route, popover phase, and preference.
-  const ctxRef = useRef({ enabled, popoverOpen, pathname: location.pathname, activeSlot })
-  ctxRef.current = { enabled, popoverOpen, pathname: location.pathname, activeSlot }
+  const covered = useAppSelector(localCovered)
+  const ctxRef = useRef({ enabled, popoverOpen, pathname: location.pathname, activeSlot, localCovered: covered })
+  ctxRef.current = { enabled, popoverOpen, pathname: location.pathname, activeSlot, localCovered: covered }
 
   const cardEls = useRef(new Map<string, HTMLElement>())
   // Mutated in place right before a removal and handed to AnimatePresence as

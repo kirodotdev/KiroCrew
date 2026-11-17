@@ -46,8 +46,10 @@ export function relayPaneRect(): [Rect, Viewport] | null {
 
 /** Open (or bring forward) a relay Crew's pane and make its tab the active one. Never throws. */
 export async function openRelayPane(bridge: RelayPaneBridge, tab: RelayTab, dispatch: AppDispatch): Promise<OpenResult> {
+  const read = () => dispatch((_d, getState: () => RootState) => getState().instances)
   // <main> is hidden under an SSH Crew: bring the local Crew forward and let it lay out before measuring.
-  if (dispatch((_d, getState: () => RootState) => getState().instances.activeId) != null) {
+  const was = read().activeId
+  if (was != null) {
     dispatch(setActiveId(null))
     await new Promise(r => requestAnimationFrame(r))
   }
@@ -57,6 +59,8 @@ export async function openRelayPane(bridge: RelayPaneBridge, tab: RelayTab, disp
     if (at) res = await bridge.openPane(tab.id, ...at)
   } catch { /* stays UNAVAILABLE */ }
   if (res.ok && !res.window) dispatch(relayPaneOpened(tab))
+  // No tab opened: put the SSH Crew back, unless something else came forward meanwhile.
+  else if (was != null && read().activeId == null && !read().relayActive) dispatch(setActiveId(was))
   return res
 }
 

@@ -707,6 +707,81 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     main.remove()
   })
 
+  it('the main window opens, as a tab, a Crew another dashboard window asked for', async () => {
+    let request: ((id: string) => void) | null = null
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = {
+      open: vi.fn(async () => ({ ok: true })), openPane, onPaneEvent: () => () => {},
+      onOpenRequest: (cb: (id: string) => void) => { request = cb; return () => { request = null } },
+    }
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ x: 0, y: 42, width: 700, height: 500 }) as DOMRect
+    document.body.appendChild(main)
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { store } = mountAt('/chat')
+    await waitFor(() => expect(request).not.toBeNull())
+    await screen.findByRole('button', { name: 'Switch crew, new Team Crew' })
+    act(() => request?.(NEW_ID))
+    await waitFor(() => expect(store.getState().instances.relayTabs).toEqual([{ id: NEW_ID, name: 'Docs box' }]))
+    expect(openPane).toHaveBeenCalledTimes(1)
+    main.remove()
+  })
+
+  it("opens another window's Crew that this window's cached list does not have yet, and shows the gateway's refusal", async () => {
+    let request: ((id: string) => void) | null = null
+    const granted = 'g'.repeat(20)
+    const gone = 'z'.repeat(20)
+    // The gateway re-lists on every open: a Crew granted after the cached read opens; a revoked one is refused.
+    const openPane = vi.fn(async (id: string) => (id === granted ? { ok: true } : { ok: false, error: 'CREW_ACCESS_NOT_GRANTED' }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = {
+      open: vi.fn(async () => ({ ok: true })), openPane, onPaneEvent: () => () => {},
+      onOpenRequest: (cb: (id: string) => void) => { request = cb; return () => { request = null } },
+    }
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ x: 0, y: 42, width: 700, height: 500 }) as DOMRect
+    document.body.appendChild(main)
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { store } = mountAt('/chat')
+    await waitFor(() => expect(request).not.toBeNull())
+    await screen.findByRole('button', { name: 'Switch crew, new Team Crew' })
+    act(() => request?.(granted))
+    await waitFor(() => expect(store.getState().instances.relayTabs).toEqual([{ id: granted, name: granted }]))
+    act(() => request?.(gone))
+    expect((await screen.findByTestId('relay-crew-open-refusal')).textContent).toContain('You no longer have access to this Crew.')
+    expect(openPane).toHaveBeenCalledTimes(2)
+    main.remove()
+  })
+
+  it("holds another window's Open through a failed list read and opens the Crew once a read succeeds", async () => {
+    let request: ((id: string) => void) | null = null
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = {
+      open: vi.fn(async () => ({ ok: true })), openPane, onPaneEvent: () => () => {},
+      onOpenRequest: (cb: (id: string) => void) => { request = cb; return () => { request = null } },
+    }
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ x: 0, y: 42, width: 700, height: 500 }) as DOMRect
+    document.body.appendChild(main)
+    vi.spyOn(api, 'relayViewerCrews')
+      .mockRejectedValueOnce(new ApiError(502, 'down', JSON.stringify({ error: 'down', code: 'UNREACHABLE' })))
+      .mockResolvedValue({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { store, queryClient } = mountAt('/chat')
+    await waitFor(() => expect(queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
+    await waitFor(() => expect(request).not.toBeNull())
+    act(() => request?.(NEW_ID))
+    expect(openPane).not.toHaveBeenCalled()
+    await act(async () => { await queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    await waitFor(() => expect(store.getState().instances.relayTabs).toEqual([{ id: NEW_ID, name: 'Docs box' }]))
+    expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
+    main.remove()
+  })
+
   it('keeps the Open through a failed list read and opens the Crew once a read succeeds', async () => {
     const open = withBridge()
     const read = vi.spyOn(api, 'relayViewerCrews')
@@ -762,6 +837,40 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     expect(history.location.pathname + history.location.search).toBe('/settings?tab=general')
     expect(history.index).toBe(1)
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it("does not let another window's Open replace a newer history entry while a navigation is pending", async () => {
+    let request: ((id: string) => void) | null = null
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = {
+      open: vi.fn(async () => ({ ok: true })), openPane, onPaneEvent: () => () => {},
+      onOpenRequest: (cb: (id: string) => void) => { request = cb; return () => { request = null } },
+    }
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const history = createMemoryHistory({ initialEntries: ['/chat'] })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    // The router keeps rendering /chat, as BrowserRouter does while a navigation is still in its transition.
+    const at = history.location
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <Router location={at} navigator={history}><TeamCrewsSwitcher variant="inline" /></Router>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    await screen.findByTestId('crew-switcher-new-dot')
+    await waitFor(() => expect(request).not.toBeNull())
+    act(() => { history.push('/settings?tab=general') })
+    // act() flushes the effect. The list is loaded and the Crew is listed, so only the location check holds the Open back.
+    act(() => request?.(NEW_ID))
+    expect(history.location.pathname + history.location.search).toBe('/settings?tab=general')
+    expect(history.index).toBe(1)
+    expect(openPane).not.toHaveBeenCalled()
   })
 
   it('does not let a list read that started before a seen save bring the dot back', async () => {

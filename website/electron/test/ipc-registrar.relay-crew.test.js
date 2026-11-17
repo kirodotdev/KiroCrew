@@ -81,6 +81,7 @@ function harness({ opener, gatewayLocal = true, portOwner = "kirocrew", main = n
     open: handlers.get("relay-crew:open"),
     closeAll: handlers.get("relay-crew:close-all"),
     openPane: handlers.get("relay-crew:open-pane"),
+    openInMain: handlers.get("relay-crew:open-in-main"),
     paneBounds: handlers.get("relay-crew:pane-bounds"),
     paneOverlay: handlers.get("relay-crew:pane-overlay"),
     paneInactive: handlers.get("relay-crew:pane-inactive"),
@@ -210,8 +211,42 @@ test("relay-crew:open-pane checks the ID, the local-dashboard gate, the main win
   for (const [label, options, ev] of refusals) {
     const b = paneOpener(null);
     const r = harness({ main, ...options, opener: b });
-    assert.deepEqual(await r.openPane(ev, ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" }, label);
+    // Still refused, with no open; another local dashboard window learns why, so it can ask for the tab in the main window.
+    const want = label === "a local dashboard window that is not the main window" ? "NOT_MAIN_WINDOW" : "UNAVAILABLE";
+    assert.deepEqual(await r.openPane(ev, ID, RECT, VIEWPORT), { ok: false, error: want }, label);
     assert.deepEqual(b.calls, [], label);
+  }
+});
+
+test("relay-crew:open-in-main brings the main window forward and hands its dashboard only the ID, from another local dashboard window only", async () => {
+  const main = mainWindow();
+  const sent = [];
+  const shown = [];
+  Object.assign(main, { isMinimized: () => true, restore: () => shown.push("restore"), show: () => shown.push("show"), focus: () => shown.push("focus") });
+  Object.assign(main._mcView.webContents, { isDestroyed: () => false, send: (...a) => sent.push(a) });
+  const h = harness({ opener: paneOpener(null), main });
+  for (const bad of ["", `${ID}.evil`, "UPPERCASEUPPERCASEUPPER", "a".repeat(64), 42, null, [ID]]) {
+    assert.deepEqual(await h.openInMain(from(otherWindow()), bad), { ok: false, error: "INVALID_ENDPOINT" }, String(bad));
+  }
+  assert.deepEqual(sent, [], "no invalid ID reaches the main window");
+  assert.deepEqual(await h.openInMain(from(otherWindow()), ID), { ok: true });
+  assert.deepEqual(sent, [["relay-crew:open-request", ID]]);
+  assert.deepEqual(shown, ["restore", "show", "focus"]);
+  for (const [label, options, ev] of [
+    ["the main window itself", {}, from(main._mcView.webContents)],
+    ["a relay Crew's page", {}, from(relayView())],
+    ["a dashboard-origin sender in no window", {}, from({ id: "relay-view", mainFrame: { url: DASHBOARD_URL } })],
+    ["a remote-origin top frame in another window", {}, from({ id: "other-dashboard", mainFrame: { url: "https://remote.example/chat" } })],
+    ["foreign port owner", { portOwner: "foreign" }, from(otherWindow())],
+    ["a subframe of another window", {}, from(otherWindow(), { url: DASHBOARD_URL })],
+    ["wrong origin", {}, from(otherWindow(), { url: "https://remote.example/chat" })],
+    ["remote window", { gatewayLocal: false }, from(otherWindow())],
+    ["no main window", { main: null }, from(otherWindow())],
+  ]) {
+    sent.length = 0;
+    const r = harness({ main, ...options, opener: paneOpener(null) });
+    assert.deepEqual(await r.openInMain(ev, ID), { ok: false, error: "UNAVAILABLE" }, label);
+    assert.deepEqual(sent, [], label);
   }
 });
 

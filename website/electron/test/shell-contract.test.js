@@ -240,6 +240,7 @@ test("the local-dashboard gate has exactly one spelling", () => {
     "relay-crew:open",
     "relay-crew:close-all",
     "relay-crew:open-pane",
+    "relay-crew:open-in-main",
   ]) {
     assert.match(
       IPC_REGISTRAR_SOURCE,

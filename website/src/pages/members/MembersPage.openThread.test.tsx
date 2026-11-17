@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { markSlotUnread, sseSlots } from '../../store/dashboardSlice'
+import { setActiveId } from '../../store/instancesSlice'
 import { setSlotStatusDetail, sseChatMessage, sseToolActivity, sseToolResult, syncSlotRunningFromServer } from '../../store/chatSlice'
 import { PILL_ACTIVITY_MAX_CHARS } from './pillActivity'
 import { __resetPaneDraftsForTests } from '../../utils/chatPaneDrafts'
@@ -389,6 +390,29 @@ describe('MembersPage viewed-thread registration', () => {
     } finally {
       // A hidden window left behind would hold every later case off its thread.
       hidden.mockRestore()
+    }
+  })
+
+  it('a remote Crew tab covering the local pane stops the thread reading and relaying; uncovering does both', async () => {
+    const { store } = await renderPage()
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(getViewedThreadSlot()).toBe('member-oncall'), PANE_READY)
+    _resetSlotReadRelayForTest()
+    const sent: string[] = []
+    bindSlotReadSender(slot => sent.push(slot))
+    try {
+      act(() => { store.dispatch(setActiveId('ssh-1')) })
+      await waitFor(() => expect(getViewedThreadSlot()).toBeNull())
+      act(() => { store.dispatch(markSlotUnread('member-oncall')) })
+      // The covered thread keeps its unread flag: the badge is the only sign of the reply.
+      expect(store.getState().dashboard.unreadSlots).toContain('member-oncall')
+      expect(sent).toEqual([])
+      act(() => { store.dispatch(setActiveId(null)) })
+      await waitFor(() => expect(store.getState().dashboard.unreadSlots).not.toContain('member-oncall'))
+      expect(getViewedThreadSlot()).toBe('member-oncall')
+      expect(sent).toContain('member-oncall')
+    } finally {
+      _resetSlotReadRelayForTest()
     }
   })
 

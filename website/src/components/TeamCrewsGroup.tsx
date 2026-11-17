@@ -314,6 +314,25 @@ function useOpenFromNote(waiting: boolean, crews: RelayCrewEntry[]): [string | n
   const wanted = params.get(OPEN_RELAY_CREW_PARAM)
   // The query lingers for a render after it is removed, so one Open opens once.
   const handled = useRef<string | null>(null)
+  // An Open from another dashboard window (relay-crew:open-in-main) opens as a `?relay_crew=`
+  // link would: it waits for a list read, and a Crew the gateway no longer grants is refused with its reason.
+  const [asked, setAsked] = useState<string | null>(null)
+  useEffect(() => {
+    const on = (window as { relayCrewAPI?: { onOpenRequest?: (cb: (id: string) => void) => () => void } }).relayCrewAPI?.onOpenRequest
+    return typeof on === 'function' ? on(setAsked) : undefined
+  }, [])
+  useEffect(() => {
+    // As below: a render that lags a navigation still in flight must not write the old page back.
+    if (!asked || !renderedLocationIsCurrent()) return
+    setAsked(null)
+    // Not checked against this window's cached list, which can trail a new grant by a
+    // minute: the link path waits for a list read, and the gateway re-lists before it opens.
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set(OPEN_RELAY_CREW_PARAM, asked)
+      return next
+    }, { replace: true })
+  }, [asked, setParams, renderedLocationIsCurrent])
   useEffect(() => {
     if (!wanted) {
       handled.current = null

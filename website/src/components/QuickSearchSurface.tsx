@@ -96,7 +96,9 @@ function TypeAheadInput({
   }, [opener])
   return (
     <OverlayPortal>
+      {/* No dialog role while the bar's chunk loads, so the marker hides a relay tab's pane under it. */}
       <div
+        data-relay-pane-overlay=""
         className="fixed left-safe right-safe z-[9999] flex items-start justify-center pointer-events-none"
         style={{ top: vv.offsetTop, height: vv.height }}
       >

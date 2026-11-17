@@ -37,10 +37,15 @@ export async function openRelayCrew(endpointId: string): Promise<RelayCrewOpenRe
 }
 
 /** Open a relay Crew as a tab in this window, or, in a desktop app older than
- *  the pane calls, in its own window through `openRelayCrew`. */
-export function openRelayCrewTab(endpointId: string, name: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
+ *  the pane calls, in its own window through `openRelayCrew`. Another dashboard
+ *  window than the main one asks main for the tab in the main window instead. */
+export async function openRelayCrewTab(endpointId: string, name: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
   const bridge = relayPaneBridge()
-  return bridge ? openRelayPane(bridge, { id: endpointId, name }, dispatch) : openRelayCrew(endpointId)
+  if (!bridge) return openRelayCrew(endpointId)
+  const res = await openRelayPane(bridge, { id: endpointId, name }, dispatch)
+  const inMain = (window as { relayCrewAPI?: { openInMain?: (id: string) => Promise<RelayCrewOpenResult> } }).relayCrewAPI?.openInMain
+  if (res.error !== 'NOT_MAIN_WINDOW' || typeof inMain !== 'function') return res
+  return inMain(endpointId).catch(() => ({ ok: false, error: 'UNAVAILABLE' }))
 }
 
 /** Ask the desktop shell to close every relay Crew window now, after this

@@ -364,11 +364,15 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     origin,
     // With a notice up the Crew's page is blank, so this loads the Crew again
     // rather than reloading the blank page.
-    reload: () => {
+    // `ignoringCache` for the app menu's Force Reload, which skips cached assets.
+    reload: (ignoringCache = false) => {
       if (closed) return;
       watch.reset();
       lastMainFrameStatus = 0;
-      if (!noticeView) { view.webContents.reload(); return; }
+      if (!noticeView) {
+        if (ignoringCache) view.webContents.reloadIgnoringCache(); else view.webContents.reload();
+        return;
+      }
       removeNotice();
       Promise.resolve(view.webContents.loadURL(`${origin}/`)).catch(() => log("load failed"));
     },
@@ -574,11 +578,22 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     setOverlay: (active) => { if (isClosed()) return; overlay = active === true; sync(); },
     setInactive: (value) => { if (isClosed()) return; inactive = value === true; sync(); },
     onChord: (cb) => { chordListeners.push(cb); },
+    // The active tab in `win`: the app menu's Reload goes to this Crew, not the
+    // dashboard. A local overlay does not count, since the Windows menu bar is one.
+    shownIn: (win) => !isClosed() && !inactive && rect !== null && win === parent,
   };
   openPanes.set(endpointId, handle);
   Promise.resolve(wc.loadURL(`${parts.origin}/`)).catch(() => crew.log("first load failed"));
   crew.log("pane opened");
   return handle;
+}
+
+// The relay pane on screen in `win`, or null. The app menu's Reload and Force
+// Reload use it, so a relay tab reloads its Crew as its window did, instead of
+// the dashboard, whose reload would close every pane.
+function shownRelayPane(win) {
+  for (const handle of openPanes.values()) if (handle.shownIn(win)) return handle;
+  return null;
 }
 
 module.exports = {
@@ -590,4 +605,5 @@ module.exports = {
   openRelayCrewWindow,
   paneChordIndex,
   openRelayCrewPane,
+  shownRelayPane,
 };

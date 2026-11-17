@@ -383,6 +383,14 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
     ipcRenderer.on("relay-crew:pane-event", handler);
     return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);
   },
+  // From another dashboard window: open the Crew as a tab in the main window.
+  // `onOpenRequest(cb)` is the main window's side, and hears the endpoint ID only.
+  openInMain: (endpointId) => ipcRenderer.invoke("relay-crew:open-in-main", String(endpointId || "")),
+  onOpenRequest: (cb) => {
+    const handler = (_e, id) => cb(String(id || ""));
+    ipcRenderer.on("relay-crew:open-request", handler);
+    return () => ipcRenderer.removeListener("relay-crew:open-request", handler);
+  },
 });
 
 // Native folder chooser for the project picker's "Open system folder picker"

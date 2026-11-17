@@ -9,6 +9,7 @@ const {
   openRelayCrewWindow,
   openRelayCrewPane,
   paneChordIndex,
+  shownRelayPane,
 } = require("../relay-crew-window");
 
 const ENDPOINT = "abcdefghij0123456789";
@@ -801,6 +802,44 @@ test("pane: an overlay and an inactive tab each hide it; it shows once both are 
   p.handle.setOverlay(false);
   assert.strictEqual(p.view.visible, true);
   p.handle.close();
+});
+
+test("pane: the app menu's Reload target is the pane on screen in that window, and none otherwise", () => {
+  const f = fakeDeps();
+  const p = openPane(f);
+  assert.strictEqual(shownRelayPane(p.parent), p.handle);
+  assert.strictEqual(shownRelayPane(new f.deps.BaseWindow({})), null, "another window");
+  p.handle.setInactive(true);
+  assert.strictEqual(shownRelayPane(p.parent), null, "behind another tab");
+  p.handle.setInactive(false);
+  p.handle.setOverlay(true);
+  assert.strictEqual(shownRelayPane(p.parent), p.handle, "a local overlay, such as the Windows menu bar, keeps it the target");
+  p.handle.setOverlay(false);
+  let reloads = 0;
+  let hardReloads = 0;
+  p.view.webContents.reload = () => { reloads += 1; };
+  p.view.webContents.reloadIgnoringCache = () => { hardReloads += 1; };
+  shownRelayPane(p.parent).reload();
+  assert.strictEqual(reloads, 1, "Reload reloads the Crew's page");
+  shownRelayPane(p.parent).reload(true);
+  assert.deepStrictEqual([reloads, hardReloads], [1, 1], "Force Reload reloads it skipping the cache");
+  p.handle.close();
+  assert.strictEqual(shownRelayPane(p.parent), null, "closed");
+});
+
+test("pane: the app menu's Reload and Force Reload ask for the pane on screen before the dashboard", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8").replace(/\r\n/g, "\n");
+  for (const [name, call] of [["reload", "pane\\.reload\\(\\)"], ["forceReload", "pane\\.reload\\(true\\)"]]) {
+    const handler = source.match(new RegExp(`\\n      ${name}: \\(\\) => \\{([\\s\\S]*?)\\n      \\},`));
+    assert.ok(handler, `${name} handler missing`);
+    assert.match(
+      handler[1],
+      new RegExp(`shownRelayPane\\(BaseWindow\\.getFocusedWindow\\(\\)\\)[\\s\\S]*${call}[\\s\\S]*focusedDashboardWebContents\\(\\)`),
+      `${name}: a dashboard reload would close every relay pane, and Force Reload must skip the cache`,
+    );
+  }
 });
 
 test("pane: main reads the Crew-switch chord before the page and reports its tab index", () => {
