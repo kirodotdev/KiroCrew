@@ -390,10 +390,15 @@ exactly as with the switch off, and the page says why under the switch.
   and their sub-agents, and says how many it stopped and how many it could not stop. A
   session on the board that the channel's agent did not start as a helper (a chat
   filed in the channel's folder, for one) is not stopped; the reply says how many
-  such sessions still run. Stop does not hold them yet: a message
-  queued for a stopped helper, its own timer or patrol, or the channel's agent can
-  start it again. Keeping them stopped until someone writes is a follow-up change. On
-  the board, a task waiting on you links to its chat. A code channel adds no reactions to your
+  such sessions still run. Then nothing it stopped starts again on its own: no
+  timer, patrol or report wakes the channel's agent or a stopped helper agent,
+  and work queued for them waits, until someone writes. A message to the channel
+  (in Slack or the dashboard) lets the channel's agent go on; a stopped helper agent
+  goes on only when you message it (in its dashboard chat), and a message to one lets
+  only that one go on. The channel's agent cannot start a stopped helper again: what
+  it sends one waits, and it is told so. It can start a new helper instead.
+  A message sent before the Stop does not count, and neither does one sent before a
+  restart. A restart does not resume what a Stop ended. A code channel adds no reactions to your
   messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
   the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
   The context bar holds Slack's maximum of five items: the helper agents in one item

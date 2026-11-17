@@ -852,7 +852,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_handle_workflow_command",
             "async function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', session_key: 'str') -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', session_key: 'str', "
+            "admit: 'Any' = None) -> 'None'",
         ),
         (
             "_handle_agent_command",

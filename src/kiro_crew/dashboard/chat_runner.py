@@ -294,6 +294,7 @@ from kiro_crew.dashboard.chat_turn.turn_admission import (
     _turn_admit,
 )
 from kiro_crew.dashboard.chat_turn.turn_context import hand_merge_cards_to_open_twin  # noqa: F401
+from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import _end_held  # noqa: F401
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
     _turn_dispatch_gates,
     _turn_dispatch_prep,
@@ -497,6 +498,7 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_kind,
 )
+from kiro_crew.slack.code_channels import stop_hold
 from kiro_crew.slack.code_channels.approval_picker import keep_card as keep_code_channel_card
 from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
 from kiro_crew.slack.code_channels.binding import notify_turn_end as notify_code_channel_turn_end
@@ -974,6 +976,9 @@ async def _run_chat(
     # the mirror does not quote it there again. Stamped by ``api_chat`` and carried
     # through the queue by the entry's ``promptOnChannel`` meta.
     _prompt_on_channel: bool = False,
+    # A person's stamp for a code channel Stop's hold (``stop_hold``): a person's
+    # own dispatch, or the queue drain from its entries; ``""`` releases nothing.
+    _stop_hold_stamp: str = "",
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1022,6 +1027,7 @@ async def _run_chat(
         _recovery_echo_owed=_recovery_echo_owed,
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
+        _stop_hold_stamp=_stop_hold_stamp,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -1149,7 +1155,10 @@ async def _run_chat(
                 _begin_compact_command(turn)
             event_stream = client.stream_command(message)
         else:
-            event_stream = client.stream(_segment_user_span(turn, full_message))
+            event_stream = client.stream(
+                _segment_user_span(turn, full_message),
+                **stop_hold.write_gate(client, slot, turn._stop_hold_stamp),
+            )
         if _timed:
             turn_timing.mark("stream_open")
         # Admission, the session claim, the prompt build and every gate are
@@ -1466,6 +1475,12 @@ async def _run_chat(
         await _on_app_agent_not_loaded(turn, exc)
     except SessionClosingError:
         await _on_session_closing(turn)
+    except stop_hold.HeldAtWrite:
+        # A Stop landed in the transport's awaits: no prompt was written. The turn had
+        # opened, so it closes once, as stopped (``stop_hold``).
+        logger.info("Prompt for %s not written: held since its code channel's Stop", slot.key)
+        turn._crew_log_error = "channel_stopped"
+        turn.turn_exit.reached_provider = False
     except Exception as exc:
         await _on_error(turn, exc)
     finally:

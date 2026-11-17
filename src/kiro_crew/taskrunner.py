@@ -368,6 +368,7 @@ class TaskRunner:
         fresh: bool = False,
         workspace_dir: str = "",
         auto_approve: bool = False,
+        admit: Callable[[], bool] | None = None,
     ) -> str:
         self._require_workflow_ready()
         run = self._runs.get(task_id)
@@ -557,6 +558,9 @@ class TaskRunner:
                         watchdog_task.cancel()
                     self._tasks.pop(task_id, None)
 
+        if admit is not None and not admit():  # asked last, right before the run starts
+            self._release_start(task_id)
+            raise ValueError("A Stop in its Slack channel holds this session.")
         try:
             self._tasks[task_id] = asyncio.create_task(_execute())
             self._tasks[task_id].add_done_callback(_observe_background_completion)

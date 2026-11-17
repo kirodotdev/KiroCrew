@@ -69,7 +69,15 @@ def survival_state(tmp_path, monkeypatch):
     # Periodic status is unrelated to the row this module follows.
     monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
 
-    async def reply(st, slot, message, *, _directive_user_origin, _directive_owner_origin=False):
+    async def reply(
+        st,
+        slot,
+        message,
+        *,
+        _directive_user_origin,
+        _directive_owner_origin=False,
+        _stop_hold_stamp="",
+    ):
         slot.append("assistant", "Filed as #13342.")
         slot.append("done", "", "done", broadcast=False)
 

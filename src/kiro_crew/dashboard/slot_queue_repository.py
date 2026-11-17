@@ -478,6 +478,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         QUEUED_CONTAINMENT_META_KEY,
         SEND_ORIGIN_META_KEY,
     )
+    from kiro_crew.slack.code_channels.stop_hold import STAMP_META as STOP_HOLD_STAMP_META
 
     entries: list[dict[str, Any]] = []
     budget = MAX_DURABLE_QUEUE_BYTES
@@ -572,6 +573,9 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # sub-agent hold (``releases_past_subagent_hold``), a path that never
             # runs the drain's containment sweep. Restored, a composer send is
             # an ordinary card that waits for the user like every other one.
+            #
+            # A person's code channel Stop stamp goes too (``stop_hold``): it is
+            # valid only in the live queue it was minted into, never in a restored one.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -582,6 +586,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
                     COMPOSER_SEND_META,
+                    STOP_HOLD_STAMP_META,
                 )
             }
         try:

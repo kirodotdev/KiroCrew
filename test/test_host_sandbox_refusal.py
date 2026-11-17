@@ -476,7 +476,15 @@ async def test_a_gzipped_history_read_holds_the_diagnostic_only_for_the_owner(
 async def test_a_chat_sse_stream_holds_the_diagnostic_only_for_the_owner(
     state, off, monkeypatch, user
 ) -> None:
-    async def reply(st, slot, message, *, _directive_user_origin, _directive_owner_origin=False):
+    async def reply(
+        st,
+        slot,
+        message,
+        *,
+        _directive_user_origin,
+        _directive_owner_origin=False,
+        _stop_hold_stamp="",
+    ):
         slot.append(
             "error", hsr.row_text(_DIAGNOSTIC), "msg msg-err", meta=hsr.row_meta(_refusal())
         )

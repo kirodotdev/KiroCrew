@@ -750,6 +750,7 @@ async def route_linked_thread(
     turn_context: str | None = None,
     interpret_commands: bool = True,
     admit: Callable[[], Awaitable[bool]] | None = None,
+    stop_hold_stamp: str = "",
 ) -> LinkedRoute:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -784,7 +785,13 @@ async def route_linked_thread(
     *admit* (the caller's live gate: a code channel's fences) is asked last,
     after every await here and right before the row is appended or the turn
     starts; False holds the message (:attr:`LinkedRoute.HELD`).
+
+    *stop_hold_stamp* is the person's stamp the message's own entry minted (a code
+    channel's message or command, ``stop_hold``), passed on unchanged; ``""`` for the
+    other callers, so a session a Stop holds queues their message.
     """
+    from kiro_crew.slack.code_channels import stop_hold
+
     # Code channels are the owner's (slack.shared_access): a shared user's message
     # in one never reaches its session, whatever the feature or the slot says.
     # First, before the no-slot fall-through hands the thread to plain routing.
@@ -916,6 +923,7 @@ async def route_linked_thread(
                 turn_context=turn_context,
                 interpret_commands=interpret_commands,
                 admit=admit,
+                stop_hold_stamp=stop_hold_stamp,
             )
 
     # A channel pinned to an agent is served only by that agent. A slot on any
@@ -1008,6 +1016,7 @@ async def route_linked_thread(
             turn_context=turn_context,
             interpret_commands=interpret_commands,
             admit=admit,
+            stop_hold_stamp=stop_hold_stamp,
         )
     text = _stored
     if admit is not None:
@@ -1063,10 +1072,13 @@ async def route_linked_thread(
     )
     _queued_text = text
     # Conductor mode "Pause all" holds this session: the message queues as it does
-    # behind a running turn, and Resume all (or its own Continue) runs it.
+    # behind a running turn, and Resume all (or its own Continue) runs it. An allowed
+    # person's message ends a code channel Stop's hold, unless it predates that Stop.
     from kiro_crew import crew_pause
 
+    _stamp = stop_hold_stamp  # ``is_allowed_user`` admitted the sender above too
     _starts = not _linked_slot.running and not crew_pause.holds_slot(_linked_slot)
+    _starts = _starts and not stop_hold.queues(_linked_slot, _stamp)
     if turn_context:
         from kiro_crew.context import _neutralize_structural_markers
 
@@ -1109,6 +1121,7 @@ async def route_linked_thread(
                 _directive_source_channels=(channel,),
                 # An OPTIONS answer is the slot's answer, never a ``/`` command.
                 _commands_off=not interpret_commands,
+                **stop_hold.run_kwargs(_stamp),
             )
         )
         _linked_slot.task = _chat_task
@@ -1144,6 +1157,7 @@ async def route_linked_thread(
                 **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
                 **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
                 **({} if interpret_commands else {COMMANDS_OFF_META_KEY: True}),
+                **stop_hold.meta(_stamp),
             },
             directive_user_origin=True,
             directive_channel_origin=True,

@@ -764,7 +764,13 @@ async def send_to_target(
             **({"steer_containment_stop_failed": True} if steer_containment_stop_failed else {}),
         },
     )
-    return {"ok": True, "target": slot.key, "started": started, "steered": steered}
+    from kiro_crew.slack.code_channels import stop_hold
+
+    # Queued on a session a code channel's Stop holds: it waits for a person (``stop_hold``).
+    held = not (started or steered) and stop_hold.holds(slot)
+    return {"ok": True, "target": slot.key, "started": started, "steered": steered} | (
+        {"held": True} if held else {}
+    )
 
 
 #: The two broadcast modes, named rather than a boolean. ``queue`` waits for each

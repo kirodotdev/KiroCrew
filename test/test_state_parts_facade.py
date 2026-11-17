@@ -527,6 +527,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_has_reader_flag": ("value", "False"),
     "_hook_continuation_depth": ("value", "0"),
     "_human_seen": ("value", "False"),
+    "_stop_held": ("value", "False"),
+    "_stop_hold_seq": ("value", "0"),
     "_infra_retries": ("value", "0"),
     "_last_enqueue_ts": ("value", "''"),
     "_last_stop_reason": ("value", "''"),

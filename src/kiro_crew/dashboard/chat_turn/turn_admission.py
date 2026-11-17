@@ -109,6 +109,7 @@ if TYPE_CHECKING:
         _read_and_tighten_turn_execution,
         unavailable_agent_message,
     )
+    from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import _end_held
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_marker import (
         _begin_local_turn_marker,
@@ -313,6 +314,15 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # compare-and-clears only an identity this turn actually published, so a
     # successor's key is never wiped.
     slot._active_turn_session_key = session_key
+    # A code channel's Stop holds this session (``stop_hold``): asked before the first
+    # await, so a turn held as it starts prepares nothing below (asked again before
+    # the session is claimed, the hooks, the mirror, at the gate and at the write).
+    from kiro_crew.slack.code_channels import stop_hold
+
+    if not getattr(turn, "_agent_started", False) and stop_hold.queues(
+        slot, getattr(turn, "_stop_hold_stamp", "")
+    ):
+        return _end_held(turn)
 
     if slot.mode == DM_SLOT_MODE and not is_dispatchable_member_name(slot.agent):
         logger.warning(
@@ -1081,6 +1091,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # thread, so a second allocation inside that window finds no unit on disk and
     # only the record can name the store it must cite.
     _previous = await _slot_predecessor_store(state.sessions, slot, session_key)
+    if not getattr(turn, "_agent_started", False) and stop_hold.queues(
+        slot, getattr(turn, "_stop_hold_stamp", "")
+    ):
+        return _end_held(turn)  # held before the claim: no provider starts for it
     slot.latch_crew_log_previous(
         _previous.sid,
         undecided=_previous.undecided,

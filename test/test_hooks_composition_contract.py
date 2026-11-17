@@ -241,7 +241,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``session_key=None`` keyword (the channel session governance judges a bot turn
 #: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
-_BASE_SHAPE_DIGEST = "99a8550367a8fe7af43162aedfa9cbe5c47b961e41df01ef8ed89e68a4f72342"
+#: ``run_script_hook`` takes a trailing ``admit=None`` keyword (asked right before the
+#: spawn: a code channel's Stop runs no hook command), so its callers fit too.
+_BASE_SHAPE_DIGEST = "bc32bfd4cb4532f7433b30396372e9dce7e3499c0a78cbe3a34aa519891fe0a5"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

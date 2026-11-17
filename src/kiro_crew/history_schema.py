@@ -29,6 +29,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "closed_at",
         "closed_id",
         "memory_mode",
+        "stop_held",  # a code channel's Stop hold: the slot's own, so a rows-only save defers it
         "title",
         "agent",
         "model",

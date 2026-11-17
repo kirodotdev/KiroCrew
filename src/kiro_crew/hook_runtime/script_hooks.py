@@ -14,7 +14,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -201,13 +201,16 @@ async def run_script_hook(
     cwd: str | None = None,
     acp_session_id: str | None = None,
     session_model: str | None = None,
+    admit: Callable[[], bool] | None = None,
 ) -> ScriptHookResult:
     """Execute a script hook's command with timeout.
 
     Passes hook event as JSON via STDIN (Kiro CLI compatible). ``cwd`` is the
     directory the command runs in; ``None`` keeps the gateway's own.
     ``acp_session_id`` becomes ``KIRO_SESSION_ID`` and ``session_model``
-    ``KIROCREW_SESSION_MODEL`` (see ``_hook_subprocess_env``).
+    ``KIROCREW_SESSION_MODEL`` (see ``_hook_subprocess_env``). ``admit``, when
+    given, is asked after the last await, right before the spawn: False runs
+    nothing and answers refused.
     """
     start = time.monotonic()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
@@ -356,6 +359,20 @@ async def run_script_hook(
         wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
             argv, env=env, _prepare=sandboxed_spawn_argv
         )
+        if admit is not None and not admit():  # no await from here to the spawn
+            if cleanup_path:
+                try:
+                    os.unlink(cleanup_path)
+                except OSError:
+                    pass
+            return ScriptHookResult(
+                hook_id=hook.id,
+                hook_name=hook.name,
+                event=hook.event,
+                error="not run: held by a code channel's Stop",
+                exit_code=2,
+                refused=True,
+            )
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution
         # on the build fleet): start_new_session=True is a no-op on Windows,
@@ -914,8 +931,11 @@ class ScriptHookStore:
         tool_match_names: Sequence[str] | None = None,
         acp_session_id: str | None = None,
         session_model: str | None = None,
+        admit: Callable[[], bool] | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
+
+        ``admit`` goes to each command's :func:`run_script_hook`.
 
         ``extra_hooks`` run after the stored ones, through the same matcher, gate
         and spawn, and are never persisted: they belong to the caller (an agent
@@ -1014,10 +1034,11 @@ class ScriptHookStore:
             extra_event["cwd"] = extra_hooks_cwd
         if extra_hooks_tool_names:
             extra_event["tool_name"] = extra_hooks_tool_names[0]
-        stored_run: dict[str, str] = {}
+        stored_run: dict[str, Any] = {}
         if session_model:
             stored_run["session_model"] = session_model
         extra_run = dict(stored_run)
+        gated: dict[str, Any] = {} if admit is None else {"admit": admit}
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
@@ -1141,10 +1162,10 @@ class ScriptHookStore:
                 continue
             if id(hook) in extra_ids:
                 payload = spec_event if hook.spec_origin in ("user", "project") else extra_event
-                result = await run_script_hook(hook, context, payload, **extra_run)
+                result = await run_script_hook(hook, context, payload, **gated, **extra_run)
                 result.from_spec = bool(hook.spec_origin)
             else:
-                result = await run_script_hook(hook, context, hook_event, **stored_run)
+                result = await run_script_hook(hook, context, hook_event, **gated, **stored_run)
             results.append(result)
             logger.info(
                 "Hook %s (%s): %s in %dms (exit=%d)",

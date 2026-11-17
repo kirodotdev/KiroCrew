@@ -57,6 +57,7 @@ from kiro_crew.dashboard.state import _TRANSIENT_ROLES, DashboardState
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
+from kiro_crew.slack.code_channels import stop_hold as _stop_hold
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +495,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     redacted_content,
                     _directive_user_origin=not bool(request_app),
                     _directive_owner_origin=_owner_sent,
+                    **_stop_hold.run_kwargs(_stop_hold.http_stamp(request)),
                     # See ``api_chat``: an observed app must be NAMED, because the
                     # actor resolver's fallback is ``user``. ``""`` is the
                     # parameter's own default and reads as "not named".

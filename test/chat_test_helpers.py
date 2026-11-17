@@ -15,6 +15,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 from kiro_crew.messaging.link import ChannelLink, binding_token
+from kiro_crew.slack.code_channels.stop_hold import stop_hold_arrival_middleware
 from kiro_crew.testing.wait import await_until
 
 #: Draining is a LOOP because a drained task may register another -- not because any
@@ -394,7 +395,9 @@ def _make_app(state: DashboardState) -> web.Application:
     # The per-slot app-ownership checkpoint runs inner to auth, as in the real
     # server chain, so an app-identity test exercises the decision every
     # /api/chat/slots/{slot}/* route takes before its handler.
-    app = web.Application(middlewares=[_test_auth_middleware, slot_ownership_middleware])
+    app = web.Application(
+        middlewares=[stop_hold_arrival_middleware, _test_auth_middleware, slot_ownership_middleware]
+    )
     app["state"] = state
     app.router.add_post("/api/chat", api_chat)
     app.router.add_get("/api/chat/slots", api_chat_slots)

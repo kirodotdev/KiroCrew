@@ -60,6 +60,7 @@ BUDGET: dict[str, int] = {
     "test/test_file_change_snapshots.py": 1,  # the clear arm's start-row reset
     "test/test_native_question_card_lifecycle.py": 1,  # no bare question_card emitter
     "test/test_orphaned_approval_card.py": 1,  # every mark site flags the slot dirty
+    "test/test_slack_code_channel_stop_hold.py": 1,  # a local command in its hold ask's span
     # The composition's guards: what compose binds is checked against the import
     # statements of the runner's text, and a store of a shared name and its copy onto
     # the turn are one property of the text; no recorded turn can show either.

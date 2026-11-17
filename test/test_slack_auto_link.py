@@ -970,7 +970,13 @@ class TestSendHandlerHook:
         seen: dict = {}
 
         async def fake_run_chat(
-            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+            st,
+            sl,
+            msg,
+            *,
+            _directive_user_origin,
+            _directive_owner_origin=False,
+            _stop_hold_stamp="",
         ):
             # The runner's own echo reads the link at turn start; it must already be there.
             seen["link"] = st.sessions.get_slack_link(f"dashboard:{sl.key}")

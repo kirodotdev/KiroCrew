@@ -227,6 +227,8 @@ class Env:
         self.senders: list[dict[str, str] | None] = []
         #: The Slack message identity each routed first turn carried ("" for none).
         self.request_ids: list[str] = []
+        #: The person's stamp (``stop_hold``) each routed message carried ("" for none).
+        self.stamps: list[str] = []
         self.created_sessions: list[dict[str, Any]] = []
         self.folders_created: list[str] = []
         self.route_result: bool | LinkedRoute = True
@@ -272,7 +274,11 @@ class Env:
 
         async def create_bound_session(state: Any, spec: Any, **kwargs: Any) -> Any:
             self.created_sessions.append({"spec": spec, **kwargs})
-            slot = SimpleNamespace(key=f"chat-{len(self.created_sessions)}-1", running=False)
+            slot = SimpleNamespace(
+                key=f"chat-{len(self.created_sessions)}-1",
+                running=False,
+                append=lambda *_a, **_k: None,
+            )
             state.linked[kwargs["anchor_ts"]] = slot
             if kwargs.get("before_publish") is not None:
                 await kwargs["before_publish"](slot)
@@ -313,6 +319,7 @@ class Env:
             self.routed.append((binding.channel_id, text, sender_id))
             self.senders.append(kw.get("sender"))
             self.request_ids.append(kw.get("request_id", ""))
+            self.stamps.append(kw.get("stop_hold_stamp", ""))
             # ``route_result``: True / False for routed / not routed, or a
             # LinkedRoute member (e.g. REFUSED) as the real route answers it.
             result = self.route_result

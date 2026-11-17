@@ -772,6 +772,23 @@ def _read_human_seen(r: _Read) -> None:
         r.slot._human_seen = True
 
 
+def _stop_held(slot: Any) -> bool:
+    from kiro_crew.slack.code_channels.stop_hold import held_flag
+
+    return held_flag(slot)
+
+
+def _read_stop_held(r: _Read) -> None:
+    # A code channel's Stop hold (``stop_hold``): restored with no press of its own,
+    # so any person's stamp of this boot releases it and none from before the restart
+    # does. A press this process already applied (a pending one at registration) keeps
+    # its number: a stamp older than that press must not release it.
+    if r.meta.get("stop_held") is True:
+        from kiro_crew.slack.code_channels import stop_hold
+
+        stop_hold.restore(r.slot)
+
+
 #: The characters of the mark ``_telemetry_notice_is_new`` and
 #: ``_project_hook_files_notice_is_new`` write: 16 of these. Any other value is not
 #: a mark.
@@ -1382,6 +1399,15 @@ FIELDS: tuple[Field, ...] = (
         read=_read_human_seen,
         why="RESUME does not restore it; the key is unowned, so a save never clears it",
     ),
+    Field(
+        "stop_held",
+        _ALL,
+        attr="_stop_held",
+        line=_flag(lambda s: _stop_held(s)),
+        merge=_always(lambda s: _stop_held(s)),
+        read=_read_stop_held,
+        why="slot-owned: a full line omits it once released, a merge writes false",
+    ),
     # The last KAS telemetry notice the chat showed, as a mark of its text. Written
     # when set and never cleared, like the once-flags above: without it a restart
     # shows the same notice again on the chat's next session start.
@@ -1596,6 +1622,7 @@ LINE_ORDER: tuple[str, ...] = (
     "tags",
     "auto_tagged",
     "human_seen",
+    "stop_held",
     "telemetry_notice_shown",
     "project_hook_files_notice_shown",
     "session_notice_marks",
@@ -1659,6 +1686,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "tab_id",
     "auto_tagged",
     "human_seen",
+    "stop_held",
     "telemetry_notice_shown",
     "project_hook_files_notice_shown",
     "session_notice_marks",

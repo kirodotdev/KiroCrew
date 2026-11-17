@@ -16,7 +16,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from kiro_crew.execution_context import ExecutionContext, read_session_execution
 from kiro_crew.start_priority import StartPriority
@@ -257,8 +257,10 @@ async def start_workflow_definition(
     author: str = "",
     session_key: str = "",
     execution_context: ExecutionContext | None = None,
+    admit: Callable[[], bool] | None = None,
 ) -> dict[str, str]:
-    """Execute one saved task-plan revision through the existing TaskRunner."""
+    """Execute one saved task-plan revision through the existing TaskRunner (*admit*:
+    ``execute_plan``'s commit-point check)."""
     del author  # reserved for a future TaskRunner attribution surface
     run = await self.plan(
         str(definition.get("source", "")),
@@ -274,7 +276,7 @@ async def start_workflow_definition(
     run.original_input = input_text
     await self._apersist_runs()
     try:
-        await self.execute_plan(run.task_id)
+        await self.execute_plan(run.task_id, admit=admit)
     except ValueError as exc:
         # Planning owns a durable TaskRunner project and shared workflow run
         # before execution admission is checked. A rejected saved invocation

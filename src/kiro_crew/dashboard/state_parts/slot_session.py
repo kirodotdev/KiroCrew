@@ -22,7 +22,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_project_hook_files_notice_shown``, ``_reasoning_effort``,
 ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``, ``_session_notice_marks``,
 ``_session_requested_model``,
-``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
+``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_stop_held``, ``_stop_hold_seq``,
+``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_telemetry_notice_shown``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``,
@@ -452,6 +453,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # covers every app-owned slot no human has ever touched, which is what
     # a crew, a cron worker and an app-spawned session all are.
     self._human_seen = False
+    # A code channel's Stop hold and the press that set it, owned by ``stop_hold``.
+    from kiro_crew.slack.code_channels import stop_hold
+
+    stop_hold.fresh(self)
     # Deliberately "" (not USER): a slot built outside get_or_create_slot
     # matches NO slots:* scope, so it stays invisible to app tokens rather
     # than being silently classified as user-initiated. Deny-by-default.

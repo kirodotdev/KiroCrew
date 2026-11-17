@@ -42,6 +42,7 @@ from slack_events_coverage_helpers import _capture_respond, _drain, _make_orch
 
 from kiro_crew.config.loader import ACTIVATION_ALWAYS, ChannelConfig
 from kiro_crew.slack import events as ev
+from kiro_crew.slack.code_channels import stop_hold
 
 
 @pytest.fixture(name="_real_sel")
@@ -897,7 +898,7 @@ class TestOnEventDispatch:
         with patch("kiro_crew.slack.events._handle_slash", new_callable=AsyncMock) as slash:
             await on_event(_client(), _req("slash_commands", {"command": "/kirocrew"}))
             await _drain(orch)
-        slash.assert_awaited_once_with(orch, {"command": "/kirocrew"})
+        slash.assert_awaited_once_with(orch, {"command": "/kirocrew"}, stop_seen=stop_hold.seen())
 
     @pytest.mark.asyncio
     async def test_unknown_envelope_type_ignored(self):

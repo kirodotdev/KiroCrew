@@ -652,11 +652,16 @@ def _recheck_for(
         if state.get_slot(key) is not slot:
             return "the session changed"
         from kiro_crew import crew_pause
+        from kiro_crew.slack.code_channels import stop_hold
 
         if crew_pause.holds_slot(slot):
             # "Pause all" holds this session: the drain would queue the recovery
             # and start nothing, so the work stays held for the button.
             return "its crew is paused"
+        if stop_hold.holds(slot):
+            # A code channel's Stop ended this turn, or the restart came while it
+            # was ending: it waits for a person's message (``stop_hold``).
+            return "stopped in the channel"
         if slot is not conductor:
             if not _is_own_worker(state, conductor_key, slot):
                 return "the worker changed"
@@ -735,6 +740,10 @@ async def _resume_slot(
     turn = await _interrupted_turn(slot)
     if not turn:
         return
+    from kiro_crew.slack.code_channels import stop_hold
+
+    if stop_hold.holds(slot):
+        return  # a Stop ended it (or it was still ending): no resume and no button
     seen = _dispatch_token(slot)
     # Asked of Slack only once some work is interrupted, and once per channel.
     unconfirmed = await live()
@@ -1142,10 +1151,21 @@ async def _channel_trusted(channel: str) -> bool:
         return False
 
 
+def _unheld(state: Any, report: ResumeReport) -> bool:
+    """Drop the held keys a code channel's Stop holds: a Resume button cannot start
+    them, only a person's message can (``stop_hold``). Whether anything is left."""
+    from kiro_crew.slack.code_channels import stop_hold
+
+    report.held[:] = [k for k in report.held if not stop_hold.holds(state.get_slot(k))]
+    return bool(report.held or report.resumed)
+
+
 async def _notify(state: Any, binding: Binding, conductor: Any, report: ResumeReport) -> None:
     """Post the one notice, deduplicated by store record."""
     channel = binding.channel_id
     resources = f"channel={channel}"
+    if not _unheld(state, report):
+        return
     held = bool(report.held)
     keys = report.held if held else report.resumed
     signature = _signature(keys, report.turns)
@@ -1168,6 +1188,10 @@ async def _notify(state: Any, binding: Binding, conductor: Any, report: ResumeRe
         surface.audit("system", f"{OPERATION}.notice", "denied", resources, why or "no Slack")
         _notify_dashboard(state, binding, report.held, report.resumed)
         return
+    if not _unheld(state, report):  # asked again after the last await before the post
+        return
+    held, keys = bool(report.held), report.held or report.resumed
+    signature = _signature(keys, report.turns)
     trust = _trust_on(conductor)
     reasons = [report.why.get(k, "") for k in report.held]
     lines = {}

@@ -386,6 +386,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
     # Imported here: this module's bodies run in the chat_handlers namespace.
     from kiro_crew.dashboard import card_send, channel_prompt, redaction_audience
+    from kiro_crew.slack.code_channels import stop_hold
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -639,6 +640,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             status=410,
         )
     cron_creator = await cron_slot_creator(request)
+    _stop_stamp = stop_hold.http_stamp(request, _person_send and not card_origin)
     if cron_creator:
         refusal, _, _ = await cron_creator_admission(request, state, slot_name, cron_creator)
         if refusal is not None:
@@ -1051,8 +1053,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     from kiro_crew.dashboard import responsive_chat
 
     # Conductor mode "Pause all" holds this session: a send is queued, not started,
-    # and waits for Resume all (or the session's own Continue).
-    _crew_paused = crew_pause.holds_slot(slot)
+    # and waits for Resume all (or the session's own Continue), as does a code channel's Stop.
+    _crew_paused = crew_pause.holds_slot(slot) or stop_hold.queues(slot, _stop_stamp)
     _responsive_eligible = False
     # The responsive path records its send as the person's own
     # (`directive_user_origin=True`), so only a person's send may take it.
@@ -1096,8 +1098,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         request.get("is_dashboard_user") is True and not _agent_origin and not cron_creator
     )
 
-    # Asked again after the replay await: a Pause all may have landed during it.
-    _crew_paused = _crew_paused or crew_pause.holds_slot(slot)
+    # Asked again after the replay await: a Pause all (or a Stop) may have landed during it.
+    _crew_paused |= crew_pause.holds_slot(slot) or stop_hold.queues(slot, _stop_stamp)
     if card_origin and (slot.turn_running or slot._turn_admission_reserved or _crew_paused):
         # Idle when the gate looked; a turn started since, or a Pause all landed. A
         # card never queues or steers, so it is refused rather than parked behind the
@@ -1276,6 +1278,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             message,
             directive_user_origin=_person_send,
             directive_owner_origin=_owner_sent,
+            stop_hold_stamp=_stop_stamp,
             # A queued turn reaches the runner through the DRAIN, so the dispatch
             # keyword this handler passes for an IMMEDIATE send cannot carry the
             # actor here. It rides the entry's meta instead, which is what
@@ -1386,6 +1389,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # and attachment lists ride on the queue entry so the drained row
         # carries them.
         _hold_meta: dict = {**containment_meta(state, slot), **channel_prompt.entry_meta(body)}
+        _hold_meta.update(stop_hold.meta(_stop_stamp))
         _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
@@ -1640,16 +1644,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     if assigned_store:
                         slot.memory_store = assigned_store
 
-        # A Pause all that landed during the admission awaits holds this session.
-        # Nothing is recorded yet, so the send is refused whole and the sender
-        # can send it again after Resume all.
-        if crew_pause.holds_slot(slot):
+        # A Pause all or a Stop that landed in the admission awaits: refused whole, nothing recorded.
+        if crew_pause.holds_slot(slot) or stop_hold.queues(slot, _stop_stamp):
             slot._has_reader = False
             await turn_admission.abandon()
-            return web.json_response(
-                {"error": "This crew is paused. Resume it from the Board.", "code": "crew_paused"},
-                status=409,
-            )
+            reply = stop_hold.refusal(slot) or {
+                "error": "This crew is paused. Resume it from the Board.",
+                "code": "crew_paused",
+            }
+            return web.json_response({"error": reply["error"], "code": reply["code"]}, status=409)
 
         # A dashboard's busy snapshot can suppress its optimistic user bubble even
         # when this send starts a turn. Echo correlated sends BEFORE starting the
@@ -1831,7 +1834,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # resolver's fallback is ``user``, so a site that observes an app and stays
         # silent records a person who never typed anything.
         _turn_kwargs: dict = {"_directive_user_origin": _person_send}
-        _turn_kwargs.update(channel_prompt.turn_kwargs(body))
+        _turn_kwargs.update(channel_prompt.turn_kwargs(body), **stop_hold.run_kwargs(_stop_stamp))
         # The owner mark rides this dispatch's own call, so a turn that never
         # starts takes it with it (``turn_entry``).
         _turn_kwargs["_directive_owner_origin"] = _owner_sent

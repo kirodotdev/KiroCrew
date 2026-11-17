@@ -31,6 +31,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from dataclasses import replace as _with
 from functools import partial
 from typing import Any
 
@@ -88,6 +89,7 @@ class InboundResult:
     gate: Gate
     binding: Binding | None = None
     info: ChannelInfo | None = None
+    stop_hold_stamp: str = ""  # a person's, minted at the event's entry (``stop_hold``)
 
 
 PASS = InboundResult(Gate.PASS)
@@ -474,6 +476,7 @@ async def dispatch(
     was_mention: bool,
     attachment_paths: Sequence[str] = (),
     slack: Any = None,
+    stop_hold_stamp: str = "",
 ) -> bool:
     """Start the turn for a code-channel message; True when handled here.
 
@@ -491,6 +494,8 @@ async def dispatch(
     clears ``orch.slack`` meanwhile cannot drop the message. None reads
     ``orch.slack`` as before.
     """
+    if stop_hold_stamp and result is not None:  # the person's stamp its entry minted
+        result = _with(result, stop_hold_stamp=stop_hold_stamp)
     token = _INBOUND_TEMPS.set(list(attachment_paths))
     slack_token = _SLACK.set(slack)
     handled = False
@@ -878,6 +883,10 @@ async def _bind_channel(
                 repo_root=repo_root,
             )
             stored.append(await asyncio.to_thread(write, binding))
+            if existing is not None:  # written, then read: a Stop that held the old one holds it
+                from kiro_crew.slack.code_channels import stop_hold
+
+                stop_hold.carry(channel, slot)
 
         _refuse_bind_if_policy_refuses(channel)  # after the kickoff, before the session
         slot = await create_bound_session(
@@ -1183,8 +1192,15 @@ async def deliver_directed(
         return False
     # The command's fences again at the route's commit point, after its own awaits.
     gate = None if admit is None else partial(admitted, binding, admit)
+    stamp = result.stop_hold_stamp
     routed = await _route_to_slot(
-        orch, binding, clean_text, sender_id, sender=slack_sender(event), admit=gate
+        orch,
+        binding,
+        clean_text,
+        sender_id,
+        sender=slack_sender(event),
+        admit=gate,
+        stop_hold_stamp=stamp,
     )
     if routed is LinkedRoute.UNROUTED:
         await _post(orch, channel, UNSUPPORTED_COMMAND_TEXT, None)

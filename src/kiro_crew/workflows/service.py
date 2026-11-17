@@ -1213,6 +1213,7 @@ class WorkflowService:
         workflow_revision: int = 0,
         fallback_title: str = "",
         fallback_folder_id: str = "",
+        admit: Optional[Callable[[], bool]] = None,
     ) -> dict:
         """Validate + launch a background run; return {run_id} or {error}.
 
@@ -1241,6 +1242,10 @@ class WorkflowService:
         default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
+
+        def closed() -> bool:  # asked last, synchronously, right before the run is scheduled
+            return self._admission_closed() or (admit is not None and not admit())
+
         started = await self._runner(
             run_id,
             timeout_secs=timeout_secs,
@@ -1250,7 +1255,7 @@ class WorkflowService:
         ).run_background(
             source,
             registry=self.registry,
-            admission_closed=self._admission_closed,
+            admission_closed=closed,
             execution_binding_version=1,
             execution_context=memory_scope.execution_context,
             memory_mode=memory_scope.memory_mode,
@@ -1569,8 +1574,13 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
         fallback_title: str = "",
         fallback_folder_id: str = "",
+        admit: Optional[Callable[[], bool]] = None,
     ) -> dict[str, Any]:
-        """Run the exact current revision of a named saved workflow."""
+        """Run the exact current revision of a named saved workflow.
+
+        *admit*, when given, is asked synchronously at the run's commit point (after
+        every await of the start); False refuses the run (a code channel's Stop hold).
+        """
         from kiro_crew.workflow_memory import capture_admission_execution
 
         captured_execution = await capture_admission_execution(
@@ -1603,6 +1613,7 @@ class WorkflowService:
                 author=author,
                 session_key=session_key or author,
                 execution_context=captured_execution,
+                **({"admit": admit} if admit is not None else {}),
             )
             if "run_id" in started:
                 started.update(_run_provenance(definition))
@@ -1624,6 +1635,7 @@ class WorkflowService:
             workflow_revision=int(definition["revision"]),
             fallback_title=fallback_title,
             fallback_folder_id=fallback_folder_id,
+            admit=admit,
         )
         if "run_id" in started:
             started.update(_run_provenance(definition))

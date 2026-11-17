@@ -1204,6 +1204,22 @@ def _undetected_host_timezone():
 
 
 @pytest.fixture(autouse=True)
+def _reset_stop_hold():
+    """Give every test NO code channel Stop hold (``slack.code_channels.stop_hold``).
+
+    A Stop records the sessions it holds process-wide, by key, and tests reuse keys
+    (``chat-1``): left over, one test's Stop would queue another test's send. Read from
+    ``sys.modules``, like the fixtures below, so it never loads the module for a test.
+    """
+    import sys as _sys
+
+    mod = _sys.modules.get("kiro_crew.slack.code_channels.stop_hold")
+    if mod is not None:
+        mod._reset_for_tests()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_crew_workers_cache():
     """Give every test an EMPTY Crew worker list cache (``handlers.crew_workers``).
 

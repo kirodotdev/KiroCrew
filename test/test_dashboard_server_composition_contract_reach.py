@@ -655,8 +655,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 # ── the boot ──────────────────────────────────────────────────────────────────
 
 #: The full middleware chain of each entrypoint, outermost first, by the name of each
-#: layer and the factory that built it. The order is a security contract: latency is
-#: outermost, the relay-path header rule is next so it reads a verified handover before
+#: layer and the factory that built it. The order is a security contract: the code
+#: channel Stop arrival read is first (it awaits nothing before the rest), latency is
+#: next, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
 #: layer reads a client-sent relay header, the
 #: deny-audit boundary is outer to every barrier that can refuse, the app web origin
@@ -667,6 +668,7 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: team-config gate and the change-card hook (innermost, after auth has classified
 #: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
+    ("stop_hold_arrival_middleware", "stop_hold_arrival_middleware"),
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
     ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
@@ -690,6 +692,7 @@ _DASHBOARD_CHAIN = (
     ("_change_card_hook", "_register_change_card_hook.<locals>."),
 )
 _API_CHAIN = (
+    ("stop_hold_arrival_middleware", "stop_hold_arrival_middleware"),
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),

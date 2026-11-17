@@ -732,10 +732,13 @@ def _safe_log(text: str) -> str:
     return text
 
 
-async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
+async def _handle_slash(
+    orch: GatewayOrchestrator, payload: dict, stop_seen: int | None = None
+) -> None:
     """Route ``/kirocrew <sub-command>`` via :data:`SLASH_REGISTRY`.
 
-    Falls back to @user / #channel mention handling, then help text.
+    Falls back to @user / #channel mention handling, then help text. *stop_seen*
+    is the last code channel Stop the envelope's entry read (``stop_hold.seen``).
     """
     cmd = payload.get("command", "")
     cmd_text = payload.get("text", "").strip()
@@ -762,7 +765,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     # `/kirocrew agent` and `/kirocrew approval` typed in a code channel): answered there while
     # slack.code_channels is on and the install can run it; a pass-through
     # (False) otherwise, so the rest of this function is unchanged.
-    if await code_channel_slash(orch, payload, _respond):
+    if await code_channel_slash(orch, payload, _respond, stop_seen=stop_seen):
         return
     # Slack delivers only commands this app registered, so a /kirocrew or
     # /kirocrew-<alias> that arrives is this app's own, whichever manifest

@@ -112,6 +112,7 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels import stop_hold
 from kiro_crew.slack.code_channels.actions import EVENT as CODE_CHANNEL_ACTION_EVENT
 from kiro_crew.slack.code_channels.actions import dispatch as dispatch_code_channel_action
 from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
@@ -316,6 +317,8 @@ async def init_socket_mode(
     _wire_slack_code_capability_probe(orch, web_client)
 
     async def _on_event(client: WSSocketModeClient, req: SocketModeRequest) -> None:
+        # Before the first await: a person's message here releases only an older Stop.
+        _stop_seen = stop_hold.seen()
         # Reserve before the ACK's first suspension. A paused update returns
         # without acknowledging, so Slack retries the whole envelope on the new
         # gateway instead of accepting a card/command that this process cannot
@@ -345,7 +348,7 @@ async def init_socket_mode(
 
         if req.type == "slash_commands":
             payload = req.payload or {}
-            t = asyncio.create_task(_handle_slash(orch, payload))
+            t = asyncio.create_task(_handle_slash(orch, payload, stop_seen=_stop_seen))
             orch._handler_tasks.add(t)
             t.add_done_callback(orch._handler_tasks.discard)
             return
@@ -478,6 +481,7 @@ async def init_socket_mode(
             seen,
             is_mention=(event_type == "app_mention"),
             from_trusted_bot=_from_trusted_bot,
+            stop_seen=_stop_seen,
         )
 
     orch._socket_client.socket_mode_request_listeners.append(_on_event)  # type: ignore[arg-type]
@@ -517,6 +521,7 @@ async def _route_message(
     seen: SeenCache,
     is_mention: bool = False,
     from_trusted_bot: bool = False,
+    stop_seen: int | None = None,  # the press _on_event read (stop_hold.seen); None: no stamp
 ) -> None:
     """Validate, dedup, check activation mode, and dispatch an incoming Slack message."""
     sender_id = event.get("user", "") or (event.get("bot_id", "") if from_trusted_bot else "")
@@ -1535,6 +1540,8 @@ async def _route_message(
     #    slack.code_channels off) continues the normal path. ──
     #    It posts, binds and routes with the client the route read the message
     #    with, not ``orch.slack``, which a reconnect clears for its window.
+    # Every sender here was admitted above: a person, unless a trusted bot (``stop_hold``).
+    # A shared user (slack.shared_access) never takes this route, so never mints a stamp.
     if not _shared_sender and await code_channel_dispatch(
         orch,
         _code_channel,
@@ -1544,6 +1551,7 @@ async def _route_message(
         was_mention=_was_mention,
         attachment_paths=_attachment_temp_paths,
         slack=_ingest_slack if _ingest_slack is not None else _route_slack,
+        stop_hold_stamp=stop_hold.stamp(stop_seen, not from_trusted_bot),
     ):
         return
     # A linked dashboard chat's turn reads these after this task deletes them;

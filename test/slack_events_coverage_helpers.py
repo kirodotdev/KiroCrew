@@ -145,10 +145,10 @@ class _capture_respond:
         self._orig = ev._handle_slash
         url = self._response_url
 
-        async def _wrapped(orch, payload):
+        async def _wrapped(orch, payload, **kw):
             payload = dict(payload)
             payload.setdefault("response_url", url)
-            return await self._orig(orch, payload)
+            return await self._orig(orch, payload, **kw)
 
         p2 = patch("kiro_crew.slack.events._handle_slash", _wrapped)
         p2.start()

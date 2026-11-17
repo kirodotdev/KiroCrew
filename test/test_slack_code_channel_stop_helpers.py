@@ -1,10 +1,10 @@
 """A code channel's Stop also stops its helper agents and their sub-agents
 (RFC ``rfc-slack-code-channels`` §3 "Stop"), and says how many it stopped.
 
-The brake only: nothing is held afterwards (the hold is a follow-up change), so
-these tests pin what the Stop itself does, its races included: a second press, a
+These tests pin what the Stop itself does, its races included: a second press, a
 helper that finishes while being stopped, a helper born during the Stop, and the
-stop fence set before any await.
+stop fence set before any await. What it holds afterwards is pinned in
+``test_slack_code_channel_stop_hold``.
 
 Not here: a shared user's Stop being refused needs shared code-channel access,
 which does not exist yet; only the owner may press Stop at all
@@ -28,6 +28,8 @@ from kiro_crew.slack.code_channels.routing import Gate
 pytestmark = pytest.mark.asyncio
 
 CHANNEL_SESSION = "chat-9-1"
+#: The sentence every Stop reply ends with now that the Stop holds what it stopped.
+HELD = " Nothing starts again until someone writes."
 
 
 @pytest.fixture
@@ -46,7 +48,9 @@ class _Subagents:
 
 
 def _slot(key: str, running: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(key=key, running=running)
+    slot = SimpleNamespace(key=key, running=running, rows=[])
+    slot.append = lambda role, text, *_a, **_k: slot.rows.append((role, text))
+    return slot
 
 
 def _world(env: Env, monkeypatch: pytest.MonkeyPatch, **helpers: bool) -> dict[str, Any]:
@@ -98,7 +102,9 @@ async def _bang_stop(env: Env, ts: str = "301.0") -> None:
 
 
 def _posts(env: Env) -> list[str]:
-    return [text for _channel, text, _ts in env.slack.posts]
+    """The channel's posts, each Stop reply's closing hold sentence taken off
+    (``HELD``: the hold tests check it on its own)."""
+    return [text.removesuffix(HELD) for _channel, text, _ts in env.slack.posts]
 
 
 async def test_an_idle_channels_stop_stops_each_running_helper_and_says_how_many(
@@ -326,7 +332,7 @@ async def test_the_reply_counts_the_stopped_helpers_and_names_none(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """How many it stopped, as the RFC says: no helper's title, even one the board
-    shows; the reply never claims nothing starts again (nothing is held yet)."""
+    shows; the reply ends by saying nothing starts again until someone writes."""
     from kiro_crew.slack.code_channels.workspace import core as workspace
 
     _world(env, monkeypatch, **{"chat-h1": True, "chat-h2": True})
@@ -340,6 +346,7 @@ async def test_the_reply_counts_the_stopped_helpers_and_names_none(
     monkeypatch.setattr(workspace, "service", lambda: service)
     await _bang_stop(env)
     assert _posts(env) == ["Stopped 2: 2 helper agents."]
+    assert all(text.endswith(HELD) for _c, text, _ts in env.slack.posts)
 
 
 async def test_a_helper_whose_compaction_declines_the_stop_is_said_so_on_either_stop(

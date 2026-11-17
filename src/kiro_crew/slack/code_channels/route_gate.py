@@ -55,6 +55,7 @@ async def _route_to_slot(
     sender: dict[str, str] | None = None,
     request_id: str = "",
     admit: Callable[[], Awaitable[bool]] | None = None,
+    stop_hold_stamp: str = "",
 ) -> LinkedRoute:
     """Deliver *text* to the bound session as a person's message.
 
@@ -65,6 +66,7 @@ async def _route_to_slot(
     ``meta["slack_request"]`` on the row or its queued entry so a re-delivered
     event can tell this request reached the session. *admit*: the caller's
     gate, asked at the route's commit point (``route_linked_thread``).
+    *stop_hold_stamp*: the person's stamp the message's entry minted (``stop_hold``).
 
     Only :attr:`LinkedRoute.ROUTED` means the session has the message. A
     REFUSED one was answered in the channel and appended nowhere, so it is
@@ -87,6 +89,7 @@ async def _route_to_slot(
         binding.anchor_ts,
         user_meta=meta or None,
         admit=admit,
+        stop_hold_stamp=stop_hold_stamp,
     )
     if routed is LinkedRoute.ROUTED:
         routing._adopt_temps(binding.session_key)

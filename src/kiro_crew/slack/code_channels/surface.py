@@ -555,8 +555,8 @@ def channel_admits(cfg: Any, binding: Binding) -> bool:
 # admitted before a later stop of its channel writes nothing more to Slack:
 # ``SurfaceClient._call`` re-checks right before every send.
 #
-# A Stop stops the helper agents' running turns too, but holds nothing, so they
-# can run again and the board keeps following them. So the board's own passes (:func:`own_pass`: the workspace refresh and its
+# A Stop stops the helper agents' running turns too and holds them until a person
+# writes (``stop_hold``); the board keeps following them. So the board's own passes (:func:`own_pass`: the workspace refresh and its
 # watch) are fenced by the admission alone: one in flight at the press writes
 # nothing more and arms one re-publish in a clean context (``board.settle``),
 # and the next helper-agent event republishes too: the board and its needs-you
@@ -699,7 +699,7 @@ def channel_stopped(channel_id: str) -> bool:
     work was stopped, or a thread-session fence scope for the channel is
     stopped. In the board's own pass (:func:`own_pass`) only the admitted work
     counts: that pass is no turn of the channel, and the helper agents it shows
-    can run again after a Stop.
+    can run again once a person writes after a Stop.
     """
     if admitted_work_stopped(channel_id):
         return True

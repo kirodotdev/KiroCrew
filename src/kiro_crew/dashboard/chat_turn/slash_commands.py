@@ -229,9 +229,14 @@ async def _answer_slash_for_harness(
 
 
 async def _handle_workflow_command(
-    state: "DashboardState", slot: "_ChatSlot", message: str, session_key: str
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    message: str,
+    session_key: str,
+    admit: Any = None,
 ) -> None:
-    """List saved workflows or run one exactly from ``/workflow``."""
+    """List saved workflows or run one exactly from ``/workflow``; *admit* is asked at
+    the run's commit point (a code channel's Stop hold, ``stop_hold``)."""
     parsed = parse_workflow_command(message)
     if parsed is None:
         return
@@ -269,9 +274,12 @@ async def _handle_workflow_command(
             input_text=input_text,
             author=session_key,
             session_key=session_key,
+            **({"admit": admit} if admit is not None else {}),
         )
         if "run_id" not in started:
             text = str(started.get("error") or "Could not start the saved workflow.")
+            if admit is not None and not admit():  # held by a Stop (``stop_hold``)
+                from kiro_crew.slack.code_channels.stop_hold import STOPPED_TEXT as text
             outcome = "error"
         else:
             # When the slug does not reach this workflow (a removed workflow
@@ -491,6 +499,26 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     slot = turn.slot
     state = turn.state
     turn_exit = turn.turn_exit
+    # A code channel's Stop holds this session (``stop_hold``). A local command acts
+    # here, before the dispatch gate, so it is asked first, before any await: held,
+    # it ends; a person's own command releases the hold.
+    if (
+        not _commands_off
+        and message.lstrip().startswith("/")
+        and not getattr(turn, "_agent_started", False)
+    ):
+        from kiro_crew.slack.code_channels import stop_hold
+
+        if not stop_hold.gate(state, slot, getattr(turn, "_stop_hold_stamp", "")):
+            logger.info("Local command in %s held since its code channel's Stop", session_key)
+            return _Flow.END
+
+    def _admits() -> bool:
+        """The hold, asked again where a local command starts work (no release)."""
+        from kiro_crew.slack.code_channels import stop_hold
+
+        return not stop_hold.queues(slot, getattr(turn, "_stop_hold_stamp", ""))
+
     # A Slack channel's words run only on that channel's agent, and a local
     # command acts before admission judges the turn: judge it here first.
     # `/agent <the channel's agent>` stays reachable, the switch onto it.
@@ -582,7 +610,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
 
     if first_word == "/workflow":
         turn_exit.local_command = first_word
-        await _handle_workflow_command(state, slot, message, session_key)
+        # Asked again at the run's commit point, after every await of its start.
+        await _handle_workflow_command(state, slot, message, session_key, admit=_admits)
         return _Flow.END
 
     # ── /agent <name>: Crew's own agent switch, never kiro-cli's ──
@@ -644,6 +673,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _card_origin=turn._card_origin,
                     _prompt_on_channel=turn._prompt_on_channel,
+                    _stop_hold_stamp=turn._stop_hold_stamp,
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":
@@ -886,9 +916,14 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             )
         ) or (_this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR):
             turn_exit.local_command = first_word
-            await _answer_slash_for_harness(
+            if not _admits():  # a Stop during the awaits above holds it (``stop_hold``)
+                return _Flow.END
+            from kiro_crew.slack.code_channels import stop_hold
+
+            command = _answer_slash_for_harness(
                 state, slot, session_key, first_word, _command_backend, message
             )
+            await stop_hold.run_local(slot, _command_backend, first_word, command)
             return _Flow.END
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)

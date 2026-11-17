@@ -2542,14 +2542,127 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   the status settle, the SEL rows and the reply). The reply says how many it
   stopped ("Stopped N: this channel's session, K helper agents and M
   sub-agents.") and names none of them; with none
-  stopped and nothing to report, `!stop` says "Nothing running." and the native Stop posts nothing. A
-  Stop does not hold anything afterwards: a message queued for a stopped helper,
-  its AutoNudge or patrol, or a send from the channel's session can start it
-  again. Holding them until a person writes is the follow-up hold change. The board's
+  stopped and nothing to report, `!stop` says "Nothing running." and the native Stop posts nothing.
+  A reply to a Stop that held a session ends "Nothing starts again until someone
+  writes." (not one with no binding, nor for a session the Stop did not stop because
+  it was compacting: that session's hold is undone). The board's
   own passes (`surface.own_pass`: every refresh and the watch's scope checks) are
   fenced by their admission alone, and the next helper-agent turn start or end,
   approval, ledger move or re-arm republishes the board and the needs-you
   replies.
+- **What a Stop holds (`slack/code_channels/stop_hold.py`).** Before its first
+  await the Stop presses once: the channel's session is held, THEN its helpers are
+  read from the store and held (`slot._stop_held`, and `_stop_hold_seq`, the press
+  that set it, from one process-wide counter; no clock is compared). The press is
+  in memory only (no transcript row: a row would load a lazy window on the loop).
+  The hold is the slot's own metadata-line field `stop_held` (slot-owned: the full
+  line writes it while held and omits it once released, the empty-window merge
+  writes `true` or `false`; both encode it from the live slot under the transcript
+  lock; the birth writers write only a line that does not exist yet), and the
+  Stop awaits its writes BEFORE its brake, so a crash during the brake keeps the
+  hold. The channel's own session, and a helper, with no live slot is held whenever its slot registers
+  (`stop_hold.on_register`, memory only, kept until a person releases it, so a
+  reopen that is refused does not spend it; reading the line back never lowers a
+  press already applied), and a
+  helper born of a held session is held at birth (`stop_hold.inherit`, read on
+  the loop after the store records it; the Stop holds the session before it
+  reads the records, so one of the two sees the other).
+  - **The one decision.** `stop_hold.decide(slot, stamp)`: free, held, or release.
+    A person's request carries a stamp, `<boot>:<press>`: the last press this
+    process had made when the request ARRIVED, read only at an arrival point
+    (`stop_hold.ENTRIES`) before any await of ours (`stop_hold.seen`), built once
+    the gateway's own authorization admitted a human. Over HTTP the arrival point
+    is `stop_hold.stop_hold_arrival_middleware`, first in both servers' middleware
+    lists, which writes the press into the request; Slack arrives only over Socket
+    Mode, where the envelope's listener (`events._on_event`) reads it.
+    `_route_message` builds the message's stamp once its sender is admitted (a
+    trusted bot gets none) and `code_channels.commands.handle_slash` the command's
+    after `is_allowed_user`; an action button carries none. The dashboard handlers
+    (send, Continue, Regenerate, Edit & Resend, Rewind) build theirs from the
+    request's arrival value (`stop_hold.http_stamp`) and stamp only a request token
+    auth marked as a dashboard user (`is_dashboard_user`), never the loopback
+    internal caller (`internal_auth`: an MCP tool, a script) nor an app. Everything
+    below (`routing.dispatch`, `deliver_directed`, `_route_to_slot`,
+    `route_linked_thread` and its reroutes, queue entries, the queue drain, the
+    `/prompts get` re-entry of `_run_chat`) takes it as a parameter and passes it
+    on unchanged; `test_slack_code_channel_stop_hold.py` scans the product for any
+    other call. It releases a hold no newer than its press. Wakes (AutoNudge,
+    monitor, cron, a helper's report), peers, app sends, births and restart resume
+    carry none, and so do a Slack message in a thread linked to a dashboard chat
+    outside a code channel and an action button's answer: they queue on a held
+    session until someone writes. The channel's own session is a peer too, so a
+    held helper is released only by a person's message to that helper. A peer's
+    send to a held session is queued, and `send_to_target` answers `held: true`,
+    which the `session_send` tool reports in one sentence (`stop_hold.QUEUED_TEXT`)
+    so the sender does not wait on it. A queue entry restored from history loses
+    its stamp (`sanitize_restored_queue`): a stamp is valid only in the live queue
+    it was minted into. A merged drain uses the newest person's stamp among its
+    entries.
+  - **Not in this change.** The RFC's "or the channel's session, working on a
+    person's message, starts it again" (§3 "Stop", "What happens next"): a
+    `session_send` carries no turn identity the gateway can prove, so this change
+    gives the channel's session no way to release a held helper. A person messages
+    the helper itself instead (in its dashboard chat), or the channel's session
+    starts a new helper: a helper born of a released session is not held.
+  - **Where it is asked.** Every path that can start a turn asks `decide` in the
+    same synchronous span as its effect: `chat_send` and `enqueue_or_run_prompt`
+    queue a held send (`chat_send` asks again after its replay read, and refuses
+    with 409 `channel_stopped` a send a Stop held during its turn admission, when
+    nothing can be queued any more); the queue drain holds the queue unless an entry in it
+    carries a releasing stamp, in which case the hold is released and the queue
+    drains in order (a held entry at the head never blocks a person's behind it);
+    `steer_into_running_turn` refuses every steer into a held turn after its last
+    await (a person's then takes the send's stamped queue path);
+    AutoNudge answers busy before it spends a cycle; restart resume refuses a held
+    slot and offers no Resume button; a local `/` command is asked at the start of
+    `_turn_slash_gate`, before its first await, since its effect comes before the
+    dispatch gate, and a person's own command releases there; one that starts work
+    asks again where it acts, with no await between: `/workflow` passes an `admit`
+    predicate to `WorkflowService.start_definition`, asked at the run's commit point
+    (`start_background_run`'s admission check, or `TaskRunner.execute_plan` right
+    before its task starts), and a harness-local command asks right before
+    `_answer_slash_for_harness`; a KAS `/context`, `/code` or `/knowledge` (only
+    engine RPCs, `stop_hold.ENDABLE_LOCAL`) runs as a task `stop_hold.press` cancels,
+    so a Stop ends it at its next await, and `/clear` and every other local command
+    are never cancelled. Restart resume's notice drops a held session after its last
+    await before the post: no Resume button can start it.
+    The last word for a model turn is `_turn_dispatch_gates`,
+    after every other refusal and before `mark_accepted`, with no await between it
+    and the stream: a held turn ends there (`channel_stopped`, the stopped
+    agent's own cycle opens its stream only to send the cancel), and a release is
+    an in-memory flip whose save is started, not awaited. The hold is asked
+    wherever a turn's work begins, each with no await before what it guards:
+    before admission's first await, right before the session claim, before the
+    AgentSpawn and UserPromptSubmit hooks and again at each hook command's spawn
+    (`run_script_hook(admit=)`), before the first post, at that gate, and last
+    under the transport's write lock right before the prompt is written
+    (`stop_hold.write_gate`, the `prompt_gate` seam): a Stop in the transport's
+    awaits writes no prompt and the turn ends as `channel_stopped`.
+    A turn already starting at the press is asked at the dispatch gate and again
+    at the prompt write, and what it does between those two asks is not undone:
+    a decision-model request (model routing on), a hook command's spawn retry
+    after its backoff, and `/compact` on the prompt transport (`stream_command`
+    has no `prompt_gate`) can still go out for it. That is the window main's own
+    Stop has for a starting turn (`stop_slot_turn` answers `no_turn` and cancels
+    nothing); the fix belongs in the Stop itself.
+  - **Where the hold lives.** The truth is the press recorded by session key
+    (`stop_hold._keys`), for every session a press holds, live or absent, and the
+    channel's fact `(session, press)` for a session replacing the channel's under a
+    new key. `stop_hold.holds` answers from them and mirrors the press onto whatever
+    object carries the key (saving it once that object is the live registry entry
+    and no longer under construction, whose constructor alone writes it),
+    so a replaced, reopened or directly republished object is held, and a stamp read
+    before a Stop is refused on any object of that key. The slot's fields are only a
+    mirror, for its line and a restart (the line writes the hold while the mirror or the
+    key's record holds it); a restore seeds a held line's key at press 0,
+    never lowering a recorded press. A release drops the key and its channel fact, an
+    undo only its own press's. Only `stop_hold` reads or writes a slot's hold fields.
+  - **After a restart.** A held slot is restored held, with no press, so any
+    person's stamp of the new boot releases it and none from before does: a
+    person's message queued before the restart does not release it after the
+    restart. The per-key records are memory only. A
+    crash between the Stop's in-memory hold and its write loses that hold; a
+    crash between a release and its write keeps the slot held.
 - **When a board write goes out.** The board's four writes (post, edit, pin and a
   needs-you reply) are its only writes of the helper agents' content, besides the
   Code tab (gated as above) and the wrap-up's outcome lines (below). Each board write

@@ -591,8 +591,10 @@ async def _start_next_queued_turn(
     # queue stays as it is until Resume all (or the member's own Continue) lets it go.
     # Imported here: this module's functions run on the composing module's globals.
     from kiro_crew import crew_pause
+    from kiro_crew.slack.code_channels import stop_hold
 
-    if slot._queue and crew_pause.holds_slot(slot):
+    # A code channel's Stop holds the queue too, until a person's entry is in it.
+    if slot._queue and (crew_pause.holds_slot(slot) or stop_hold.holds_queue(slot)):
         return False
 
     # A drain that follows a turn's end marks that end before it writes anything:
@@ -720,8 +722,9 @@ async def _start_next_queued_turn(
         return False
 
     # Asked again after the parked-work probes above: a Pause all published
-    # during them holds this drain too, with the queue left as it is.
-    if slot._queue and crew_pause.holds_slot(slot):
+    # during them holds this drain too, with the queue left as it is (and a code
+    # channel's Stop that landed during them).
+    if slot._queue and (crew_pause.holds_slot(slot) or stop_hold.holds_queue(slot)):
         return False
 
     try:
@@ -1320,6 +1323,8 @@ async def _start_next_queued_turn(
     _drained_meta.pop(REQUEUED_STEER_ROW_MID_META, None)
     # Queue plumbing for ``session_queue``'s ownership read; never row meta.
     _drained_meta.pop(SESSION_SEND_QUEUED_META, None)
+    # A person's code channel Stop stamp, read by the drain above; never row meta.
+    _drained_meta.pop(stop_hold.STAMP_META, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -1506,6 +1511,9 @@ async def _start_next_queued_turn(
 
     if any((item.get("meta") or {}).get(CARD_ORIGIN_META_KEY) is True for item in consumed):
         _run_kwargs["_card_origin"] = True
+    # A person's stamp among what this turn runs, or (held) what still waits behind
+    # it (``stop_hold``): the dispatch gate releases a code channel Stop's hold for it.
+    _run_kwargs.update(stop_hold.drain_kwargs(slot, consumed))
     # Provenance for the session's log, from the enqueue-time ``kind`` tag — the
     # same unforgeable source ``is_system_injection_item`` classifies on, and for
     # the same reason: the banner these injections wrap their text in is something

@@ -8,9 +8,8 @@ whose parent edge follows adoption) and the sub-agents those turns started.
 Helpers are one level deep, so there are no grandchildren to walk. The reply
 says how many were stopped; it names none of them.
 
-This is the brake only: nothing is held afterwards. A message queued for a
-stopped helper, its own AutoNudge or patrol, or a send from the channel's session
-can start it again; holding it until a person writes is a follow-up change.
+After the Stop, nothing it stopped starts again until a person writes: the hold
+is :mod:`.stop_hold`'s, pressed by :func:`stop_channel` before its first await.
 """
 
 from __future__ import annotations
@@ -231,8 +230,13 @@ def left_running(state: Any, binding: Any, tally: Tally) -> int:
     return sum(1 for s in _live(state, sorted(watched - helpers)) if getattr(s, "running", False))
 
 
-def reply_text(session: bool, tally: Tally) -> str:
-    """What the channel is told: how many were stopped ("Nothing running." for none)."""
+def reply_text(session: bool, tally: Tally, *, held: Any = None) -> str:
+    """What the channel is told: how many were stopped ("Nothing running." for none).
+
+    *held* is what the press held (``stop_hold.press``): when it held any session,
+    the reply says that nothing starts again until someone writes, and when the
+    helper records could not be read, that the helpers are not held.
+    """
     stopped = tally.stopped
     total = int(session) + len(stopped) + tally.subagents
     compacting = len(tally.compacting)
@@ -261,8 +265,13 @@ def reply_text(session: bool, tally: Tally) -> str:
             f"{'are' if many else 'is'} still running: Stop reaches only this channel's "
             "session and its helper agents."
         )
+    tail = ""
+    if getattr(held, "unread", False):
+        tail += " Its helper agents' records could not be read, so they are not held."
+    if held is not None and held.holds_any():  # a key held with no live slot counts
+        tail += " Nothing starts again until someone writes."
     if not total:
-        return declined.strip() or "Nothing running."
+        return (declined.strip() or "Nothing running.") + tail
     parts: list[str] = []
     if session:
         parts.append("this channel's session")
@@ -272,7 +281,7 @@ def reply_text(session: bool, tally: Tally) -> str:
     if tally.subagents:
         parts.append(f"{tally.subagents} sub-agent{'' if tally.subagents == 1 else 's'}")
     listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
-    return f"Stopped {total}: {listed}.{declined}"
+    return f"Stopped {total}: {listed}.{declined}{tail}"
 
 
 async def stop_channel(
@@ -283,14 +292,18 @@ async def stop_channel(
     Returns the channel's own session's stop info (``"idle"`` when it was not
     running). Routing's helpers are read off the module, where tests patch them.
     """
-    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels import routing, stop_hold
 
     state = routing._dashboard_state()
+    binding = routing.store().get_binding(channel) or binding  # read again: a replacement
     slot = routing.bound_slot(state, binding) if binding is not None else None
+    slot = slot or (state.get_slot(binding.session_key) if state and binding else None)
     conductor = binding.session_key if binding is not None else ""
     # Read before the first await: a turn the channel's session starts during the
     # sweep (the person's next message) began after the press and is not stopped.
     pressed = state is not None and slot is not None and bool(getattr(slot, "running", False))
+    held = stop_hold.press(state, conductor, slot, channel)  # still before the first await
+    await stop_hold.persist(state, held)  # durable before the brake (and a restart)
     tally = await stop_helpers(
         state,
         slot,
@@ -316,7 +329,11 @@ async def stop_channel(
             if service is not None:
                 service._forget_worker_status(binding)
     elif info == "compacting":
+        held.undo(state, slot)  # not applied to the session, so not held either
         await routing._post(orch, channel, routing.COMPACTING_STOP_TEXT, None)
+    for key in tally.compacting:  # a helper's compaction declined the Stop: not held either
+        if (helper := next((s for s in held if s.key == key), None)) is not None:
+            held.undo(state, helper)
     for key, result in tally.helpers:
         routing._audit(
             sender_id, source, "allowed", f"channel={channel} slot={key} result={result}"
@@ -329,7 +346,7 @@ async def stop_channel(
         say_idle and info != "compacting"
     ):
         return info
-    await routing._post(orch, channel, reply_text(own, tally), None)
+    await routing._post(orch, channel, reply_text(own, tally, held=held), None)
     return info
 
 

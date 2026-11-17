@@ -1203,7 +1203,7 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                 self._conductor_of[key] = record.session_key
             # The cached board decides the status and the workers watched: a
             # channel that turned shared since loses it here, within one pass
-            # (a Stop does not: the helper agents can run again), not only at
+            # (a Stop does not: the helper agents run again once a person writes), not only at
             # its next refresh, which is armed now so the board comes back as
             # soon as the scope admits it again.
             if self._drop_board_unless_admitted(binding, key):

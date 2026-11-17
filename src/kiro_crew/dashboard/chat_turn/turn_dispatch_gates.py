@@ -253,6 +253,19 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
             turn._provider_has_history = _provider_has_history
 
 
+def _end_held(turn: _ChatTurn) -> _Flow:
+    """End a turn a code channel's Stop holds, as stopped, with nothing sent (``stop_hold``)."""
+    logger.info("Aborting dispatch for %s: held since its code channel's Stop", turn.session_key)
+    crew_log_emit.on_turn_refused(
+        turn._crew_log_sid,
+        turn._crew_log_turn_no,
+        "channel_stopped",
+        turn._crew_log_actor,
+        depth=turn._prompt_depth,
+    )
+    return _Flow.END
+
+
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
     # Every gate below reads synchronously; the stored conductor mode pause is read
@@ -316,11 +329,25 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _sends_prompt = not turn._agent_started
     if not _sends_prompt and not _agent_turn_still_pending(client):
         return _Flow.END
+    # A code channel's Stop holds this session until a person writes (``stop_hold``),
+    # asked wherever a turn's work begins: here before any hook command (and again in
+    # each hook's spawn, after its awaits), last at the gate below and the prompt write.
+    from kiro_crew.slack.code_channels import stop_hold
+
+    if _sends_prompt and stop_hold.queues(slot, turn._stop_hold_stamp):
+        return _end_held(turn)
+    _hook_held: list[bool] = []
+
+    def _hook_admits() -> bool:
+        if stop_hold.queues(slot, turn._stop_hold_stamp):
+            _hook_held.append(True)
+        return not _hook_held
+
     if is_new and _sends_prompt:
-        spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
+        spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key, admit=_hook_admits)
         # Defensive on the accessor, like ``turn_bracket.consume_reinjection``.
         remember = getattr(state.sessions, "remember_agent_spawn_context", None)
-        if callable(remember):
+        if callable(remember) and not _hook_held:  # a held spawn's output is not kept
             remember(session_key, spawn_injected)
     elif _sends_prompt and turn._needs_reinjection and _crew_fires_agent_spawn(client):
         # kiro-cli runs the spec's hooks itself and sends the agentSpawn output
@@ -333,7 +360,13 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     else:
         spawn_injected = []
 
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message) if _sends_prompt else []
+    injected = (
+        await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message, admit=_hook_admits)
+        if _sends_prompt and not _hook_held
+        else []
+    )
+    if _hook_held or (_sends_prompt and stop_hold.queues(slot, turn._stop_hold_stamp)):
+        return _end_held(turn)  # held during the hooks: nothing below starts
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)
@@ -476,6 +509,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             prompt=full_message,
             retried=bool(regenerate_hint),
         )
+
+    # Asked again after the model probes' awaits, before any post below (the dashboard
+    # status, the Slack echo and placeholder): a held turn announces nothing.
+    if _sends_prompt and stop_hold.queues(slot, turn._stop_hold_stamp):
+        return _end_held(turn)
 
     if _assembled_line is not None:
         # Every step after build_message is a pure prepend, so the assembled
@@ -871,6 +909,17 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         )
         # This phase runs inside _run_chat's try: its finally's tail runs the newer message.
         return _Flow.END
+    # A code channel's Stop holds this session until a person writes (``stop_hold``).
+    # The LAST refusal, synchronous like the gates above (a release is an in-memory
+    # flip; its save is started, not awaited), so no await separates it from the
+    # stream. Any turn but a person's stamped after the Stop ends here as stopped; a
+    # held agent's own cycle opens its stream only to send the cancel. The transport
+    # asks once more right before it writes the prompt (``stop_hold.prompt_gate``).
+    if not stop_hold.gate(turn.state, slot, turn._stop_hold_stamp):
+        if turn._agent_started:
+            turn._agent_cancel_owed = True
+        else:
+            return _end_held(turn)
     if monitor_completion is not None:
         monitor_completion.mark_accepted()
     # Append-only the session's log (flag-gated, fail-soft). Emitted HERE, after

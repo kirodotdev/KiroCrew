@@ -233,7 +233,7 @@ def test_the_write_chains_name_functions_that_exist() -> None:
 #: surface must not grow. UPPER bounds, so a change that removes a site does not
 #: fail; it lowers the number in the same change. "Pinned" means the call names the transcript it
 #: expects with ``expected_history_key``, which lets the save refuse a stale one.
-_FORCED_FULL_SAVES = 26
+_FORCED_FULL_SAVES = 27
 _FORCED_FULL_SAVES_WITHOUT_TRANSCRIPT_PIN = 4
 _FULL_SAVES = frozenset({"save_slot_off_loop", "_save_slot_to_history"})
 

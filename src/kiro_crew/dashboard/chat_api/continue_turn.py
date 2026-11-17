@@ -159,7 +159,23 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
                 # A member the pause stopped sends its first restored card too (a
                 # restart during the pause); otherwise Continue below runs over a
                 # restored queue, as it does on any interrupted chat.
+                from kiro_crew.slack.code_channels import stop_hold
+
+                if _person := stop_hold.http_stamp(request):
+                    # The person's Continue sends the queue on, so its stamp rides the
+                    # entry the drain sends: a code channel Stop's hold is released too.
+                    queue[0]["meta"] = {
+                        **(queue[0].get("meta") or {}),
+                        stop_hold.STAMP_META: _person,
+                    }
                 drained = await drain_held_queue(state, slot, send_restored=owed)
+                if drained == "held" and stop_hold.holds_queue(slot):
+                    # Not a person's Continue, and the Stop still holds the queue: say
+                    # so, and the pause keeps its hand-back, rather than ok with nothing run.
+                    await asyncio.to_thread(crew_pause.rehold, slot.key, released)
+                    return web.json_response(
+                        {"error": stop_hold.STOPPED_TEXT, "code": "channel_stopped"}, status=409
+                    )
                 # A chosen restored card that waits behind another hold (sub-agents,
                 # an open editor) is sent by the drain that follows: holding the
                 # member again would stop it.
@@ -167,11 +183,15 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
                     state.push_slots_update()
                     return web.json_response({"ok": True, "slot": slot.key})
 
+        from kiro_crew.slack.code_channels import stop_hold
+
         try:
             await continue_slot_turn(
                 state,
                 slot,
                 directive_user_origin=not bool(request.get("app", "")),
+                # The person's own Continue may end a code channel Stop's hold.
+                extra_meta=stop_hold.meta(stop_hold.http_stamp(request)),
                 # The dashboard Resume button is a human-initiated action: allow
                 # the recovery on a slot whose queue is fully restored. The
                 # restored cards stay queued for the user to send; the drain never

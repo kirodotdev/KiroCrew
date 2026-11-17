@@ -82,7 +82,9 @@ def _bind(env: Env, channel: str = "C0CODE", **kw: Any) -> Binding:
     )
     env.store.put_binding(binding)
     assert env.state is not None
-    env.state.linked[binding.anchor_ts] = SimpleNamespace(key="chat-9-1", running=False)
+    env.state.linked[binding.anchor_ts] = SimpleNamespace(
+        key="chat-9-1", running=False, append=lambda *_a, **_k: None
+    )
     return binding
 
 
@@ -1143,7 +1145,9 @@ async def test_bang_stop_in_a_code_channel_stops_the_bound_session(env: Env) -> 
     env.info("C0CODE")
     event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
     assert (await _gate(env, event)).gate is Gate.DROP
-    assert env.slack.posts == [("C0CODE", "Nothing running.", None)]
+    assert env.slack.posts == [
+        ("C0CODE", "Nothing running. Nothing starts again until someone writes.", None)
+    ]
 
 
 async def test_an_idle_stop_lets_the_watch_show_the_helper_agents_state_again(

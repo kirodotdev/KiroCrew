@@ -446,6 +446,10 @@ class SlotRegistry:
             owner, name, transcript_stems=_slot_transcript_identity(slot), publication=True
         )
         owner._slots[name] = slot
+        # A code channel's Stop that found no slot for this key holds it now (``stop_hold``).
+        from kiro_crew.slack.code_channels import stop_hold
+
+        stop_hold.on_register(slot)
         # A publication owns the key: a close that handed it over owes its
         # marker to nobody (writing it would close the tab just published).
         # Settled here only when NO takeover note stands on the key -- a

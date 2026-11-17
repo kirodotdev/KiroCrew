@@ -1569,6 +1569,12 @@ async def create_session(
                 raise
             if pct_override is not None:
                 _seed_live_pct()
+        if via_code_channel:
+            # Read on the loop after the worker record landed: a Stop holds its
+            # session before it reads the records, so one of the two sees the other.
+            from kiro_crew.slack.code_channels import stop_hold
+
+            stop_hold.inherit(state, caller_slot, slot)
         if profile_worker:
             from kiro_crew.dashboard.crewmate_approval import seed_new_worker
 

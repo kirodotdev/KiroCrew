@@ -601,6 +601,13 @@ async def steer_into_running_turn(
         # The turn IS a manual /compact: no prompt runs that a steer could join.
         logger.info("slot %s is compacting; queueing instead of steering", slot.key)
         return STEER_UNAVAILABLE
+    from kiro_crew.slack.code_channels import stop_hold
+
+    if stop_hold.holds(slot):
+        # A code channel's Stop holds this session: nothing joins its ending turn,
+        # asked after the last await above. The caller's queue path holds a wake's or
+        # a peer's text, and a person's carries its stamp there, which releases.
+        return STEER_UNAVAILABLE
 
     # Register as pending BEFORE the await: ``steer()`` suspends on
     # ``stdin.drain()``, and if the turn's finally runs during that suspension
@@ -1303,6 +1310,7 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    stop_hold_stamp: str = "",
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1384,6 +1392,7 @@ def queue_for_next_turn(
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
+    from kiro_crew.slack.code_channels.stop_hold import meta as stop_hold_meta
 
     meta: dict[str, Any] = (
         dict(admission) if admission is not None else dict(containment_meta(state, slot))
@@ -1425,6 +1434,8 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    # A person's stamp for a code channel Stop's hold (``stop_hold``).
+    meta.update(stop_hold_meta(stop_hold_stamp))
     qid = slot.queue_append(
         message,
         meta=meta,

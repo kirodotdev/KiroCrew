@@ -122,10 +122,12 @@ async def _fire_dashboard_nudge(
         if self.dashboard_state.get_slot(loop.slot_key) is not slot:
             return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     # A conductor mode "Pause all" holds this session: the wake is refused like a busy
-    # slot's, so it spends no cycle and dispatches nothing until Resume all.
+    # slot's, so it spends no cycle and dispatches nothing until Resume all; a code
+    # channel's Stop the same, until a person writes (``stop_hold``).
     from kiro_crew import crew_pause
+    from kiro_crew.slack.code_channels import stop_hold
 
-    if crew_pause.holds_slot(slot):
+    if crew_pause.holds_slot(slot) or stop_hold.holds(slot):
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
     # STRUCTURAL-TERMINAL GUARD (message loops only). If the slot's LAST
     # delivered turn ended on a malformed-request rejection, the backend
@@ -404,8 +406,10 @@ async def _start_dashboard_wake_turn(
     # Asked again after the last await before the turn is spawned: a Pause all
     # that landed during the body's ledger read or the admission check holds it.
     # From here to the spawn nothing suspends, and a spawned turn is one Pause
-    # all sees running and stops.
-    if crew_pause.holds_slot(slot):
+    # all sees running and stops. So does a code channel's Stop (``stop_hold``).
+    from kiro_crew.slack.code_channels import stop_hold
+
+    if crew_pause.holds_slot(slot) or stop_hold.holds(slot):
         return MonitorDispatchResult.BUSY
     # Show nudge as a distinct "nudge" role message in the slot history.
     # The structured meta lets the dashboard render a compact cycle chip

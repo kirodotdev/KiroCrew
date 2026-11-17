@@ -1003,8 +1003,12 @@ async def _fire(
     tool_id: str | None = None,
     tool_identity: str = "",
     mcp_server: str = "",
+    admit: Any = None,
 ) -> list[str]:
     """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
+
+    ``admit``, when given, is asked synchronously right before each hook command
+    spawns (``ScriptHookStore.fire``): False runs no command (a code channel's Stop).
 
     ``tool_id`` is the id the harness stated for the call
     (``AcpEvent.harness_tool_id``). The spec's own hooks match their tool
@@ -1065,6 +1069,7 @@ async def _fire(
             tool_match_names=_match_names,
             acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
             session_model=_model,
+            **({} if admit is None else {"admit": admit}),
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the

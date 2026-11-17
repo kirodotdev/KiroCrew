@@ -224,10 +224,14 @@ def _install_dashboard_middlewares(
         card_turn_delegation_middleware,
     )
     from kiro_crew.dashboard.redaction_audience import redaction_audience_middleware
+    from kiro_crew.slack.code_channels.stop_hold import stop_hold_arrival_middleware
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
-        # Outermost: privacy-safe per-route latency. Times the FULL
+        # First, awaiting nothing before the rest: the code channel Stop a request
+        # arrived after (``stop_hold``), so no await of ours lets a later Stop in first.
+        stop_hold_arrival_middleware,
+        # Then: privacy-safe per-route latency. Times the FULL
         # in-gateway handling (all middleware + handler). Labels are limited to
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
@@ -386,10 +390,12 @@ def _install_api_middlewares(
         return await handler(request)  # type: ignore[operator]
 
     from kiro_crew.dashboard.redaction_audience import redaction_audience_middleware
+    from kiro_crew.slack.code_channels.stop_hold import stop_hold_arrival_middleware
 
-    # Explicit ordering mirrors start_dashboard: latency → relay rule → relay strip →
-    # deny-audit → host → csrf → token → redaction audience → audit.
+    # Explicit ordering mirrors start_dashboard: Stop arrival → latency → relay rule →
+    # relay strip → deny-audit → host → csrf → token → redaction audience → audit.
     app.middlewares[:] = [
+        stop_hold_arrival_middleware,
         # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
         # The MCP routes are registered AFTER this assignment, so the middleware
         # captures its route-template set LAZILY on the first request (by which

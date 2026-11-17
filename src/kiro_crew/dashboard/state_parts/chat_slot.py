@@ -297,6 +297,8 @@ class _ChatSlot:
         "_dropped_note_ids",
         "_app",
         "_human_seen",
+        "_stop_held",
+        "_stop_hold_seq",
         "_origin",
         "_pending_variants",
         "_regenerate_target",
@@ -530,6 +532,8 @@ class _ChatSlot:
     _pending_memory_mode: str | None
     _app: str
     _human_seen: bool
+    _stop_held: bool
+    _stop_hold_seq: int
     _origin: str
     forked_from: str | None
     forked_from_created_at: str
@@ -1257,6 +1261,9 @@ class _ChatSlot:
         row that kind drains to, so neither arm draws it as the person's bubble.
         The caller hands a *run_chat_coro* that runs it as a synthetic payload.
 
+        A session a code channel's Stop holds queues the prompt: no peer, wake or
+        app releases it (``stop_hold``).
+
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
@@ -1272,7 +1279,9 @@ class _ChatSlot:
         # whether the slot is idle or busy.
         if gateway_prompt_kind and gateway_prompt_kind not in GATEWAY_PROMPT_INJECT_KINDS:
             raise ValueError(f"unknown gateway prompt kind: {gateway_prompt_kind!r}")
-        if self.running or crew_pause.holds_slot(self):
+        from kiro_crew.slack.code_channels import stop_hold
+
+        if self.running or crew_pause.holds_slot(self) or stop_hold.holds(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta
