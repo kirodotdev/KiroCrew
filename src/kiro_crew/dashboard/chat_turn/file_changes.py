@@ -619,18 +619,19 @@ def _snapshot_write_target(
             snapshot["pending_str_replace"] = pending
         return snapshot
 
-    # Fallback: read from disk (correct on the blocking permission-request path
-    # where the write has NOT yet executed). One read: the whole file when it is
-    # within _MAX_RECONSTRUCT_BYTES (capped here exactly as the ordinary read
-    # caps it), else the ordinary capped read and no whole text.
+    return _disk_before_snapshot(path, canonical, pending)
+
+
+def _disk_before_snapshot(path: str, canonical: str, pending: dict | None = None) -> dict[str, Any]:
+    """*path*'s before read from disk, for a write that has not run yet (a permission wait).
+
+    Whole file within _MAX_RECONSTRUCT_BYTES, else the capped read; missing or unreadable: "".
+    """
     whole = _safe_read_file_text(path, whole=True)
     content = _truncate_snapshot(whole.content) if whole is not None else _safe_read_snapshot(path)
     if content is None:
-        # File doesn't exist yet (`create` on a new file is the common case)
-        # OR was unreadable. Either way, record an empty before so the chip
-        # still surfaces.
         return {"path": path, "canonical_path": canonical, "content": "", "truncated": False}
-    snapshot = {
+    snapshot: dict[str, Any] = {
         "path": path,
         "canonical_path": canonical,
         "content": content.content,

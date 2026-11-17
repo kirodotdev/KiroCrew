@@ -68,6 +68,7 @@ _OWNER_MODULES = frozenset(
         "directives",
         "eager_spawn",
         "elicitation_prompt",
+        "file_change_shapes",
         "file_changes",
         "mcp_oauth_notice",
         "mcp_session",

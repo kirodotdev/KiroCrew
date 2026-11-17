@@ -169,6 +169,10 @@ from kiro_crew.dashboard.chat_turn.eager_spawn import (
     stop_eager_spawns,
 )
 from kiro_crew.dashboard.chat_turn.elicitation_prompt import _on_elicitation_request
+from kiro_crew.dashboard.chat_turn.file_change_shapes import (  # noqa: F401
+    _client_cwd,
+    _snapshot_tool_writes,
+)
 from kiro_crew.dashboard.chat_turn.file_changes import _MAX_RECONSTRUCT_BYTES  # noqa: F401
 from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     _on_mcp_oauth_request,
