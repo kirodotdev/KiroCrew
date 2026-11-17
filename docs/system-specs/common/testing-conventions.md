@@ -2568,7 +2568,13 @@ added a fourth; each was a real defect:
   about four runs of ten by pointing the temp root at its 8.3 short name, the shape of
   the runner's `C:\Users\RUNNER~1`. Production fix: `session_ledger.resolved_within`
   resolves the base once, builds the child from it, and strips the prefix from both
-  sides; the three ledger guards go through it. Ninety repeated runs pass.
+  sides; the three ledger guards go through it. Ninety repeated runs pass. The same
+  class came back as an EQUALITY guard: `test_dashboard_save_tool_older_rule`'s two
+  concurrent first saves got a 503 because `atomic_write._refuse_linked_parent`
+  compared a prefixed resolve of the parent with a plain one of the same directory
+  (#37114, fixed in #37211). The rule is the platform-compat row "Compare paths for
+  identity": every identity comparison of a resolved path folds both sides through
+  `strip_extended_length_prefix`.
 
 ### What the fourth five-run pass found (Linux, 106k tests per run)
 
