@@ -86,8 +86,15 @@ kirocrew`). Onto that base:
    a PREVIOUS rebuild left behind is *reconciled*: the transport-independent keys
    the source owns (`timeout`, `disabled`) are overwritten, and one the source has
    since dropped is removed, so an edit to the source reaches the generated spec
-   instead of losing to the value the first rebuild froze. Every other key on the
-   entry is the user's and survives by omission, `autoApprove` included.
+   instead of losing to the value the first rebuild froze. `disabledTools` is
+   reconciled the same way when the source entry declares the server (a `command`
+   or a `url`): a changed list replaces the copy, a removed one is removed, and the
+   worker agent file derived from this spec follows. A placeholder the dashboard
+   wrote for a server another file declares (`{"disabled": true}`,
+   `{"disabledTools": [...]}`) starts nothing, so it leaves the entry's list as it
+   is. A list the `~/.kiro/crew/mcp.json` store sets (the dashboard's Apply) still
+   wins in step 4. Every other key on the entry is the user's and survives by
+   omission, `autoApprove` included.
    Reconciling retires the name, so a lower-priority scope cannot reconcile it
    again. `url` and `headers` are NOT reconciled — see the fallback's as-a-unit
    rule below. A stdio entry's `command`, `args` and `env` ARE, as one unit: the
@@ -106,8 +113,8 @@ kirocrew`). Onto that base:
    command unit (`command`, `args` and `env`), because that invocation is the
    edition's (`_refresh_dynamic_fields()` refreshes its `command` and `args`, and
    puts back any `env` key the edition ships that the entry lacks, keeping the
-   user's value for a key both set); only `timeout` and `disabled` are reconciled
-   onto it, here and in step 3.
+   user's value for a key both set); only `timeout`, `disabled` and (from a
+   declaring entry) `disabledTools` are reconciled onto it, here and in step 3.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
