@@ -1092,6 +1092,60 @@ class TestServiceAttachmentFollowsUpdates:
 
         assert self._attachment(aa, launcher) == str(launcher.resolve())
 
+    def test_a_managed_update_version_script_attaches_to_every_version_of_this_tool(
+        self, monkeypatch, durable_dir
+    ):
+        """The shared launcher execs the current version's script, so every version
+        folder of this tool is covered, and no other tool the launcher dispatches."""
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        tools = durable_dir / "tools"
+        script = self._launcher(tools / "kirocrew" / "0.12.2.4" / "bin" / "kirocrew")
+
+        attached = self._attachment(aa, script)
+
+        root = tools.resolve()
+        assert attached == f"{root}/kirocrew/*/bin/kirocrew"
+        assert aa.attachment_covers(attached, f"{root}/kirocrew/0.12.2.5/bin/kirocrew")
+        assert not aa.attachment_covers(attached, f"{root}/other/0.12.2.5/bin/kirocrew")
+        assert not aa.attachment_covers(
+            attached, f"{root}/kirocrew/0.12.2.5/python3.12/bin/python3"
+        )
+
+    def test_a_managed_update_root_another_account_can_write_keeps_the_exact_path(
+        self, monkeypatch, durable_dir
+    ):
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        script = self._launcher(
+            durable_dir / "tools" / "kirocrew" / "0.12.2.4" / "bin" / "kirocrew"
+        )
+        tool = (durable_dir / "tools" / "kirocrew").resolve()
+
+        def takeover(path, expected_uid=None, candidate=None):
+            return "writable by another account" if path == tool else None
+
+        monkeypatch.setattr(aa, "_substitutable_by_others", takeover)
+
+        assert self._attachment(aa, script) == str(script.resolve())
+
+    @pytest.mark.parametrize(
+        "relative",
+        [
+            "tools/other/0.12.2.4/bin/kirocrew",
+            "tools/kirocrew/latest/bin/kirocrew",
+            "tooling/kirocrew/0.12.2.4/bin/kirocrew",
+        ],
+    )
+    def test_a_script_outside_this_tools_version_folders_keeps_the_exact_path(
+        self, monkeypatch, durable_dir, relative
+    ):
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        script = self._launcher(durable_dir / relative)
+
+        assert self._attachment(aa, script) == str(script.resolve())
+
 
 class TestAttachmentCovers:
     """The kernel's attachment-glob semantics, which doctor and the update hold share."""

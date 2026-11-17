@@ -651,6 +651,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.service.common import (  # noqa: F401
         kirocrew_bin,
+        service_attach_path,
         service_environment,
         systemctl_user_env,
         systemd_quote,

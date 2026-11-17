@@ -414,6 +414,10 @@ def _doctor_service_launch() -> None:
         print(f"  service runs: Warning: could not read the program the service starts ({unit})")
         return
     real = os.path.realpath(program)
+    # A managed-update launcher resolves to one dispatcher every tool shares, so
+    # its realpath names no install: show the launcher as the definition spells it.
+    if os.path.basename(real) == _TOOLBOX_DISPATCHER:
+        real = program
     checkout = _kirocrew_checkout_of(Path(real))
     # A link target is whatever its writer chose, so a path that carries a
     # control character is shown escaped; an ordinary one stays copyable.

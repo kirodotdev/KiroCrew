@@ -73,6 +73,21 @@ def test_a_service_running_the_wheel_install_is_ok(tmp_path, monkeypatch, host, 
     assert _WARN not in out
 
 
+def test_a_toolbox_launcher_is_named_as_written(tmp_path, monkeypatch, host, capsys):
+    """Its realpath is the dispatcher every tool shares, which names no install."""
+    dispatcher = _executable(tmp_path / "toolbox" / "1.0" / install._TOOLBOX_DISPATCHER)
+    launcher = tmp_path / "home" / ".toolbox" / "bin" / "kirocrew"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(dispatcher)
+    _point_at(monkeypatch, _unit(tmp_path, f"{launcher} gateway --no-open"))
+
+    install._doctor_service_launch()
+
+    out = capsys.readouterr().out
+    assert f"service runs: OK:      {launcher}\n" in out
+    assert install._TOOLBOX_DISPATCHER not in out
+
+
 def test_a_shared_launcher_repointed_at_a_clone_is_warned_on(tmp_path, monkeypatch, host, capsys):
     """The issue's hijack: ExecStart names ``~/.local/bin/kirocrew``, which a clone's
     installer repointed from the wheel install to the clone's own ``.venv``."""

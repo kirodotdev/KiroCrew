@@ -25,6 +25,8 @@ from kiro_crew.service.common import (
     kirocrew_bin,
     launchd_live_program,
     service_environment,
+    service_exec_path,
+    toolbox_launcher_for,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -262,11 +264,11 @@ def _repairer_bin() -> str:
         "kirocrew.exe" if os.name == "nt" else "kirocrew"
     )
     if _is_executable_file(sibling):
-        # The launcher persists this path, so on a managed venv it names the
-        # stable link rather than the versioned tree the interpreter runs from.
+        # The launcher persists this path, so it names a stable launcher rather
+        # than the versioned tree the interpreter runs from.
         from kiro_crew.platform.tree_liveness import through_stable_link
 
-        return through_stable_link(str(sibling))
+        return service_exec_path(through_stable_link(str(sibling)))
     raise OSError(
         "refusing to restore the launchd launcher: no kirocrew console script "
         f"beside the running interpreter ({sys.executable}). PATH is not "
@@ -296,9 +298,14 @@ def ensure_live_program() -> bool:
     would be a script nothing runs. The restored launcher targets the running
     install: a Dev Fleet cutover's worktree and PATH were in the lost file, and
     Make live can re-target it. Callers do the platform check.
+
+    An existing plain launcher (no Dev Fleet cutover) that execs a Toolbox
+    tool-version dir is repointed at the Toolbox launcher instead
+    (:func:`_repoint_versioned_launcher`): a later Toolbox update removes that
+    dir, and the agent would then have nothing to run.
     """
     if LIVE_PROGRAM.exists():
-        return False
+        return _repoint_versioned_launcher()
     # Reuses the module's own payload reader rather than parsing again: it already
     # fails closed on the cases that matter here — unreadable, not a plist, a
     # malformed-XML plist (an unescaped `&` in a hand-added value is the usual
@@ -319,6 +326,52 @@ def ensure_live_program() -> bool:
         "with nothing to execute. It now targets this install; use Dev Fleet's "
         "Make live to point it at a different checkout.",
         LIVE_PROGRAM, LAUNCHD_LABEL,
+    )
+    return True
+
+
+def _repoint_versioned_launcher() -> bool:
+    """Rewrite a plain launcher that execs a Toolbox version dir. True if written.
+
+    Only a launcher that is byte-for-byte what :func:`render_live_program`
+    writes for one target is touched, so a Dev Fleet cutover (``cd`` and
+    ``PATH`` lines) or a hand-edited file is left alone. A launcher an older
+    ``service install`` wrote this way is rewritten when a gateway of a build
+    with this heal starts. launchd itself keeps starting the build the launcher
+    names, which has no heal, so on its own this fires only when that newer
+    build starts another way (by hand, or an in-app restart); an existing Mac
+    install is otherwise fixed by one more ``kirocrew service install``. That
+    includes a target an operator pinned with ``KIROCREW_SERVICE_BIN`` at
+    install: a pin inside a managed-update version folder breaks at the next
+    update anyway. A pin anywhere else is left alone.
+    """
+    import shlex
+
+    try:
+        text = LIVE_PROGRAM.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    exec_lines = [line for line in text.splitlines() if line.startswith("exec ")]
+    if len(exec_lines) != 1:
+        return False
+    try:
+        argv = shlex.split(exec_lines[0])
+    except ValueError:
+        return False
+    if len(argv) != 3 or argv[2] != "$@" or render_live_program(argv[1]) != text:
+        return False
+    # Not service_exec_path: the version folder this launcher names is usually
+    # already gone, which is the failure this heal exists for.
+    if os.environ.get("KIROCREW_SERVICE_BIN", "").strip():
+        return False
+    stable = toolbox_launcher_for(argv[1])
+    if stable is None:
+        return False
+    write_live_program(render_live_program(stable))
+    log.warning(
+        "Repointed the launchd launcher at %s from %s to %s: a Toolbox update "
+        "removes old version dirs, which would leave the agent %s nothing to run.",
+        LIVE_PROGRAM, argv[1], stable, LAUNCHD_LABEL,
     )
     return True
 
@@ -396,7 +449,7 @@ def install() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     # Write the launcher BEFORE loading: a loaded agent whose Program does not
     # exist fails to spawn and KeepAlive would retry it in a tight loop.
-    write_live_program(render_live_program(kirocrew_bin()))
+    write_live_program(render_live_program(service_exec_path(kirocrew_bin())))
     # Boot out whatever launchd still holds, plist or not: a job whose plist is
     # gone (an earlier uninstall launchd refused, or a hand-deleted file) is
     # still loaded, and bootstrapping over it fails with "5: Input/output error".
