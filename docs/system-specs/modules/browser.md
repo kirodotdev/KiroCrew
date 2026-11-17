@@ -476,8 +476,13 @@ the card for 2 windows in a row; it climbs one step after 5 windows in a row in
 which the sharper picture's frame would land in time with 30% to spare. Frames are
 acked one at a time, so a high round trip alone only slows the frame rate: on
 2 Mbit/s with a 150 ms round trip the stream runs at about 2.5 fps and keeps the
-1280-wide picture. A window with no frame (a still page, the agent thinking) is no
-evidence and changes nothing. The hub's `rung` is `picture * 7 + fps step`.
+1280-wide picture. The link is read from the faster frames of a window (its upper
+quarter of per-frame rates): a busy card delays some acks, a slow link delays all,
+and while that link carries 30 fps late acks never take the rate below 30 fps. A
+window with no frame (a still page, the agent thinking) counts as calm against the
+link last measured, so a rate stepped down climbs back while nothing moves; the
+first frame after 0.3 s of stillness, and any input, puts the stream on its fastest
+step at once. The hub's `rung` is `picture * 7 + fps step`.
 
 **Link memory.** A stream starts where the last stream of the same card on the
 same relay stood when it ticked or stopped, within 10 minutes, so a new turn or a
@@ -498,7 +503,7 @@ emit two more frames at the ladder's picture, which would cover the sharp still.
 An off-screen or collapsed card stops the screencast (the card reports
 visibility), unless the turn replay records: then the cast keeps running for
 the recorder only (see Turn replay). Input sent with no frame for 3 s restarts it. While the person holds
-the browser the frame rate is capped at 15 fps; the picture stays. `browser.live.*` holds the knobs: `enabled`, `quality`
+the browser the frame rate may reach 60 fps (a slow link still steps it down); the picture stays. `browser.live.*` holds the knobs: `enabled`, `quality`
 (`auto|high|medium|low`), `max_fps` (15|30|60), `mask_passwords`; `max_fps` caps the
 fps axis and a fixed `quality` caps the picture axis. They are read per stream start from the
 live config snapshot, so a Settings change applies to the next turn, never to a
@@ -507,7 +512,12 @@ asked, at most every 250 ms, for the boxes of visible `input[type=password]`
 (a read-only `querySelectorAll` + `getBoundingClientRect` on the relay's own
 session, walking open shadow roots to the same depth the snapshot walker does),
 scaled from CSS to frame pixels; a failed query keeps the last boxes rather than
-unmasking. The query runs in an isolated world made on the frame it reads
+unmasking. While the person's input is under 1 s old the card's frame goes with the
+boxes the last query read and the next query runs beside it, so a frame never waits
+for the page; a secret field that appears mid-gesture can show unmasked in the card
+until that query answers (the recorder never takes such a frame, see Turn replay). A
+query run that way voids the recorder's proof that the fields stood still, so the
+first held frame after a drive needs two fresh matching queries. The query runs in an isolated world made on the frame it reads
 (`screencast.MASK_WORLD`), so a page script cannot replace those functions to
 report no secret field; no world means a failed query. The world is made when
 the stream starts; a query that has to make it again (a navigation destroyed it,
@@ -885,8 +895,8 @@ card can play a finished turn back: what the page looked like, and what the agen
 (`bind_live_hub`). `turn_started` opens the turn's recording (a reopened view
 reopens the same turn), `_fold` ends it. Frames come from the stream through the
 sink's recorder seam (`_StreamSink.records` / `wants_frame` / `record`). When the
-recorder's 5 fps gate is open (`wants_frame`), the stream runs a box query FOR
-THAT FRAME, bypassing the card's 250 ms cache and even with
+recorder's 5 fps gate is open (`wants_frame`) and the person's input is over 1 s
+old (`RECORD_INPUT_QUIET_S`), the stream runs a box query FOR THAT FRAME, bypassing the card's 250 ms cache and even with
 `browser.live.mask_passwords` off (the card's header then still carries no mask),
 and hands the recorder the JPEG with those boxes and `mask_ok`. `mask_ok` is true
 only when the query ran for the frame, answered `{boxes, frames, partial}` (or a
@@ -904,8 +914,11 @@ exception is unknown. A secret field is `input[type=password]`, an input whose
 document it cannot read or place exactly (cross-origin, a scaled or transformed
 iframe, any `object`/`embed`/`fencedframe`/`portal`) is reported in `frames`,
 which the recorder paints over and the card ignores. A frame that arrives while
-the gate is shut is held; the stream's once-a-second tick offers it (`flush_held`)
-only when no newer frame replaced it, it is under 1.5 s old, its size matches, and
+the person's input is under 1 s old is never recorded: no query brackets it, so
+it drops any held frame and the proof that the fields stood still, and recording
+resumes once two fresh queries agree. A frame that arrives while the gate is shut
+is held; the stream's once-a-second tick offers it (`flush_held`) once input is
+quiet, only when no newer frame replaced it, it is under 1.5 s old, its size matches, and
 a fresh query finds exactly the boxes the query before it found, so the password
 fields provably stood still across its window; otherwise it is dropped. A held
 frame from before the turn began is dropped by the recorder. The stream also keeps casting while the card is hidden, sending nothing to
