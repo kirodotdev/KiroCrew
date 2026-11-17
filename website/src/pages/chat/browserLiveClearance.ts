@@ -19,20 +19,32 @@
  * the card's header whenever the card and what follows it fill the view.
  */
 
+import { chromeQueryAll } from './appChrome'
+
 export const TOP_OVERLAY_ATTR = 'data-transcript-top-overlay'
+
+/** The overlay's elements, by their markers: the title row's root and the pinned-prompt card. */
+const TOP_OVERLAY_SELECTOR = '[data-transcript-top-overlay],[data-testid="pinned-prompt"]'
 
 /** Space kept between the overlay's lower edge and the card's top, in px. */
 export const CLEARANCE_GAP_PX = 8
 
-/** The overlay's elements (the title row's root and the pinned-prompt card). */
-export function topOverlays(): HTMLElement[] {
-  return [...document.querySelectorAll<HTMLElement>(`[${TOP_OVERLAY_ATTR}], [data-testid="pinned-prompt"]`)]
+/** The overlay's elements (the title row's root and the pinned-prompt card),
+ *  in `scope` (one split-view pane, say) or the whole document. Never one inside
+ *  content an agent or a file wrote (rendered markdown, an SVG): its sanitizer
+ *  keeps these attributes, so a message could otherwise pose as the overlay
+ *  and push cards out of its way. */
+export function topOverlays(scope: ParentNode = document): HTMLElement[] {
+  return chromeQueryAll(scope, TOP_OVERLAY_SELECTOR)
 }
 
-/** The overlay's lowest edge on screen, or null when there is none. */
-function overlayBottom(): number | null {
+/** The overlay's lowest edge on screen, or null when there is none. An overlay
+ *  that contains `inside` (that element's own dock, say) is not counted: it
+ *  cannot cover what it holds. */
+export function overlayBottom(scope: ParentNode = document, inside?: Node): number | null {
   let bottom = -Infinity
-  for (const el of topOverlays()) {
+  for (const el of topOverlays(scope)) {
+    if (inside && el.contains(inside)) continue
     // A banner set aside (visibility hidden) keeps its box but covers nothing.
     if (getComputedStyle(el).visibility === 'hidden') continue
     const r = el.getBoundingClientRect()

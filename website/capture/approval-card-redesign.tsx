@@ -5,7 +5,10 @@
  *   reads — a read-only command: the Read-only chip and the read-only row
  *   env   — an env-prefixed command the gateway derives no family for
  *   mcp   — an MCP tool call with arguments: no exact-call grant exists for it
+ *   mcp-always — the same call where the server offers "Always allow this tool"
  *   none  — an unattended (cron) request: Trust holds its slot, disabled
+ *   override — a command a deny rule refuses: the rule-override card
+ *   ghost — the transcript row out of view: the card's "Show in chat" chip
  *
  * WHY ISOLATED: the pending-approval state only exists inside a live chat
  * session with an agent parked on an approval. This mounts the REAL ChatInput
@@ -34,6 +37,10 @@ import '../src/index.css'
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'kiro-dark'
 const scene = params.get('scene') || 'shell'
+/** A stand-in for the chat's title overlay, `overlay` px tall, for the cramped
+ *  frame: the shoot script sizes it to leave the card's request less than
+ *  64px of room, so the card holds Allow once and Trust and says why. */
+const overlayPx = Number(params.get('overlay') || 0)
 
 document.documentElement.setAttribute('data-theme', theme)
 
@@ -81,6 +88,37 @@ const SCENES: Record<string, { content: string; meta: Record<string, unknown> }>
       trust_grantable: '1',
     },
   },
+  // The same call on a server whose tools may be allowed for good.
+  'mcp-always': {
+    content: 'post_message',
+    meta: {
+      tool_purpose: 'Post a placeholder update to Slack',
+      tool_input: JSON.stringify({ channel: '#placeholder-team', text: 'Draft is ready for review' }),
+      is_shell: '', tool_kind: 'other', tool_name: 'post_message', mcp_server: 'slack-mcp',
+      trust_grantable: '1', always_allow_tool_grantable: '1', always_allow_tool_ref: '@slack-mcp/post_message',
+    },
+  },
+  // A command a deny rule refuses: the card offers the rule override instead of Trust.
+  override: {
+    content: 'Running: git push',
+    meta: {
+      tool_purpose: 'Publish the placeholder branch',
+      tool_input: JSON.stringify({ command: 'git push origin main' }), is_shell: '1', is_read_only: '',
+      full_command: 'git push origin main', base_command: 'git',
+      deny_override_rule: 'git-publish-push-protected-branch-name', deny_override_command: 'git push origin main',
+      trust_command_grantable: '1', trust_grantable: '1',
+    },
+  },
+  // The shell scene again, with its transcript row out of view ("Show in chat").
+  ghost: {
+    content: 'Running: ls',
+    meta: {
+      tool_purpose: 'List placeholder project files',
+      tool_input: JSON.stringify({ command: READS }), is_shell: '1', is_read_only: '1',
+      full_command: READS, base_command: 'ls',
+      trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1',
+    },
+  },
   // An unattended source: no standing grant can be recorded for it.
   none: {
     content: '[cron] Running: ls',
@@ -116,6 +154,11 @@ function Harness() {
   const [value, setValue] = useState('')
   return (
     <div className="flex flex-col justify-end h-screen bg-bg text-text" data-capture-root>
+      {overlayPx > 0 && (
+        <div data-transcript-top-overlay className="fixed inset-x-0 top-0 z-[45] flex items-end px-4 pb-2 bg-bg-elevated border-b border-border text-[13px] text-muted" style={{ height: overlayPx }}>
+          Chat title (overlay)
+        </div>
+      )}
       <div className="flex flex-col gap-2 px-3 pb-3 overflow-hidden">
         <div className="self-end max-w-[80%] rounded-xl bg-accent-subtle px-3 py-2 text-[13px]">
           Placeholder request from the user.
@@ -125,7 +168,7 @@ function Harness() {
             form, which is the state the mockup draws. */}
         <div
           className="self-start text-[13px] font-mono text-muted"
-          ref={el => { if (el) registerToolPill('tc-capture-1', el) }}
+          ref={el => { if (el && scene !== 'ghost') registerToolPill('tc-capture-1', el) }}
         >
           ▶ {seed.content}
         </div>

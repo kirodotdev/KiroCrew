@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api } from '../api/client'
@@ -83,6 +83,12 @@ beforeEach(() => {
 })
 
 describe('ChatInput security-rule override card', () => {
+  it('shows the refused command once, in its warning, not again as the call payload', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithOverrideCard()) })
+    expect(screen.getByTestId('deny-override-warning').textContent).toContain('rm -rf /')
+    expect(screen.queryByTestId('approval-input')).not.toBeInTheDocument()
+  })
+
   it('names the rule and offers no Allow once or Trust control', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithOverrideCard()) })
     expect(screen.getByTestId('deny-override-warning').textContent).toContain('rm -rf /.*')
@@ -211,5 +217,50 @@ describe('ChatInput security-rule override card', () => {
     })
     const older = store.getState().chat.messages.find(m => m.meta?.mid === 'mid-0')
     expect(older?.meta?.resolved).toBe('approved')
+  })
+
+  it('prints the refused call in the menu when it carries more than the command, which the menu covers', () => {
+    const command = 'rm -rf /'
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithOverrideCard({ tool_input: JSON.stringify({ command, cwd: '/srv' }) })) })
+    fireEvent.click(screen.getByTestId('deny-override-trigger'))
+    expect(screen.getByTestId('deny-override-pending-call')).toHaveTextContent('Either option runs this now')
+    // Two blocks, as on the card: the working directory never reads as a second command line.
+    expect(screen.getByTestId('deny-override-pending-call-command').textContent).toBe(command)
+    expect(screen.getByTestId('deny-override-pending-call-text').textContent).toBe('{"cwd":"/srv"}')
+  })
+
+  it('the override menu cues its own scroll on a short screen', () => {
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    const menu = (el: Element) => (el as HTMLElement).dataset?.testid === 'deny-override-menu'
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return menu(this) ? 400 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return menu(this) ? 200 : 0 } })
+    onTestFinished(() => {
+      if (sh) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh)
+      else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+      if (ch) Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch)
+      else delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+    })
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithOverrideCard({ tool_input: JSON.stringify({ command: 'ls', cwd: '/srv' }) })) })
+    fireEvent.click(screen.getByTestId('deny-override-trigger'))
+    expect(screen.getByTestId('deny-override-menu')).toHaveAttribute('data-more-below')
+  })
+
+  it('an override menu left open closes when the next request takes the card', () => {
+    const store = createTestStore(stateWithOverrideCard())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByTestId('deny-override-trigger'))
+    expect(screen.getByTestId('deny-override-menu')).toBeInTheDocument()
+    act(() => {
+      store.dispatch(sseChatMessage({ slot: 'slot-1', role: 'permission', content: 'Running: curl x', meta: { approval_id: 'ap-2', mid: 'mid-2', tool_input: '{"command":"curl x"}', is_shell: '1', tool_call_id: 'tc-2', deny_override_rule: 'curl .*', deny_override_reason: 'Blocked by security policy: curl .*', deny_override_command: 'curl x' } }))
+    })
+    expect(screen.getByTestId('deny-override-command')).toHaveTextContent('curl x')
+    expect(screen.queryByTestId('deny-override-menu')).not.toBeInTheDocument()
+  })
+
+  it('leaves the refused command to the warning when it is the whole call', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithOverrideCard()) })
+    fireEvent.click(screen.getByTestId('deny-override-trigger'))
+    expect(screen.queryByTestId('deny-override-pending-call')).not.toBeInTheDocument()
   })
 })

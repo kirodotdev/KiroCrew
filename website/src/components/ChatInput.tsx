@@ -62,7 +62,7 @@ import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/l
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { useSpawnApprovals, useToolApproval } from './chat-input/approval'
-import { ApprovalReceipt, ToolApprovalCard } from './chat-input/ToolApprovalCard'
+import { ApprovalCardMotion, ApprovalReceipt, ToolApprovalCard } from './chat-input/ToolApprovalCard'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -384,7 +384,7 @@ function ChatInput({
   const {
     pendingApproval, hasApproval, approvalId, approvalPickerSignal,
     approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus, showGhost,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, approvalReceiptKey, approvalReceiptSlot, showApprovalError, showApprovalStatus, showGhost,
   } = approval
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
@@ -1125,16 +1125,24 @@ function ChatInput({
         {...GUIDE_KEEP_CLEAR}
         className={`${hasApproval ? 'glass-shadow approval-glow' : 'glass-shadow'}${inlineToolbarWhileFits ? ' transition-[border-radius] duration-200' : ''}`}
       >
-      <AnimatePresence>
+      {/* Keyed on the slot, like the receipt below: a session switch drops the
+          previous session's card, live buttons and all, at once. */}
+      <AnimatePresence key={`approval-card:${activeSlot ?? ''}`}>
         {pendingApproval && approvalId && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
-          >
+          <ApprovalCardMotion key="approval-card" reduced={reduceMotion}>
           <ToolApprovalCard approval={approval} activeSlot={activeSlot} approvalMode={approvalMode} />
-          </motion.div>
+          </ApprovalCardMotion>
+        )}
+      </AnimatePresence>
+      {/* In the card's own slot: its status pill moves here (a shared layout id)
+          and turns into the verdict, so the decision reads as the card settling. */}
+      {/* In presence, so the receipt fades out when its time is up as it faded in. */}
+      {/* Only over the composer of the slot it was made in, and keyed on the
+          slot: a receipt never shows or fades over another session's composer,
+          it goes at once in the render that moves the composer. */}
+      <AnimatePresence key={`approval-receipt:${activeSlot ?? ''}`} initial={false}>
+        {approvalNotice && approvalReceiptSlot === activeSlot && (approvalNoticeKind === 'granted' || approvalNoticeKind === 'rejected') && (
+          <ApprovalReceipt key="approval-receipt" kind={approvalNoticeKind} slot={approvalReceiptSlot} request={approvalReceiptKey}>{approvalNotice}</ApprovalReceipt>
         )}
       </AnimatePresence>
 
@@ -1182,9 +1190,6 @@ function ChatInput({
             onDismiss={spawnApprovals.dismissSpawnLivenessError}
           />
         </div>
-      )}
-      {approvalNotice && (approvalNoticeKind === 'granted' || approvalNoticeKind === 'rejected') && (
-        <ApprovalReceipt kind={approvalNoticeKind}>{approvalNotice}</ApprovalReceipt>
       )}
 
       {!showGhost && prefillHint && (

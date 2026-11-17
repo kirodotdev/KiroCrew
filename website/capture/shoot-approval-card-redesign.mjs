@@ -4,13 +4,10 @@
  * Serves the isolated capture entry (capture/approval-card-redesign.tsx) with a
  * programmatic Vite dev server on loopback, then photographs the REAL composer
  * in each of the card's five states, with the Trust and Reject menus open, with
- * the all-tools row armed, and after a decision, in a light and a dark theme.
+ * the all-tools row armed, and after a decision, in a light and a dark theme,
+ * plus short recordings of a decision and of arming the lone all-tools control.
  * Every row is fabricated inside the entry and every /api call is answered
  * here, so no gateway / kiro-cli / token is involved.
- *
- * It also reports, for the open Trust menu, whether the menu's box overlaps
- * the card's command box: the exact-command row names no command, so the
- * command must stay in view while the menu is open.
  *
  * Usage (from website/): node capture/shoot-approval-card-redesign.mjs [outDir] [light,dark themes]
  */
@@ -43,14 +40,15 @@ page.on('pageerror', e => console.log('PAGE EXCEPTION:', e.message))
 // left to the dev server, which has no such route, as in a session with no
 // gateway. Matched on the path's first segment: a `**/api/**` glob also catches
 // Vite's own `/src/api/*` module requests.
-await page.route(url => url.pathname.startsWith('/api/'), route => (
+const stubApi = p => p.route(url => url.pathname.startsWith('/api/'), route => (
   route.request().method() === 'POST'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
     : route.continue()
 ))
+await stubApi(page)
 
-const open = async (scene, theme) => {
-  await page.goto(`${base}/capture/approval-card-redesign.html?scene=${scene}&theme=${theme}`)
+const open = async (scene, theme, extra = '') => {
+  await page.goto(`${base}/capture/approval-card-redesign.html?scene=${scene}&theme=${theme}${extra}`)
   await page.locator('[data-approval-actions]').waitFor({ timeout: 30000 })
   await page.waitForTimeout(700)
 }
@@ -59,20 +57,34 @@ const shoot = async (name, theme) => {
   await page.screenshot({ path })
   console.log('wrote', path)
 }
-const rect = async sel => page.locator(sel).first().evaluate(el => {
-  const r = el.getBoundingClientRect()
-  return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }
-})
-const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 const trust = () => page.locator('[data-approval-actions] button', { hasText: 'Trust' })
 const reject = () => page.locator('[data-approval-actions] button', { hasText: 'Reject' })
 
 for (const theme of THEMES) {
   // The five states.
-  for (const scene of ['shell', 'reads', 'env', 'mcp', 'none']) {
+  for (const scene of ['shell', 'reads', 'env', 'mcp', 'none', 'override', 'ghost']) {
     await open(scene, theme)
     await shoot(`state-${scene}`, theme)
   }
+
+  // The MCP card's lone all-tools control, armed by its first click. Its
+  // measured width, idle and armed, is logged: the reserve keeps them equal.
+  await open('mcp', theme)
+  const lone = await trust().elementHandle()
+  const width = async () => Math.round((await lone.boundingBox()).width)
+  const idleWidth = await width()
+  await lone.click()
+  await page.waitForTimeout(200)
+  console.log(`  [${theme}] lone all-tools control width: idle ${idleWidth}px, armed ${await width()}px`)
+  await shoot('state-mcp-armed', theme)
+
+  // An MCP card that can also take "Always allow this tool": a menu again.
+  await open('mcp-always', theme)
+  await trust().click()
+  await page.getByRole('menu').waitFor()
+  await page.waitForTimeout(300)
+  await shoot('menu-trust-always-allow', theme)
+  await page.keyboard.press('Escape')
 
   // Trust menu, as it opens: the session lifetime, every row.
   await open('reads', theme)
@@ -80,7 +92,6 @@ for (const theme of THEMES) {
   await page.getByRole('menu').waitFor()
   await page.waitForTimeout(300)
   await shoot('menu-trust', theme)
-  console.log(`  [${theme}] reads: trust menu overlaps the command box:`, overlaps(await rect('[role="menu"]'), await rect('[data-testid="approval-command"]')))
 
   // A timed lifetime chosen, and the all-tools row armed by its first click.
   await page.getByRole('menuitemradio').first().click()
@@ -95,8 +106,51 @@ for (const theme of THEMES) {
   await page.getByRole('menu').waitFor()
   await page.waitForTimeout(300)
   await shoot('menu-trust-long-command', theme)
-  console.log(`  [${theme}] shell: trust menu overlaps the command box:`, overlaps(await rect('[role="menu"]'), await rect('[data-testid="approval-command"]')))
   await page.keyboard.press('Escape')
+
+  // A short pane: the card's request region is capped and cues what it hides,
+  // and the Trust menu's exact-command row prints the whole command.
+  await page.keyboard.press('Escape')
+  // The ghost scene: no stand-in transcript pill, which at this height would
+  // flip the card in and out of its ghost state in this in-flow harness.
+  await page.setViewportSize({ width: 860, height: 360 })
+  await open('ghost', theme)
+  await shoot('short-pane', theme)
+  await trust().click()
+  await page.getByRole('menu').waitFor()
+  await page.waitForTimeout(300)
+  await shoot('short-pane-menu', theme)
+  // The menu's own scroll fades the edge that hides rows (data-more-*).
+  // Checked with each attribute set by hand, since a menu that fits sets none.
+  const menuCue = await page.getByTestId('trust-menu').evaluate(el => {
+    const mask = () => getComputedStyle(el).maskImage || getComputedStyle(el).webkitMaskImage
+    const at = attrs => { attrs.forEach(a => el.setAttribute(a, '')); const m = mask(); attrs.forEach(a => el.removeAttribute(a)); return m }
+    return { none: mask(), below: at(['data-more-below']), above: at(['data-more-above']), both: at(['data-more-above', 'data-more-below']) }
+  })
+  console.log(`  [${theme}] short-pane menu cue: ${JSON.stringify(menuCue)}`)
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 860, height: 520 })
+
+  // Cramped: a title overlay low enough that the request has under 64px of
+  // room (requestRegionCap.ts). Sized from the card as it lays out without
+  // one: room = region bottom - (overlay bottom + 8px gap) - the card's
+  // heading, so an overlay ending 38px above that line leaves 30px.
+  await open('shell', theme)
+  const geo = await page.getByTestId('approval-request-region').evaluate(r => {
+    const card = r.parentElement.getBoundingClientRect()
+    const box = r.getBoundingClientRect()
+    return { bottom: box.bottom, heading: box.top - card.top }
+  })
+  await open('shell', theme, `&overlay=${Math.round(geo.bottom - geo.heading - 38)}`)
+  await page.getByTestId('approval-cramped').waitFor()
+  const cramped = await page.evaluate(() => ({
+    allow: document.querySelector('[data-approval-primary]').disabled,
+    trust: [...document.querySelectorAll('[data-approval-actions] button')].find(b => b.textContent.includes('Trust')).disabled,
+    reject: [...document.querySelectorAll('[data-approval-actions] button')].find(b => b.textContent.includes('Reject')).disabled,
+  }))
+  console.log(`  [${theme}] cramped: Allow once disabled ${cramped.allow}, Trust disabled ${cramped.trust}, Reject disabled ${cramped.reject}`)
+  await shoot('cramped', theme)
+  await open('shell', theme)
 
   // Reject menu (unchanged), with its reason box.
   await reject().click()
@@ -119,6 +173,36 @@ for (const theme of THEMES) {
   await page.locator('[data-testid="approval-receipt"]').waitFor()
   await page.waitForTimeout(500)
   await shoot('receipt-rejected', theme)
+}
+
+// Recordings, one clip each: a decision settling into its receipt (the status
+// pill moves and turns into the verdict), and the lone all-tools control's
+// first click. Video at 1x, so each clip stays small.
+const record = async (name, theme, scene, act) => {
+  const ctx = await browser.newContext({ viewport: { width: 860, height: 520 }, recordVideo: { dir: `${OUT}/video-tmp`, size: { width: 860, height: 520 } } })
+  const p = await ctx.newPage()
+  await stubApi(p)
+  await p.goto(`${base}/capture/approval-card-redesign.html?scene=${scene}&theme=${theme}`)
+  await p.locator('[data-approval-actions]').waitFor({ timeout: 30000 })
+  await p.waitForTimeout(900)
+  await act(p)
+  await p.waitForTimeout(1600)
+  await ctx.close()
+  await p.video().saveAs(`${OUT}/${name}-${theme.endsWith('light') ? 'light' : 'dark'}.webm`)
+  console.log('wrote', `${OUT}/${name}`)
+}
+for (const theme of THEMES) {
+  await record('rec-allow-once', theme, 'shell', p => p.getByRole('button', { name: 'Allow once' }).click())
+  await record('rec-reject-once', theme, 'shell', async p => {
+    await p.locator('[data-approval-actions] button', { hasText: 'Reject' }).click()
+    await p.waitForTimeout(400)
+    await p.getByRole('menuitem').first().click()
+  })
+  await record('rec-all-tools-arm', theme, 'mcp', async p => {
+    await p.locator('[data-approval-actions] button', { hasText: 'Trust' }).hover()
+    await p.waitForTimeout(400)
+    await p.locator('[data-approval-actions] button', { hasText: 'Trust' }).click()
+  })
 }
 
 await browser.close()
