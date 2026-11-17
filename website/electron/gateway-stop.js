@@ -1085,6 +1085,7 @@ async function isServiceManaged(pid, getPpid, isLaunchdJob = null) {
 }
 
 module.exports = {
+  confirmedFree,
   postShutdown,
   stopGatewayGracefully,
   forceStopPort,
