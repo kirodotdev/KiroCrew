@@ -12107,7 +12107,6 @@
       "usage_error": "Could not check where this item is used: {{error}}",
       "usage_incomplete": "Could not check {{places}}, so any use there is not shown.",
       "delete_in_use": "This item is still in use. Whatever uses it will stop working.",
-      "reference_title": "Reference",
       "copy_reference": "Copy {{reference}}",
       "corrupt_item": "This item could not be read. Delete it and add it again.",
       "not_found": "No item by that name. Pick one on the left.",
@@ -12115,7 +12114,12 @@
       "open_website": "Open {{href}}",
       "keep_blank_hint": "Leave the password and notes blank to keep what is stored.",
       "copy_failed": "Couldn’t copy. Select the text and copy it yourself.",
-      "reference_hint": "Paste a reference into an MCP server’s environment to use this item there. #username picks one field."
+      "usage_kind_browser_signin": "Browser sign-in",
+      "usage_signs_in_at": "Signs you in at {{host}}",
+      "use_in_tool_title": "Use in a tool",
+      "use_in_tool_tip": "Paste this into a tool’s settings, such as an MCP server’s environment. The tool gets the value when it runs; the value itself never appears there.",
+      "advanced_title": "Advanced",
+      "api_call_label": "API call"
     }
   },
   "uiLocations": {

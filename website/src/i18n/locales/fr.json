@@ -23512,7 +23512,6 @@
       "usage_error": "Impossible de vérifier où cet élément est utilisé : {{error}}",
       "usage_incomplete": "Impossible de vérifier {{places}}, donc aucune utilisation n’y est affichée.",
       "delete_in_use": "Cet élément est encore utilisé. Ce qui l’utilise cessera de fonctionner.",
-      "reference_title": "Référence",
       "copy_reference": "Copier {{reference}}",
       "corrupt_item": "Cet élément n’a pas pu être lu. Supprime-le et ajoute-le de nouveau.",
       "not_found": "Aucun élément de ce nom. Choisis-en un à gauche.",
@@ -23520,7 +23519,12 @@
       "open_website": "Ouvrir {{href}}",
       "keep_blank_hint": "Laisse vides le mot de passe et les notes pour garder ce qui est enregistré.",
       "copy_failed": "Impossible de copier. Sélectionne le texte et copie-le toi-même.",
-      "reference_hint": "Colle une référence dans l’environnement d’un serveur MCP pour y utiliser cet élément. #username choisit un champ."
+      "usage_kind_browser_signin": "Connexion dans le navigateur",
+      "usage_signs_in_at": "Te connecte sur {{host}}",
+      "use_in_tool_title": "Utiliser dans un outil",
+      "use_in_tool_tip": "Colle ceci dans les réglages d’un outil, par exemple l’environnement d’un serveur MCP. L’outil reçoit la valeur quand il s’exécute\u202f; la valeur elle-même n’y apparaît jamais.",
+      "advanced_title": "Avancé",
+      "api_call_label": "Appel d’API"
     }
   },
   "store": {
