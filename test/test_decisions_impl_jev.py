@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import sys
 
 import pytest
 from aiohttp import web
@@ -1191,6 +1193,30 @@ class TestConnectionReuse:
         assert same_connector
         assert len(rec.peers) == 2
         assert rec.peers[0] == rec.peers[1], "both requests must ride one TCP connection"
+
+    def test_without_h2_the_client_falls_back_to_http1_and_says_so_once(self, monkeypatch, caplog):
+        # A runtime with httpx but no ``h2``: ``AsyncClient(http2=True)`` raises
+        # ImportError. Each decision still has to be sent and answered.
+        monkeypatch.setitem(sys.modules, "h2", None)
+        monkeypatch.setattr(impl_jev, "_http2_missing_warned", False, raising=False)
+
+        async def scenario():
+            rec = _ok()
+            async with _Serving(rec) as serving:
+                first = await serving.oracle().ask("hi", [URGENT])
+                await close_sessions()
+                second = await serving.oracle().ask("hi", [URGENT])
+                return first, second
+
+        with caplog.at_level(logging.WARNING, logger=impl_jev.__name__):
+            try:
+                first, second = asyncio.run(scenario())
+            except ImportError as exc:
+                pytest.fail(f"a missing h2 failed the decision: {exc}")
+        assert first["is_urgent"].p == pytest.approx(0.9)
+        assert second["is_urgent"].p == pytest.approx(0.9)
+        said = [r for r in caplog.records if "h2 package is not installed" in r.getMessage()]
+        assert len(said) == 1, "the missing h2 is logged once, not once per client"
 
     def test_a_closed_session_is_recreated_and_works(self):
         async def scenario():

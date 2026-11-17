@@ -153,6 +153,9 @@ _KEEPALIVE_SECS = 15.0
 _POOL_LIMIT = 16
 _sessions: dict[asyncio.AbstractEventLoop, Any] = {}
 _sessions_lock = threading.Lock()
+#: Set once the missing ``h2`` package has been logged, so it is said once per
+#: process rather than once per new client.
+_http2_missing_warned = False
 
 
 def _refuse_all_cookies() -> Any:
@@ -180,24 +183,38 @@ def _session_for_running_loop() -> Any:
 
     import httpx
 
+    global _http2_missing_warned
     loop = asyncio.get_running_loop()
     with _sessions_lock:
         for dead in [lp for lp in _sessions if lp.is_closed()]:
             _sessions.pop(dead)
         session = _sessions.get(loop)
         if session is None or session.is_closed:
-            session = httpx.AsyncClient(
-                http2=True,
-                verify=ssl.create_default_context(),
-                trust_env=False,
-                follow_redirects=False,
-                cookies=_refuse_all_cookies(),
-                limits=httpx.Limits(
+            options = {
+                "verify": ssl.create_default_context(),
+                "trust_env": False,
+                "follow_redirects": False,
+                "cookies": _refuse_all_cookies(),
+                "limits": httpx.Limits(
                     max_connections=_POOL_LIMIT,
                     max_keepalive_connections=_POOL_LIMIT,
                     keepalive_expiry=_KEEPALIVE_SECS,
                 ),
-            )
+            }
+            try:
+                session = httpx.AsyncClient(http2=True, **options)
+            except ImportError:
+                # httpx needs the ``h2`` package for HTTP/2 and raises here without
+                # it. A runtime assembled without the ``http2`` extra would then fail
+                # every decision before it is sent; HTTP/1.1 over the same pool
+                # keeps them working.
+                if not _http2_missing_warned:
+                    _http2_missing_warned = True
+                    logger.warning(
+                        "decisions: the h2 package is not installed, so the provider "
+                        "client uses HTTP/1.1; install httpx[http2] for HTTP/2"
+                    )
+                session = httpx.AsyncClient(http2=False, **options)
             _sessions[loop] = session
         return session
 
