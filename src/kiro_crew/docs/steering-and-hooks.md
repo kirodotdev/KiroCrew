@@ -594,10 +594,21 @@ them, and there are two scopes:
 | Global | `~/.kiro/prompts` |
 | Local | `<project>/.kiro/prompts` |
 
-To use one, type `@` in the composer and pick it by name — the same mention
-syntax skills use. From the Prompts tab, **Send to** picks the destination
-instead: a new chat, or one of your open sessions. Either way the prompt's name
-lands in the composer as `@<name>` and sends.
+To use one, start a message with `@<name>`, then a space and anything you want
+to add, which reaches the agent after the prompt's text. The name is read only
+at the very start of the message; `@<name>` anywhere else is sent as plain
+text. The composer's `@` picker lists files, not prompts, so type the name in
+full. Three other routes reach the same prompt:
+
+- In a dashboard chat, `/prompts` lists the prompts that chat can see, and
+  `/prompts get <name>` runs one there.
+- From the Prompts tab, **Send to** picks the destination: a new chat, or one
+  of your open sessions.
+- The search palette's **Prompts** tab matches names as you type and puts
+  `@<name>` in the open chat's composer, or starts a new session with it when
+  no chat is open. `Cmd+K` / `Ctrl+K` opens that palette only when
+  `dashboard.command_bar_enabled` is `false` (Settings → Display → View); by
+  default the same keys open the Command Bar, which does not list prompts.
 
 A global prompt can also be a slash command. Add `slash_command: true` to its
 frontmatter and `~/.kiro/prompts/review-cr.md` answers to `/review-cr`, with a row
@@ -639,7 +650,7 @@ should hold always is steering.
 ## Related docs
 
 - [Agents](agents.md): agent specs, and the resources a spec loads
-- [Skills](skills.md): markdown knowledge packs, and the `@` mention that loads one
+- [Skills](skills.md): markdown knowledge packs; `$<name>` in a message loads one
 - [Inbound webhooks](inbound-webhooks.md): the endpoint `register_hook` points at
 - [Memory and learning](memory-and-learning.md): the layer steering outranks
 - [Dashboard](dashboard.md): where the Steering files, Hooks and Prompts tabs sit
