@@ -33,6 +33,7 @@ from kiro_crew.apps.manager_records import (
     _approved_grants_row,
     _is_sidecar_entry,
     _read_installed,
+    _recorded_app_names,
     _write_installed,
     app_dir,
     apps_dir,
@@ -439,14 +440,13 @@ def list_apps() -> list[dict[str, Any]]:
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
 
     root = apps_dir()
-    if not root.is_dir():
+    names = _recorded_app_names(root)
+    if not names:
         return []
     orphaned_set = detect_orphaned_builtins()
     adoption_markers = _adoption_rows_context()
     result: list[dict[str, Any]] = []
-    for entry in sorted(root.iterdir()):
-        if _is_sidecar_entry(entry.name) or not entry.is_dir():
-            continue
+    for entry in (root / name for name in names):
         try:
             meta = _read_installed(entry.name)
         except InstalledRecordShapeError as exc:
