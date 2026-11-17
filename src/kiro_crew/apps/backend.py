@@ -62,6 +62,7 @@ from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
+    app_backend_secret_mask_targets,
     app_backend_visible_targets,
     app_declared_mask_targets,
     app_declared_readonly_targets,
@@ -887,6 +888,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 else ""
             ),
         )
+    # The npm install below runs third-party lifecycle scripts, so it takes the env as it
+    # is HERE: before the per-app proxy secret and its origin proof, which are meant for
+    # the backend process alone, are added.
+    install_env = dict(env)
     # Inject the per-app proxy secret so the backend can verify the
     # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
     # (CWE-306). Without it the loopback backend would trust any local caller.
@@ -985,11 +990,16 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 sandboxed_npm, _ = wrap_argv(
                     [npm_bin, "install", "--production", "--no-audit", "--no-fund"],
                     mode="standard",
+                    # Lifecycle scripts (postinstall) are third-party code.
+                    extra_hidden_dirs=app_backend_secret_mask_targets(),
                 )
                 sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
                 npm_run = run_limited(
                     sandboxed_npm,
-                    cwd=str(pkg_dir), env=env, capture_output=True, timeout=120,
+                    cwd=str(pkg_dir),
+                    env={**install_env, "NODE_ENV": "production"},
+                    capture_output=True,
+                    timeout=120,
                 )
             except Exception as exc:
                 logger.warning(

@@ -238,6 +238,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "annotations",
     "app_admission_denied",
     "app_backend_lifecycle_flock",
+    "app_backend_secret_mask_targets",
     "app_backend_visible_targets",
     "app_declared_mask_targets",
     "app_declared_readonly_targets",
