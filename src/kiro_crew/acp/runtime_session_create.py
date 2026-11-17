@@ -50,6 +50,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    _with_runtime_ipc_pickups,
 )
 from kiro_crew.acp.runtime_start import _START_COLLECT_TIMEOUT_DEFAULT, StartCollector, StartPermit
 from kiro_crew.acp.session_handle import (
@@ -429,6 +430,11 @@ async def create_session(
             session_work_dir=session_work_dir,
             stub_token=stub_token,
         )
+    mirror_used = mirrored is not None
+    if mirror_used:
+        # Once, on the array as it will be sent: the member entries above replace
+        # same-name projected ones, so issuing before them left those unserved.
+        mcp_servers = _with_runtime_ipc_pickups(self, mcp_servers, stub_token)
     # The agent to run: an explicit request, else the runtime default. KAS
     # has no --agent spawn flag, so its default must be BOTH injected (below)
     # and activated (via set_mode after session/new); the kiro default is
@@ -670,7 +676,7 @@ async def create_session(
             zero_tools=zero_tools,
             mirrored_snapshot=mirrored_snapshot,
             consumed_spec=consumed_spec,
-            mirror_used=mirrored is not None,
+            mirror_used=mirror_used,
             ref_spec=ref_spec,
             mcp_json=mcp_json,
             active_agent=active_agent,
@@ -740,7 +746,7 @@ async def create_session(
             zero_tools=zero_tools,
             mirrored_snapshot=mirrored_snapshot,
             consumed_spec=consumed_spec,
-            mirror_used=mirrored is not None,
+            mirror_used=mirror_used,
             ref_spec=ref_spec,
             mcp_json=mcp_json,
             active_agent=active_agent,

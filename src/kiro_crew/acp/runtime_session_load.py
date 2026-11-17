@@ -51,6 +51,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    _with_runtime_ipc_pickups,
 )
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
@@ -348,6 +349,11 @@ async def load_session(
             stub_token=stub_token,
             resuming=True,
         )
+    mirror_used = mirrored is not None
+    if mirror_used:
+        # Once, on the array as it will be sent: the member entries above replace
+        # same-name projected ones, so issuing before them left those unserved.
+        mcp_servers = _with_runtime_ipc_pickups(self, mcp_servers, stub_token)
     # Narrowed by the host for the same reason session/new is, and it matters
     # MORE here: session/load re-initializes the session's servers, so a
     # rejected array does not just fail to add tools -- it takes them away from
@@ -651,7 +657,7 @@ async def load_session(
     handle.spec_denied_tools = denied_tools
     handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
-    handle.mirror_used = mirrored is not None
+    handle.mirror_used = mirror_used
     if harness_state is not None:
         # Mirrors create_session: what the host's own setup decided that the
         # handle enforces.

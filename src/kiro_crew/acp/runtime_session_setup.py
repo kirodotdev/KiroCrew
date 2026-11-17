@@ -777,8 +777,8 @@ async def _mirrored_session_mcp(
     servers = list(servers) if isinstance(servers, list) else []
     crew_bridged: list[str] = []
     if self.acp_backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
-        # The AcpClient twin is in ``client_mcp_array``. Before the pickups below,
-        # so a bridge element gets its agent-socket pickup too.
+        # The AcpClient twin is in ``client_mcp_array``. Before the pickups the
+        # session paths issue, so a bridge element gets its agent-socket pickup too.
         servers, crew_bridged = await asyncio.to_thread(
             kas_env_launch.bridge_array,
             servers,
@@ -786,24 +786,6 @@ async def _mirrored_session_mcp(
             session_key=session_key or "",
             agent_id=active_agent or "",
         )
-    runtime_ref = weakref.ref(self)
-
-    def _own_root_pid() -> int | None:
-        live_runtime = runtime_ref()
-        if live_runtime is None:
-            return None
-        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
-
-    # An enforced harness's kirocrew-core cannot read the gateway secret through its
-    # credential mask, so its element gets an agent-socket pickup bound to this
-    # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
-    servers = with_ipc_pickups(
-        servers,
-        backend=self.acp_backend,
-        session_token=stub_token,
-        runtime_pid=_own_root_pid,
-        owner=self,
-    )
     return _MirroredSessionMcp(
         servers=servers,
         denied_tools=projection.denied_tools,
@@ -813,6 +795,33 @@ async def _mirrored_session_mcp(
         agent_spec=projection.agent_spec,
         crew_bridged=crew_bridged,
         zero_tools=projection.zero_tools,
+    )
+
+
+def _with_runtime_ipc_pickups(
+    runtime: AcpRuntime, servers: list[dict[str, Any]], stub_token: str
+) -> list[dict[str, Any]]:
+    """*servers* with this runtime's agent-socket pickups (``acp/ipc_pickup.py``).
+
+    An enforced harness's Kiro Crew server cannot read the gateway secret through its
+    credential mask, so its element gets a pickup bound to this session's stub token
+    and this runtime's process tree. Create and resume call it once, on the mirrored
+    array after their member entries are appended, as the client path does.
+    """
+    runtime_ref = weakref.ref(runtime)
+
+    def _own_root_pid() -> int | None:
+        live_runtime = runtime_ref()
+        if live_runtime is None:
+            return None
+        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
+
+    return with_ipc_pickups(
+        servers,
+        backend=runtime.acp_backend,
+        session_token=stub_token,
+        runtime_pid=_own_root_pid,
+        owner=runtime,
     )
 
 
