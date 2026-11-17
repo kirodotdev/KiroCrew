@@ -538,7 +538,8 @@ ones.
 | Crew down 30 minutes | The conductor retires the binding and redispatches the item (§5b). The timeout is configurable. |
 | Peer restart | The peer slot and its ledger are on the peer's disk and rehydrate. A turn in flight dies, so the slot is not `running` and `stale` follows the window. The conductor nudges with `session_send(crew=)`. The worker resumes from its pushed branch. The next `api/chat/headroom` read replaces the stored snapshot. |
 | `crew_busy` | The hub stores the reply's snapshot and tries the next eligible crew. With none left, the item stays unbound and the next patrol retries. Nothing is created on a refusing crew. |
-| Worker stuck on a login | `blocked`, `needs_human`. The conductor redispatches to another crew first; it asks the person only when none works. |
+| Worker stuck on a login | `blocked`, `needs_human`. The conductor redispatches to another crew: on a turn the owner sent, `work_ledger_record action=retire reason=login_blocked`, then `session_create(work_item=)` (§5b). On a wake turn it tells the owner. |
+| Wrong crew (a tool or account the item needs is missing) | The same move, with `reason=wrong_crew`. |
 | Hub restart | Nothing in flight lives on the hub. The item, with its binding history, is on disk; the next read resumes. Snapshots are refetched from `api/chat/headroom`. |
 | Version skew | Every call with a crew checks `versions_compatible` first (`major.minor`). A create whose reply lacks `work_item_id` (a peer that ignored the field) is closed at once and refused as `crew_peer_lacks_work_items`, so a worker never runs unbound. |
 
@@ -546,16 +547,23 @@ ones.
 
 When a remote worker's crew stays unreachable for 30 minutes
 (`crew_down_since` older than the timeout), the conductor gives up on that
-binding and moves the item.
+binding and moves the item. The conductor can also move it on its own call,
+when the worker is stuck on a login or the crew lacks what the item needs:
+`work_ledger_record action=retire reason=login_blocked|wrong_crew` on its own
+crew-bound item. Only the item's owner can retire it, only on a turn the owner
+sent (the `session_close(crew=)` gate; the #26651 exception does not cover it),
+and a locally bound item is refused `retire_not_remote`.
 
 1. **Retire.** The conductor records a `retire` on the item. The binding is
    marked `retired` with its crew id, its slot key and a reason
-   (`crew_unreachable`, `login_blocked`).
+   (`crew_unreachable` from the hub's timer; `login_blocked` or `wrong_crew`
+   from the conductor).
 2. **Redispatch.** The conductor places the SAME item again (§2b), excluding the
    retired crew. The new binding gets a NEW branch name, so two workers never
    push to one branch. Its seed names the retired binding's last pushed branch,
    and the new worker starts from it.
-3. **Clean up.** When the old crew reconnects, the conductor closes the old slot
+3. **Clean up.** When the old crew is connected (at once, for a conductor's
+   retire) or reconnects, the conductor closes the old slot
    with `session_close(crew=)` and logs a `destroyed` event on the binding. The
    peer's own crew log records `session/closed` with reason `destroyed`
    (`crew_log/entry_types_lifecycle.py`), as for any close.

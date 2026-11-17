@@ -1278,6 +1278,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         WORK_ASK_WHAT_CHARS,
         WORK_ASK_WHY_CHARS,
         WORK_BLOCKED_REASONS,
+        WORK_CONDUCTOR_RETIRE_REASONS,
         WORK_ITEM_STATES,
         WORK_MAX_ARTIFACT_VALUE_CHARS,
         WORK_MAX_DEPTH_DEFAULT,

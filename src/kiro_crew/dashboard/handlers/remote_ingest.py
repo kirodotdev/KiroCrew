@@ -58,6 +58,9 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _board_lock,
     _conductor_unit,
     _drain_before_cancelling,
+    _refuse_404,
+    _refuse_409,
+    _refuse_503,
     _refuse_if_dirty,
 )
 
@@ -627,6 +630,10 @@ async def _ingest_item(
         if record.binding not in (None, work_ledger.binding_id(item)):
             # Went stale since the guard above: file nothing on it.
             return
+        # A retire that landed during the peer call left a fresh record with no
+        # binding; writing this pull's pair into it would fence the item.
+        if not await _still_bound(board, item):
+            return
         record.binding = work_ledger.binding_id(item)
         record.crew_state = "connected"
         record.crew_down_since = None
@@ -805,7 +812,9 @@ async def _retire_overdue(
                 _DOWN_SEEN.pop(key, None)
                 continue
             first = _DOWN_SEEN.setdefault(key, _monotonic())
-            if _monotonic() - first >= minutes * 60 and await _record_retire(state, board, item):
+            if _monotonic() - first >= minutes * 60 and _landed(
+                await _record_retire(state, board, item)
+            ):
                 _DOWN_SEEN.pop(key, None)
         except Exception:  # noqa: BLE001 - a retire must never fail the read
             logger.warning("remote retire failed for %s", item.item_id, exc_info=True)
@@ -813,28 +822,66 @@ async def _retire_overdue(
         _DOWN_SEEN.pop(key, None)
 
 
-async def _record_retire(state: "DashboardState", board: str, item: work_ledger.WorkItem) -> bool:
-    """Record one ``retire`` write for *item*'s current binding. Whether it landed."""
+def _landed(resp: web.Response | None) -> bool:
+    return resp is not None and resp.status == 200
+
+
+#: The refusal for a retire whose item left that binding since it was read.
+CODE_RETIRE_BINDING_MOVED = "retire_binding_moved"
+
+
+async def _still_bound(board: str, item: work_ledger.WorkItem) -> bool:
+    """Whether *board*'s copy of *item* still holds *item*'s pair. Hold the board lock.
+
+    Every write that stamps a pair into the remote record checks this first: the
+    item it holds was read before the lock, and a retire may have landed since.
+    """
+    current = await asyncio.to_thread(work_ledger.read_work_item, board, item.item_id)
+    return current is not None and work_ledger.binding_id(current) == work_ledger.binding_id(item)
+
+
+async def _record_retire(
+    state: "DashboardState",
+    board: str,
+    item: work_ledger.WorkItem,
+    reason: str = RETIRE_CREW_UNREACHABLE,
+    *,
+    code_channel: bool = False,
+    caller_sk: str = "",
+) -> web.Response | None:
+    """Record one ``retire`` write for *item*'s current binding.
+
+    The write's own reply, or ``None`` when it was never tried (no crew-log unit,
+    or the record could not name the binding first).
+    """
     slot, crew = str(item.worker_session_key), str(item.worker_instance_id)
     # The board's durable crew-log unit, as a pull files reports into: the
     # background puller retires with no conductor runtime alive.
     unit, unit_error = await _board_unit(state, board)
     if unit_error is not None or not unit:
-        return False
+        return None
     # The record must name this binding BEFORE the retire commits, so a fresh
     # record that then fails to store leaves it recognisably stale (fenced)
     # rather than silently carried into the replacement. No stamp, no retire.
     async with _board_lock(board):
+        # *item* was read before this lock: another retire may have landed since
+        # and left a fresh record, which this stale pair must not fence.
+        if not await _still_bound(board, item):
+            return _refuse_409(
+                CODE_RETIRE_BINDING_MOVED,
+                f"item {item.item_id} is no longer bound to that crew session; "
+                "read the ledger again",
+            )
         record = await asyncio.to_thread(_stored, board, item.item_id)
         if record.binding is None:
             record.binding = work_ledger.binding_id(item)
             if not await asyncio.to_thread(_store, board, item.item_id, record):
-                return False
+                return None
     # The write and the steps after it run as one, finished even when this read
     # is cancelled (the puller's per-board budget): a retire that committed always
     # leaves the dispatch record and the remote record behind it.
-    return bool(
-        await _drain_before_cancelling(_commit_retire(state, board, unit, item, slot, crew))
+    return await _drain_before_cancelling(
+        _commit_retire(state, board, unit, item, slot, crew, reason, code_channel, caller_sk)
     )
 
 
@@ -845,8 +892,15 @@ async def _commit_retire(
     item: work_ledger.WorkItem,
     slot: str,
     crew: str,
-) -> bool:
-    """Record the retire, then drop the dispatch entry and store a fresh record."""
+    reason: str,
+    code_channel: bool,
+    caller_sk: str,
+) -> web.Response:
+    """Record the retire, then drop the dispatch entry and store a fresh record.
+
+    *code_channel* and *caller_sk* are the record route's, for a conductor's own
+    retire (the reply's published-fields projection); the hub's retire has neither.
+    """
     from kiro_crew.dashboard.handlers.work_ledger import _record_conductor_write
 
     # The slot leaves the in-memory dispatch record BEFORE the retire commits, so
@@ -874,16 +928,22 @@ async def _commit_retire(
                     "item_id": item.item_id,
                     "worker_session_key": slot,
                     "worker_instance_id": crew,
-                    "reason": RETIRE_CREW_UNREACHABLE,
+                    "reason": reason,
                 },
-                operation="work_ledger_read.retire",
+                operation=(
+                    "work_ledger_read.retire"
+                    if reason == RETIRE_CREW_UNREACHABLE
+                    else "work_ledger_record.retire"
+                ),
+                code_channel=code_channel,
+                caller_sk=caller_sk,
             )
             landed = resp.status == 200
             if not landed:
                 logger.info(
                     "remote retire of %s not recorded (%s)", item.item_id, _response_code(resp)
                 )
-                return False
+                return resp
         finally:
             if not landed:
                 for caller in holders:
@@ -894,7 +954,57 @@ async def _commit_retire(
     # item (no ingest, no bind) until a later read stores it (_reset_if_stale).
     async with _board_lock(board):
         await asyncio.to_thread(_store, board, item.item_id, _fresh_record())
-    return True
+    return resp
+
+
+#: The refusal for a conductor retire of an item bound to no session.
+CODE_RETIRE_NOT_BOUND = "retire_not_bound"
+
+#: The refusal for a conductor retire of an item bound to a LOCAL session.
+CODE_RETIRE_NOT_REMOTE = "retire_not_remote"
+
+
+async def retire_by_conductor(
+    state: "DashboardState",
+    board: str,
+    item_id: str,
+    reason: str,
+    *,
+    code_channel: bool = False,
+    caller_sk: str = "",
+) -> web.Response:
+    """The owning conductor's ``work_ledger_record action=retire`` (RFC §5b).
+
+    *board* is the caller's own, so an item on any other board reads as unknown:
+    only its owner may retire it. The same write as the hub's own retire
+    (:func:`_record_retire`), with the conductor's *reason*: the item stays open
+    with its history and the worker's last branch, placement skips the crew
+    (:func:`retired_crews`), and the old slot is closed now if its crew is
+    connected, else by the first pull that finds it back.
+    """
+    item = await settled_item(board, item_id)
+    if item is None:
+        return _refuse_404(work_ledger.CODE_UNKNOWN_ITEM, f"no item {item_id} on your ledger")
+    if item.is_terminal:
+        return _refuse_409(work_ledger.CODE_ITEM_CLOSED, f"item {item_id} is {item.state}")
+    if not item.worker_session_key:
+        return _refuse_409(CODE_RETIRE_NOT_BOUND, f"item {item_id} is bound to no session")
+    if not item.worker_instance_id:
+        return _refuse_409(
+            CODE_RETIRE_NOT_REMOTE,
+            f"item {item_id} is bound to a local session; retire moves only a crew-bound "
+            "item. Close it, or create a new item for another session.",
+        )
+    resp = await _record_retire(
+        state, board, item, reason, code_channel=code_channel, caller_sk=caller_sk
+    )
+    if resp is None:
+        return _refuse_503("retire_not_recorded", "the retire was not recorded; try again")
+    if _landed(resp):
+        retired = await settled_item(board, item_id)
+        if retired is not None:
+            _schedule_closes(state, board, [retired])
+    return resp
 
 
 #: ``(crew, slot)`` retired slots this process already tried to close. One try

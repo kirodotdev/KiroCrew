@@ -108,3 +108,14 @@ returns no branch. The retired session can only be closed. Once its crew is
 back, a pull tries once to close it; if that fails, `session_close(crew=)` it
 in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
 retire past that is refused `retired_history_full` and the binding stays.
+
+**A stuck or wrong crew.** When a crew worker reports `blocked` on a login, or
+the crew lacks a tool or account the item needs, the item can move to another
+crew: `work_ledger_record action=retire item_id=<id> reason=login_blocked` (or
+`reason=wrong_crew`), then redispatch as above. Retire closes the live worker,
+so it needs a turn the owner sent, as `session_close(crew=)` does. On a wake
+turn it is refused `crew_owner_unverifiable` and nothing changes: leave the item
+and tell the owner, who retires it from their own turn. The retire keeps the
+item, its history and the worker's last branch, closes the old session once its
+crew is connected, and placement skips that crew. A locally bound item is
+refused `retire_not_remote`.
