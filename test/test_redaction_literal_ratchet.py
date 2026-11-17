@@ -8,9 +8,9 @@ testing-conventions.md holds the rule and its history: build a credential that
 must vanish with ``kiro_crew.testing.synthetic_credentials``.
 
 A site is ``<key> not in <value>`` or ``assertNotIn(<key>, ...)`` where ``<key>``
-is a string literal holding an AWS key ID, or a name the same function (or the
-module) binds to one. Asserting the key IS kept (``in``) stays allowed: that is
-where such a literal belongs.
+is a str or bytes literal holding an AWS key ID, or a name the same function (or
+the module, or a class body read as ``self.KEY``) binds to one. Asserting the key
+IS kept (``in``) stays allowed: that is where such a literal belongs.
 
 ``_BASELINE`` holds the sites that predate this gate, as exact counts per file.
 It only shrinks: a new site in any file fails, and a removed one must lower its
@@ -51,6 +51,8 @@ _BASELINE: dict[str, int] = {
     "test_acp_structured_refusal.py": 1,
     "test_agent_hooks_both_shapes.py": 4,
     "test_ai_review_workflows_block_adjudication.py": 1,
+    "test_ai_review_workflows_scope_verdict.py": 1,
+    "test_artifacts_handlers_update.py": 1,
     "test_autonudge_banner.py": 2,
     "test_autonudge_handlers_cov80.py": 1,
     "test_aws_control_backup_job.py": 1,
@@ -78,6 +80,7 @@ _BASELINE: dict[str, int] = {
     "test_review_fixes.py": 1,
     "test_sel.py": 1,
     "test_sel_edge_cases.py": 1,
+    "test_sel_redaction.py": 9,
     "test_session_directive.py": 1,
     "test_session_start_timeout_diagnostics.py": 1,
     "test_slack_gateway_coverage_nudge_routing.py": 1,
@@ -89,13 +92,14 @@ _BASELINE: dict[str, int] = {
     "tracing/test_tracing_turns.py": 1,
 }
 
-_SCOPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+_SCOPES = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def _literal(node: ast.expr) -> str | None:
-    """The constant text of a string literal, f-string or ``+`` of literals."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+    """The constant text of a str or bytes literal, f-string or ``+`` of literals."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+        value = node.value
+        return value.decode("latin-1") if isinstance(value, bytes) else value
     if isinstance(node, ast.JoinedStr):
         return "".join(
             part.value
@@ -115,7 +119,7 @@ def _holds_key(node: ast.expr) -> bool:
 
 
 def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
-    """Every node of *scope*, without descending into a nested function."""
+    """Every node of *scope*, without descending into a nested function or class."""
     stack = list(ast.iter_child_nodes(scope))
     while stack:
         node = stack.pop()
@@ -124,8 +128,10 @@ def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
             stack.extend(ast.iter_child_nodes(node))
 
 
-def _key_names(scope: ast.AST) -> set[str]:
-    names: set[str] = set()
+def _key_names(scope: ast.AST) -> tuple[set[str], set[str]]:
+    """The names *scope* binds to a key, and every name it binds at all."""
+    keys: set[str] = set()
+    bound: set[str] = set()
     for node in _own_nodes(scope):
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
@@ -133,9 +139,11 @@ def _key_names(scope: ast.AST) -> set[str]:
             targets, value = [node.target], node.value
         else:
             continue
+        names = {t.id for t in targets if isinstance(t, ast.Name)}
+        bound |= names
         if _holds_key(value):
-            names.update(t.id for t in targets if isinstance(t, ast.Name))
-    return names
+            keys |= names
+    return keys, bound
 
 
 def _removal_subjects(node: ast.AST) -> Iterator[ast.expr]:
@@ -153,16 +161,44 @@ def _removal_subjects(node: ast.AST) -> Iterator[ast.expr]:
         yield node.args[0]
 
 
+def _names_key(subject: ast.expr, names: set[str], class_keys: set[str]) -> bool:
+    """*subject* is a name bound to a key, or ``self.KEY`` / ``cls.KEY`` of its class."""
+    if isinstance(subject, ast.Name):
+        return subject.id in names
+    return (
+        isinstance(subject, ast.Attribute)
+        and isinstance(subject.value, ast.Name)
+        and subject.value.id in ("self", "cls")
+        and subject.attr in class_keys
+    )
+
+
 def _sites(tree: ast.Module) -> list[int]:
-    """Line numbers where *tree* asserts an AWS key ID literal is absent."""
-    module_names = _key_names(tree)
+    """Line numbers where *tree* asserts an AWS key ID literal is absent.
+
+    Names resolve the way Python resolves them: a function sees the enclosing
+    function's or module's keys unless it rebinds the name, a class body's names
+    are invisible to its methods as bare names, and ``self.KEY`` reads only the
+    class whose method holds it.
+    """
     lines: list[int] = []
-    for scope in [tree, *(n for n in ast.walk(tree) if isinstance(n, _SCOPES[1:]))]:
-        names = module_names | (_key_names(scope) if scope is not tree else set())
+
+    def visit(scope: ast.AST, names: set[str], outer: set[str], class_keys: set[str]) -> None:
         for node in _own_nodes(scope):
-            for subject in _removal_subjects(node):
-                if _holds_key(subject) or (isinstance(subject, ast.Name) and subject.id in names):
-                    lines.append(node.lineno)
+            if isinstance(node, ast.ClassDef):
+                keys, bound = _key_names(node)
+                visit(node, (names - bound) | keys, outer, keys)
+            elif isinstance(node, _SCOPES):
+                keys, bound = _key_names(node)
+                inner = (outer - bound) | keys
+                visit(node, inner, inner, class_keys)
+            else:
+                for subject in _removal_subjects(node):
+                    if _holds_key(subject) or _names_key(subject, names, class_keys):
+                        lines.append(subject.lineno)
+
+    module_keys, _ = _key_names(tree)
+    visit(tree, module_keys, module_keys, set())
     return sorted(lines)
 
 
@@ -182,6 +218,9 @@ def test_the_detector_sees_every_removal_spelling() -> None:
     assert _lines(f'self.assertNotIn("{_KEY}", out)\n') == [1]
     assert _lines(f'def t():\n    secret = "{_KEY}"\n    assert secret not in out\n') == [3]
     assert _lines(f'SECRET: str = "{_KEY}"\ndef t():\n    assert SECRET not in out\n') == [3]
+    assert _lines(f'assert b"{_KEY}" not in body\n') == [1]
+    source = f'class T:\n    KEY = "{_KEY}"\n    def t(self):\n        assert self.KEY not in raw\n'
+    assert _lines(source) == [4]
 
 
 def test_the_detector_allows_a_kept_key_and_other_values() -> None:
@@ -195,6 +234,24 @@ def test_the_detector_allows_a_kept_key_and_other_values() -> None:
     # A name bound to a key in ANOTHER function is not this function's key.
     source = f'def a():\n    secret = "{_KEY}"\ndef b():\n    assert secret not in out\n'
     assert _lines(source) == []
+    # A local rebinding to a synthetic value shadows a module-level key.
+    source = f'KEY = "{_KEY}"\ndef t():\n    KEY = github_classic()\n    assert KEY not in out\n'
+    assert _lines(source) == []
+    # ``self.SECRET`` reads its own class, not another class's key of that name.
+    source = (
+        f'class Kept:\n    SECRET = "{_KEY}"\n'
+        "class Gone:\n    SECRET = github_classic()\n"
+        "    def t(self):\n        assert self.SECRET not in out\n"
+    )
+    assert _lines(source) == []
+    # A class body's name is not a bare name inside its methods.
+    source = f'class T:\n    KEY = "{_KEY}"\n    def t(self):\n        assert KEY not in out\n'
+    assert _lines(source) == []
+
+
+def test_the_detector_follows_enclosing_function_bindings() -> None:
+    source = f'def t():\n    key = "{_KEY}"\n    def check():\n        assert key not in out\n'
+    assert _lines(source) == [4]
 
 
 def _tree_sites() -> Counter[str]:
