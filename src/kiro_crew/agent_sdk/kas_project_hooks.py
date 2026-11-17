@@ -202,6 +202,8 @@ async def person_turn_reprojects(
     fails closed), and only while no sub-agent work is *pending* on the session;
     with work pending the turn runs without the folder hooks, logged.
     """
+    from kiro_crew.agent_discovery import in_agents_dir_revision_scope
+
     # circular import: spec_hooks re-exports this module.
     from kiro_crew.agent_sdk import spec_hooks
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
@@ -234,6 +236,7 @@ async def person_turn_reprojects(
             return {}
         return _consented_kas_project_hooks(name, folder) or {}
 
+    @in_agents_dir_revision_scope
     def _folder_hooks() -> bool:
         from kiro_crew.acp.kas_subagent_targets import _spec_pre_tool_matchers
 

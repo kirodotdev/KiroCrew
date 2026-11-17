@@ -2685,7 +2685,16 @@ The snapshot is only ever rebuilt off-loop:
   entry, once until that folder next yields a revision; a spent byte budget is
   not logged. Callers whose inputs
   keep moving scan one after another; readers of the snapshot never wait on the
-  flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
+  flight lock. The key read before a scan is the revision every memo and
+  snapshot share (`agent_discovery.shared_agents_dir_revision`): inside an
+  `agents_dir_revision_scope` (one resolve that reads a directory more than
+  once: the KAS spec resolve, the crewmate worker-spec verdict, a person's-turn
+  project-hooks check) the directory is walked once per resolve; outside a
+  scope every lookup walks. The scope is keyed on the in-process spec
+  generation, so a `clear_list_agents_cache()` is seen at once; any other write
+  is seen by the next resolve. The key read after a scan is always a fresh walk
+  (`fresh_agents_dir_revision`), so a write during the scan is never memoized.
+  A reuse heals like a scan, outside the lock, and the agent-catalog
   fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
   heals for the owner over a complete snapshot. `_MATERIALIZED_SCAN_COUNTS`
   counts reuses and scans, and a declined record is logged once per key.

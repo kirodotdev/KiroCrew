@@ -72,7 +72,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTS_DIR_UNHASHABLE_LOGGED,
         _DIGEST_CHUNK_BYTES,
         _NO_DIGEST,
+        _P,
         _PIN_EVERY_ENTRY_ON_BYTES,
+        _R,
+        _REVISION_SCOPE,
         AGENTS_DIR_MEMO_ENABLED,
         AgentsDirMemo,
         AgentsDirRevision,
@@ -81,6 +84,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SpecStatRevision,
         _young_entry_digest,
         agents_dir_revision,
+        agents_dir_revision_scope,
+        fresh_agents_dir_revision,
+        in_agents_dir_revision_scope,
+        shared_agents_dir_revision,
     )
     from kiro_crew.agent_discovery_parts.project_agents import (  # noqa: F401
         _declared_project_agent_name,
@@ -192,9 +199,20 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import stat  # noqa: F401
     import threading  # noqa: F401
     import time  # noqa: F401
+    from contextlib import contextmanager  # noqa: F401
+    from contextvars import ContextVar  # noqa: F401
     from dataclasses import asdict, dataclass, field  # noqa: F401
     from pathlib import Path  # noqa: F401
-    from typing import Any, Callable, Generic, Iterator, Mapping, Sequence, TypeVar  # noqa: F401
+    from typing import (  # noqa: F401
+        Any,
+        Callable,
+        Generic,
+        Iterator,
+        Mapping,
+        ParamSpec,
+        Sequence,
+        TypeVar,
+    )
 
     from kiro_crew.agent_files import (  # noqa: F401
         KIROCREW_DEFAULT_AGENT_NAMES,

@@ -58,6 +58,7 @@ from kiro_crew.acp.harness.base import (
     TeardownPolicy,
 )
 from kiro_crew.acp.harness.kas_missing_agent import _kiro_cli_builtin_reason, _missing_agent_reason
+from kiro_crew.acp.harness.kas_project_switch_offs import _with_project_switch_offs
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_agents_session_hoist import without_subagent_refused_servers
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
@@ -121,6 +122,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_KAS,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
+from kiro_crew.agent_discovery import in_agents_dir_revision_scope
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
 from kiro_crew.agent_sdk import kas_machine
 from kiro_crew.config import paths as paths_mod
@@ -335,40 +337,6 @@ def _crewmate_spec(mate_dir: Path, agent: str) -> dict[str, Any]:
     return merge_at_spawn(agent, mate_spec)
 
 
-def _keep_malformed_tool_list(own: dict[str, Any], keys: dict[str, Any]) -> dict[str, Any]:
-    """*keys* without its ``disabledTools`` when *own* carries one that is not a list.
-
-    KAS refuses a session whose spec holds a malformed ``disabledTools``. Joining a
-    checkout's list onto it would replace it with a valid one and start the server
-    with no exclusions, so the malformed value is left for the translator to refuse.
-    """
-    prior = own.get("disabledTools")
-    if prior is None or isinstance(prior, list):
-        return keys
-    return {key: value for key, value in keys.items() if key != "disabledTools"}
-
-
-def _with_project_switch_offs(spec: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
-    """*spec* with the checkout spec's switch-off keys layered on its own servers.
-
-    Only narrows: a mute or switched-off tools from *project* reach a server *spec*
-    already declares, and nothing else of the checkout does. A name *spec* does not
-    declare is skipped, so the checkout can add no entry. The same keys the
-    mirrored hosts layer on (``session_mcp._with_restrictions``).
-    """
-    from kiro_crew.acp.session_mcp import _project_restrictions, _with_restrictions
-
-    declared = spec.get("mcpServers")
-    if not isinstance(declared, dict):
-        return spec
-    kept = {
-        name: _keep_malformed_tool_list(declared[name], keys)
-        for name, keys in _project_restrictions(project).items()
-        if isinstance(declared.get(name), dict)
-    }
-    return _with_restrictions(spec, kept)
-
-
 def session_projects_folder_hooks(session_key: str) -> bool:
     """Whether a session keyed *session_key* projects a folder agent's own hooks.
 
@@ -384,6 +352,7 @@ def session_projects_folder_hooks(session_key: str) -> bool:
     return not session_key.startswith(CRON_SESSION_KEY_PREFIX) or PERSON_TURN.get()
 
 
+@in_agents_dir_revision_scope
 def resolve_projected_spec(
     agents_dir: Path,
     agent: str,

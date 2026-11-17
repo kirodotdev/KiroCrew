@@ -364,21 +364,30 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> bool:
     return landed
 
 
-def _memo_key() -> _MemoKey | None:
+def _memo_key(*, fresh: bool = False) -> _MemoKey | None:
     """What a scan reads, pinned: both directories' revisions and the publish count.
 
     ``None`` when a revision cannot be proved (the memo is off, a symlinked spec,
     too many young entries, an unlistable directory), so the scan always runs.
     Never raises: the refresh it keys never does, and an unprovable key costs
     only the scan.
+
+    The key read before a scan is the revision shared with every other holder
+    (:func:`~kiro_crew.agent_discovery.shared_agents_dir_revision`); the one read
+    after it is *fresh*, so a write during the scan moves it.
     """
     # Deferred: agent_discovery imports the config package.
-    from kiro_crew.agent_discovery import _revision_pin, agents_dir_revision
+    from kiro_crew.agent_discovery import (
+        _revision_pin,
+        fresh_agents_dir_revision,
+        shared_agents_dir_revision,
+    )
 
+    revision = fresh_agents_dir_revision if fresh else shared_agents_dir_revision
     try:
         user_dir, mate_dir = kiro_agents_dir(), mate_agents_dir()
-        user = agents_dir_revision(user_dir)
-        mate = agents_dir_revision(mate_dir)
+        user = revision(user_dir)
+        mate = revision(mate_dir)
     except Exception:  # noqa: BLE001 -- an unprovable key scans, as before the memo
         logger.debug("agent snapshot memo key unavailable", exc_info=True)
         return None
@@ -423,7 +432,7 @@ def _refresh_or_reuse() -> tuple[bool, bool]:
         # The installed snapshot is the one before this call, or a later scan's,
         # and the memo still describes it.
         return False, False
-    after = _memo_key() if key is not None else None
+    after = _memo_key(fresh=True) if key is not None else None
     with _MATERIALIZED_AGENTS_LOCK:
         memoize = reusable and after == key and ticket == _MATERIALIZED_REFRESH_APPLIED
         declined = key is not None and not memoize and _MATERIALIZED_MEMO != (key, None)
