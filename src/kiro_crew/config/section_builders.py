@@ -22,6 +22,7 @@ schema/validation.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 # Computer-use ceilings come from the feature's constants module rather than
@@ -408,14 +409,14 @@ def _build_knowledge_config(knowledge_data: dict) -> KnowledgeConfig:
         auto_ingest_artifact_kinds=[
             k for k in section.get("auto_ingest_artifact_kinds") if isinstance(k, str)
         ],
+        # A JSON number only (no numeric string), >= 0, and finite in bytes too:
+        # readers multiply it by 1 MiB. ``_safe_float`` answers -1 for a bool,
+        # NaN, Infinity or an int too large for a float.
         max_ingest_file_mb=(
-            float(mb)
-            if isinstance(
-                (mb := section.get("max_ingest_file_mb")),
-                (int, float),
-            )
-            and not isinstance(mb, bool)
-            and mb >= 0
+            mb
+            if isinstance(section.get("max_ingest_file_mb"), (int, float))
+            and (mb := _safe_float(section.get("max_ingest_file_mb"), -1.0)) >= 0
+            and math.isfinite(mb * 1024 * 1024)
             else section.default("max_ingest_file_mb")
         ),
         embed_timeout_secs=section.read("embed_timeout_secs", _safe_float),
