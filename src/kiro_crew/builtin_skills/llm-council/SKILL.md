@@ -10,10 +10,11 @@ inject_on_trigger: false
 ## Overview
 
 Answer with a **panel of different-vendor models** instead of one. The **main
-session is the Chairman**: it fans a task out to N subagents — each `spawn_run`
-pinned to a different model via the `model` override — collects their outputs, and
-produces one result. Cross-vendor is the point (a same-model panel echoes one bias);
-kiro-cli is already the gateway (`kiro-cli chat --list-models`), so no external egress.
+session is the Chairman**: it fans a task out to N subagents in one `spawn_run`
+call, each `tasks` entry pinned to a different model by its own `model`, collects
+their outputs, and produces one result. Cross-vendor is the point (a same-model
+panel echoes one bias); kiro-cli is already the gateway (`kiro-cli chat
+--list-models`), so no external egress.
 
 ## Modes at a glance
 
@@ -42,23 +43,24 @@ model runs**. It is a deliberate, occasional move. If unsure it's worth it, ask 
    payoff. Skip deprecated or restricted-use models unless opted in. Honor a
    user-supplied roster verbatim. `--list-models` is a CATALOG, not an entitlement:
    a listed model can still be unavailable to this session, so keep a fallback pick
-   for each slot. `reasoning_effort` ('low' | 'medium' | 'high' | 'xhigh' | 'max') is
-   batch-wide unless a `tasks[]` entry sets its own, and wins over the configured role
-   pin — setting it forces one dedicated
+   for each slot. `reasoning_effort` ('low' | 'medium' | 'high' | 'xhigh' | 'max') goes
+   on the call (every member) or on a `tasks` entry (that member only), and wins over
+   the configured role pin. Setting it forces one dedicated
    process per subagent (~3-5s start, ~0.55 GB each, against ~200ms and near-zero for
    session sharing), which is worth it for `adversarial` on a high-stakes artifact and
    wasteful for a cheap `vote`.
-2. **Fan out — one `spawn_run` with one `tasks` entry PER member.** Each entry is an
-   object `{task, model}` with a distinct `model`: a `tasks[]` object's `model`
-   overrides the call's batch-wide `model` for that task only. (`agents` sets a
-   per-task agent.) Use the mode's member prompt (below) as the `task`. Keep a
-   private map of `subagent id → model`. Pass `include_memory=false` on every member
-   spawn: the member prompt is self-contained, and inherited memory re-imports the
-   Chairman's framing into every supposedly independent answer, which is the shared
-   bias a council exists to break. `include_lessons=false` too unless a member will
-   write code; keep `include_project=true` when the question is about code in the
-   active project. Each member is told by name which groups were withheld, so it
-   reports the gap instead of inventing context.
+2. **Fan out — one `spawn_run` call with one `tasks` entry per member.** Each entry is
+   an object `{task, model}`, and its `model` overrides the call's for that member
+   only, so one call can pin every member to a different model. Use the mode's
+   member prompt (below) as each `task`. Keep a private map of `subagent id → model`,
+   and confirm each member's completion reports the model you assigned. Pass
+   `include_memory=false` on the call. It covers every member, since a `tasks` entry
+   can't set it. The member prompt is self-contained, and inherited memory re-imports
+   the Chairman's framing into every supposedly independent answer, which is the
+   shared bias a council exists to break. `include_lessons=false` too unless any member
+   will write code (it is call-wide as well); keep `include_project=true` when the
+   question is about code in the active project. Each member is told by name which
+   groups were withheld, so it reports the gap instead of inventing context.
 3. **Wait for ALL `[Subagent completion event]`s.** Do NOT answer the task yourself
    while waiting. If a member fails, drop it and proceed (a council of 2 is still a
    council); abort only if zero return.
@@ -86,12 +88,15 @@ bias by the task:
 Opus/Sonnet-class model) when the panel diverges or stakes are high.
 
 **Agent selection (optional).** A member may be an **(agent, model) tuple** rather
-than a bare model: pass `spawn_run(agent="<name>", model="<id>")` to run a specialist
-agent (e.g. a code reviewer or security agent) on a chosen vendor model. Use it for
+than a bare model: in the fan-out call, pass `agents=["<name>", ...]` with exactly
+one name per `tasks` entry, in the same order, and keep each entry's `model`. A
+`tasks` entry can't carry `agent` itself, and an `agents` list of a different
+length is refused. This runs a specialist agent (e.g. a code reviewer or
+security agent) on a chosen vendor model. Use it for
 domain panels where specialist context beats a generic reasoner (e.g. `adversarial`
 code review). Rules: pick agents ONLY from the names `spawn_run`'s `agent` parameter
 description lists (or `spawn_list`) — an unknown name is refused, never replaced by
-the default, so never invent one; set `model=` explicitly so vendor diversity is
+the default, so never invent one; set each entry's `model` so vendor diversity is
 preserved (it overrides the agent's default model). With no fitting agent installed,
 use model-only members.
 
@@ -211,13 +216,18 @@ Append the research clause (already in the member prompts above) to the vote and
 adversarial member prompts too.
 
 **Backend caveat (important):** the MCP `spawn_run` tool exposes no `allowed_tools`
-parameter, so a council you spawn cannot be tool-scoped by configuration — members
+parameter, so members cannot be tool-scoped per call. Members
 INHERIT the main session's trusted tools, and under a `yolo`/trust-all session that
 includes write and exec. The read-only restriction is therefore enforced by the
 member PROMPT; keep that clause in. `allowed_tools` itself IS honored on the ACP
 backend — `kas_permissions.allowed_tools_to_permissions` converts it into a KAS
 inline policy that is then ceiling-clamped, and shipped in-process callers pass it —
-it is simply not reachable from `spawn_run`.
+it is simply not reachable from `spawn_run`. To narrow what members load, spawn them
+on a named agent whose spec lists only read-only MCP servers, sets
+`includeMcpJson: false`, leaves `includePowers` unset or `false`, defines no hooks,
+and grants no write or exec tools. Without `includeMcpJson: false`
+the agent still starts every server in the user-level `mcp.json`. Members still inherit
+the session's trust, so keep the prompt clause.
 
 ## Presenting to the user
 
