@@ -1350,7 +1350,8 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     call the projection makes: a spec judged here that differed from the one
     projected would turn deferral on for a session with no loader.
     An unreadable spec grants nothing (fail closed: ``enabled: false``).
-    ``secretStorage`` is added first, when :func:`_with_mcp_sign_in_storage` says so.
+    ``secretStorage`` is added first, when :func:`_with_mcp_sign_in_storage` says so,
+    and ``codeIntelligence`` carries kiro-cli's own ``chat.enableCodeIntelligence``.
     """
     base = self._harness.client_capabilities
     base = await _with_mcp_sign_in_storage(self, base)
@@ -1380,6 +1381,10 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
         pin = await asyncio.to_thread(harness_memory_settings)
         if pin:
             base = with_client_meta_settings(base, pin)
+        code_intel_on = await asyncio.to_thread(
+            kas_cli_settings.kiro_cli_code_intelligence_enabled, self._work_dir
+        )
+        base = with_client_meta_settings(base, {"codeIntelligence": {"enabled": code_intel_on}})
     if self._tool_search is None:
         return base
 

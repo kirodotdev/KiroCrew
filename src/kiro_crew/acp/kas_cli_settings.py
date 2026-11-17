@@ -1,4 +1,6 @@
-"""kiro-cli's telemetry opt-out and ``chat.defaultModel``, read for a KAS session.
+"""kiro-cli's telemetry opt-out, ``chat.defaultModel`` and ``chat.enableCodeIntelligence``.
+
+All three are read for a KAS session.
 
 kiro-cli honours its own ``cli.json`` ``telemetry.enabled`` opt-out and the
 ``KIRO_DISABLE_TELEMETRY`` / ``Q_DISABLE_TELEMETRY`` environment switches. KAS reads no
@@ -9,7 +11,9 @@ Crew reads the setting here and hands it to KAS itself.
 The files are the ones kiro-cli reads: ``<kiro home>/settings/cli.json`` and the
 workspace's ``.kiro/settings/cli.json``. kiro-cli lets the workspace file override the
 global one; for the opt-out this module takes the stricter answer instead (see
-:func:`kiro_cli_telemetry_enabled`).
+:func:`kiro_cli_telemetry_enabled`). ``chat.enableCodeIntelligence`` decides the
+``codeIntelligence`` setting the KAS ``initialize`` carries, as kiro-cli's own KAS
+client does (see :func:`kiro_cli_code_intelligence_enabled`).
 """
 
 from __future__ import annotations
@@ -169,6 +173,30 @@ def kiro_cli_default_model(work_dir: Path | str | None = None) -> str:
             model = value.strip()
     # ``auto`` is what KAS starts every new session on already: nothing to name.
     return "" if model.lower() == "auto" else model
+
+
+def kiro_cli_code_intelligence_enabled(work_dir: Path | str | None = None) -> bool:
+    """kiro-cli's ``chat.enableCodeIntelligence`` for *work_dir*: off only when ``false``.
+
+    The workspace file wins over the global one when it holds the key, as in
+    kiro-cli. On unless the deciding value is ``false``: a value that is not a
+    boolean, a file that cannot be read, or an unknown settings path says nothing,
+    leaving kiro-cli's default of on. Reads files: call it off the event loop.
+    """
+    try:
+        files = _settings_files(work_dir)
+    except Exception:  # no home directory: kiro-cli's default
+        return True
+    enabled = True
+    for path in files:
+        try:
+            data = _read(path)
+        except _UNREADABLE_SETTINGS_ERRORS:
+            continue
+        value = data.get("chat.enableCodeIntelligence")
+        if isinstance(value, bool):
+            enabled = value
+    return enabled
 
 
 def default_model_notice(model: str) -> str:
