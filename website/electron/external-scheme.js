@@ -65,10 +65,10 @@ const EXTERNAL_URLS = Object.freeze([
 ]);
 
 // Editor deep links that open a file, locally or over SSH, after the user
-// confirms. Any other `vscode:` URL (an extension URI handler) stays blocked.
-// Matched on the raw string, for the same reason as EXTERNAL_URLS.
+// confirms. Any other `vscode:` or `kiro:` URL (an extension URI handler) stays
+// blocked. Matched on the raw string, for the same reason as EXTERNAL_URLS.
 const EDITOR_LINK_RE =
-  /^(vscode|vscode-insiders):\/\/(?:file(\/[A-Za-z]:)?|vscode-remote\/ssh-remote\+([^/]+))(\/[A-Za-z0-9._~@+%/-]*)(?::\d{1,7}){0,2}$/;
+  /^(vscode|vscode-insiders|kiro):\/\/(?:file(\/[A-Za-z]:)?|vscode-remote\/ssh-remote\+([^/]+))(\/[A-Za-z0-9._~@+%/-]*)(?::\d{1,7}){0,2}$/;
 
 /**
  * The editor and machine an editor link opens a file on, or null when `url` is
@@ -76,7 +76,8 @@ const EDITOR_LINK_RE =
  *
  * Accepts `vscode://file/<path>` and
  * `vscode://vscode-remote/ssh-remote+<host>/<path>`, each with an optional
- * `:line[:col]`, and the same for `vscode-insiders://`. A local file may start
+ * `:line[:col]`, and the same for `vscode-insiders://` and `kiro://` (Kiro is a
+ * VS Code build and reads the same authorities). A local file may start
  * with a Windows drive letter (`vscode://file/C:/<path>`). The host must be a DNS
  * name or SSH alias, and the decoded path must have no `..` segment. A local
  * path that starts with `//` and no drive letter names a share on another

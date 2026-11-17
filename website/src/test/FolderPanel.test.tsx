@@ -18,12 +18,22 @@ import { api } from '../api/client'
 // launcher on the gateway host: a remote or headless session cannot drive
 // Finder there). Most tests exercise the local desktop case, so pin both true;
 // dedicated tests cover the hidden cases.
-const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
+// Reveal and "Open in <editor>" live in the header's one overflow menu; Radix
+// opens a dropdown on a primary-button pointerdown.
+const openMoreMenu = async () => {
+  const trigger = await screen.findByTestId('folder-panel-more')
+  act(() => { fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+  return screen.findByRole('menu')
+}
+
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true, remoteEditor: '', remoteEditorHost: '' }))
 vi.mock('../hooks/useBranding', () => ({
   useBranding: () => ({
     botName: 'Test', avatar: '',
     directLocal: brandingEnv.directLocal,
     desktopLauncher: brandingEnv.desktopLauncher,
+    remoteEditor: brandingEnv.remoteEditor,
+    remoteEditorHost: brandingEnv.remoteEditorHost,
   }),
 }))
 
@@ -39,6 +49,8 @@ describe('FolderPanel', () => {
     vi.restoreAllMocks()
     brandingEnv.directLocal = true
     brandingEnv.desktopLauncher = true
+    brandingEnv.remoteEditor = ''
+    brandingEnv.remoteEditorHost = ''
   })
 
   it('lists the directory it was opened on', async () => {
@@ -162,12 +174,9 @@ describe('FolderPanel', () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
-    const btn = await waitFor(() => {
-      const el = screen.getByLabelText('Show in file manager')
-      expect(el).toBeTruthy()
-      return el
-    })
-    await act(async () => { fireEvent.click(btn) })
+    const menu = await openMoreMenu()
+    const item = within(menu).getByRole('menuitem', { name: 'Show in file manager' })
+    await act(async () => { fireEvent.click(item) })
     // Routes through the shared revealOrOpen helper, which passes the explicit
     // 'reveal' action so a failed reveal surfaces the shared message.
     expect(reveal).toHaveBeenCalledWith('/Users/me/ws', 'reveal')
@@ -178,9 +187,11 @@ describe('FolderPanel', () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
     // The listing still renders; only the header reveal button is gone, because
-    // /api/reveal would drive Finder on a host the user is not looking at.
+    // /api/reveal would drive Finder on a host the user is not looking at. With no
+    // editor set either, the overflow menu has no item, so its trigger is gone too.
     await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
-    expect(screen.queryByLabelText('Show in file manager')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('folder-panel-more')).toBeNull()
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
   })
 
   it('hides the reveal button when the gateway host has no desktop launcher', async () => {
@@ -190,7 +201,8 @@ describe('FolderPanel', () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
-    expect(screen.queryByLabelText('Show in file manager')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('folder-panel-more')).toBeNull()
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
   })
 
   /**
@@ -212,11 +224,46 @@ describe('FolderPanel', () => {
       <FolderPanel path="/Users/me/ws" onClose={vi.fn()} />,
     )
     act(() => { queryClient.setQueryData(['kiro-prerequisite'], { platform }) })
-    const button = await waitFor(() => screen.getByLabelText(label))
-    // Both channels, because the button is icon-only: a tooltip alone leaves a
-    // screen-reader user with nothing, and an aria-label alone leaves a pointer
-    // user hovering a mystery glyph.
-    expect(button.getAttribute('title')).toBe(label)
+    const menu = await openMoreMenu()
+    // A menu row names itself with visible text, so the label reaches pointer and
+    // screen-reader users alike.
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: label })).toBeTruthy())
+  })
+
+  it('opens the folder in the chosen remote editor, as a folder link with no line suffix', async () => {
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    brandingEnv.remoteEditor = 'kiro'
+    brandingEnv.remoteEditorHost = 'dev-box'
+    renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
+    const menu = await openMoreMenu()
+    const link = within(menu).getByRole('menuitem', { name: 'Open in Kiro' })
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('kiro://vscode-remote/ssh-remote+dev-box/Users/me/ws')
+  })
+
+  it('keeps the header to Refresh plus one overflow trigger holding Reveal and the editor link', async () => {
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    brandingEnv.remoteEditor = 'kiro'
+    brandingEnv.remoteEditorHost = 'dev-box'
+    renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
+    const trigger = await screen.findByTestId('folder-panel-more')
+    const row = trigger.parentElement as HTMLElement
+    // The direct children of the header row that are actions; the Back/Forward pair
+    // sits in its own nested group.
+    const actions = Array.from(row.children).filter(el => el.matches('button, a'))
+    expect(actions.map(el => el.getAttribute('aria-label'))).toEqual(['Refresh', 'More actions'])
+    expect(within(row).queryByRole('link')).toBeNull()
+    const menu = await openMoreMenu()
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent)).toEqual(['Show in file manager', 'Open in Kiro'])
+  })
+
+  it('offers no remote editor link while no editor is picked', async () => {
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    brandingEnv.remoteEditorHost = 'dev-box'
+    renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
+    const menu = await openMoreMenu()
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent)).toEqual(['Show in file manager'])
+    expect(screen.queryByTestId('folder-panel-remote-editor')).toBeNull()
   })
 
   it('activates rows by keyboard', async () => {

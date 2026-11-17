@@ -19797,7 +19797,7 @@
         "intensity_intense": "インテンス",
         "remote_editor": "リモートエディター",
         "remote_editor_editor": "エディター",
-        "remote_editor_editor_desc": "サイドパネルで開いたファイルの ⋯ メニューに「VS Code で開く」を追加します。使用中のコンピューターに、Remote-SSH を入れた VS Code が必要です。ファイルはそこで開き、下の SSH ホストに接続します。",
+        "remote_editor_editor_desc": "サイドパネルで開いたファイルの ⋯ メニューに、そのファイルをこのエディターで開く項目を追加します。使用中のコンピューターに、Remote-SSH を入れたこのエディターが必要です。ファイルはそこで開き、下の SSH ホストに接続します。",
         "remote_editor_off": "オフ",
         "remote_editor_host": "SSH ホスト",
         "remote_editor_host_desc": "使用中のコンピューターの ~/.ssh/config で Host の後に書く名前です（例：dev-box）。このダッシュボードを開くどのコンピューターにも、その名前が必要です。",

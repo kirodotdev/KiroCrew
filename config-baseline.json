@@ -11822,7 +11822,8 @@
       "hasChildren": false,
       "enumValues": [
         "",
-        "vscode"
+        "vscode",
+        "kiro"
       ],
       "defaultValue": ""
     },

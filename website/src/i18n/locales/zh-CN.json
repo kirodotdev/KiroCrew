@@ -19797,7 +19797,7 @@
         "intensity_intense": "强烈",
         "remote_editor": "远程编辑器",
         "remote_editor_editor": "编辑器",
-        "remote_editor_editor_desc": "在侧边面板中打开的文件的 ⋯ 菜单中添加“在 VS Code 中打开”。你正在使用的电脑上需要装有带 Remote-SSH 的 VS Code。文件会在那里打开，并连接到下方的 SSH 主机。",
+        "remote_editor_editor_desc": "在侧边面板中打开的文件的 ⋯ 菜单中添加一项，用此编辑器打开该文件。你正在使用的电脑上需要装有带 Remote-SSH 的此编辑器。文件会在那里打开，并连接到下方的 SSH 主机。",
         "remote_editor_off": "关闭",
         "remote_editor_host": "SSH 主机",
         "remote_editor_host_desc": "你正在使用的电脑上 ~/.ssh/config 中 Host 后面的名称，例如 dev-box。你用来打开此仪表板的每台电脑都需要这个名称。",
