@@ -2910,7 +2910,9 @@ ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
 `kirocrew-lite` mounts nothing. A server in its block was written into the spec
 by another tool, and a background turn on it is closed right after such a start
 (`llm_helpers_parts/background_turns.py`), so its start does not wait for that
-server first.
+server first. On KAS, a block whose only change is an injection an edition-registered
+filter removes exactly is sent as the template instead
+(`service_agents.lite_view_without_registered_injection`), and the turn runs.
 
 `person_waits` is the one predicate, and WHO IS WAITING decides it, not the
 queue the start waited in. A person is waiting when the start claimed
