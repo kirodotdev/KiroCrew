@@ -11,12 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import socket
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -228,28 +226,31 @@ class TestARealIdleStub:
         assert _spawns[0].returncode is not None
 
     def test_a_stub_that_never_registers_is_reaped_with_no_reading(
-        self, monkeypatch: pytest.MonkeyPatch, _spawns: list[subprocess.Popen[bytes]]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        short_sock_dir: Path,
+        _spawns: list[subprocess.Popen[bytes]],
     ) -> None:
         silent = [sys.executable, "-c", "import time; time.sleep(120)"]
         monkeypatch.setattr(footprint_probe, "_probe_argv", lambda _socket: silent)
-        base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX, dir=short_tmp_base()))
-        try:
-            verdict = footprint_probe._probe(
-                timeout=1.0,  # flake-ok: the child never connects; the wait length does not matter
-                socket_dir=str(base),
-            )
-            assert verdict is None
-            # The timeout removes the socket and its directory too.
-            assert list(base.iterdir()) == []
-        finally:
-            shutil.rmtree(base, ignore_errors=True)
+        base = short_sock_dir
+        verdict = footprint_probe._probe(
+            timeout=1.0,  # flake-ok: the child never connects; the wait length does not matter
+            socket_dir=str(base),
+        )
+        assert verdict is None
+        # The timeout removes the socket and its directory too.
+        assert list(base.iterdir()) == []
         assert len(_spawns) == 1
         assert _spawns[0].returncode is not None
 
     def test_the_socket_is_private_and_in_the_gateway_runtime_dir(
-        self, monkeypatch: pytest.MonkeyPatch, _spawns: list[subprocess.Popen[bytes]]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        short_sock_dir: Path,
+        _spawns: list[subprocess.Popen[bytes]],
     ) -> None:
-        base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX, dir=short_tmp_base()))
+        base = short_sock_dir
         seen: dict[str, Any] = {}
         real_attach = footprint_probe._attach
 
@@ -263,27 +264,20 @@ class TestARealIdleStub:
 
         monkeypatch.setattr(daemon_control, "configured_socket_path", lambda: base / "gateway.sock")
         monkeypatch.setattr(footprint_probe, "_attach", attach)
-        try:
-            assert isinstance(footprint_probe._probe(), int)
-            assert seen == {
-                "dir": base,
-                "dir_mode": 0o700,
-                "sock_mode": 0o600,
-                "family": socket.AF_UNIX,
-            }
-            assert list(base.iterdir()) == []
-        finally:
-            shutil.rmtree(base, ignore_errors=True)
+        assert isinstance(footprint_probe._probe(), int)
+        assert seen == {
+            "dir": base,
+            "dir_mode": 0o700,
+            "sock_mode": 0o600,
+            "family": socket.AF_UNIX,
+        }
+        assert list(base.iterdir()) == []
 
     def test_the_private_socket_directory_is_removed(
-        self, tmp_path: Path, _spawns: list[subprocess.Popen[bytes]]
+        self, short_sock_dir: Path, _spawns: list[subprocess.Popen[bytes]]
     ) -> None:
-        base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX, dir=short_tmp_base()))
-        try:
-            footprint_probe._probe(socket_dir=str(base))
-            assert list(base.iterdir()) == []
-        finally:
-            shutil.rmtree(base, ignore_errors=True)
+        footprint_probe._probe(socket_dir=str(short_sock_dir))
+        assert list(short_sock_dir.iterdir()) == []
 
 
 def _pss_readable() -> bool:
@@ -342,11 +336,27 @@ async def test_the_probe_reads_within_15_percent_of_a_connected_stub(
     assert connected_kb > 0
 
     assert Path.cwd() == tmp_path
-    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX, dir=short_tmp_base()))
-    try:
-        probed = await asyncio.to_thread(footprint_probe._probe, socket_dir=str(base))
-    finally:
-        shutil.rmtree(base, ignore_errors=True)
+    # _probe() makes its own kc-fp- child; another level here would push the
+    # socket past sun_path on a long login (test_the_short_sock_dir_socket_fits_sun_path).
+    probed = await asyncio.to_thread(footprint_probe._probe, socket_dir=str(short_sock_dir))
     assert isinstance(probed, int)
     probed_kb = probed // 1024
     assert abs(probed_kb - connected_kb) <= 0.15 * connected_kb, (probed_kb, connected_kb)
+
+
+def test_the_short_sock_dir_socket_fits_sun_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe socket under ``short_sock_dir`` fits sun_path at the worst case.
+
+    Built from the same naming pieces the run uses: a 32-character login (the
+    root caps it at 24), a 7-digit PID (Linux pid_max), mkdtemp's 8-character
+    suffixes, the ``short_sock_dir`` label and the probe's own ``kc-fp-``/``s``.
+    """
+    import conftest_floor_home
+
+    monkeypatch.setattr(conftest_floor_home.getpass, "getuser", lambda: "u" * 32)
+    prefix = conftest_floor_home._tmp_root_prefix_for_run().replace(f"-{os.getpid()}-", "-4194304-")
+    suffix = "X" * 8
+    root = f"/tmp/{prefix}short-{suffix}"
+    sock_dir = f"{root}/{SHORT_TMP_PREFIX}unixsock-{suffix}"
+    socket_path = f"{sock_dir}/kc-fp-{suffix}/s"
+    assert len(os.fsencode(socket_path)) <= footprint_probe._MAX_SOCKET_PATH, socket_path
