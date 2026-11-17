@@ -458,11 +458,11 @@ class TestRestart:
         out = capsys.readouterr().out
         assert "NOT restarted" not in out
         assert out.startswith(
-            "⚠️ Restarted kirocrew service in the user scope; the restart did not "
+            "Warning: Restarted kirocrew service in the user scope; the restart did not "
             "take in the system scope:\n"
         )
         assert "\n   user scope: restarted.\n" in out
-        assert "\n   ⚠️ system scope: kirocrew.service is activating (auto-restart)" in out
+        assert "\n   Warning: system scope: kirocrew.service is activating (auto-restart)" in out
         assert "Read why it exits:  sudo journalctl -u kirocrew.service" in out
         audit = mock_sel.log_api_access.call_args.kwargs
         assert audit["outcome"] == "partial"

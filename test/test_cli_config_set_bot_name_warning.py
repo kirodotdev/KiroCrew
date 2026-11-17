@@ -64,29 +64,29 @@ class TestBotNameWarning:
         captured = capsys.readouterr()
         # The write succeeded and stored the typed value verbatim.
         assert _read(home / "config.json")["agent"]["bot_name"] == "Kiro " + _ROBOT
-        assert "✅" in captured.out
+        assert "Done: " in captured.out
         # The warning on stderr names the spelling the loader will produce.
-        assert "⚠️" in captured.err
+        assert "Warning: " in captured.err
         assert '"Kiro"' in captured.err
         assert "will load as" in captured.err
 
     def test_symbol_dropped_warns(self, home, capsys):
         _set(home, BOT_NAME, "Ops" + _SUPER2)
         err = capsys.readouterr().err
-        assert "⚠️" in err
+        assert "Warning: " in err
         assert '"Ops"' in err
 
     def test_braces_stripped_warn(self, home, capsys):
         _set(home, BOT_NAME, "Kiro{x}")
         err = capsys.readouterr().err
-        assert "⚠️" in err
+        assert "Warning: " in err
         assert '"Kirox"' in err
 
     def test_name_emptied_warns_that_the_default_is_used(self, home, capsys):
         _set(home, BOT_NAME, _ROBOT + _ROBOT)
         captured = capsys.readouterr()
         assert _read(home / "config.json")["agent"]["bot_name"] == _ROBOT + _ROBOT
-        assert "⚠️" in captured.err
+        assert "Warning: " in captured.err
         assert "empty" in captured.err
         assert "default name" in captured.err
 
@@ -94,26 +94,26 @@ class TestBotNameWarning:
         _set(home, BOT_NAME, "Kiro Bot")
         captured = capsys.readouterr()
         assert _read(home / "config.json")["agent"]["bot_name"] == "Kiro Bot"
-        assert "⚠️" not in captured.err
+        assert "Warning: " not in captured.err
 
     def test_another_key_is_never_warned(self, home, capsys):
         # A different string key carrying a sanitizer-dropped character must not
         # warn: the sanitizer applies to bot_name alone.
         _set(home, "agent.model", "Kiro " + _ROBOT)
-        assert "⚠️" not in capsys.readouterr().err
+        assert "Warning: " not in capsys.readouterr().err
 
     def test_local_overlay_path_warns_too(self, home, capsys):
         _set(home, BOT_NAME, "Kiro " + _ROBOT, local=True)
         captured = capsys.readouterr()
         assert _read(home / "config.local.json")["agent"]["bot_name"] == "Kiro " + _ROBOT
         assert "saved to config.local.json" in captured.out
-        assert "⚠️" in captured.err
+        assert "Warning: " in captured.err
         assert '"Kiro"' in captured.err
 
     def test_local_overlay_empty_name_warns_about_the_default(self, home, capsys):
         _set(home, BOT_NAME, _ROBOT, local=True)
         err = capsys.readouterr().err
-        assert "⚠️" in err
+        assert "Warning: " in err
         assert "empty" in err
         assert "default name" in err
 
@@ -129,7 +129,7 @@ class TestBotNameWarning:
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "expected string" in err
-        assert "\u26a0" not in err
+        assert "Warning: " not in err
         assert _read(home / "config.json")["agent"]["bot_name"] == "Kiro"
 
     def test_local_overlay_non_text_value_is_refused(self, home, capsys):
@@ -138,7 +138,7 @@ class TestBotNameWarning:
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "expected string" in err
-        assert "\u26a0" not in err
+        assert "Warning: " not in err
         assert not (home / "config.local.json").exists()
 
 
@@ -155,7 +155,7 @@ class TestBaseWriteShadowedByOverlay:
         _set(home, "agent.log_level", "warning")
         captured = capsys.readouterr()
         assert _read(home / "config.json")["agent"]["log_level"] == "WARNING"
-        assert "✅" in captured.out
+        assert "Done: " in captured.out
         assert "agent.log_level is also set in config.local.json" in captured.err
 
     def test_shadowed_bot_name_drops_the_will_load_as_line(self, home, capsys):

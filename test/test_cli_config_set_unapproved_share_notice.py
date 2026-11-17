@@ -2,7 +2,7 @@
 
 The share list names servers, but what a shared server runs is approved by content
 in MCP Management. A listed server whose launch nobody approved is refused at the
-next gateway start, and without a notice the write's ``✅`` line reads as if sharing
+next gateway start, and without a notice the write's ``Done:`` line reads as if sharing
 were on. The notice goes to stderr after the write, which is unchanged; a server the
 store approves, a reserved ``kirocrew-*`` server and a never-pooled one are not named.
 
@@ -69,7 +69,7 @@ def test_a_listed_server_with_no_approved_launch_is_named(home, capsys, local):
         "kirocrew-cron",
         "creds-agent",
     ]
-    assert "✅" in captured.out
+    assert "Done: " in captured.out
     assert _names_in(captured.err) == ["wide-tools"]
     assert "MCP Servers" in captured.err
 
