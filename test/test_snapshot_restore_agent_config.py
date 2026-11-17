@@ -176,10 +176,10 @@ def test_replace_names_each_note_it_installed(tmp_path, monkeypatch, capsys):
     assert _restore(_bundle(tmp_path / "b.tar.gz", files), home, monkeypatch, "replace") == 0
     assert (home / "workspace" / "x" / "AGENTS.md").read_text() == "x notes"
     out = capsys.readouterr().out
-    assert "restored notes: workspace/CLAUDE.md" in out
-    assert "restored notes: workspace/x/AGENTS.md" in out
+    assert "Restored notes: workspace/CLAUDE.md" in out
+    assert "Restored notes: workspace/x/AGENTS.md" in out
     # A note inside a held directory was not installed, so it is not named.
-    assert "restored notes: workspace/y/.claude/CLAUDE.md" not in out
+    assert "Restored notes: workspace/y/.claude/CLAUDE.md" not in out
 
 
 def test_merge_names_only_the_notes_it_added(tmp_path, monkeypatch, capsys):
@@ -189,8 +189,8 @@ def test_merge_names_only_the_notes_it_added(tmp_path, monkeypatch, capsys):
     assert _restore(_bundle(tmp_path / "b.tar.gz", files), home, monkeypatch, "merge") == 0
     assert (home / "workspace" / "CLAUDE.md").read_text() == "live top"
     out = capsys.readouterr().out
-    assert "restored notes: workspace/x/AGENTS.md" in out
-    assert "restored notes: workspace/CLAUDE.md" not in out
+    assert "Restored notes: workspace/x/AGENTS.md" in out
+    assert "Restored notes: workspace/CLAUDE.md" not in out
 
 
 def test_every_harness_project_config_the_gate_fences_is_held_back():
