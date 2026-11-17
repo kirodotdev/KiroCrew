@@ -779,11 +779,24 @@ def judge_evidence_scope_granted(
     alone. A loop whose owner armed no brief lacks the ``judge`` spec half of that
     lane's authorization, so screening it asks whether this point's own egress scope
     was granted. Fail-closed: anything unreadable answers False.
+
+    In an LTS build an endpoint the build refuses (hosted Jev, or one written by hand,
+    :func:`capability.edition_refuses`) can never be armed, so the judge falls to the
+    LLM lane, which sends to no decision endpoint. For that endpoint the consent
+    recorded for it, its scope and the row decide, not the endpoint's eligibility.
     """
     try:
         cfg = config if config is not None else _snapshot()
         if cfg is None:
             return False
+        from kiro_crew.decisions.capability import edition_refuses, provider_id
+
+        endpoint = configured_endpoint(cfg)
+        if edition_refuses(provider_id(endpoint, configured_provider_model(cfg))):
+            state = _consent.load_state()
+            if not _consent.permits(endpoint, state) or _capability_denied(session_key):
+                return False
+            return _point_scope_granted(JUDGE_POINT, state)
         if not _consented_for(cfg, session_key, JUDGE_POINT):
             return False
         return _point_scope_granted(JUDGE_POINT, _consent.load_state())

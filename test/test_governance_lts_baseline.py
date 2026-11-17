@@ -81,6 +81,19 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     "bind_address": (("127.0.0.1",), ("0.0.0.0", "::", "10.0.0.5")),
     "dashboard_origins": ((), ("https://crew.example.com", "http://localhost:3000")),
+    # RFC D13: on, every decision model but hosted Jev. The code
+    # lock on Jev and hand-written endpoints is ``test_decisions_lts_jev_lock.py``.
+    "capabilities.decisions": (
+        (
+            "",
+            "providers:plumb-4b",
+            "providers:strands-decider-2b",
+            "providers:laya",
+            "providers:sagemaker",
+            "providers:clef",
+        ),
+        ("providers:jev", "providers:other"),
+    ),
 }
 
 
@@ -129,7 +142,7 @@ def test_open_scopes_are_ungated_and_kept_off_scopes_are_not() -> None:
         "yolo_duration",
         # Kept off by the owner (D3).
         "capabilities.app_dev_mode",
-        # ``capabilities.decisions_local`` only narrows this row, so it stays inert.
+        # On with a ``providers`` allow list that leaves hosted Jev out.
         "capabilities.decisions",
     ):
         assert kept_off in BASELINE_CONTROLS, kept_off

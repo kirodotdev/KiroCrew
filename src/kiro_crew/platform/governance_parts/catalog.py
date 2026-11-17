@@ -506,7 +506,9 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # hosted provider, each local preset id, ``sagemaker``). ``capability.provider_id``
     # names the configured one, and every check that reads this row for the configured
     # provider asks it too, so a refused model is neither selectable nor used. ``none``
-    # is never asked, and neither is an endpoint the owner wrote by hand.
+    # is never asked, and neither is an endpoint the owner wrote by hand. An LTS
+    # build refuses hosted Jev and every hand-written endpoint in code, whatever
+    # this list says (``capability.edition_refuses``).
     "capabilities.decisions": ScopeSpec(
         CAPABILITY,
         capability_default=True,
