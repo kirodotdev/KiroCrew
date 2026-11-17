@@ -62,8 +62,10 @@ another version, another minor version, a venv filled from a runtime copy, below
 still a `--clear` rebuild.
 On Linux with a glibc older than 2.27 (Amazon Linux 2: 2.26) the locked
 `pillow==12.3.0`, which `browser-harness` itself pins, has no wheel and pip has to
-build its sdist. `build_deps.py` checks first, from the filesystem alone, for a C
-compiler (`$CC`, the interpreter's own `CC`, or `cc`/`gcc` on `PATH`), the gateway
+build its sdist. `build_deps.py` checks first, from the filesystem alone, for the C
+compiler and archiver the build will run (`$CC` and `$AR`, else the interpreter's
+own `CC` and `AR`; `cc`/`gcc` on `PATH` only when neither names a compiler, and no
+archiver check when neither names one), the gateway
 interpreter's `Python.h`, and `zlib.h` and `jpeglib.h` wherever pillow 12.3.0's
 `setup.py` looks: the system include directories, `C_INCLUDE_PATH`, `CPATH`,
 `INCLUDE`, a glued `-I<dir>` in `CFLAGS`/`CPPFLAGS`/`LDFLAGS`, and
