@@ -58,6 +58,7 @@ from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
 from kiro_crew.acp.no_model_provider import AcpNoModelProvider
 from kiro_crew.acp.pi_mcp_registration import verify_registration
+from kiro_crew.acp.session_mcp import refuse_contested_agent_spec
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
@@ -90,6 +91,7 @@ from kiro_crew.acp.types import (
     steering_advertised,
 )
 from kiro_crew.agent import (
+    AmbiguousAgentSpecError,
     DerivedSpecSnapshot,
     DerivedSpecStale,
     ForkGovernanceUnresolved,
@@ -263,6 +265,14 @@ async def _spawn(self: AcpClient) -> None:
     # reads it (``_harness_read_back``). ``_reset_state`` drops it.
     self._process_adapter = adapter
     if adapter is not None:
+        # Two differing specs declaring this agent leave which one runs undefined;
+        # the session MCP read would answer with Crew's control plane alone. Refuse
+        # the start instead, naming the files (R-SPEC-13). kiro-cli's arm refuses
+        # through its native projection, so it gains no step here.
+        try:
+            await asyncio.to_thread(refuse_contested_agent_spec, self._agent)
+        except AmbiguousAgentSpecError as exc:
+            raise AcpError(str(exc)) from exc
         # The host's own launch knowledge -- its binary, argv, labels, credential
         # mask and gate -- in its own file. The context names this session, which
         # the host may need to prepare before it starts (its MCP array, a seed)
