@@ -643,10 +643,16 @@ async def _run_inner_impl(
 
     # The host's refusal in the current prompt attempt, as (title, reason,
     # cause), set by the permission branch below and read by the stream when
-    # the turn then ends cancelled; and how many such turns this run resumed.
+    # the turn then ends on it; and how many such turns this run resumed.
     _refused_call: list[tuple[str, str, str]] = []
     _person_rejected = [False]
     _refusal_resumes = [0]
+    # Whether the model wrote or called anything after the latest refusal.
+    # opencode answers ``reject_once`` by ending a clean turn ``end_turn`` on
+    # the refusal itself, which leaves it unanswered; other harnesses go on
+    # after a reject, so only opencode's clean ending is read as one.
+    _refusal_answered = [False]
+    _reject_ends_turn = getattr(client, "is_opencode_backend", False) is True
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -767,6 +773,7 @@ async def _run_inner_impl(
             self._manager._clear_tool_dispatch(info)
             _refused_call.clear()
             _person_rejected[0] = False
+            _refusal_answered[0] = False
             try:
                 if not use_session_sharing:
                     # Publish the live dedicated PID before every prompt,
@@ -794,10 +801,12 @@ async def _run_inner_impl(
                 # by a continuation on the same session.
                 _withheld: LLMEvent | None = None
                 _infra: Any = None
-                # A completion CANCELLED right after the host refused a call:
-                # codex's only reject option for a shell command aborts the
-                # whole turn. It is withheld, and the turn resumes on the same
-                # session with the refusal as the next prompt.
+                # A completion that ends the turn ON the host's refusal: codex's
+                # only reject option for a shell command aborts the whole turn
+                # (``cancelled``), and opencode ends a clean turn on a reject
+                # with nothing after it. Where no steer carried the reason in,
+                # it is withheld, and the turn resumes on the same session with
+                # the refusal as the next prompt.
                 _refused_turn: LLMEvent | None = None
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
@@ -839,7 +848,14 @@ async def _run_inner_impl(
                             _withheld = _ev
                             continue
                         if (
-                            _stop_c.name == STOP_CLASS_CANCELLED
+                            (
+                                _stop_c.name == STOP_CLASS_CANCELLED
+                                or (
+                                    _stop_c.is_success
+                                    and _reject_ends_turn
+                                    and not _refusal_answered[0]
+                                )
+                            )
                             and _refused_call
                             and not _person_rejected[0]
                             and _refusal_resumes[0] < REFUSED_TURN_RESUME_MAX
@@ -869,6 +885,8 @@ async def _run_inner_impl(
                         # continuation prompt starts.
                         _ended = _ev
                         continue
+                    if _refused_call and _ev.kind in (EVENT_TEXT_CHUNK, EVENT_TOOL_CALL):
+                        _refusal_answered[0] = True
                     yield _ev
                 if _refused_turn is not None:
                     # Every prompt end fires Stop, a resumed one included.
@@ -881,7 +899,7 @@ async def _run_inner_impl(
                     usage.settle(_refused_turn)
                     _refusal_resumes[0] += 1
                     logger.info(
-                        "Subagent %s: turn cancelled after a host refusal; resuming (%d/%d)",
+                        "Subagent %s: turn ended on a host refusal; resuming (%d/%d)",
                         info.id,
                         _refusal_resumes[0],
                         REFUSED_TURN_RESUME_MAX,
@@ -1314,6 +1332,7 @@ async def _run_inner_impl(
                 _person_rejected[0] = True
             elif settled.outcome == "refused" and settled.cause is not None:
                 _refused_call.append((event.title or "", settled.reason, settled.cause))
+                _refusal_answered[0] = False
             if settled.rung == "stopped":
                 # The ladder bailed this request for a stop that landed
                 # while it was being settled: the run ends here, as at the

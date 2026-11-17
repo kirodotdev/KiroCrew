@@ -2005,6 +2005,20 @@ the subagent runs and in which order live in `_permission_policy`, and what read
 or moves this run's own state (the approval prompt's wait flag and crew-log
 pair, the log lines, the counter, `tool_count`) lives beside it in `run.py`.
 
+**A turn that ends on a host refusal resumes.** Two backends end the turn on the
+reject itself, so no steer reaches the model: codex aborts it (`cancelled`), and
+opencode closes the call with its stock "user rejected permission" text and ends
+it `end_turn` with nothing after it. The run then withholds that ending and sends
+`deny_notice.build_refused_turn_resume_prompt` (the redacted notice, plus the fact
+that the turn was stopped) as the next prompt on the same session, at most
+`REFUSED_TURN_RESUME_MAX` times per run (`subagent_manager/run_turn.py`). The clean
+ending resumes only on opencode (the provider's `is_opencode_backend`; other
+harnesses go on after a reject, so their clean ending is the model's own), and
+only when the model wrote no text and made no new tool call after the latest
+refusal; a
+turn the model went on with, a person's no in the same attempt, and a stop, reap
+or shutdown end as they ended. Pinned by `test_subagent_refused_turn_resume.py`.
+
 The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next
 subagent run, not on the current run's remaining tools.
