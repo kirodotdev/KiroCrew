@@ -1,6 +1,6 @@
 """Where the MCP config files are, and reading, refusing and writing them.
 
-The server-name check, the Kiro-global ``mcp.json`` path and the Kiro Crew one, the extra
+The server-name check and the toggle routes' typed body fields, the Kiro-global ``mcp.json`` path and the Kiro Crew one, the extra
 provider scopes an edition adds, the files the servers list skips for their encoding, the
 refusal of a commented (JSONC) file, the retrying read of the Kiro-global file, the atomic
 write and its off-loop form, resolving which key of a file names a server, the synchronous
@@ -243,6 +243,26 @@ def _string_identifier(body: dict, field: str) -> tuple[str, web.Response | None
         {"error": f"{field} must be a string", "code": f"mcp.{field}_not_string"},
         status=400,
     )
+
+
+def _enabled_field(body: dict) -> tuple[bool, web.Response | None]:
+    """The ``enabled`` toggle field as a bool, or a 400 to return.
+
+    ``(value, None)`` for a real boolean, ``(True, response)`` for anything else.
+    An absent field means ``True``, the on default these routes already assumed.
+    The toggle writes the value into ``mcp.json`` as given, so a non-boolean handed
+    through raw -- the string ``"false"`` is the one that bites, since it is truthy
+    -- would turn the server ON while the route answered ok. Only a real boolean is
+    accepted, the same ``invalid_enabled`` refusal the cron, updates and webhook
+    toggle routes already make, so every toggle route answers a bad ``enabled`` the
+    same way.
+    """
+    enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        return True, web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
+        )
+    return enabled, None
 
 
 # ─── The Kiro Crew mcp.json, provider scopes, reads and writes ──────────

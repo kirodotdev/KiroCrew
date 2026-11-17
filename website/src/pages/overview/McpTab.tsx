@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, ToggleLeft, ToggleRight } from 'lucide-react'
+import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, Lock, ToggleLeft, ToggleRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
@@ -94,8 +94,16 @@ function pruneStagedScopes(servers: McpServer[], prev: Record<string, PendingCha
   const byName = new Map(servers.map(s => [s.name, s]))
   const next: Record<string, PendingChange> = {}
   let dropped = false
-  for (const [name, p] of Object.entries(prev)) {
+  for (const [name, entry] of Object.entries(prev)) {
     const s = byName.get(name)
+    let p = entry
+    // One of Kiro Crew's own servers cannot be turned off or uninstalled, so a
+    // restored draft that stages either for one is dropped, not resubmitted.
+    if (s?.builtin === true && (p.uninstall || p.scopes?.kirocrew === false)) {
+      const { kirocrew: _off, ...scopes } = p.scopes ?? {}
+      p = { scopes }
+      dropped = true
+    }
     if (s && (p.uninstall || hasPendingScopeChange(s, p))) next[name] = p
     else dropped = true
   }
@@ -257,6 +265,7 @@ function ScopeBadge({
   pendingChange,
   disabled,
   disabledInConfig,
+  builtinLocked,
   onClick,
 }: {
   label: string
@@ -266,19 +275,23 @@ function ScopeBadge({
   disabled: boolean
   /** The badge is inert because the shared config disables the row (not a pending uninstall). */
   disabledInConfig?: boolean
+  /** The badge is locked ON: the row is one of Kiro Crew's own servers. */
+  builtinLocked?: boolean
   onClick: () => void
 }) {
   // Every state of the title starts with the scope's own label: three inert
   // badges on one row that all read the same label-free sentence are, to a
   // screen reader, three identical unnamed buttons.
-  const title = disabled
+  const title = builtinLocked
+    ? i18nT('pages.overview.mcpTab.scope_builtin', { label })
+    : disabled
     ? (disabledInConfig
       ? i18nT('pages.overview.mcpTab.scope_disabled_in_config', { label })
       : i18nT('pages.overview.mcpTab.pending_uninstall', { label }))
     : pendingChange
       ? i18nT(active ? 'pages.overview.mcpTab.scope_switch_pending_on' : 'pages.overview.mcpTab.scope_switch_pending_off', { label })
       : i18nT(active ? 'pages.overview.mcpTab.scope_switch_on' : 'pages.overview.mcpTab.scope_switch_off', { label })
-  const bg = disabled
+  const bg = disabled && !builtinLocked
     ? 'bg-bg-elevated text-muted'
     : active
       ? 'bg-ok/20 text-ok-text border border-ok/40'
@@ -293,7 +306,9 @@ function ScopeBadge({
   // An inert switch (shared-config disable or a staged uninstall) is off
   // whatever its presence says: the server will not load either way, so the
   // switch state, glyph and accessible name must all read off together.
-  const checked = active && !disabled
+  // A locked built-in switch is the one inert switch that reads on: the server
+  // loads, and only the off direction is refused.
+  const checked = active && (!disabled || !!builtinLocked)
   const Glyph = checked ? ToggleRight : ToggleLeft
   return (
     <button
@@ -304,10 +319,12 @@ function ScopeBadge({
       onClick={onClick}
       title={title}
       aria-label={title}
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer transition-colors ${bg} ${pendingRing}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer ${builtinLocked ? 'disabled:cursor-default' : ''} transition-colors ${bg} ${pendingRing}`}
       data-scope={scope}
     >
       <Glyph className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-glyph" data-on={checked ? 'true' : 'false'} />
+      {/* The glyph keeps showing on; the lock beside it says it cannot be turned off. */}
+      {builtinLocked && <Lock className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-lock" />}
       {label}
     </button>
   )
@@ -1011,6 +1028,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             // A row off because of an INVALID value is not dimmed at all: grey
             // reads as "deliberately off", and this one is an error to repair.
             const dimmedCell = disabledInConfig && !invalidValue && !pendingUninstall ? { opacity: 0.6 } : undefined
+            // One of Kiro Crew's own servers: its Kiro Crew switch is
+            // locked on and it has no Uninstall, and the backend refuses both.
+            // The lock reads the SAVED state: a built-in that is off keeps a
+            // live switch, so it can be turned back on and a staged turn-on
+            // can be clicked back.
+            const builtinLocked = s.builtin === true && base.kirocrew && !pendingUninstall && !disabledInConfig
             return (
               <tr key={s.name} className={`group/mcprow hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }} data-disabled-in-config={disabledInConfig ? 'true' : undefined}>
                 <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]" style={dimmedCell}>
@@ -1035,6 +1058,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       >
                         {i18nT(invalidValue ? 'pages.overview.mcpTab.disabled_in_config_invalid' : 'pages.overview.mcpTab.disabled_in_config')}
                       </Badge>
+                    )}
+                    {s.builtin === true && (
+                      <span className="inline-flex items-center gap-1">
+                        <Badge variant="muted" className="text-[10px] px-1.5 py-0.5 font-body" style={{ color: 'var(--text)' }} data-testid="mcp-builtin-chip">
+                          {i18nT('pages.overview.mcpTab.builtin')}
+                        </Badge>
+                        <InfoTip text={i18nT('pages.overview.mcpTab.builtin_help')} placement="top" />
+                      </span>
                     )}
                     {managedProvider && (onManagedProviderClick ? (
                       <button
@@ -1061,8 +1092,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     scope="kirocrew"
                     active={eff.kirocrew}
                     pendingChange={!pendingUninstall && !!p?.scopes && 'kirocrew' in p.scopes}
-                    disabled={pendingUninstall || disabledInConfig}
+                    disabled={pendingUninstall || disabledInConfig || builtinLocked}
                     disabledInConfig={disabledInConfig && !pendingUninstall}
+                    builtinLocked={builtinLocked}
                     onClick={() => toggleScope(s.name, 'kirocrew', !eff.kirocrew, base)}
                   />
                 </td>
@@ -1413,7 +1445,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           hover text says exactly that; a re-enable stays out (a
                           separate decision), but a removal the user asks for is not
                           a re-enable. */}
-                      <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
+                      {s.builtin !== true && (
+                        <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
+                      )}
                     </div>
                   )}
                 </td>

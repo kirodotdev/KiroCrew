@@ -474,6 +474,10 @@ export interface McpServer {
   /** True when the entry lives in Kiro Crew's own mcp.json — the scope the
    *  Edit JSON action reads and writes (consent-disabled rows included). */
   kirocrewManaged?: boolean
+  /** One of Kiro Crew's own servers (`kirocrew-core`, `kirocrew-cron`, ...).
+   *  The table locks its Kiro Crew switch on and offers no Uninstall, and the
+   *  backend refuses turning it off or removing it. */
+  builtin?: boolean
   /** Which config switched the row off, from the backend — never inferred from
    *  `enabled` + `kirocrewManaged`. `kirocrew`: a disable in Kiro Crew's own
    *  store, which the Kiro Crew scope badge + Apply lifts (the consent step).
