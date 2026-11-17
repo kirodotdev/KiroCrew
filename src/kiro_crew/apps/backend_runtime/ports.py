@@ -345,9 +345,9 @@ def spawned_backend_owner(pid: int) -> str | None:
     this gateway cannot vouch for.
 
     The answer is the registry key the backend was started under, which is the
-    app identity every other registry read uses; the owner-token mint stamps it
-    into its audit record so a token minted by an app is attributed to that app
-    rather than to an anonymous local process.
+    app identity every other registry read uses; the owner-token mint refuses a
+    caller this names and stamps the key into its ``app-backend-refused`` audit
+    record.
 
     The ancestry walk runs OUTSIDE ``_lock``: it reads ``/proc`` per candidate,
     and the snapshot taken under the lock is all the registry state it needs.
