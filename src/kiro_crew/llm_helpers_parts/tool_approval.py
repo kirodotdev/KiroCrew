@@ -62,7 +62,11 @@ from kiro_crew.security.mcp_body_fields import (
     warn_body_field_matches,
 )
 from kiro_crew.security.paths_resolver import bounded_judgment
-from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
+from kiro_crew.security.readonly_bash import (
+    command_invokes_git,
+    is_read_only_bash,
+    may_write_through_git_flag,
+)
 from kiro_crew.tool_gate_busy import hook_gate_busy
 
 if TYPE_CHECKING:
@@ -938,7 +942,13 @@ async def _resolve_permission(
     # name-grant check the read-only approve ran -- so it is refused instead.
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks and on_tool_approval is None:
         _git_command = name_grant.shell_command_for_event(event)
-        if _git_command and command_invokes_git(_git_command) and is_read_only_bash(_git_command):
+        # A git command that may write a file through a flag
+        # (`git blame --output=F`) is refused here too, not auto-approved.
+        if (
+            _git_command
+            and command_invokes_git(_git_command)
+            and (is_read_only_bash(_git_command) or may_write_through_git_flag(_git_command))
+        ):
             _log("rejected", metadata={"reason": "git_read_headless_reject"})
             await _steer_host_deny(
                 provider,
