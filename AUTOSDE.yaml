@@ -508,6 +508,13 @@ custom-rules:
           developer host. Pin the probe, give the test its own `HOME`, or spawn
           through the helper that fixes the trait (testing-conventions § What
           the host lends the suite, and must not).
+      15. A shell stand-in whose TERM/INT trap the test relies on, while the
+          step it `wait`s on stays in the process group the test signals
+          (`sleep 30 & wait $!` with no `set -m` / `setsid`). On macOS bash 3.2
+          the step dies of the same signal and the shell can exit without
+          running the trap. Also flag a stop of that stand-in bounded by a
+          product grace constant instead of the suite's safety net
+          (testing-conventions § Shell stand-ins that trap a group signal).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits

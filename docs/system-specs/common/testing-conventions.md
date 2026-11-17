@@ -614,6 +614,40 @@ Actions runs that step on Linux but the test does not. A shell script outside
 `.github/` uses the portable form. `test/test_gnu_only_shell_usage.py` enforces both
 and holds the reviewed exceptions.
 
+### Shell stand-ins that trap a group signal
+
+A shell stand-in that must run a TERM/INT trap when the test signals its
+process GROUP keeps its long step out of that group. macOS `/bin/sh` is bash
+3.2: when the step it `wait`s on dies of the same group SIGTERM, bash can
+return from `wait` with the step's 143 and exit without ever running the trap.
+That failed about 1 run in 150 on a loaded Mac and looked like "the rollback
+never happened". Run the step in a group of its own, the way cli.sh's
+`_run_step` does on macOS, let the trap stop it, and record its pid so teardown
+can reap that group too:
+
+```sh
+# WRONG: the group SIGTERM also kills the waited step; bash 3.2 may skip the trap
+trap restore TERM
+sleep 30 & step=$!
+wait "$step"
+
+# RIGHT: only the shell gets the group signal; the trap stops the step
+trap restore TERM
+set -m 2>/dev/null || true
+sleep 30 & step=$!
+set +m 2>/dev/null || true
+echo "$step" > "$D/steppid"   # teardown reaps this group too
+wait "$step"
+```
+
+The trap is also given the suite's safety net as its grace, never a product
+deadline such as `UPDATE_INSTALLER_TERM_GRACE_SECS` (4 s): a loaded runner can
+stall the rollback for longer ([Production deadlines are not test
+boundaries](#production-deadlines-are-not-test-boundaries)). A product helper
+whose grace default is bound at `def` time cannot be raised by a fixture; read
+the module constant at call time so its binding is the one seam.
+`test/test_update_installer_graceful_stop.py` is the example.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
