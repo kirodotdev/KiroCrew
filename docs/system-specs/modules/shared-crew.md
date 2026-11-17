@@ -563,9 +563,13 @@ canonical form. Each is a credential that would outlive the teammate's access, o
 gateway process, so one table holds a teammate on any path to the boundary the relay
 holds every remote caller to. Plus a channel connection's writes
 (`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
-connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
-job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
-a channel and sending through it stay open. And managing who may reach the
+connection, linking WhatsApp or Weixin), which hold the channel's token, a cron
+job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job, and the
+portability export and import (`PORTABILITY_ROUTES`, `/api/portability…`): the
+export hands out the raw `config.json` and settings documents, whose channel tokens
+and agent env secrets a teammate would keep after their access is revoked, and the
+import overwrites them. The preview reads only the uploaded archive and asks no owner
+gate. Reading a channel and sending through it stay open. And managing who may reach the
 Crew: `routes_invites._owner_refusal` admits only the local operator or this
 machine's own tailnet user, so a teammate cannot list, create or revoke invites, read
 the access card or switch the preview; the mobile setup (`tailnet_mobile`, whose QR

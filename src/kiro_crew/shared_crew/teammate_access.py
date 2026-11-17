@@ -24,7 +24,10 @@ owner's (:func:`is_owner_only_for_teammates`):
   webhook bearer; shutdown; and a path not in canonical form. Each is a credential
   that would outlive the teammate's access, or the gateway process. Plus a channel
   connection's writes (:data:`CHANNEL_CONNECTION_WRITES`), which hold the channel's
-  token, and a cron job's secret grants (:data:`CRON_SECRET_GRANTS`);
+  token, a cron job's secret grants (:data:`CRON_SECRET_GRANTS`), and the
+  portability export and import (:data:`PORTABILITY_ROUTES`): the export hands out
+  the raw config, whose channel tokens and agent env secrets a teammate would keep
+  after their access is revoked, and the import overwrites it;
 * managing who may reach the Crew: invites, the access card and the preview switch,
   which ``routes_invites._owner_refusal`` holds to the local operator or this
   machine's own tailnet user; the mobile setup (``tailnet_mobile``); and the config
@@ -54,6 +57,7 @@ from typing import Any
 __all__ = [
     "CHANNEL_CONNECTION_WRITES",
     "CRON_SECRET_GRANTS",
+    "PORTABILITY_ROUTES",
     "TEAMMATE_WS_FLAG",
     "TERMINAL_PATH_PREFIXES",
     "is_admission_config_key",
@@ -85,6 +89,11 @@ CHANNEL_CONNECTION_WRITES = (
 #: the teammate can read the output of.
 CRON_SECRET_GRANTS = re.compile(r"\A/api/crons/[^/]+/secrets/?\Z")
 
+#: The whole-install export and import. The export hands out the raw config and
+#: settings documents, so a channel token or an agent env secret in them would
+#: outlive the teammate's access; the import overwrites them.
+PORTABILITY_ROUTES = re.compile(r"\A/api/portability(?:/|\Z)")
+
 #: Set on an owner socket a teammate opened, so the WebSocket redaction treats it as
 #: a non-owner reader while every owner frame still reaches it.
 TEAMMATE_WS_FLAG = "_shared_crew_teammate"
@@ -114,7 +123,7 @@ def is_owner_only_for_teammates(request: Any) -> bool:
     path = str(getattr(request, "path", "") or "")
     if is_terminal_request(request) or remote_route_limit(path) is not None:
         return True
-    if CRON_SECRET_GRANTS.match(path):
+    if CRON_SECRET_GRANTS.match(path) or PORTABILITY_ROUTES.match(path):
         return True
     method = str(getattr(request, "method", "GET") or "GET").upper()
     return method not in ("GET", "HEAD") and any(
