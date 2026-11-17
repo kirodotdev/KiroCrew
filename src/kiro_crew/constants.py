@@ -1883,6 +1883,13 @@ DENY_CAUSE_AUDIT_UNAVAILABLE = "audit_unavailable"
 #: call is refused the same way, so the notice says to use another tool rather
 #: than retry or rename (``DENY_CAUSE_INVALID_NAME`` is the model's own name).
 DENY_CAUSE_UNREADABLE_IDENTITY = "unreadable_identity"
+#: How much of an exit-2 hook's stderr becomes the block reason the model reads.
+#: A deny hook writes that reason for the model, often as a recovery instruction
+#: (what to do first, what to run instead), so the bound leaves room for a few
+#: sentences. The excerpt keeps the head, where the hook's author starts it.
+#: ``run_script_hook`` has already redacted the whole stream, so the cut cannot
+#: sever a secret.
+HOOK_DENY_REASON_MAX_CHARS = 2000
 #: The session handle refused a call whose tool_call frame its per-turn
 #: provenance caches could not retain (too many calls in flight, or an input
 #: over the payload bound), so kind, identity and target are unknown. Nothing
