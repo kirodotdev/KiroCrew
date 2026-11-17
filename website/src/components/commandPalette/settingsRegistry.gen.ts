@@ -2402,6 +2402,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
   },
   {
+    "id": "developer.let-agents-control-your-other-sessions",
+    "label": "Let agents control your other sessions",
+    "labelKey": "pages.settings.sessionControlSection.session_control_tools",
+    "description": "When off, agents can no longer open, message, stop or close your other sessions. A change applies at once, even to sessions already running.",
+    "hint": "When on, an agent with the dashboard tools can open sessions, and read, message, stop or close your other sessions in this workspace. Turning it off stops none of your sessions, and your bots and Conductor can still drive the sessions they started.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    },
+    "configKey": "agent.session_control"
+  },
+  {
     "id": "developer.mark-out-of-date-dashboard-fields",
     "label": "Mark out-of-date Dashboard fields",
     "labelKey": "pages.developer.featurePreviewsTab.dashboard_stale_fields",
