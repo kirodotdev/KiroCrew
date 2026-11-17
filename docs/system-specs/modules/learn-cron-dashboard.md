@@ -4401,8 +4401,7 @@ the match. The list and detail routes build their payloads INSIDE the
 `asyncio.to_thread` that reads the rows, because a redacted `limit=1000` page or
 a 200-event tail costs about as much as the read itself and the loop is shared.
 Pinned by `test_api_tasks.py::test_task_routes_redact_store_prose`
-(a real store, a real handler, both shapes, nested) and
-`::test_redaction_runs_exfil_before_credentials`.
+(a real store, a real handler, both shapes, nested).
 - `POST /api/tasks/{task_id}/cancel` — cancels THROUGH the owner that can
   stop the work, never by writing the store for a running row. Subagent rows:
   `SubagentManager.cancel(task_id)` — the manager's cascade is what unqueues a
@@ -7662,7 +7661,7 @@ offer card (the intro, under the title) and the guide panel (the intro on the
 first step of the first action; a note on its action's final step; a step that
 is both shows one block, the note when the action has one, else the intro),
 always below the template line, which stays, and attributed with "From
-{name}" for the Bot whose pinned thread offered the guide (`GuideAgentNote`,
+{name}" for the Bot whose pinned thread offered the guide (`GuideMateNote`,
 the guide's `slot_key` matched against the roster, muted theme tokens), as React
 text; a guide offered from an ordinary chat shows the words without a "From" line.
 

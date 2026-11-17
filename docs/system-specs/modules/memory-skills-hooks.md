@@ -3541,7 +3541,7 @@ does not prove the provenance of vectors created before any weight digest.
 Signatures retain the original SHA-256 encoding of `model_id|dim`, truncated to
 16 hex characters, so unchanged bundled vectors need no rebuild. Custom-model
 tests derive expected
-identities with `_custom_model_id(path, configured_label)` and spaces with
+identities with `_custom_model_id(path, configured)` and spaces with
 `embedding_space_signature`, including an independent SHA-256 check of the
 weight bytes rather than a basename/size or label-only assertion.
 

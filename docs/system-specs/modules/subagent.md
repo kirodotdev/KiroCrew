@@ -2514,8 +2514,8 @@ Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `m
 ### Properties
 
 **Run controls are scoped to the originating session, for every internal caller.**
-`spawn_steer`, `spawn_release`, `spawn_status`, `spawn_retry`, `spawn_delete` and
-`spawn_continue` run behind `_spawn_scope_refusal`, and `spawn_list` filters by the
+`spawn_steer`, `spawn_release`, `spawn_status`, `spawn_continue` and the
+`api_spawn_retry` and `api_spawn_delete` routes run behind `_spawn_scope_refusal`, and `spawn_list` filters by the
 same predicate (`_run_belongs_to_caller`): the caller must be the run's
 `parent_session_key`, or the run itself. This holds whatever memory store the
 caller resolved to, and a caller with no `X-Session-Key` reaches only a run no
