@@ -2,7 +2,9 @@
 
 Kept dependency-free (stdlib only) and TTY-aware: colors and the live spinner
 degrade to plain text when stdout is not a terminal or ``NO_COLOR`` is set, so
-the same code works interactively and under ``curl | bash`` / CI.
+the same code works interactively and under ``curl | bash`` / CI. The symbols
+(rules, arrows, check marks, middle dots) degrade to ASCII when the reader's
+encoding is unknown: off a terminal on Windows, or on a non-UTF-8 stream.
 """
 
 from __future__ import annotations
@@ -11,9 +13,59 @@ import os
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Optional, TextIO
 
 _ENABLE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def _glyphs_readable(stream: TextIO = sys.stdout, platform: str = sys.platform) -> bool:
+    """True when whoever reads ``stream`` decodes the symbols this module prints.
+
+    A terminal does. Off a terminal on Windows the reader decodes with its own
+    code page (PowerShell's ``[Console]::OutputEncoding``, OEM 437 by default)
+    while ``ensure_utf8_console`` has made Python write UTF-8, so each symbol
+    arrives as mojibake; elsewhere a UTF-8 stream is read as UTF-8. Deciding at
+    import is safe: ``ensure_utf8_console`` keeps a POSIX stream's encoding, and
+    the Windows answer does not read it.
+    """
+    if stream.isatty():
+        return True
+    if platform == "win32":
+        return False
+    encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+    return encoding == "utf8"
+
+
+_ENABLE_GLYPHS = _glyphs_readable()
+
+# The plain-text stand-ins for every symbol the cloud commands print.
+_ASCII = str.maketrans(
+    {
+        "─": "-",
+        "→": "->",
+        "✓": "ok",
+        "⚠": "!",
+        "✗": "x",
+        "·": "-",
+        "—": "-",
+        "–": "-",
+        "…": "...",
+        "◉": "(*)",
+        "○": "( )",
+        "‘": "'",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+    }
+)
+
+
+def _text(line: str) -> str:
+    return line if _ENABLE_GLYPHS else line.translate(_ASCII)
+
+
+def _say(line: str = "") -> None:
+    print(_text(line), flush=True)
 
 
 def _c(code: str) -> str:
@@ -50,40 +102,40 @@ class Steps:
 
     def step(self, title: str) -> None:
         self.n += 1
-        print(flush=True)
-        print(f"  {BLUE}{BOLD}[{self.n}/{self.total}]{RESET} {BOLD}{title}{RESET}", flush=True)
-        print(f"  {DIM}{'─' * 52}{RESET}", flush=True)
+        _say()
+        _say(f"  {BLUE}{BOLD}[{self.n}/{self.total}]{RESET} {BOLD}{title}{RESET}")
+        _say(f"  {DIM}{'─' * 52}{RESET}")
 
 
 def info(msg: str) -> None:
-    print(f"  {DIM}→{RESET} {msg}", flush=True)
+    _say(f"  {DIM}→{RESET} {msg}")
 
 
 def ok(msg: str) -> None:
-    print(f"  {GREEN}✓{RESET} {msg}", flush=True)
+    _say(f"  {GREEN}✓{RESET} {msg}")
 
 
 def warn(msg: str) -> None:
-    print(f"  {YELLOW}⚠{RESET} {msg}", flush=True)
+    _say(f"  {YELLOW}⚠{RESET} {msg}")
 
 
 def fail(msg: str) -> None:
-    print(f"  {RED}✗{RESET} {msg}", flush=True)
+    _say(f"  {RED}✗{RESET} {msg}")
 
 
 def detail(msg: str) -> None:
-    print(f"    {DIM}{msg}{RESET}", flush=True)
+    _say(f"    {DIM}{msg}{RESET}")
 
 
 def note(msg: str) -> None:
-    print(f"  {msg}", flush=True)
+    _say(f"  {msg}")
 
 
 def prompt(text: str, default: str = "") -> str:
     """Read a line with an optional default (shown in brackets)."""
     suffix = f" {DIM}[{default}]{RESET}" if default else ""
     try:
-        val = input(f"  {CYAN}?{RESET} {text}{suffix}: ").strip()
+        val = input(_text(f"  {CYAN}?{RESET} {text}{suffix}: ")).strip()
     except EOFError:
         print()
         return default
@@ -97,7 +149,7 @@ def confirm(text: str, default: bool = True) -> bool:
     """Y/n confirmation. Default shown capitalized; end of input is always no."""
     d = "Y/n" if default else "y/N"
     try:
-        val = input(f"  {CYAN}?{RESET} {text} {DIM}[{d}]{RESET} ").strip().lower()
+        val = input(_text(f"  {CYAN}?{RESET} {text} {DIM}[{d}]{RESET} ")).strip().lower()
     except EOFError:
         print()
         return False
@@ -121,13 +173,13 @@ def choose(title: str, options: list[tuple[str, str]], default_index: int = 0) -
 
 def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: int = 0) -> int:
     """Numbered fallback picker for non-TTY input."""
-    print(f"  {BOLD}{title}{RESET}")
+    _say(f"  {BOLD}{title}{RESET}")
     for i, (label, sub) in enumerate(options):
         marker = f"{GREEN}◉{RESET}" if i == default_index else f"{DIM}○{RESET}"
         star = f" {GREEN}(recommended){RESET}" if i == default_index else ""
-        print(f"    {marker} {BOLD}{label}{RESET}{star}")
+        _say(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:
-            print(f"       {DIM}{sub}{RESET}")
+            _say(f"       {DIM}{sub}{RESET}")
     # Piped answers cannot be asked again: re-reading would take the line meant
     # for the next question, so a bad piped answer falls back to the default.
     piped = not sys.stdin.isatty()

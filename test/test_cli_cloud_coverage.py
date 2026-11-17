@@ -218,6 +218,7 @@ def test_a_refused_stop_or_start_exits_one_without_success_lines(
 class TestDestroyFailures:
     def test_declining_the_prompt_deletes_nothing(self, monkeypatch, capsys):
         confirm, destroy = mock.Mock(return_value=False), mock.Mock()
+        monkeypatch.setattr(cli_cloud.ui, "_ENABLE_GLYPHS", True)  # a Windows capture gets ASCII
         monkeypatch.setattr(cli_cloud.ui, "confirm", confirm)
         monkeypatch.setattr(ec2, "destroy", destroy)
         assert cli_cloud._cloud_destroy(_args(yes=False)) == 0
