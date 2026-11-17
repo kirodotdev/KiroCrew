@@ -450,6 +450,72 @@ def test_the_root_swapped_for_a_link_during_the_scan_still_removes_the_pinned_ro
     assert not (root.with_name("root-moved") / "skills").exists()
 
 
+def _unpinned_with_swap(monkeypatch, swap) -> None:
+    """Make the platform unable to pin, and run *swap* right after the pin decision,
+    the moment before the by-name delete."""
+    from kiro_crew import pinned_fs, portability_vetting
+
+    monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: False)
+    real = portability_vetting._staging_is_pinned
+
+    def decide_then_swap(**kwargs):
+        answer = real(**kwargs)
+        swap()
+        return answer
+
+    monkeypatch.setattr(portability_vetting, "_staging_is_pinned", decide_then_swap)
+
+
+def test_the_unpinned_delete_refuses_a_root_swapped_for_a_link(tmp_path, monkeypatch):
+    root, home, outside = _staged_world(tmp_path)
+    _unpinned_with_swap(monkeypatch, lambda: _swap_root_for_link(root, outside))
+
+    with pytest.raises(OSError):
+        _hold_back_foreign_skills(root, home, allow_unpinned=True)
+
+    assert (outside / "skills" / "keep.txt").read_text(encoding="utf-8") == "outside"
+
+
+def test_the_unpinned_delete_refuses_a_skills_folder_swapped_for_a_link(tmp_path, monkeypatch):
+    root, home, outside = _staged_world(tmp_path)
+
+    def swap_skills() -> None:
+        (root / "skills").rename(root / "skills-moved")
+        (root / "skills").symlink_to(outside / "skills", target_is_directory=True)
+
+    _unpinned_with_swap(monkeypatch, swap_skills)
+
+    with pytest.raises(OSError):
+        _hold_back_foreign_skills(root, home, allow_unpinned=True)
+
+    assert (outside / "skills" / "keep.txt").read_text(encoding="utf-8") == "outside"
+
+
+def test_the_unpinned_delete_refuses_a_target_on_another_drive(tmp_path, monkeypatch):
+    root, home, outside = _staged_world(tmp_path)
+    _unpinned_with_swap(monkeypatch, lambda: None)
+
+    def other_drive(_paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(os.path, "commonpath", other_drive)
+
+    with pytest.raises(OSError):
+        _hold_back_foreign_skills(root, home, allow_unpinned=True)
+
+    assert (root / "skills").is_dir()
+
+
+def test_the_unpinned_delete_still_removes_a_normal_staged_folder(tmp_path, monkeypatch):
+    root, home, outside = _staged_world(tmp_path)
+    _unpinned_with_swap(monkeypatch, lambda: None)
+
+    assert _hold_back_foreign_skills(root, home, allow_unpinned=True) is True
+
+    assert not (root / "skills").exists()
+    assert (outside / "skills" / "keep.txt").is_file()
+
+
 def test_a_picked_template_keeps_a_cron_that_names_its_declared_name(tmp_path):
     home = _home(tmp_path)
     template = {"name": "reviewer", "description": "reviews"}
