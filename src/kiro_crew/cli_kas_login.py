@@ -69,6 +69,16 @@ POLL_INTERVAL_SECS = 5.0
 
 _PROVIDERS = ("builder_id", "idc", "google", "github")
 
+#: The plain name of each sign-in method, keyed by the provider class a finished
+#: login reports, so the confirmation never shows a stored code like ``Enterprise``.
+#: A class missing here is printed as is.
+_PROVIDER_LABELS = {
+    "BuilderId": "AWS Builder ID",
+    "Enterprise": "IAM Identity Center",
+    "Google": "Google",
+    "Github": "GitHub",
+}
+
 #: Plain text for the coded poll failures a person can act on; the dashboard's
 #: sign-in card says the same thing. Any other code is printed as is.
 _FAILURE_TEXT = {
@@ -275,6 +285,7 @@ async def _run_device_login(
         MissingStartUrlError,
         SignedOutDuringLoginError,
         UnknownLoginError,
+        _canonical_start_url,
     )
 
     service = KasLoginService(store)
@@ -330,9 +341,12 @@ async def _run_device_login(
             if status == "pending":
                 continue
             if status == "authorized":
-                print(
-                    f"Signed in to Kiro Crew as {result.get('provider') or provider}.", flush=True
-                )
+                stored = result.get("provider") or provider
+                method = _PROVIDER_LABELS.get(stored, stored)
+                if provider == "idc":
+                    # The portal in the form the vault records, as `kas whoami` prints it.
+                    method += f" ({_canonical_start_url(start_url)})"
+                print(f"Signed in to Kiro Crew with {method}.", flush=True)
                 if result.get("code") == "previous_identity_not_removed":
                     print(
                         "⚠ an earlier identity could not be removed from the vault; "
