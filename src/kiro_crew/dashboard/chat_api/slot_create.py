@@ -268,6 +268,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     title_error = string_field_error("title", raw_title)
     if title_error is not None:
         return title_error
+    # An app's page opening a person's chat it declares (`permissions.chatLaunch`):
+    # held to that declaration before anything else is read.
+    if "app_launch" in body:
+        from kiro_crew.dashboard.app_chat_launch import app_launch_refusal
+
+        launch_refused = await app_launch_refusal(request, state, body)
+        if launch_refused is not None:
+            return launch_refused
     # Remote-dispatch preview (RFC conductor-remote-dispatch §2b): an owner's
     # work-item create on a crew short of memory, CPU or disk is refused before
     # anything is read or minted, and every owner create reply carries the
@@ -687,7 +695,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # delayed publication failure is logged and retried once by the guarded
     # callback.
     defer_plain_create_broadcast = bool(
-        set(body).issubset(_DEFERRED_PLAIN_CREATE_KNOWN_KEYS)
+        set(body).difference(("app_launch",)).issubset(_DEFERRED_PLAIN_CREATE_KNOWN_KEYS)
         and is_new_slot
         and not request_app
         and not folder_id
@@ -710,6 +718,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             )
             if denied is not None:
                 return denied
+        if "app_launch" in body:
+            # The key may have taken another slot during the awaits above; checked
+            # again with none between this and the mint.
+            from kiro_crew.dashboard.app_chat_launch import live_slot_refusal
+
+            launch_refused = live_slot_refusal(body, state, _requested_key)
+            if launch_refused is not None:
+                return launch_refused
         is_new_slot = not _requested_key or _requested_key not in state._slots
         # The binding is stamped only on the owner's own fresh local create below;
         # any request that would skip that branch is refused, never left unbound.

@@ -534,6 +534,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ),
         ({"permissions": {"webhookSource": "true"}}, {}, {}),
         (
+            {"permissions": {"chatLaunch": {"keyPrefix": "demo-chat-", "agents": ["kirocrew"]}}},
+            {},
+            {"app.json permissions.chatLaunch": 10},
+        ),
+        (
             {},
             {"backend/_host.py": "def f(ctx):\n    return ctx.webhook_source.refusal()\n"},
             {"ctx.webhook_source": 7},

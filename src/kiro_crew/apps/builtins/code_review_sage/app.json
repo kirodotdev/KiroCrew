@@ -36,7 +36,13 @@
       "/api/source/pull-request"
     ],
     "network": true,
-    "storage": true
+    "storage": true,
+    "chatLaunch": {
+      "keyPrefix": "sage-followup-",
+      "agents": ["code-review-sage-reviewer", "kirocrew"],
+      "folder": "Sage Review",
+      "memoryModes": ["persistent"]
+    }
   },
   "dependencies": {
     "commands": ["gh"]

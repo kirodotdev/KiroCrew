@@ -110,3 +110,55 @@ def test_the_app_token_matches_the_family_and_nothing_undeclared(registered, mon
         "/api/apps",
     ):
         assert not scope.app_token_path_allowed(NAME, path), path
+
+
+# The follow-up chat the page opens (`permissions.chatLaunch`, section 44): the wheel
+# copy declares it, so the repository copy declaring the same is no widening.
+LAUNCH = {
+    "keyPrefix": "sage-followup-",
+    "agents": ["code-review-sage-reviewer", "kirocrew"],
+    "folder": "Sage Review",
+    "memoryModes": ["persistent"],
+}
+
+
+def _repository_launch(launch: dict | None) -> AppManifest:
+    data = copy.deepcopy(_shipped())
+    if launch is None:
+        data["permissions"].pop("chatLaunch", None)
+    else:
+        data["permissions"]["chatLaunch"] = launch
+    return AppManifest.from_dict(data)
+
+
+def test_the_wheel_copy_declares_the_follow_up_chat():
+    assert _shipped()["permissions"]["chatLaunch"] == LAUNCH
+
+
+def test_the_repository_copy_declaring_the_same_chat_adopts(registered):
+    assert checks.permission_refusal(NAME, _repository_launch(LAUNCH)) is None
+    assert checks.permission_refusal(NAME, _repository_launch(None)) is None
+
+
+@pytest.mark.parametrize(
+    "wider",
+    [
+        {**LAUNCH, "agents": [*LAUNCH["agents"], "kirocrew-conductor"]},
+        {**LAUNCH, "memoryModes": ["persistent", "incognito"]},
+        {**LAUNCH, "folder": "Inbox"},
+        {**LAUNCH, "keyPrefix": "sage-"},
+    ],
+)
+def test_a_wider_chat_launch_is_a_widening(registered, wider):
+    assert checks.permission_refusal(NAME, _repository_launch(wider)) == "permission_widening"
+
+
+def test_the_registered_builtin_launches_what_it_declares_only_while_enabled(
+    registered, monkeypatch
+):
+    from kiro_crew.apps.chat_launch import declared_chat_launch, parse_chat_launch
+
+    # Off by default (`defaultEnabled: false`), so the gate admits no launch.
+    assert declared_chat_launch(NAME) is None
+    monkeypatch.setattr(manager, "is_app_enabled", lambda name: name == NAME)
+    assert declared_chat_launch(NAME) == parse_chat_launch(LAUNCH)

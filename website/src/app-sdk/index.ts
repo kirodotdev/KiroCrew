@@ -443,6 +443,24 @@ export interface ChatLaunchOptions {
 
 export type { ChatLaunchMemoryMode }
 
+/**
+ * The person's chat an app creates or reopens with `createChat`, inside its
+ * manifest's `permissions.chatLaunch`. The gateway refuses anything else.
+ */
+export interface ChatCreateOptions {
+  /** `chatLaunch.keyPrefix` followed by 1-128 of `[A-Za-z0-9._-]`. The same key
+   *  reopens the same chat; a key holding another app's or a core slot is refused. */
+  slotKey: string
+  /** One of `chatLaunch.agents`. */
+  agent: string
+  /** Sidebar title for a NEW chat. Sent again on a reopen, it renames the chat. */
+  title?: string
+  /** Id of a folder named `chatLaunch.folder`, to file the chat in. */
+  folderId?: string
+  /** One of `chatLaunch.memoryModes`; `'persistent'` when omitted. */
+  memoryMode?: ChatLaunchMemoryMode
+}
+
 /** Launch intent written to a global slot for the routed chat to claim. */
 interface ChatLaunchIntent extends ChatLaunchOptions {
   ts: number
@@ -457,8 +475,16 @@ interface ChatLaunchIntent extends ChatLaunchOptions {
  */
 export function useChatLauncher(): {
   openChat: (opts?: ChatLaunchOptions) => void
+  /**
+   * Create, or reopen, the person's chat `opts` names and resolve to its slot
+   * key (App Kit seam level 10; feature-detect `createChat`, not the level). It
+   * does not navigate: pass the key to `openChat({ slotKey })`. Rejects with the
+   * gateway's refusal (`status` 403, `app_chat_launch_refused`) outside the
+   * manifest's `permissions.chatLaunch`.
+   */
+  createChat: (opts: ChatCreateOptions) => Promise<string>
 } {
-  const { navigate } = useCtx()
+  const { navigate, launchChat } = useCtx()
 
   const openChat = useCallback((opts: ChatLaunchOptions = {}) => {
     // Session-shaping options describe a NEW session, so they are dropped for a
@@ -479,7 +505,13 @@ export function useChatLauncher(): {
       : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat')
   }, [navigate])
 
-  return { openChat }
+  const createChat = useCallback((opts: ChatCreateOptions) => (
+    launchChat
+      ? launchChat(opts)
+      : Promise.reject(new Error('[app-sdk] this host cannot create an app chat'))
+  ), [launchChat])
+
+  return { openChat, createChat }
 }
 
 // ---------------------------------------------------------------------------

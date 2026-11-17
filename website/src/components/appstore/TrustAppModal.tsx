@@ -28,6 +28,7 @@ import Modal from '../Modal'
 import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
 import SessionApprovalModes from './SessionApprovalModes'
+import { chatLaunchLine, chatLaunchScopeLine, type ChatLaunchDeclaration } from './chatLaunch'
 import TrustAppDesktopBox from './TrustAppDesktopBox'
 import type { DesktopRequest } from './desktopRequest'
 import { i18nT } from '../../i18n/t'
@@ -72,6 +73,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   chatSlots?: boolean
   /** The app declares `permissions.hiddenSessions`: its own chats stay out of the session lists. */
   hiddenSessions?: boolean
+  /** The app declares `permissions.chatLaunch`: the person's chats its page may open. */
+  chatLaunch?: ChatLaunchDeclaration
   /** The `permissions.reachableByUserSessions` verbs: what your chats may do to the sessions it runs. */
   reachableByUserSessions?: string[]
   /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
@@ -853,6 +856,22 @@ export default function TrustAppModal({
               </div>
               <p className="text-text leading-relaxed">
                 {i18nT('components.appstore.trustAppModal.hidden_sessions_desc')}
+              </p>
+            </div>
+          )}
+          {/* The person's own chats its page may open: which agents, which folder,
+              under which key prefix and with which memory modes. */}
+          {app.chatLaunch && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-chat-launch">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <MessagesSquare size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.chat_launch_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {chatLaunchLine(app.chatLaunch, 'trust')}
+              </p>
+              <p className="text-muted leading-relaxed">
+                {chatLaunchScopeLine(app.chatLaunch)}
               </p>
             </div>
           )}
