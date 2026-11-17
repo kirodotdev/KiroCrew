@@ -5,7 +5,7 @@ agents handler through this module. The handler families live in the
 ``agent_admin`` owners -- ``app_mcp_ownership``, ``agent_config``,
 ``default_agent``, ``capabilities``, ``template_lineage``, ``fork_publish``,
 ``agent_detail``, ``roster``, ``installed_agents``, ``crew_records``,
-``crew_update``, ``crew_removal`` and ``avatars`` -- and ``_facade_compose.compose``
+``crew_update``, ``crew_removal``, ``avatars`` and ``catalog_bounds`` -- and ``_facade_compose.compose``
 runs them on this module's globals, so a patch of ``agents.<name>`` reaches them.
 
 This module keeps the imports, constants and seams the owners read (``_err500``,
@@ -153,6 +153,7 @@ from kiro_crew.dashboard.agent_admin import agent_detail as _owner_agent_detail
 from kiro_crew.dashboard.agent_admin import app_mcp_ownership as _owner_app_mcp_ownership
 from kiro_crew.dashboard.agent_admin import avatars as _owner_avatars
 from kiro_crew.dashboard.agent_admin import capabilities as _owner_capabilities
+from kiro_crew.dashboard.agent_admin import catalog_bounds as _owner_catalog_bounds
 from kiro_crew.dashboard.agent_admin import crew_records as _owner_crew_records
 from kiro_crew.dashboard.agent_admin import crew_removal as _owner_crew_removal
 from kiro_crew.dashboard.agent_admin import crew_update as _owner_crew_update
@@ -220,6 +221,7 @@ from kiro_crew.dashboard.agent_admin.capabilities import (  # noqa: F401
     api_capability_skills_list,
     api_capability_skills_uninstall,
 )
+from kiro_crew.dashboard.agent_admin.catalog_bounds import _bounded_catalog  # noqa: F401
 from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
     _created_response,
@@ -1003,75 +1005,6 @@ class _CatalogUnavailable(Exception):
         self.error = error
         self.backoff = backoff
         self.code = code
-
-
-def _bounded_catalog(models: list[dict]) -> list[dict]:
-    """Clamp a parsed catalog to what the cache may safely retain.
-
-    The retention point (:data:`_catalog_cache`) holds the list past the request,
-    so it is bounded here before it is stored, through the SAME admission the
-    window / advertised stores use — ``model_registry.ADVERTISED_MODELS_MAX_IDS``
-    rows, each identifying field (``model_name`` / ``model_id``) at most
-    ``ADVERTISED_MODEL_ID_MAX_CHARS`` — so the cache cannot serve an id those
-    stores refused. An over-long id is REFUSED (its whole row skipped), never
-    truncated, matching :func:`model_registry.admit_catalog_rows`'s own
-    invariant; the picker reads the name, so a sliced name would name a different
-    model or none.
-
-    Each remaining scalar field (str / int / float / bool / None) is kept, with
-    strings clamped to the id-length bound and a row holding at most
-    :data:`_CATALOG_CACHE_MAX_FIELDS_PER_ROW`; a non-scalar field (nested object
-    or array) is dropped — no reader of the cached list consumes one, and it is
-    the unbounded edge the retention bound exists to close. Row ORDER is
-    preserved (readers treat catalog order as meaningful). Rows and fields
-    discarded for any reason are counted and logged once per snapshot.
-    """
-    max_rows = model_registry.ADVERTISED_MODELS_MAX_IDS
-    max_chars = model_registry.ADVERTISED_MODEL_ID_MAX_CHARS
-    bounded: list[dict] = []
-    dropped_rows = 0
-    dropped_fields = 0
-    for row in models:
-        if len(bounded) >= max_rows:
-            dropped_rows += 1
-            continue
-        if not isinstance(row, dict):
-            dropped_rows += 1
-            continue
-        # Refuse (skip) a row whose identifying field is over-long, rather than
-        # slicing it into an id no store retained.
-        ident = row.get("model_name") or row.get("model_id")
-        if isinstance(ident, str) and len(ident) > max_chars:
-            dropped_rows += 1
-            continue
-        kept: dict = {}
-        for key, value in row.items():
-            if len(kept) >= _CATALOG_CACHE_MAX_FIELDS_PER_ROW:
-                dropped_fields += 1
-                continue
-            # The KEY is a retained string too: refuse (skip) an over-long one
-            # rather than cache it, so no retained string is unbounded.
-            if isinstance(key, str) and len(key) > max_chars:
-                dropped_fields += 1
-                continue
-            if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
-                kept[key] = value
-            elif isinstance(value, str):
-                kept[key] = value[:max_chars]
-            else:
-                # Non-scalar (nested dict/list): dropped — unbounded and unread.
-                dropped_fields += 1
-        bounded.append(kept)
-    if dropped_rows or dropped_fields:
-        logger.warning(
-            "api_models: catalog cache dropped %d row(s) and %d field(s) over the "
-            "retention bound (max_rows=%d, max_id_chars=%d)",
-            dropped_rows,
-            dropped_fields,
-            max_rows,
-            max_chars,
-        )
-    return bounded
 
 
 @dataclasses.dataclass
@@ -1995,5 +1928,6 @@ _facade_compose(
         _owner_crew_update,
         _owner_crew_removal,
         _owner_avatars,
+        _owner_catalog_bounds,
     ),
 )
