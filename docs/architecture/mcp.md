@@ -1704,7 +1704,10 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
   setter, and never below the 30 s cold-start floor), settles the permit `success` (ready), `failure` (handshake failed;
   the permit is then held until the process is reaped) or `neutral` (no
   handshake ever arrived -- an unused prewarm or a client that never
-  initialised is not congestion). `settle` is exactly-once and separate from
+  initialised is not congestion). The watcher also ends, `neutral`, the moment
+  the backend process exits with no handshake in flight: a private backend dies
+  with its stub, so a stub that left before `initialize` must not hold a slot
+  (and the starts queued behind it) for the whole window. `settle` is exactly-once and separate from
   `release`, which is idempotent and settles `neutral` on its own; cancellation
   at any boundary is neutral. Prewarm settles neutral the moment the fork
   returns; it also re-reads the queue depth BEFORE EACH KEY and stands that key
