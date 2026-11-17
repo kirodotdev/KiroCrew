@@ -41,13 +41,20 @@ export const persistActivityOpen = (slot: string | null, open: boolean): void =>
 /** Whether `slot` has a saved panel open/closed choice: the panel was opened or
  *  closed in that chat at least once. */
 export const hasSavedActivityOpen = (slot: string): boolean => safeGetItem(ACTIVITY_OPEN_PREFIX + slot) !== null
+/** The page draws its phone form: `data-layout-form`, which `useIsMobile` keeps
+ *  on <html>. An embed frame is never in it. */
+const phoneForm = (): boolean => typeof document !== 'undefined' && document.documentElement.dataset.layoutForm === 'phone'
 /** The panel state a chat is entered with: its own saved choice (closed when it
  *  has none), or open while Keep side panel open is on and the entry CHANGES the
  *  chat. Re-entering the chat already shown (a return to the chat page, a switch
  *  that fell back to it) keeps that state, so a panel the user closed stays
- *  closed until a chat switch. */
+ *  closed until a chat switch. On a phone an entry that changes the chat lands
+ *  on the chat: the panel is a sheet over it there, so an open sheet is a
+ *  per-visit choice (as the Members page keeps its phone overlay), and a chat
+ *  left with its sheet up does not come back covered. A press that opens the
+ *  panel after the switch still opens it. */
 export const entryActivityOpen = (state: ChatState, changesChat: boolean, cached: { activityOpen?: boolean } | undefined): boolean =>
-  (state.sidePanelAlwaysOpen && changesChat) || (cached?.activityOpen ?? false)
+  (state.sidePanelAlwaysOpen && changesChat) || (!(changesChat && phoneForm()) && (cached?.activityOpen ?? false))
 /** Put every chat's panel back on its own saved choice. Keep side panel open
  *  saves no choice, but a chat entered while it was on holds `true` in its
  *  in-memory bucket, and would reopen with it until the next reload. */
