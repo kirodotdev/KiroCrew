@@ -8,7 +8,7 @@ import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../compo
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { clearPreviewFlagWriteError, usePreviewFlagWriteError } from '../../hooks/usePreviewFlagServerSync'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Badge, Btn } from '../../components/ui'
+import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
@@ -294,8 +294,10 @@ export function FeaturePreviewsSection() {
         {/* Shared Crew (People, invites, shared sessions). Unlike the flags here, the
             switch is not a browser setting: it is the owner's stored choice behind
             `/api/shared-crew/preview` (a keystone file), which the gateway reads at
-            start, so a change waits for a restart -- the Restart badge says so
-            before the switch is touched. No `configKey` and no `previewFlags.ts`
+            start, so a change waits for a restart -- the muted note under the
+            description says so before the switch is touched, and the warn-coloured
+            notice below appears only while a restart is actually pending. No
+            `configKey` and no `previewFlags.ts`
             entry for that reason. The row shows whether or not the People tab
             does; a gateway without the route, or a caller who is not the owner,
             gets no row. */}
@@ -304,15 +306,12 @@ export function FeaturePreviewsSection() {
             <SettingsToggle
               label={i18nT('sharedCrew.preview_title')}
               description={i18nT('sharedCrew.preview_desc')}
-              descriptionBadge={
-                <Badge variant="warn" className="text-[11px] font-sans px-1.5 py-0">
-                  {i18nT('pages.settings.developerPanel.restart_badge')}
-                </Badge>
-              }
+              describedBy="shared-crew-preview-restart-hint"
               checked={!!sharedCrewSetting && (sharedCrewSetting.env_override || sharedCrewSetting.enabled)}
               disabled={!sharedCrewSetting || sharedCrewSetting.env_override || sharedCrewPreview.saving}
               onChange={sharedCrewPreview.set}
             />
+            <p id="shared-crew-preview-restart-hint" className="text-[12px] text-muted -mt-1" data-testid="shared-crew-preview-restart-hint">{i18nT('sharedCrew.preview_restart_hint')}</p>
             {sharedCrewSetting?.env_override && (
               <p className="text-[12px] text-muted pt-1" data-testid="shared-crew-preview-env">{i18nT('sharedCrew.preview_env_on')}</p>
             )}
