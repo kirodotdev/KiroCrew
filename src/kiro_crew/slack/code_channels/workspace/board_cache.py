@@ -212,29 +212,15 @@ class BoardCache:
         }
         return {k: str(getattr(s, "project", "") or "") for k, s in slots.items() if s is not None}
 
-    def running_helpers(self, binding: Any) -> list[tuple[str, str]]:
-        """``(session key, board title)`` per helper agent the watch last saw running.
+    def watched_sessions(self, binding: Any) -> set[str]:
+        """The slot keys of the sessions the channel's watch last saw.
 
-        The sessions of its last pass (the bound session's workers), the
-        channel's own session left out, in a stable order. The title is the one
-        the channel's last board shows for that session (already made
-        publishable there), ``""`` when the board has no row for it. ``[]`` when
-        the board's scope refuses the channel: the reply would name what that
-        board withholds.
+        Its helper agents and the sessions filed in its folder, the channel's own
+        session left out. Empty when the board's scope refuses the channel: the
+        Stop reply would count what that board withholds.
         """
         if not self._board_still_admitted(binding):
-            return []
+            return set()
         key = f"{binding.team_id or ''}:{binding.channel_id or ''}"
         own = str(binding.session_key or "").removeprefix("dashboard_")
-        seen = self._seen.get(key, {})
-        board = self._cached_board(key)
-        titles = {
-            str(row.session_key): str(row.title or "")
-            for row in (board.rows if board is not None else ())
-            if row.session_key
-        }
-        return [
-            (k, titles.get(k, ""))
-            for k, (run, _g) in sorted(seen.items())
-            if run and k.removeprefix("dashboard_") != own
-        ]
+        return {k.removeprefix("dashboard_") for k in self._seen.get(key, {})} - {own}

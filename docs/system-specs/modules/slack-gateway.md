@@ -1473,7 +1473,7 @@ and turn-hook interface other features build on.
 | Sender attribution | `creation.slack_sender`, passed by `routing._route_to_slot` as `maybe_route_linked_thread(user_meta=...)` | Each person's message handed to a bound session (the opening request, every later one, and a button answer clicked in the channel -- `routing.action_user_meta` from the interaction payload, through `handle_message(user_meta=...)`) stores `meta["slack_sender"] = {team_id, enterprise_id, user_id}` on its user row; a queued one carries it on its queue entry too, so the row the drain writes for its turn has it, and a merged row keeps it only when every merged entry names the same sender; editing a queued entry's text drops it, and so does an opener whose origin thread could not be seated as background context and rides inline (other people's words). `team_id` is the event's team (the envelope's), `enterprise_id` the envelope's `enterprise_id` copied onto the event (`""` outside Enterprise Grid), `user_id` the sender: the workspace and org the gateway admitted the message under, which for a Slack Connect participant from another organisation is this install's, not theirs. Raw ids, each full-matched against its shape (`\AT[A-Z0-9]{1,31}\Z`, `\AE[A-Z0-9]{1,31}\Z` or `""`, `\A[UW][A-Z0-9]{1,31}\Z`: verbatim the shapes Shared Crew's reader checks, pinned by `test_the_id_shapes_are_the_shared_crew_readers_verbatim`); a bot copy, Slack's origin-context copy or any malformed id leaves the key off. Plain data for Shared Crew's attribution: no access decision reads it. A reply that reaches a bound session through the ordinary linked-thread path (code channels off, or a failed channel lookup) is not a code-channel turn and carries no sender. |
 | Dispatch from a code channel | `session_control_parts/code_channel_exemption.judge_code_channel` at the creator, session-control and work-ledger gates | The channel's recorded session may create, drive and close its own one-level workers and run its own ledger, on owner-driven turns, in a workspace-internal channel, with only the published-fields projection reaching the channel; switch `slack.code_channel_dispatch` (off when unset; its sub-toggle under Code channels on the Slack Code card; a settings save that first turns Code channels on saves it on, and a stored value, an explicit off included, is kept). See [session-control: Code-channel conductor callers](session-control.md#code-channel-conductor-callers-the-second-exemption). The channel's share state (`audience.py`) is refreshed from the `conversations.info` read above. |
 | Replies and status | `chat_runner._run_chat` mirror leg; `binding.mirror_post_thread`, `notify_turn_start/end`; `status` | Mirror posts and the stream omit `thread_ts` for a code channel's own session (`start_stream` omits an empty `thread_ts`). Turn hooks fire once per turn on every exit path; the built-in subscriber moves the channel to `processing` then `active` through its own `agent_sessions.status.AgentSessionStatus` instance (the one `setStatus` writer, `thread_ts=None`), gated on code channels rather than on thread agent sessions. A code-channel turn runs outside a Slack turn scope, so no keepalive is armed and Slack's one-hour timeout bounds `processing`. The gate is read live, so when `slack.code_channels` goes off mid-turn a settle to `active` (turn end or `settle_after_stop`) still goes through for a channel this driver left on `processing`, clearing Slack's loader; a `processing` write stays gated. |
-| Stop | `agent_sessions.session_events.register_channel_stop_handler` (whole-channel Stops); `!stop` in the gate | Stops the bound slot through `stop_slot_turn(escalate=True)`: a redelivered `!stop` is answered from `inbound_gate`'s per-message memory and a redelivered native Stop is dropped by its `event_ts`, so each call is a fresh press and a second one takes the escalation (the compaction escape included). A Stop declined because the session is compacting posts `COMPACTING_STOP_TEXT` in the channel. An idle channel's status is set back to `active`. |
+| Stop | `agent_sessions.session_events.register_channel_stop_handler` (whole-channel Stops); `!stop` in the gate | Stops the bound slot through `stop_slot_turn(escalate=True)`: a redelivered `!stop` is answered from `inbound_gate`'s per-message memory and a redelivered native Stop is dropped by its `event_ts`, so each call is a fresh press and a second one takes the escalation (the compaction escape included). A Stop declined because the session is compacting posts `COMPACTING_STOP_TEXT` in the channel. An idle channel's status is set back to `active`. It also stops the channel's helper agents and their sub-agents (see "What a Stop covers"). |
 | Archive, unarchive, rename | `lifecycle.dispatch`, routed by `_on_event` (`channel_*` / `group_*` events, subscribed under `#@code_channels`) | Only a bound channel is touched, and nothing while the code-channels gate is shut. Events for one channel apply one at a time in delivery order (a per-channel lock taken before the first await), so an archive cannot land after the unarchive that followed it. An event with no workspace id, from a workspace `slack_gate.check_message_origin` does not admit, or not naming exactly the binding's recorded workspace (a binding with none matches nothing), is refused and SEL-audited. Archive stamps `archived_at`, unarchive clears it, rename sets `channel_name`; each applied change is audited as `slack.code_channel.lifecycle` and re-pushes the dashboard slot list. |
 | Dashboard badge | `dashboard_view.with_code_channels`, applied by `DashboardState.serialize_slots` for a dashboard user or owner and by `serialize_slot_views` to the dashboard-user and owner frames | A bound session's slot row carries `code_channel` (`channel_name`, `status` = `archived` > `wrapped_up` > `active`, and `web_url` `https://slack.com/app_redirect?channel=…&team=…`, Slack's documented redirect that opens the desktop app when it is installed and the web client otherwise; empty unless the team and channel ids are well formed; only what the badge draws). Absent for an unbound session and for every session while the gate is shut; the gate is read first, and a store not yet read from its file yields no badge while it is loaded off the loop and the slot list re-pushed. Meanwhile every row that carries a Slack thread (`slack_linked`, or a Slack-born session's `slack_origin_thread_ts`) carries `code_channel_pending: true` instead, so the header draws no thread link on a session that may turn out to be a code channel's. It reaches a person's dashboard only: the bare list (`/api/stream` SSE, an app token's `GET /api/chat/slots`) never carries it and `filter_slots_for_app` removes it from an app token's WebSocket rows; within a person's views the member-principal row filter drops it with any row the member may not see. Withholding a field from audiences that never had it is not a per-request decision and these are the sidebar's high-frequency list reads, so it writes no SEL row of its own. The sidebar row (on its meta line, so the row keeps its height, and standing in for the row's connected-to-Slack mark so the row shows one Slack mark) and the session header draw a "Slack code channel" badge from it (`CodeChannelBadge.tsx`). |
 
@@ -2496,34 +2496,54 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   `session_deep_link` over the dashboard (or opted-in tunnel) origin and NEVER carry a
   click token, because the board is in a shared channel.
 - **What a Stop covers.** A Stop (native or `!stop`) stops the channel's own
-  session and fences the work in flight at the press: that turn's own turn-end
-  refresh is skipped, and a board pass admitted before the press writes nothing
-  more. The helper agents keep running (Stop does not reach them; the RFC's
-  amended Stop, `rfc-slack-code-channels.md` §3, will stop them in its own
-  change), so the board's
+  session, the running turn of every helper agent the store records for it
+  (`stop_helpers.stop_helpers`: `store().workers_of`, never the crew-log tree; read
+  again after the stops, so a helper born or started during the Stop is
+  stopped too) and the sub-agents of each (`cancel_for_parent`, before their
+  parents' turns, since a parent's hard Stop stops the ones sharing its process
+  uncounted, and once more at the end), and fences the
+  work in flight at the press (`surface.mark_stopped`, before any await): that
+  turn's own turn-end refresh is skipped, and a board pass admitted before the
+  press writes nothing more. The session and its running helpers are stopped
+  together, so no helper waits out another's soft-stop budget. Each running helper gets
+  `stop_slot_turn(escalate=True)` (a pending approval is rejected; a second press
+  escalates) and one SEL row per stop call; one that ended meanwhile answers "not running" and
+  is not counted, and one idle at its call that has started a new turn by the
+  second read is stopped then (a second call, a second row); one whose compaction declined the stop is counted in the
+  reply as not stopped (a second press forces it), and one whose stop was refused,
+  failed or was cancelled midway is audited as `result=error` and counted in the reply as not stopped
+  (so is the channel's own session when its stop raises, or `result=refused` when
+  it is refused). A
+  sub-agent sweep that failed is said even when a later sweep works, since it may
+  have stopped some before failing. After the stops, an idle channel's status is
+  set back to `active` only if its session is still idle; the channel's own
+  session is stopped once, at the press, and is not read again (a turn a person's
+  next message starts during the Stop is theirs). The board also watches the
+  sessions filed in the channel's folder and the crew-log children its last board
+  names; a running one the store does not record as a helper agent is not stopped,
+  and the reply counts it as still running (`stop_helpers.left_running` over
+  `BoardCache.watched_sessions`, empty when the board's scope refuses the channel). The reply says how many it stopped ("Stopped N: this channel's
+  session, K helper agents (…) and M sub-agents."), naming up to five stopped helpers the
+  board's scope admits, linked to its chat with the board's own links; with none
+  stopped and nothing to report, `!stop` says "Nothing running." and the native Stop posts nothing. A
+  Stop does not hold anything afterwards: a message queued for a stopped helper,
+  its AutoNudge or patrol, or a send from the channel's session can start it
+  again. Holding them until a person writes is the follow-up hold change. The board's
   own passes (`surface.own_pass`: every refresh and the watch's scope checks) are
   fenced by their admission alone, and the next helper-agent turn start or end,
   approval, ledger move or re-arm republishes the board and the needs-you
-  replies. A `!stop` while the session is idle but helper agents run
-  answers "This channel's session isn't running, but N helper agents still are" and
-  names them (`render.idle_stop_text` over `BoardCache.running_helpers`): up to
-  `render.STOP_NAMED` (5) by their board title, each linked to its chat with the board's
-  own link builder (no click token; a URL `_linkable` refuses leaves the escaped title
-  in bold), the rest, and any the board has no row for, folded into "and N more" and
-  pointed at the lead session (linked when it can be). With no dashboard origin it
-  names them and says to open them from the lead session in the dashboard. It never
-  sends anyone to the board for a link: there only a waiting-on-you row carries one.
-  Each one's chat has **Stop generation**.
+  replies.
 - **When a board write goes out.** The board's four writes (post, edit, pin and a
-  needs-you reply) are its only writes of the helper agents' content, besides the
-  Code tab (gated as above), the wrap-up's outcome lines (below) and the idle
-  `!stop` reply's helper titles, which `_stop_bound` reads under the board's
-  scope check (`BoardCache.running_helpers`) after its last await, right before the
-  send. Each board write
-  re-checks the board's scope and the Stop right before its raw send, with no await
-  between: the publisher asks `_writable` right before the raw client's call, which
-  awaits nothing before its HTTP request. `test_slack_code_channel_commit_point.py`
-  lists every such writer, so a new one fails until it is gated. A board counts as
+  needs-you reply) are its writes of the helper agents' content, besides the
+  Code tab (gated as above), the wrap-up's outcome lines (below) and the Stop
+  reply, which names stopped helpers by their board titles. Each
+  re-checks the board's scope right before its raw send, with no await between:
+  the publisher asks `_writable` (scope and Stop) right before the raw client's
+  call, which awaits nothing before its HTTP request, and the Stop reply reads
+  `stop_helpers.board_titles` (scope) right before its send.
+  `test_slack_code_channel_commit_point.py` lists every board writer, so a new one
+  fails until it is gated; the Stop reply's check is pinned by
+  `test_slack_code_channel_stop_helpers.py`. A board counts as
   published only once its writes reached Slack. A pass that read a board and did not
   get it out (fenced by a Stop, failed) arms exactly one re-publish (`board.settle`):
   the channel's one re-arm timer, armed in a clean context, debounced and backed off

@@ -1374,26 +1374,18 @@ def test_a_published_line_published_again_is_unchanged(monkeypatch, case):
     assert _published(monkeypatch, once, project) == once
 
 
-def test_running_helpers_names_the_watched_sessions_running_but_the_channels_own(tmp_path):
+def test_watched_sessions_are_the_watchs_sessions_but_the_channels_own(tmp_path):
     h = _Harness(tmp_path)
     h.svc._seen["T1:C1"] = {
         "dashboard_chat-cond": (True, 1),  # the channel's own session
         "chat-w1": (True, 1),
-        "chat-w2": (False, 1),  # idle
+        "chat-w2": (False, 1),  # idle: the Stop reads its live state itself
         "dashboard_chat-w3": (True, 2),
     }
-    # The board's titles name them (the reply links each); one with no board row: "".
-    h.svc._boards["T1:C1"] = model.BoardSnapshot(
-        rows=(_row(title="Fix login", session_key="dashboard_chat-w3"),)
-    )
-    h.svc._board_owner["T1:C1"] = "chat-cond"
-    assert h.svc.running_helpers(suite._FakeBinding()) == [
-        ("chat-w1", ""),
-        ("dashboard_chat-w3", "Fix login"),
-    ]
-    assert h.svc.running_helpers(suite._FakeBinding(channel_id="C2")) == []
+    assert h.svc.watched_sessions(suite._FakeBinding()) == {"chat-w1", "chat-w2", "chat-w3"}
+    assert h.svc.watched_sessions(suite._FakeBinding(channel_id="C2")) == set()
     source.set_scope_predicate(lambda state, b: False)  # shared: the board withholds them
-    assert h.svc.running_helpers(suite._FakeBinding()) == []
+    assert h.svc.watched_sessions(suite._FakeBinding()) == set()
 
 
 def test_a_stop_clears_the_suspended_the_last_turn_left_for_the_worker_status(monkeypatch):
