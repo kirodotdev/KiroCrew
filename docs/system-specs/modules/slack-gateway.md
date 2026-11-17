@@ -1314,6 +1314,14 @@ and `message_deleted` cannot disagree.
 19. Strip inline `<thinking>` tags from accumulated text
 20. Final update with mrkdwn-converted response (split into multiple messages if over 3900 chars by `split_message` in `slack/format.py`)
 21. Post thinking content as 💭 thread reply (if any, and `slack.show_thinking` is true)
+22. Show the footer (`build_timing_footer`; in the stream's seal or as its own post, see
+    "Where the timing footer lands"): the "Finished in …" context block plus any
+    OPTIONS and Link to Dashboard controls. With `slack.show_timing_footer` false (read
+    through `slack_cfg()` on each footer, so a change applies without a restart) the
+    context block is left out, a footer still carrying a control posts with the control
+    only (fallback text `Options`, or `Link to Dashboard`), and an empty footer is not
+    posted. The transport renderer, `!compact` and a subagent's Slack reply follow the
+    same rule
 
 ### `StatusReactionController`
 The one reaction a Slack turn wears on the message it answers, defined in `slack/handler_runtime/reactions.py`; the table it reads (`_PHASE_EMOJIS`, from `slack.reactions`) is built at import in `slack/handler.py`. Both Slack turn paths (the native handler and `SlackRenderer`) use it:
@@ -1651,7 +1659,7 @@ Triggers in-place ACP `/compact` on the current thread's session (`_handle_compa
 3. Runs `provider.compact()` bounded by `wait_for(..., 120)`, then
    `provider.wait_for_compaction(timeout=sessions.compact_wait_budget_secs())`
    (the `session.compact_wait_secs` budget)
-4. Posts result (✅/❌, ⚠ on a timeout) + timing footer
+4. Posts result (✅/❌, ⚠ on a timeout) + timing footer (no footer when `slack.show_timing_footer` is false)
 5. On an exception: `sessions.discard_conversation(session_key)` — kills the session and drops only the resume sid, so the next message cold-starts. The session-map ENTRY survives, keeping the thread↔session linkage `get_session_for_thread` routes later replies through; `destroy` here would fork the thread into a fresh session with none of its context. Housekeeping never removes a channel identity (see [session](session.md))
 
 ## Wedged-Session Recovery (`AcpPromptBusy`)
@@ -1672,7 +1680,7 @@ LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered 
 
 Action IDs: `options_choice_<i>` (a choice), `options_several` (the ⋯ menu); modal callback `options_several_submit` (with `notify_on_close`, so Cancel frees the held card). A Send press on a checkbox card posted before this card replaced it (`options_submit`) gets a private "This card has expired"; its checkbox ticks (`options_checkboxes`) are ignored. When an OPTIONS card ends the footer, the Link to Dashboard button gets its own row, so answering the card leaves it in place.
 
-**Where the timing footer lands.** A streamed reply with no `[OPTIONS]` hands the footer to `chat.stopStream`'s `blocks`, so it renders at the bottom of the answer message (`finalize.py::seal_stream`, called from `_AnswerStream.seal` and `SlackRenderer.on_done`). Every other turn posts it as its own message: an OPTIONS turn (the next turn strikes the card with a `chat.update` on that ts), a reply that did not stream, a footer seal Slack refuses (`message_not_in_streaming_state` after the stream's 10 minutes; the stream is then sealed bare), and on the native path a sealed stream that a `chat.update` rewrites (a redaction overwrite or a stream demoted at the seal). A finished turn shows exactly one footer.
+**Where the timing footer lands.** A streamed reply with no `[OPTIONS]` hands the footer to `chat.stopStream`'s `blocks`, so it renders at the bottom of the answer message (`finalize.py::seal_stream`, called from `_AnswerStream.seal` and `SlackRenderer.on_done`). Every other turn posts it as its own message: an OPTIONS turn (the next turn strikes the card with a `chat.update` on that ts), a footer holding only the Link to Dashboard button (`slack.show_timing_footer` false: it has no text the read-back could confirm), a reply that did not stream, a footer seal Slack refuses (`message_not_in_streaming_state` after the stream's 10 minutes; the stream is then sealed bare), and on the native path a sealed stream that a `chat.update` rewrites (a redaction overwrite or a stream demoted at the seal). A finished turn shows exactly one footer, or none when `slack.show_timing_footer` is false and no control rides it.
 
 Beyond the reply-finalization path in `handler_runtime/delivery.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway_runtime/result_egress.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
 

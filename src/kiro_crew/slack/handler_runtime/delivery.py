@@ -357,6 +357,10 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         def _build_footer(options_token: str | None) -> tuple[list[dict], str]:
             """The timing footer with its OPTIONS / Link-to-Dashboard controls."""
             footer_blocks, footer_text = build_timing_footer(time.monotonic() - _t0, client)
+            if not footer_blocks and not options:
+                # Timing hidden and no choices: the Link to Dashboard button is all
+                # this footer can still carry, so its notification says that.
+                footer_text = "Link to Dashboard"
             # Re-read the DASHBOARD link for the footer button only: a mid-turn
             # click on the turn-start button may have linked the thread to a slot
             # since turn start, and a second Link button would be redundant. (Not
@@ -633,8 +637,9 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         _footer_ts: str | None = None
         _options_delivered = False
         try:
-            # Already inside the answer message when the seal carried it.
-            if not _footer_inline:
+            # Already inside the answer message when the seal carried it; an empty
+            # footer (timing hidden, no controls) posts nothing.
+            if not _footer_inline and footer_blocks:
                 _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
             _options_delivered = True
         except Exception:
