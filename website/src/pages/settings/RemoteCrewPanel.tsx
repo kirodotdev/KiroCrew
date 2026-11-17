@@ -578,6 +578,56 @@ export function RemoteCrewPanel() {
     void queryClient.invalidateQueries({ queryKey: ['cloud', 'launches'] })
   }, [queryClient])
 
+  // A finished job's "not signed in" was written when the launch ended. The crew
+  // can be signed in after that (on its own dashboard, in a shell on it), and
+  // nothing rewrites the job, so a working crew read "Needs sign-in" forever. Ask
+  // the box once per finished job with no live code; the row shows the badge only
+  // when the box says it is signed out. Signed in: the gateway corrects the job
+  // and the reload drops it. Could not ask (unreachable, a crew on another
+  // harness with no Kiro sign-in program): no badge -- nobody checked that its
+  // chats fail -- and the failed check itself as a minor notice on the row.
+  // Once per job per mount, never a poll.
+  const [boxSignin, setBoxSignin] = useState<Record<string, { signedOut: true } | { error: string }>>({})
+  const askedBox = useRef(new Set<string>())
+  useEffect(() => {
+    for (const job of signinJobByInstanceId.values()) {
+      if (!isTerminal(job) || job.signin || askedBox.current.has(job.id)) continue
+      askedBox.current.add(job.id)
+      void Promise.resolve().then(() => api.cloudLaunchSignin(job.id)).then(
+        () => reloadLaunches(),
+        e => {
+          const code = e instanceof ApiError && e.status === 409 ? parseErrorCode(e.body) : null
+          if (code === 'signin_already_complete') {
+            reloadInstances()
+            reloadLaunches()
+            // The Set-up card reads this job's own cached copy, which a terminal
+            // job never refetches; the manual check invalidates it the same way.
+            void queryClient.invalidateQueries({ queryKey: ['cloud', 'launch', job.id] })
+            return
+          }
+          setBoxSignin(prev => ({
+            ...prev,
+            [job.id]: code === 'no_signin_pending'
+              ? { signedOut: true }
+              : { error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) },
+          }))
+        },
+      )
+    }
+  }, [signinJobByInstanceId, reloadInstances, reloadLaunches, queryClient, errMsg])
+  const rowSigninJob = (inst: InstanceView): LaunchJob | undefined =>
+    inst.connection_method === 'ssm' && inst.ssm_target ? signinJobByInstanceId.get(inst.ssm_target) : undefined
+  const shownSigninJob = (inst: InstanceView): LaunchJob | null => {
+    const job = rowSigninJob(inst)
+    if (!job) return null
+    return !isTerminal(job) || job.signin || 'signedOut' in (boxSignin[job.id] ?? {}) ? job : null
+  }
+  const signinCheckError = (inst: InstanceView): string | null => {
+    const job = rowSigninJob(inst)
+    const answer = job ? boxSignin[job.id] : undefined
+    return answer && 'error' in answer ? answer.error : null
+  }
+
   // The other half of the announce. When the gateway showing this page refuses a
   // crew we announced, only IT holds the reason -- the depth cap and the cycle
   // guard are its decisions, taken against a registry this pane never sees -- so
@@ -1204,7 +1254,8 @@ export function RemoteCrewPanel() {
                     key={inst.id}
                     inst={inst}
                     cloudTag={inst.connection_method === 'ssm' && inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) ?? null : null}
-                    signinJob={inst.connection_method === 'ssm' && inst.ssm_target ? signinJobByInstanceId.get(inst.ssm_target) ?? null : null}
+                    signinJob={shownSigninJob(inst)}
+                    signinCheckError={signinCheckError(inst)}
                     onRestartSignin={id => signinRestartMutation.mutate(id)}
                     // Keyed to THIS row's job: the mutation is one object shared by
                     // every row, so its bare `isPending` would disable the sign-in
@@ -1598,9 +1649,12 @@ export function RemoteCrewPanel() {
                       is checked until the user picks, and Launch waits for that pick.
                       The notice names the cause the server reported: whoami did not
                       answer, or an Identity Center sign-in was read without its
-                      portal address; after a pick it says the choice is theirs. */}
+                      portal address; after a pick it says the choice is theirs.
+                      `partial`, not red: the form still works, only the preselect
+                      is missing. A signed-out kiro-cli no longer lands here. */}
                   <ErrorNotice
                     variant="inline"
+                    impact="partial"
                     className="mb-2"
                     message={i18nT(
                       identityChosen

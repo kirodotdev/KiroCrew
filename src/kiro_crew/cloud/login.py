@@ -394,11 +394,30 @@ def is_logged_in(
     caller that passes no target at all asks the legacy question "is there
     some session".
     """
-    if _auth_probe(instance_id, profile, region) is not True:
-        return False
-    if target is None:
-        return True
-    return remote_identity_state(instance_id, profile, region, target=target) == "match"
+    return signin_state(instance_id, profile, region, target=target) is True
+
+
+def signin_state(
+    instance_id: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    target: Optional[KiroLoginTarget] = None,
+) -> Optional[bool]:
+    """:func:`is_logged_in` without folding "could not tell" into "signed out".
+
+    ``True`` signed in (as *target* when given), ``False`` a POSITIVE answer that
+    it is not (signed out, or a session for another identity), ``None`` when the
+    box could not answer: SSM unreachable, no sentinel, a box that has neither
+    sign-in program (a crew on another harness with no kiro-cli), or an identity
+    that did not read. A caller that SHOWS the answer must keep ``None`` apart,
+    or it tells the owner a crew it never reached is signed out.
+    """
+    probe = _auth_probe(instance_id, profile, region)
+    if probe is not True or target is None:
+        return probe
+    state = remote_identity_state(instance_id, profile, region, target=target)
+    return None if state == "unknown" else state == "match"
 
 
 def remote_identity(

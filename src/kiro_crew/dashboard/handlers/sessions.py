@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         _safe_float,
         _safe_int,
         _usage_scrape_argv,
+        _whoami_says_signed_out,
         _wrap_argv_at_configured_tier,
         _wrap_argv_whoami,
     )

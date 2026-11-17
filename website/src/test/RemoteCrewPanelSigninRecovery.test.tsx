@@ -167,6 +167,11 @@ beforeEach(() => {
   )
   vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] } as never)
   useJob(UNSIGNED_JOB)
+  // The row asks the box once before badging a finished unsigned job. By default
+  // the box says it is signed out, so the badge these tests assert is the real one.
+  vi.mocked(api.cloudLaunchSignin).mockRejectedValue(
+    new ApiError(409, 'no sign-in pending', JSON.stringify({ code: 'no_signin_pending' })),
+  )
   vi.mocked(copyToClipboard).mockResolvedValue(true)
 })
 
@@ -542,6 +547,49 @@ describe('Your crews — an unsigned cloud crew', () => {
     expect(screen.getByRole('button', { name: /Start sign-in/i })).toBeInTheDocument()
   })
 
+  it('asks the box before badging, and drops the badge when it was signed in later', async () => {
+    // The owner's report: a connected crew signed in after its launch's code ran
+    // out still read "Needs sign-in", because the job is written once and never
+    // re-read. The row asks the box; the gateway corrects the job.
+    // The box's answer is held until the baseline is taken, so only the
+    // invalidation that answer triggers can raise the status-read count.
+    let answer: (e: unknown) => void = () => {}
+    vi.mocked(api.cloudLaunchSignin).mockReturnValue(new Promise((_r, reject) => { answer = reject }) as never)
+    vi.mocked(api.listInstances).mockResolvedValue(
+      { active: true, warm_set_cap: 5, instances: [{ ...CLOUD_INSTANCE, status: { instance_id: 'kc1', state: 'connected' } }] } as never,
+    )
+    renderWithProviders(<RemoteCrewPanel />)
+    await waitFor(() => expect(api.cloudLaunchStatus).toHaveBeenCalled())
+    await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-unsigned'))
+    const statusReads = vi.mocked(api.cloudLaunchStatus).mock.calls.length
+    useJob({ ...UNSIGNED_JOB, signin_detected: true, updated_at: 1 })
+    answer(new ApiError(409, 'already signed in', JSON.stringify({ code: 'signin_already_complete' })))
+    // The Set-up card's own cached copy of the job is re-read too: a terminal
+    // job never refetches it on its own.
+    await waitFor(() => expect(vi.mocked(api.cloudLaunchStatus).mock.calls.length).toBeGreaterThan(statusReads))
+    await waitFor(() => expect(vi.mocked(api.cloudLaunches).mock.calls.length).toBeGreaterThan(1))
+    await screen.findByText('Kiro Crew Cloud (kc-5e10bb)')
+    expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('signin-prompt')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['the box could not be reached', new ApiError(502, 'could not reach the crew', JSON.stringify({ code: 'signin_probe_failed' })), 'could not reach the crew'],
+    ['the request failed', new Error('network down'), 'network down'],
+  ])('does not badge when %s: unknown is not "signed out"', async (_label, err, text) => {
+    // A crew on another harness, with no Kiro sign-in program, answers this way
+    // too. "Its chats will fail" would be a claim nobody checked; the failed
+    // check itself is shown, as a minor notice with the hand-off.
+    vi.mocked(api.cloudLaunchSignin).mockRejectedValue(err)
+    renderWithProviders(<RemoteCrewPanel />)
+    await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-unsigned'))
+    expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
+    const notice = (await screen.findByText(text)).closest('[data-crew-id="kc1"]') as HTMLElement
+    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('signin-prompt')).not.toBeInTheDocument()
+  })
+
   it('leaves a signed-in crew alone', async () => {
     useJob({ ...UNSIGNED_JOB, signin_detected: true })
     renderWithProviders(<RemoteCrewPanel />)
@@ -549,6 +597,8 @@ describe('Your crews — an unsigned cloud crew', () => {
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
     expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('signin-prompt')).not.toBeInTheDocument()
+    // A signed-in job is never re-probed: one SSM round trip per UNSIGNED row only.
+    expect(api.cloudLaunchSignin).not.toHaveBeenCalled()
   })
 
   it('does not list a sign-in retry as a second instance being set up', async () => {
