@@ -42,7 +42,7 @@ function FolderConfigModalWithCrews(props: React.ComponentProps<typeof FolderCon
 
 /** The modal for the folder the sidebar targets. */
 export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalTarget): React.ReactNode {
-  const { createFolderMutation, defaultAgent, dispatch, flatView, folders, installedAgents, refetchTags, setFlatView,
+  const { createFolderMutation, defaultAgent, dispatch, flatView, folders, hideEmptyFolders, installedAgents, refetchTags, setFlatView,
     setFolderModal, tagsData, tagsQueryFailed, updateFolderMutation } = shell
   return (
         <FolderConfigModalWithCrews
@@ -93,9 +93,11 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               // A subfolder lands inside its parent, and a collapsed parent would
               // hide it, so the create looked like it had done nothing. The folder
               // reveal opens the parent and every collapsed ancestor, scrolls the
-              // new row into view and flashes it.
+              // new row into view and flashes it. A new folder is also empty, so
+              // with empty folders hidden it would vanish the moment it lands; the
+              // reveal keeps it shown for this visit.
               const createdId = (created as { id?: unknown } | null)?.id
-              if (folderModal.parentId && typeof createdId === 'string' && createdId) {
+              if ((folderModal.parentId || hideEmptyFolders) && typeof createdId === 'string' && createdId) {
                 dispatch(requestFolderReveal(createdId))
               }
             } else {

@@ -98,6 +98,14 @@ describe('loadChatConfig', () => {
     expect(loadChatConfig().hideEmptyFolderBody).toBe(false)
   })
 
+  it('keeps empty folders shown unless the user opts in with a real boolean', () => {
+    expect(loadChatConfig().hideEmptyFolders).toBe(false)
+    localStorage.setItem('mc-chat-config', JSON.stringify({ hideEmptyFolders: 'yes' }))
+    expect(loadChatConfig().hideEmptyFolders).toBe(false)
+    localStorage.setItem('mc-chat-config', JSON.stringify({ hideEmptyFolders: true }))
+    expect(loadChatConfig().hideEmptyFolders).toBe(true)
+  })
+
   it('keeps collapsing long pastes until the user opts out', () => {
     // OFF is the contract: the chip is what keeps a very large paste from being
     // laid out in the composer and the sent bubble, so a client with no stored
