@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
@@ -736,7 +736,85 @@ describe('QueueStack restored card', () => {
     const live = render(<QueueStack messages={[queued('live', 'q1')]} />)
     expect(screen.getByTestId('queue-card-hourglass').className).toContain('animate-')
     live.unmount()
-    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true } }]} />)
+    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true, held: true } }]} />)
     expect(screen.getByTestId('queue-card-hourglass').className).not.toContain('animate-')
+  })
+
+  it('keeps the hourglass turning on a restored card the server does not hold', () => {
+    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true } }]} />)
+    expect(screen.getByTestId('queue-card-hourglass').className).toContain('animate-')
+  })
+})
+
+describe('QueueStack held restored card', () => {
+  const restored = (queueId: string): ChatMessage => ({ ...queued('restored words', queueId), meta: { queueId, restored: true, held: true } })
+  const HELD = "Restored after a restart. Won't send on its own."
+
+  it('says in words that a held restored card waits for the person', () => {
+    render(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.getByTestId('queue-card-held')).toHaveTextContent(HELD)
+  })
+
+  it('shows no held line where the stack offers no Send now, edit and cancel', () => {
+    const view = render(<QueueStack messages={[restored('r1')]} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+  })
+
+  it('shows no held line on a card that was not restored', () => {
+    render(<QueueStack messages={[queued('live', 'q1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+  })
+
+  it('reads the server held flag, not restored provenance: a restored card the startup drain accepted shows no line, and shows it once the flag flips', () => {
+    const accepted: ChatMessage = { ...queued('restored words', 'r1'), meta: { queueId: 'r1', restored: true } }
+    const view = render(<QueueStack messages={[accepted]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.getByTestId('queue-card-held')).toHaveTextContent(HELD)
+  })
+
+  it('puts the held line on its own row under the message, without truncation', () => {
+    render(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    const line = screen.getByTestId('queue-card-held')
+    expect(line.className).not.toContain('truncate')
+    expect(line.hasAttribute('title')).toBe(false)
+    expect(line.parentElement?.contains(screen.getByText('restored words'))).toBe(true)
+    expect(line.previousElementSibling?.contains(screen.getByText('restored words'))).toBe(true)
+  })
+
+  it('drops the line while Send now is in flight or accepted, and brings it back when it is declined', () => {
+    const onInterrupt = vi.fn()
+    const view = render(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={onInterrupt} onEdit={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Send now'))
+    expect(onInterrupt).toHaveBeenCalledWith('r1')
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={onInterrupt} onEdit={() => {}} pendingIds={new Set(['r1'])} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={onInterrupt} onEdit={() => {}} pendingIds={new Set()} />)
+    expect(screen.getByTestId('queue-card-held')).toBeInTheDocument()
+  })
+
+  it('drops the line when the card is cancelled and leaves the queue', async () => {
+    const onCancel = vi.fn()
+    const view = render(<QueueStack messages={[restored('r1')]} onCancel={onCancel} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.getByTestId('queue-card-held')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Cancel queued message'))
+    expect(onCancel).toHaveBeenCalledWith('r1')
+    view.rerender(<QueueStack messages={[]} onCancel={onCancel} onInterrupt={() => {}} onEdit={() => {}} />)
+    await waitFor(() => expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument())
+  })
+})
+
+describe('QueueStack collapsed stack with a held front card', () => {
+  it('lines every backing card up with the front card top, one peek higher per depth', () => {
+    const held: ChatMessage = { ...queued('front', 'r1'), meta: { queueId: 'r1', restored: true, held: true } }
+    render(<QueueStack messages={[held, queued('second', 'q2')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    const boxes = screen.getAllByTestId('queue-card').map(c => c.parentElement as HTMLElement)
+    const y = (el: HTMLElement) => Number(/translateY\((-?[\d.]+)px\)/.exec(el.style.transform)?.[1] ?? 0)
+    const h = (el: HTMLElement) => parseFloat(el.style.height)
+    expect(h(boxes[0])).toBeGreaterThan(h(boxes[1]))
+    // The backing card's top sits above the front card's top.
+    expect(y(boxes[1])).toBeLessThan(y(boxes[0]))
   })
 })
