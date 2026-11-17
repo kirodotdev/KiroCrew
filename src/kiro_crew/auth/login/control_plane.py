@@ -197,7 +197,7 @@ async def list_available_profiles(
 
     *viewer_cps_url* is the relay viewer's own control plane
     (``tunnel.relay_viewer_cps_url``, held to https:// or a loopback http:// when the
-    config is read), passed only while the viewer is on. It is asked before the hosts
+    config is read), passed whenever it is set. It is asked before the hosts
     above, because a non-prod control plane (gamma) holds profiles the prod hosts do
     not list. The viewer already sends this sign-in to that host, so asking it here
     shares the token with no new party. Any failure there, a transport error included,

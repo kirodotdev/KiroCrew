@@ -1593,10 +1593,12 @@ def _viewer_config(monkeypatch, *, enabled: bool, url: str, prefix: str = "") ->
     )
 
 
+@pytest.mark.parametrize("enabled", [True, False], ids=["old-setting-on", "old-setting-off"])
 @pytest.mark.asyncio
-async def test_poll_idc_asks_the_relay_viewer_control_plane_first(tmp_path, monkeypatch):
-    """A gamma profile lives only at the viewer's gamma CPS, so that host is asked first."""
-    _viewer_config(monkeypatch, enabled=True, url=_GAMMA_CPS)
+async def test_poll_idc_asks_the_relay_viewer_control_plane_first(tmp_path, monkeypatch, enabled):
+    """A gamma profile lives only at the viewer's gamma CPS, so that host is asked first,
+    whatever the ignored tunnel.relay_viewer_enabled says."""
+    _viewer_config(monkeypatch, enabled=enabled, url=_GAMMA_CPS)
     arn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/GAMMA"
     service, session = _service(
         tmp_path,
@@ -1621,8 +1623,8 @@ async def test_poll_idc_asks_the_relay_viewer_control_plane_first(tmp_path, monk
 
 @pytest.mark.parametrize(
     "enabled, url",
-    [(False, _GAMMA_CPS), (True, ""), (True, "http://management.rejected.kiro.example")],
-    ids=["viewer-off", "url-unset", "url-rejected"],
+    [(True, ""), (True, "http://management.rejected.kiro.example")],
+    ids=["url-unset", "url-rejected"],
 )
 @pytest.mark.asyncio
 async def test_poll_idc_without_the_viewer_asks_only_the_prod_control_planes(

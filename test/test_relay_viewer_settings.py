@@ -61,6 +61,17 @@ def test_the_viewer_settings_round_trip(tmp_path, monkeypatch) -> None:
     assert again.tunnel == cfg.tunnel
 
 
+def test_the_old_viewer_switch_is_deprecated_and_still_loads(tmp_path, monkeypatch, caplog) -> None:
+    from kiro_crew.config.schema import SCHEMA_REGISTRY
+
+    entry = next(e for e in SCHEMA_REGISTRY if e.path == "tunnel.relay_viewer_enabled")
+    assert entry.deprecated is True
+    with caplog.at_level(logging.WARNING):
+        cfg = _load(tmp_path, monkeypatch, {"relay_viewer_enabled": True})
+    assert cfg.tunnel.relay_viewer_enabled is True
+    assert not any("unrecognized" in r.getMessage() for r in caplog.records)
+
+
 def test_a_string_true_does_not_turn_the_viewer_on(tmp_path, monkeypatch) -> None:
     assert (
         _load(tmp_path, monkeypatch, {"relay_viewer_enabled": "yes"}).tunnel.relay_viewer_enabled

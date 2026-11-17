@@ -88,7 +88,7 @@ def viewer(monkeypatch) -> SimpleNamespace:
     )
     state = SimpleNamespace(tunnel=tunnel, bearers=[])
 
-    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
+    async def _list(url, bearer, *, crew_domain="", token_type="", profile_arn=""):
         state.bearers.append(bearer)
         return (CREW,)
 

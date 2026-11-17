@@ -186,8 +186,8 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     // endpoint's other 403s (a non-owner caller, a Slack-origin request) still
     // journal — they are real authorization failures and a reader needs them.
     listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
-    // Remote Crews reachable through the Kiro relay. 404 `RELAY_VIEWER_OFF` while
-    // `tunnel.relay_viewer_enabled` is off; it throws but is not journaled.
+    // Remote Crews reachable through the Kiro relay. An older gateway's 404
+    // `RELAY_VIEWER_OFF` throws but is not journaled.
     relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[]; account?: RelayViewerAccount }>,
     // Clears the dot of each named Crew; an ID the gateway does not hold is ignored.
     relayViewerCrewsSeen: (endpointIds: string[]) =>

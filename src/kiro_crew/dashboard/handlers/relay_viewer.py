@@ -1,8 +1,8 @@
 """The relay viewer's gateway routes: the desktop app lists remote Crews and opens one.
 
-Off unless ``tunnel.relay_viewer_enabled`` is set: every route answers 404
-``RELAY_VIEWER_OFF`` while it is off. None is reachable through the relay
-(``kiro_relay.limits`` refuses everything under ``/api/relay-viewer``).
+Always on, whatever ``tunnel.relay_viewer_enabled`` says (it is ignored). None is
+reachable through the relay (``kiro_relay.limits`` refuses everything under
+``/api/relay-viewer``).
 
 * ``GET /api/relay-viewer/crews``: the owner's dashboard reads the Crews this
   person can open. The answer carries no token, and names the kind of account
@@ -46,11 +46,10 @@ if TYPE_CHECKING:
     from kiro_crew.relay_viewer import cps
 
 # The control plane client and the relay modules are imported inside the handlers,
-# after the setting check, so a gateway with the viewer off loads none of them.
+# so a gateway nobody opens the viewer on loads none of them.
 
 logger = logging.getLogger(__name__)
 
-OFF_CODE = "RELAY_VIEWER_OFF"
 #: The window's sign-in differs from the vault's (an account switch). A stop code.
 SIGN_IN_CHANGED = "SIGN_IN_CHANGED"
 _HEX = frozenset("0123456789abcdef")
@@ -73,6 +72,13 @@ _FORCED_AT: dict[str, float] = {}  # identity -> time.monotonic() of its last fo
 #: identity -> the lock a 401 handler holds across its re-read and forced refresh, so a
 #: second 401 on the same sign-in waits for that refresh instead of reporting signed out.
 _FORCE_LOCKS: dict[str, asyncio.Lock] = {}
+#: Logged once per process when ``tunnel.relay_viewer_relay_domain`` is set.
+DOMAIN_IGNORED_WARNING = (
+    "tunnel.relay_viewer_relay_domain is set but this build no longer uses it: each Crew"
+    " opens at the exact address the Kiro control plane lists for it. You can remove the"
+    " setting."
+)
+_DOMAIN_WARNED = False
 _T = TypeVar("_T")
 
 
@@ -112,10 +118,6 @@ def _refused(exc: cps.CpsRefused) -> web.Response:
     return _error(str(exc), exc.code, _STATUS.get(exc.code, 403), exc.request_id)
 
 
-def _off() -> web.Response:
-    return _error("The relay viewer is turned off.", OFF_CODE, 404)
-
-
 def _load_tunnel() -> Any:
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -128,18 +130,24 @@ async def _off_loop(func: Callable[..., _T], /, *args: Any) -> _T:
     )
 
 
-async def _settings() -> Optional[tuple[str, str, str]]:
-    """``(cps_url, credential_ref, crew_domain)`` while the viewer is on, else ``None``."""
+async def _settings() -> tuple[str, str]:
+    """``(cps_url, credential_ref)``, each stripped, "" when unset.
+
+    A set ``tunnel.relay_viewer_relay_domain`` is ignored: each Crew opens at the exact
+    address the control plane lists for it. The setting is still read so the person is
+    told once per process that it can go.
+    """
+    global _DOMAIN_WARNED
     tunnel = await _off_loop(_load_tunnel)
-    if getattr(tunnel, "relay_viewer_enabled", False) is not True:
-        return None
     url = getattr(tunnel, "relay_viewer_cps_url", "")
     ref = getattr(tunnel, "relay_viewer_credential", "")
     domain = getattr(tunnel, "relay_viewer_relay_domain", "")
+    if isinstance(domain, str) and domain.strip() and not _DOMAIN_WARNED:
+        _DOMAIN_WARNED = True
+        logger.warning(DOMAIN_IGNORED_WARNING)
     return (
         url.strip() if isinstance(url, str) else "",
         ref.strip() if isinstance(ref, str) else "",
-        domain.strip() if isinstance(domain, str) else "",
     )
 
 
@@ -325,9 +333,6 @@ def _account(before: str, after: str, fields: dict[str, object]) -> Optional[dic
 
 async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     """GET /api/relay-viewer/crews: the Crews this person can open, with no token."""
-    settings = await _settings()
-    if settings is None:
-        return _off()
     from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
     from kiro_crew.relay_viewer import cps
 
@@ -339,7 +344,7 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
         return denied
     from kiro_crew.dashboard.handlers.kiro_vault_identity import vault_identity_snapshot
 
-    cps_url, ref, crew_domain = settings
+    cps_url, ref = await _settings()
     # The test credential names no vault account, so it gets no account field.
     before = "" if ref else (await vault_identity_snapshot())[0]
     try:
@@ -348,7 +353,6 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
             lambda bearer, token_type, profile_arn: cps.list_crew_endpoints(
                 _control_plane(cps_url, profile_arn),
                 bearer,
-                crew_domain=crew_domain,
                 token_type=token_type,
                 profile_arn=profile_arn,
             ),
@@ -376,9 +380,6 @@ async def api_relay_viewer_crews_seen(request: web.Request) -> web.Response:
     Body ``{"endpointIds": [...]}``. Owner-only like the list; an ID the state
     file does not hold is ignored, so the answer says nothing about which exist.
     """
-    settings = await _settings()
-    if settings is None:
-        return _off()
     from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
     from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
     from kiro_crew.relay_viewer import crew_notices
@@ -449,9 +450,6 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     refusal = await _local_main_refusal(request)
     if refusal is not None:
         return refusal
-    settings = await _settings()
-    if settings is None:
-        return _off()
     from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
     from kiro_crew.relay_viewer import cps
 
@@ -468,23 +466,19 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         isinstance(expected, str) and len(expected) == 16 and set(expected) <= _HEX
     ):
         return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
-    cps_url, ref, crew_domain = settings
+    cps_url, ref = await _settings()
 
     async def _list_then_mint(
         bearer: str, token_type: str, profile_arn: str
     ) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken]:
         # Listed again on each call because the list is the only source of the
-        # Crew's URL (and its domain check), so the URL is the one CPS gives now.
+        # Crew's URL, so the URL is the one CPS gives now.
         url = _control_plane(cps_url, profile_arn)
         crew = next(
             (
                 c
                 for c in await cps.list_crew_endpoints(
-                    url,
-                    bearer,
-                    crew_domain=crew_domain,
-                    token_type=token_type,
-                    profile_arn=profile_arn,
+                    url, bearer, token_type=token_type, profile_arn=profile_arn
                 )
                 if c.endpoint_id == endpoint_id
             ),
@@ -549,9 +543,9 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         return _refused(exc)
     logger.info("relay viewer: mint %s -> done", endpoint_id)
     _audit(request, "success", endpoint_id)
-    # No relay domain: pin the window to the exact host the control plane listed for this
-    # Crew. The list kept only https://<endpointId>.<rest> on the default port.
-    relay_domain = crew_domain or (urlsplit(crew.crew_url).hostname or "")[len(endpoint_id) + 1 :]
+    # Pin the window to the exact host the control plane listed for this Crew. The
+    # list kept only https://<endpointId>.<rest> on the default port.
+    relay_domain = (urlsplit(crew.crew_url).hostname or "")[len(endpoint_id) + 1 :]
     return _ok(
         {
             "accessToken": grant.access_token,

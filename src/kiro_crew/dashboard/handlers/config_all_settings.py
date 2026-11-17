@@ -114,7 +114,6 @@ READONLY_REASONS: dict[str, str] = {
     "tunnel.enabled": WHY_REACH,
     "tunnel.name_mode": WHY_REACH,
     "tunnel.relay_enabled": WHY_REACH,
-    "tunnel.relay_viewer_enabled": WHY_REACH,
     "dashboard.tailscale.bind_refresh_chains": WHY_REACH,
     "dashboard.tailscale.pin_scope": WHY_REACH,
     "dashboard.shared_crew.containment_enabled": WHY_REACH,

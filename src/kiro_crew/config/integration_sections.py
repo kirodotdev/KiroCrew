@@ -1299,10 +1299,11 @@ class TunnelConfig:
     relay_viewer_enabled: bool = field(
         default=False,
         metadata=_meta(
-            "Relay Viewer",
-            "Let the desktop app list the remote Crews you can reach through the Kiro "
-            "relay and open them. Off by default. This is the viewer side only: a Crew "
-            "you open still needs Kiro Relay on where it runs.",
+            "Relay Viewer (deprecated)",
+            "Deprecated and ignored: the desktop app always lists the remote Crews you "
+            "can reach through the Kiro relay. Kept so an existing config that sets it "
+            "still loads.",
+            deprecated=True,
         ),
     )
     relay_viewer_cps_url: str = field(
@@ -1346,12 +1347,10 @@ class TunnelConfig:
         default="",
         metadata=_meta(
             "Relay Viewer Relay Domain",
-            "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
-            "viewer lists a remote Crew, and sends its access token, only when the Crew's "
-            "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
-            "default) lists a Crew whose address is https://<endpoint ID>.<any domain> with no "
-            "port, and the desktop app opens it at exactly that address. Any other value matches "
-            "no Crew address, so no Crew is listed.",
+            "No longer used: a set value is ignored, with one warning in the gateway log. The "
+            "viewer lists a remote Crew whose address is https://<endpoint ID>.<any domain> "
+            "with no port, and the desktop app opens it at exactly that address. Kept so an "
+            "existing config file still loads; you can remove it.",
         ),
     )
 

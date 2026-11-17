@@ -256,17 +256,15 @@ which remote Crews your Kiro sign-in may open, and opens one through the Kiro
 relay. This is the viewer side only. A Crew you open this way still needs Kiro
 Relay turned on where it runs.
 
-It is off by default, and only the desktop app offers it. A browser tab or the
+It is on in every desktop app, with nothing to set. A browser tab or the
 installed web app shows nothing new.
 
-### Turning it on
+### What it needs
 
-Two settings, both on the gateway the desktop app runs:
-
-```bash
-kirocrew config set tunnel.relay_viewer_enabled true
-kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
-```
+Only a Kiro sign-in. The list is fetched with it, read from the gateway's own
+sign-in store. Signed out, you see no Team Crews at all, so sign in first from the **Kiro account** tab in Settings (any agent harness).
+An IAM Identity Center account that has no Kiro profile can't sign in today: the
+sign-in stops at the profile step and nothing is saved, so the list stays empty.
 
 The viewer uses the built-in Kiro control plane for your sign-in's region. Set
 `tunnel.relay_viewer_cps_url` only to use another control plane. A test setup that
@@ -276,49 +274,39 @@ uses `tunnel.relay_viewer_credential` must also set it:
 kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
 ```
 
-With `tunnel.relay_viewer_relay_domain` empty, the desktop app opens a listed
-Crew, and sends its access token, only at exactly the address the control plane
-lists for it, `https://<endpoint ID>.<domain>` with no port. With it set, only
-at exactly `https://<endpoint ID>.<relay domain>`.
+A set control plane URL must be `https://` (`http://` only for a loopback
+port-forward). A URL that breaks that rule is ignored with a warning, and the list
+then says Team Crews over the relay aren't set up.
 
-`kirocrew config set` saves through the gateway's own writer, and the gateway reads
-these settings on every request, so the change takes effect at the next request with
-no restart. The settings page can't change them: the dashboard's config route
-refuses `tunnel.relay_viewer_enabled` as not editable.
-
-A hand edit of `config.json` works differently. On a Linux host where the agent
-sandbox seals that file, the gateway keeps serving its own last-saved copy and holds
-the edit as a pending change, even across a restart, until you apply it in
-**Settings → Security**. Until then it has no effect.
-
-Reload the dashboard once the change is in effect: a tab that last saw the feature
-off stops asking until it reloads. A set control plane URL must be `https://`
-(`http://` only for a loopback port-forward). A URL that breaks that rule is
-ignored with a warning, and the list then says Team Crews over the relay aren't
-set up.
-
-The list is fetched with your Kiro sign-in, read from the gateway's own sign-in
-store. If you are signed out, it says to sign in to Kiro. An IAM Identity Center
-account that has no Kiro profile can't sign in today: the sign-in stops at the
-profile step and nothing is saved, so the list stays signed out.
+The desktop app opens a Crew, and sends its access token, only at exactly the
+address the control plane lists for it, `https://<endpoint ID>.<domain>` with no
+port. An older `tunnel.relay_viewer_relay_domain` setting is ignored, with one
+warning in the gateway log, and you can remove it. An older
+`tunnel.relay_viewer_enabled` setting is ignored too.
 
 ### The Team Crews group
 
-With the feature on, the Crew switcher in the top header gains a **Team Crews**
+In the desktop app, the Crew switcher in the top header gains a **Team Crews**
 group. It lists the Crews the control plane lists for you, each with its name,
 **Personal** or **Team**, and its status. A Crew is **online**, and choosing its
 row opens it, only while the relay reports its tunnel connected. A Crew whose host
 still renews its lease but whose tunnel is down shows **reconnecting**, any other
 shows **offline**, and either may also show when it was last seen. A row that
-isn't online is dimmed, and choosing it does nothing. If the list can't be loaded,
-the group says why, with the request ID as plain text when there is one. The list
+isn't online is dimmed, and choosing it does nothing. A refusal about a listed
+Crew, a throttle or this install's setup shows in the group, with the request ID as
+plain text when there is one. Signed out, remote access turned off, access denied
+or a failed load show nothing: the gateway log keeps the reason. A failed load
+after the list has loaded keeps the last list until the next good read. The list
 is read again each time you open the switcher (unless it was read in the last
 few seconds), every 15 seconds while a listed Crew isn't online, and about once
-a minute otherwise, and it never carries an access token. The control plane can
+a minute otherwise, and it never carries an access token. After a refusal it is
+read less often: every 15 minutes when remote access is turned off for your
+organization or access is denied or while you're signed out (it is read
+again as soon as you sign in), and never sooner than a throttle asks. The control plane can
 itself take a minute or two after a host connects to report its tunnel
 connected, so a Crew can read offline for that long whatever the dashboard
 does. The group appears once your account has at least one Team Crew, when it
-has a sign-in or load problem to show, or when the gateway names the account the
+has one of the refusals above to show, or when the gateway names the account the
 list was read for.
 
 Under its heading the group shows one muted line, **Signed in with** and the

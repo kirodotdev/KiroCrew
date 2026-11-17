@@ -938,15 +938,15 @@ On the `kas` backend, a background helper whose agent mounts no tool
 
 ### Kiro relay viewer
 
-The desktop app's list of remote Crews it can open through the Kiro relay. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). The gateway reads all four on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
+The desktop app's list of remote Crews it can open through the Kiro relay. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). The gateway reads these on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `tunnel.relay_viewer_enabled` | Lets the desktop app list the remote Crews your Kiro sign-in can reach through the relay and open them. While it is off, both relay viewer routes answer 404 and the list is hidden. Only the JSON boolean `true` turns it on | `false` |
+| `tunnel.relay_viewer_enabled` | Deprecated and ignored. The desktop app always lists the remote Crews your Kiro sign-in can reach through the relay. Kept so an existing config that sets it still loads | `false` |
 | `tunnel.relay_viewer_cps_url` | The base URL of the control plane the viewer lists Crews from and gets access tokens from. Must be `https://` (`http://` only for a loopback port-forward); any other value is ignored with a warning, and the viewer says it is not set up. Empty uses the built-in Kiro control plane for your sign-in's region. A test setup that uses `tunnel.relay_viewer_credential` must also set this | `""` |
 | `tunnel.relay_viewer_credential` | For testing only. Where the viewer reads a test credential to use instead of your Kiro sign-in, as `secret://NAME` or the absolute path of a file. Never the credential itself; a value that is not a reference is ignored with a warning that does not repeat it | `""` (your Kiro sign-in) |
 | `tunnel.relay_viewer_oidc_scope_prefix` | For testing against a non-prod control plane only, like kiro-cli's `api.oidc.scopePrefix`. Builder ID and IAM Identity Center sign-ins request their scopes under this prefix instead of the public one. Lower-case letters and underscores only; any other value is ignored with a warning. Applies to the next sign-in | `""` (public scopes) |
-| `tunnel.relay_viewer_relay_domain` | Empty (the default) lists a Crew whose address is `https://<endpoint ID>.<any domain>` with no port, and the desktop app opens it at exactly that address. Set, the address must be exactly `https://<endpoint ID>.<this domain>` with no port, so a value that isn't the relay's domain lists no Crews | `""` |
+| `tunnel.relay_viewer_relay_domain` | No longer used: a set value is ignored, with one warning in the gateway log. The viewer lists a Crew whose address is `https://<endpoint ID>.<any domain>` with no port, and the desktop app opens it at exactly that address. Kept so an existing config file still loads; you can remove it | `""` |
 
 ### Plan credit alerts
 

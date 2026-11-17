@@ -1315,10 +1315,11 @@ const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teamm
 const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
 
 /**
- * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF` while
- * `tunnel.relay_viewer_enabled` is off, which is every install by default. The desktop
- * app's relay Crew list reads it on every load and hides itself on that answer, so
- * journaling it would file one error report per load. Any other failure journals.
+ * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF`. The
+ * route is always on; only an older gateway, where `tunnel.relay_viewer_enabled`
+ * still gates it, answers that. The desktop app's relay Crew list reads it on every
+ * load and hides itself on that answer, so journaling it would file one error report
+ * per load. Any other failure journals.
  */
 const RELAY_VIEWER_OFF: BenignDenial = { status: 404, code: 'RELAY_VIEWER_OFF' }
 const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)

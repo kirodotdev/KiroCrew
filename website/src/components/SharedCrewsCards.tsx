@@ -6,8 +6,7 @@
  * The list is the one behind the Crew switcher's Team Crews group
  * (`useRelayViewerCrews`, one cached read of `GET /api/relay-viewer/crews`), so
  * the two surfaces cannot disagree. Both cards render nothing while that hook
- * is hidden: no desktop bridge, or the route 404s because
- * `tunnel.relay_viewer_enabled` is off. Rows open a Crew the same way the
+ * is hidden: no desktop bridge, or an older gateway's route 404s. Rows open a Crew the same way the
  * switcher does (`openRelayCrew`, the endpoint ID only).
  *
  * shortcut: no role chip and no member count. The crews answer carries neither
@@ -135,6 +134,7 @@ export default function SharedCrewsCards() {
       })
     })
   }, [crews, dispatch, queryClient])
+  // Hidden also covers a signed-out, access or generic load refusal (`SHOWN_LIST_REFUSALS`).
   if (hidden) return null
   return (
     <>

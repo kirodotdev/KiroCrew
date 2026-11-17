@@ -59,7 +59,7 @@ def viewer(monkeypatch, tmp_path):
     async def _bearer(ref, rejected=""):
         return "bearer", "", ""
 
-    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
+    async def _list(url, bearer, *, token_type="", profile_arn=""):
         if ctl.refuse is not None:
             raise ctl.refuse
         return tuple(ctl.crews)
@@ -123,17 +123,13 @@ async def test_first_read_with_several_crews_rings_one_summary(viewer) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_read_or_the_viewer_off_never_rings(viewer) -> None:
+async def test_a_failed_read_never_rings(viewer) -> None:
     viewer.crews = (TEAM_A,)
     viewer.refuse = cps.CpsRefused(cps.SIGNED_OUT, "signed out")
     state = _State()
     async with _client(state) as client:
         status, _ = await _read(client)
         assert status == 409
-        viewer.refuse = None
-        viewer.enabled = False
-        status, _ = await _read(client)
-        assert status == 404
     assert state.notes == []
     assert not (viewer.home / crew_notices.STATE_FILENAME).exists()
 

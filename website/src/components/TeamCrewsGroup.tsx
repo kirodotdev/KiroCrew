@@ -3,8 +3,8 @@
  * relay, as the Team Crews group at the end of the Crew switcher's menu.
  *
  * Renders nothing unless the desktop bridge exists AND the gateway's crews route
- * answers (it 404s while `tunnel.relay_viewer_enabled` is off), so the default
- * switcher is unchanged. Open hands only the endpoint ID to the desktop shell,
+ * answers (only an older gateway 404s it), so a browser tab's switcher is
+ * unchanged. Open hands only the endpoint ID to the desktop shell,
  * which opens that Crew in its own window. A Team Crew is not a destination in
  * this dashboard: its rows are plain menu items, never pinned, never in the
  * stable order and never in the unread count.
@@ -262,7 +262,8 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
 }
 
 /** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on
- *  and the group has a Crew, a notice (sign-in, setup or load failure) or the signed-in account to show. */
+ *  and the group has a Crew, a notice (a Crew's access, a throttle or setup) or the signed-in
+ *  account to show. A signed-out, access or generic load refusal leaves it hidden. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
   const { hidden, crews, account, refusal, retry, retrying, refreshOnOpen } = useRelayViewerCrews()
   const [openRefusal, dismissOpenRefusal] = useOpenFromNote(hidden || refusal !== null, crews)

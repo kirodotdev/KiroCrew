@@ -2,11 +2,11 @@
  * The desktop app's list of remote Crews reachable through the Kiro relay.
  *
  * Two gates, both needed: the desktop shell's `relayCrewAPI` preload bridge (a
- * plain browser tab and the PWA have none), and the gateway's crews route, which
- * answers 404 while `tunnel.relay_viewer_enabled` is off. Either one missing
- * hides the whole list, so the default dashboard is unchanged.
+ * plain browser tab and the PWA have none), and the gateway's crews route. The
+ * route is always on; only an older gateway answers 404. Either one missing
+ * hides the whole list, so a browser tab's dashboard is unchanged.
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../api/client'
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
@@ -79,6 +79,16 @@ const RETRYABLE = new Set(['SERVICE_ERROR', 'THROTTLED', 'UNREACHABLE', 'BAD_ANS
 export function relayRetryable(code: string | undefined): boolean {
   return RETRYABLE.has((code || '').toUpperCase())
 }
+
+/** The list refusals still shown: about a listed Crew, a throttle, or this
+ *  install's own setup. Signed out, remote access off, access denied and every
+ *  load failure with generic text hide the list instead, so a person with no
+ *  relay access sees no Team Crews and no notice. The gateway log keeps the code
+ *  (`relay viewer: crews -> CODE`), and the list is read again after a sign-in
+ *  or on its back-off poll. */
+const SHOWN_LIST_REFUSALS = new Set(['CREW_ACCESS_NOT_GRANTED', 'CREW_OFFLINE', 'THROTTLED', 'NOT_SET_UP'])
+/** The quiet refusals that hide even a list already loaded; any other one keeps it. */
+const HIDING_REFUSALS = new Set(['SIGNED_OUT', 'REMOTE_ACCESS_DISABLED', 'ACCESS_DENIED'])
 
 /** A list read the gateway refused. `requestId` is CPS's request ID (not a secret),
  *  present only when CPS sent a usable one. `retryAt` is when Try again may send
@@ -163,10 +173,34 @@ export async function clearRelayCrewsUnseen(queryClient: QueryClient, endpointId
 
 const isOffError = (err: unknown) => err instanceof ApiError && err.status === 404
 
+/** The typed code of a refused list read, upper-cased; '' for no error or no code. */
+const refusalCode = (err: unknown) =>
+  (err instanceof ApiError ? parseErrorCode(err.body) || '' : '').toUpperCase()
+
 /** How often the list is re-read: sooner while a listed Crew is not online, so a host
  *  that just connected reads as online without a reload, and once a minute otherwise. */
 export const RELAY_CREWS_POLL_OFFLINE_MS = 15_000
 export const RELAY_CREWS_POLL_MS = 60_000
+/** After a refusal about access (the org has remote access off, or access is denied),
+ *  which the next minute will not change, the list is re-read this rarely. */
+export const RELAY_CREWS_POLL_REFUSED_MS = 15 * 60_000
+const SLOW_REFUSALS = new Set(['REMOTE_ACCESS_DISABLED', 'ACCESS_DENIED'])
+/** The app's Kiro sign-in status (`KasLoginGate`, `KiroSignInNotice`). Observed only:
+ *  after SIGNED_OUT the list slows to the 15-minute read, and a sign-in landing here
+ *  reads it again at once. */
+const SIGN_IN_STATUS_KEY = ['kas-login'] as const
+
+/** When to read the list again after a refusal: 15 minutes after SIGNED_OUT (a
+ *  sign-in in this app reads it at once; one made elsewhere, such as the terminal,
+ *  is picked up by this slow read) or an access refusal, else a minute; and never
+ *  sooner than the refusal's Retry-After. */
+function refusedPollMs(err: unknown): number | false {
+  const code = refusalCode(err)
+  if (code === 'SIGNED_OUT') return RELAY_CREWS_POLL_REFUSED_MS
+  const base = SLOW_REFUSALS.has(code) ? RELAY_CREWS_POLL_REFUSED_MS : RELAY_CREWS_POLL_MS
+  const wait = retryAfterSeconds(err instanceof ApiError ? err.body : undefined)
+  return wait === null ? base : Math.max(base, wait * 1000)
+}
 /** Opening the switcher re-reads the list unless a successful read is this recent. */
 const OPEN_FRESH_MS = 5_000
 
@@ -194,9 +228,27 @@ export function useRelayViewerCrews(): {
     // Presence changes on the host's side, so re-read; stop once the route says the feature is off.
     refetchInterval: query => {
       if (isOffError(query.state.error)) return false
+      if (query.state.error) return refusedPollMs(query.state.error)
       return query.state.data?.crews.some(c => !isRelayCrewOnline(c)) ? RELAY_CREWS_POLL_OFFLINE_MS : RELAY_CREWS_POLL_MS
     },
   })
+  // Stopped on SIGNED_OUT: read again once the sign-in status turns signed in. Only a
+  // real transition counts (a status answer that was not signed in, then one that is,
+  // newer than the refusal): a sign-in whose refresh was refused still reads
+  // `authenticated: true`, and each unchanged poll of it must not re-read the list.
+  const signIn = useQuery({ queryKey: SIGN_IN_STATUS_KEY, queryFn: api.kasLoginStatus, enabled: false })
+  const signedOutAt = hasBridge && refusalCode(q.error) === 'SIGNED_OUT' ? q.errorUpdatedAt : 0
+  const hasStatus = signIn.data !== undefined
+  const authed = signIn.data?.authenticated === true
+  const statusAt = signIn.dataUpdatedAt
+  const lastAuthed = useRef<boolean | null>(null)
+  const refetchList = q.refetch
+  useEffect(() => {
+    if (!hasStatus) return
+    const was = lastAuthed.current
+    lastAuthed.current = authed
+    if (signedOutAt && authed && was === false && statusAt > signedOutAt) void refetchList()
+  }, [signedOutAt, hasStatus, authed, statusAt, refetchList])
   // Stable, so the menu can call it once when it opens. Only a loaded list is read
   // again: with none, a refetch puts a refusal back to pending, which is Try again's job.
   const refreshOnOpen = useCallback(() => {
@@ -231,7 +283,13 @@ export function useRelayViewerCrews(): {
     // Try again is reading: keep its refusal up, with Try again off, until the answer.
     return { hidden: false, crews: [], account: null, refusal: held.refusal, retry, retrying: true, refreshOnOpen }
   }
-  if (!hasBridge || off || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
+  const code = (refusal?.code || '').toUpperCase()
+  const quiet = refusal !== null && !SHOWN_LIST_REFUSALS.has(code)
+  if (quiet && !off && q.data && !HIDING_REFUSALS.has(code)) {
+    // A load blip after a good read keeps the last good list until the next one.
+    return { hidden: false, crews: q.data.crews, account: q.data.account ?? null, refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
+  }
+  if (!hasBridge || off || quiet || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
   if (refusal) return { hidden: false, crews: [], account: null, refusal, retry, retrying: q.isFetching, refreshOnOpen }
   return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
 }
