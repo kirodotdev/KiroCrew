@@ -125,6 +125,8 @@ const SYSTEM_NOTE_TITLE_KEY = {
   mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_title',
   moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_title',
   moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_title',
+  relay_crew_added: 'components.notifications.systemNote.relay_crew_added_title',
+  relay_crews_available: 'components.notifications.systemNote.relay_crews_available_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
@@ -145,6 +147,8 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_body',
   moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_startup_body',
   moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_idle_body',
+  relay_crew_added: 'components.notifications.systemNote.relay_crew_added_body',
+  relay_crews_available: 'components.notifications.systemNote.relay_crews_available_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway
@@ -171,6 +175,17 @@ export function noteLinkLabel(n: Notification): string {
   const id = n.i18n?.id
   const key = typeof id === 'string' && Object.hasOwn(SYSTEM_NOTE_LINK_KEY, id) ? SYSTEM_NOTE_LINK_KEY[id as SystemNoteId] : undefined
   return i18nT(key ?? 'components.notifications.notificationDetailPanel.open')
+}
+
+/** An action button's label: a gateway note's `open` action reads "Open" in the
+ *  dashboard's language, like `noteLinkLabel`; every other action keeps the label
+ *  its producer sent. */
+export function noteActionLabel(n: Notification, a: { id: string; label: string }): string {
+  const id = n.i18n?.id
+  if (a.id === 'open' && typeof id === 'string' && Object.hasOwn(SYSTEM_NOTE_TITLE_KEY, id)) {
+    return i18nT('components.notifications.notificationDetailPanel.open')
+  }
+  return a.label
 }
 
 /** RFC Phase 4 security: deep-links must be dashboard-internal routes only.

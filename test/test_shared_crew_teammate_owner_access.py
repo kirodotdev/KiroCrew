@@ -561,3 +561,175 @@ async def test_an_ssm_guest_gets_the_app_list(state, monkeypatch) -> None:
         resp = await client.get("/api/apps")
     assert resp.status == 200
     assert walked == [True]
+
+
+# -- the machine owner's own Team Crew notes ----------------------------------------
+#
+# A ``system.relay`` note names the Team Crews the machine owner's own sign-in can
+# open, so it stays the machine owner's on every transport even though a teammate
+# otherwise acts as the owner (``ws_event_scope.OWNER_ONLY_CHANNELS``).
+
+_RELAY_NOTE = {
+    "ts": "2",
+    "source": "system",
+    "channel": "system.relay",
+    "title": "You've been added to Build box",
+    "acked": False,
+}
+_AGENT_NOTE = {
+    "ts": "1",
+    "source": "system",
+    "channel": "system.agent",
+    "body": "done",
+    "acked": False,
+}
+
+
+@pytest.fixture
+def owner_only_withheld(monkeypatch) -> list[str]:
+    """The event types withheld as owner-only, as their SEL rows record them."""
+    from kiro_crew.dashboard import ws_event_scope
+
+    rows: list[str] = []
+
+    def record(app: str, event_type: str, reason: str) -> None:
+        if reason == ws_event_scope.OWNER_ONLY_NOTE:
+            rows.append(event_type)
+
+    monkeypatch.setattr(ws_event_scope, "_audit_deny", record)
+    return rows
+
+
+def _notes_app(state, who: str) -> web.Application:
+    from kiro_crew.dashboard.handlers import messaging as msg
+    from kiro_crew.dashboard.handlers import updates
+
+    @web.middleware
+    async def middleware(request: web.Request, handler):
+        _publish(request, who)
+        return await handler(request)
+
+    app = web.Application(middlewares=[middleware])
+    app["state"] = state
+    app.router.add_get("/api/notifications", msg.api_notifications)
+    app.router.add_post("/api/notifications/ack", msg.api_notification_ack)
+    app.router.add_delete("/api/notifications", msg.api_notification_delete)
+    app.router.add_get("/api/stream", updates.api_stream)
+    return app
+
+
+class _OwnerSocket:
+    """An owner socket; a teammate's carries ``TEAMMATE_WS_FLAG`` (``ws.py`` sets it)."""
+
+    def __init__(self, teammate: bool) -> None:
+        from kiro_crew.shared_crew.teammate_access import TEAMMATE_WS_FLAG
+
+        self.closed = False
+        self._flags = {"_is_dashboard_user": True, TEAMMATE_WS_FLAG: teammate}
+
+    def get(self, key, default=None):
+        return self._flags.get(key, default)
+
+
+def test_a_team_crew_note_reaches_only_the_machine_owners_socket(
+    state, monkeypatch, owner_only_withheld
+) -> None:
+    machine_owner, teammate = _OwnerSocket(teammate=False), _OwnerSocket(teammate=True)
+    state.register_ws(machine_owner, owner=True)
+    state.register_ws(teammate, owner=True)
+    sent: list = []
+    monkeypatch.setattr(state, "_spawn_ws_send", lambda ws, _payload: sent.append(ws))
+    state._send_ws_all("notification", dict(_RELAY_NOTE), "{}")
+    assert machine_owner in sent
+    assert teammate not in sent
+    assert owner_only_withheld == ["notification"]
+    # The Crew's own notes still reach the teammate as the owner.
+    sent.clear()
+    state._send_ws_all("notification", dict(_AGENT_NOTE), "{}")
+    assert machine_owner in sent and teammate in sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", (*TEAMMATES, "owner"))
+async def test_the_sse_stream_keeps_team_crew_notes_for_the_machine_owner_alone(
+    state, monkeypatch, owner_only_withheld, who: str
+) -> None:
+    from kiro_crew.dashboard.handlers import updates
+    from kiro_crew.testing.wait import finished
+
+    stopped = asyncio.Event()
+    monkeypatch.setattr(updates, "shutdown_event", stopped)
+    monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
+    try:
+        async with TestClient(TestServer(_notes_app(state, who))) as client:
+            resp = await client.get("/api/stream")
+            assert resp.status == 200
+            first = await finished(resp.content.readuntil(b"\n\n"), "the first SSE frame")
+            assert first.startswith(b"event: dashboard")
+            state._broadcast(dict(_RELAY_NOTE))
+            state._broadcast({"source": "system", "body": "fence"})
+            blocks: list[bytes] = []
+            while b"fence" not in (blocks[-1] if blocks else b""):
+                blocks.append(await finished(resp.content.readuntil(b"\n\n"), "an SSE frame"))
+            resp.close()
+    finally:
+        stopped.set()
+    got = [block for block in blocks if b"Build box" in block]
+    if who == "owner":
+        assert got and owner_only_withheld == []
+    else:
+        assert not got
+        assert owner_only_withheld == ["notification"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", (*TEAMMATES, "owner"))
+async def test_the_notification_list_keeps_team_crew_notes_for_the_machine_owner_alone(
+    state, owner_only_withheld, who: str
+) -> None:
+    state._notification_log = [dict(_AGENT_NOTE), dict(_RELAY_NOTE)]
+    async with TestClient(TestServer(_notes_app(state, who))) as client:
+        resp = await client.get("/api/notifications")
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    channels = [note["channel"] for note in body["notifications"]]
+    if who == "owner":
+        assert channels == ["system.agent", "system.relay"]
+        assert body["unread"] == 2
+    else:
+        assert channels == ["system.agent"]
+        assert body["unread"] == 1
+        assert owner_only_withheld == ["notification"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", TEAMMATES)
+@pytest.mark.parametrize(("method", "operation"), [("POST", "ack"), ("DELETE", "delete")])
+async def test_a_teammate_is_refused_a_team_crew_note_by_its_timestamp(
+    state, owner_only_withheld, who: str, method: str, operation: str
+) -> None:
+    state._notification_log = [dict(_AGENT_NOTE), dict(_RELAY_NOTE)]
+    path = "/api/notifications/ack" if operation == "ack" else "/api/notifications"
+    async with TestClient(TestServer(_notes_app(state, who))) as client:
+        resp = await client.request(method, path, json={"ts": "2"})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "owner_only"
+        # The Crew's own note is still theirs to change.
+        ok = await client.request(method, path, json={"ts": "1"})
+        assert ok.status == 200, await ok.text()
+    relay = [note for note in state._notification_log if note["ts"] == "2"]
+    assert relay and relay[0]["acked"] is False
+    assert owner_only_withheld == [f"notifications.{operation}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("method", "operation"), [("POST", "ack"), ("DELETE", "delete")])
+async def test_the_machine_owner_changes_a_team_crew_note(
+    state, monkeypatch, method: str, operation: str
+) -> None:
+    state._notification_log = [dict(_AGENT_NOTE), dict(_RELAY_NOTE)]
+    path = "/api/notifications/ack" if operation == "ack" else "/api/notifications"
+    async with TestClient(TestServer(_notes_app(state, "owner"))) as client:
+        resp = await client.request(method, path, json={"ts": "2"})
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["ok"] is True

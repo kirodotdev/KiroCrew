@@ -191,6 +191,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.status_counts import cached_status_snapshot  # noqa: F401
     from kiro_crew.dashboard.urls import is_loopback  # noqa: F401
     from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE  # noqa: F401
+    from kiro_crew.dashboard.ws_event_scope import audit_owner_only_withheld  # noqa: F401
+    from kiro_crew.dashboard.ws_event_scope import owner_only_note  # noqa: F401
     from kiro_crew.gateway_restart import resolve_restart_launcher  # noqa: F401
     from kiro_crew.git_divergence import DivergenceUnreadable  # noqa: F401
     from kiro_crew.git_divergence import count_divergence  # noqa: F401

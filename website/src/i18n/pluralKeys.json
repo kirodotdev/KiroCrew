@@ -567,5 +567,6 @@
   "components.notifications.systemNote.moved_to_history_startup_body",
   "components.notifications.systemNote.moved_to_history_idle_body",
   "pages.overview.usageTab.period_messages",
-  "pages.overview.usageTab.period_tool_calls"
+  "pages.overview.usageTab.period_tool_calls",
+  "components.notifications.systemNote.relay_crews_available_title"
 ]

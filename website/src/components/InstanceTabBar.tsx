@@ -661,6 +661,7 @@ function SwitcherMenu({
   onToggleStableOrder,
   showStableOrderToggle,
   extraGroups,
+  extraNew = false,
   open,
   onOpenChange,
   onInteractOutside,
@@ -676,6 +677,8 @@ function SwitcherMenu({
   onToggleStableOrder: () => void
   showStableOrderToggle: boolean
   extraGroups?: SwitcherExtraGroups
+  /** An extra group holds something new (a Team Crew not seen yet): a dot on the caret. */
+  extraNew?: boolean
   /** Owned by `Switcher`, so the leading active chip opens this same menu. */
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -693,7 +696,9 @@ function SwitcherMenu({
   const label =
     elsewhere > 0
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
-      : i18nT('components.instanceTabBar.switch_crew')
+      : extraNew
+        ? i18nT('components.instanceTabBar.switch_crew_new_team_crew')
+        : i18nT('components.instanceTabBar.switch_crew')
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
@@ -714,6 +719,13 @@ function SwitcherMenu({
             >
               {badgeText(elsewhere)}
             </span>
+          ) : extraNew ? (
+            // The unread badge, when up, already draws the eye to this menu.
+            <span
+              aria-hidden
+              data-testid="crew-switcher-new-dot"
+              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent pointer-events-none"
+            />
           ) : null}
         </button>
       </DropdownMenuTrigger>
@@ -1107,12 +1119,15 @@ function Switcher({
   onToggleStableOrder: onToggleStableOrderProp,
   embedded = false,
   extraGroups,
+  extraNew = false,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
   /** Top-level bar only: an embedded pane never gets one (no Team Crew list leaves this computer). */
   extraGroups?: SwitcherExtraGroups
+  /** Top-level bar only: an extra group holds something not seen yet. */
+  extraNew?: boolean
   /** When provided (embedded pane), the pin set is driven by the parent's relayed
    *  model instead of this realm's localStorage — a remote pane lives in a
    *  separate cross-origin iframe whose store the parent cannot reach, so without
@@ -1218,6 +1233,7 @@ function Switcher({
         onToggleStableOrder={toggleStableOrder}
         showStableOrderToggle={!relayUnsupported}
         extraGroups={extraGroups}
+        extraNew={extraNew}
         open={menuOpen}
         onOpenChange={setMenuOpen}
         onInteractOutside={e => {
@@ -1331,11 +1347,18 @@ export default function InstanceTabBar({
   variant = 'strip',
   style,
   extraGroups,
+  extraNew = false,
+  extraNotice,
 }: {
   variant?: 'strip' | 'inline'
   style?: CSSProperties
   /** Set only while those groups have something to show, which also keeps the bar up. */
   extraGroups?: SwitcherExtraGroups
+  /** Those groups hold something the person has not seen yet: the caret shows a dot. */
+  extraNew?: boolean
+  /** A notice about those groups, shown where the bar shows its own list failure,
+   *  so the top bar sizes it the same way. */
+  extraNotice?: ReactNode
 } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
@@ -1433,7 +1456,7 @@ export default function InstanceTabBar({
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.
-  if (!extraGroups && (disabled || (tabInstances.length === 0 && !listFailure))) return null
+  if (!extraGroups && !extraNotice && (disabled || (tabInstances.length === 0 && !listFailure))) return null
 
   // Right-aligned tunnel-status cluster: the ACTIVE remote pane's connection
   // state + countdown to the next token auto-refresh. On the Local tab there is
@@ -1480,7 +1503,7 @@ export default function InstanceTabBar({
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
       <div className={`tb-crew-grow flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} extraGroups={extraGroups} />
+        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} extraGroups={extraGroups} extraNew={extraNew} />
         {/* Only a 403 (feature gated) used to be interpreted; every other
             listInstances failure was dropped and the bar simply showed no
             crews. askAgent on: the bar holds no draft. */}
@@ -1503,6 +1526,7 @@ export default function InstanceTabBar({
             testId="instance-tab-bar-list-error"
           />
         )}
+        {extraNotice}
       </div>
       {variant === 'strip' && activeInst && (
         <div className="flex items-center gap-1.5 shrink-0 pl-2 pr-1 min-w-0" title={tunnelTitle}>

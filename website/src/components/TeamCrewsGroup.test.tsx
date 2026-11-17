@@ -6,8 +6,12 @@
  * and Open handing the shell the endpoint ID only.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { act, screen, waitFor, cleanup, within } from '@testing-library/react'
+import { act, render, screen, waitFor, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { Router, UNSAFE_createMemoryHistory as createMemoryHistory } from 'react-router-dom'
+import { ThemeProvider } from '../hooks/useTheme'
 import { api, ApiError, type InstanceView, type RelayCrewEntry, type SsoStatus } from '../api/client'
 import TeamCrewsSwitcher from './TeamCrewsGroup'
 import { setCrewPins, setStableOrder } from './InstanceTabBar'
@@ -520,5 +524,187 @@ describe('TeamCrewsGroup', () => {
     expect(relayRefusalText('something_new')).toBe("Couldn't open this Crew.")
     expect(relayRefusalText(undefined)).toBe("Couldn't open this Crew.")
     expect(relayRefusalText('crew_offline')).toBe('This Crew is offline.')
+  })
+})
+
+describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
+  const NEW_ID = 'n'.repeat(24)
+  const fresh = () => crew({ endpointId: NEW_ID, name: 'Docs box', crewType: 'TEAM', unseen: true })
+
+  function mountAt(route: string) {
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    return renderWithProviders(<TeamCrewsSwitcher variant="inline" />, { store, route })
+  }
+
+  it('dots the caret and the row, tells the gateway once the menu shows it, and drops the dot on close', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    mountAt('/')
+    const caret = await screen.findByRole('button', { name: 'Switch crew, new Team Crew' })
+    expect(screen.getByTestId('crew-switcher-new-dot')).toBeTruthy()
+    const u = userEvent.setup()
+    await u.click(caret)
+    const group = await screen.findByTestId('team-crews-group')
+    expect(within(group).getByTestId('relay-crew-new').textContent).toBe('New')
+    await waitFor(() => expect(seen).toHaveBeenCalledWith([NEW_ID]))
+    await u.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull())
+    expect(seen).toHaveBeenCalledTimes(1)
+  })
+
+  it("opens the Crew a note's Open action names, then clears its dot", async () => {
+    const open = withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    mountAt(`/chat?relay_crew=${NEW_ID}`)
+    await waitFor(() => expect(open).toHaveBeenCalledWith(NEW_ID))
+    expect(open).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(seen).toHaveBeenCalledWith([NEW_ID]))
+    await waitFor(() => expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull())
+  })
+
+  it('keeps the Open through a failed list read and opens the Crew once a read succeeds', async () => {
+    const open = withBridge()
+    const read = vi.spyOn(api, 'relayViewerCrews')
+      .mockRejectedValueOnce(new ApiError(502, 'down', JSON.stringify({ error: 'down', code: 'UNREACHABLE' })))
+      .mockResolvedValue({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { queryClient } = mountAt(`/chat?relay_crew=${NEW_ID}`)
+    await waitFor(() => expect(queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
+    expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
+    expect(open).not.toHaveBeenCalled()
+    await act(async () => { await queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    await waitFor(() => expect(open).toHaveBeenCalledWith(NEW_ID))
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
+  })
+
+  it("opens a note's Crew through the bridge even when the cached list doesn't have it", async () => {
+    const open = withBridge()
+    const read = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    mountAt(`/chat?relay_crew=${NEW_ID}`)
+    await waitFor(() => expect(open).toHaveBeenCalledWith(NEW_ID))
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
+  })
+
+  it("ignores a note's pending Open when the list read lands after history moved on", async () => {
+    const open = withBridge()
+    let answer!: (v: { crews: RelayCrewEntry[] }) => void
+    vi.spyOn(api, 'relayViewerCrews').mockReturnValueOnce(new Promise(r => { answer = r }))
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const history = createMemoryHistory({ initialEntries: [`/chat?relay_crew=${NEW_ID}`] })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    // The router keeps rendering the note's location, as BrowserRouter does while
+    // a click's navigation is still in its transition.
+    const at = history.location
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <Router location={at} navigator={history}><TeamCrewsSwitcher variant="inline" /></Router>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    act(() => { history.push('/settings?tab=general') })
+    await act(async () => { answer({ crews: [fresh()] }) })
+    // The list has rendered (its new Crew dots the caret), so the effect has had its run.
+    await screen.findByTestId('crew-switcher-new-dot')
+    expect(history.location.pathname + history.location.search).toBe('/settings?tab=general')
+    expect(history.index).toBe(1)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('does not let a list read that started before a seen save bring the dot back', async () => {
+    withBridge()
+    let release: (v: { crews: RelayCrewEntry[] }) => void = () => {}
+    const read = vi.spyOn(api, 'relayViewerCrews').mockResolvedValueOnce({ crews: [fresh()] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { queryClient } = mountAt('/')
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await screen.findByTestId('team-crews-group')
+    // A poll goes out while the menu is open, answering with the pre-save list.
+    read.mockReturnValueOnce(new Promise(r => { release = r }))
+    void queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+    await u.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull())
+    await act(async () => { release({ crews: [fresh()] }) })
+    // The late answer has been taken in or dropped once the read is no longer running.
+    await waitFor(() => expect(queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)?.fetchStatus).toBe('idle'))
+    expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull()
+  })
+
+  it("says the gateway's refusal when a note's Crew isn't granted any more", async () => {
+    const open = withBridge(vi.fn(async () => ({ ok: false, error: 'CREW_ACCESS_NOT_GRANTED' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    mountAt(`/chat?relay_crew=${'z'.repeat(24)}`)
+    expect((await screen.findByTestId('relay-crew-open-refusal')).textContent)
+      .toContain('You no longer have access to this Crew.')
+    expect(open).toHaveBeenCalledWith('z'.repeat(24))
+  })
+
+  it('keeps the dot when the gateway could not save that the Crew was seen', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockRejectedValue(new ApiError(503, 'not saved', '{}'))
+    mountAt('/')
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await screen.findByTestId('team-crews-group')
+    await waitFor(() => expect(seen).toHaveBeenCalled())
+    expect((await screen.findByTestId('relay-crews-seen-failed')).textContent)
+      .toContain("Couldn't save that you've seen this.")
+    await u.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
+    expect(screen.getByTestId('crew-switcher-new-dot')).toBeTruthy()
+  })
+
+  it('clears the dot when the seen reply lands after the menu closed', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    let reply: (v: { ok: boolean }) => void = () => {}
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockReturnValue(new Promise(r => { reply = r }))
+    mountAt('/')
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await screen.findByTestId('team-crews-group')
+    await u.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
+    expect(screen.getByTestId('crew-switcher-new-dot')).toBeTruthy()
+    await act(async () => { reply({ ok: true }) })
+    await waitFor(() => expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull())
+  })
+
+  it('sends a long unseen list in batches the route accepts', async () => {
+    withBridge()
+    const many = Array.from({ length: 450 }, (_, i) =>
+      crew({ endpointId: `m${String(i).padStart(23, '0')}`, name: `Crew ${i}`, crewType: 'TEAM', unseen: true }))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: many })
+    const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    mountAt('/')
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await screen.findByTestId('team-crews-group')
+    await waitFor(() => expect(seen).toHaveBeenCalledTimes(3))
+    expect(seen.mock.calls.map(c => c[0].length)).toEqual([200, 200, 50])
+  })
+
+  it('says why beside the switcher when that open fails, and keeps the dot', async () => {
+    withBridge(vi.fn(async () => ({ ok: false, error: 'CREW_OFFLINE' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
+    const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    mountAt(`/chat?relay_crew=${NEW_ID}`)
+    expect((await screen.findByTestId('relay-crew-open-refusal')).textContent).toContain("Couldn't open Docs box. This Crew is offline.")
+    expect(screen.getByTestId('crew-switcher-new-dot')).toBeTruthy()
+    expect(seen).not.toHaveBeenCalled()
   })
 })

@@ -42,7 +42,7 @@ const API_KEY_ORDER = [
   'redactionRevokeHost', 'listTrustedApps', 'trustApp', 'untrustApp',
   'setTrustAllApps', 'listTrustedRegistries', 'grantTrustedRegistry', 'revokeTrustedRegistry',
   'governancePolicy', 'suggestions', 'branding',
-  'listInstances', 'relayViewerCrews', 'addInstance', 'updateInstance', 'removeInstance',
+  'listInstances', 'relayViewerCrews', 'relayViewerCrewsSeen', 'addInstance', 'updateInstance', 'removeInstance',
   'instanceStatus', 'connectInstance', 'refreshInstanceToken', 'embedInstanceToken', 'disconnectInstance',
   'restartInstance', 'updateRemoteInstance', 'remoteUpdateStatus', 'exportSession', 'importSessionFromFile', 'sendSessionToInstance',
   'cloudPreflight', 'cloudIamPolicy', 'cloudProvisioners', 'cloudLaunches',

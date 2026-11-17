@@ -220,6 +220,9 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   // The bare id is "memory", which reads as memory in general; this channel
   // carries only the opt-in weekly note that tool failures keep coming back.
   'system.memory': () => i18nT('pages.settings.notificationsPanel.channel_memory'),
+  // The bare id is "relay", which names the transport; this channel carries only
+  // the note that a team Crew can now be opened, so it is named for that list.
+  'system.relay': () => i18nT('components.relayCrews.group_team_crews'),
 }
 
 /** Catalog KEY for each system channel's "when does this fire?" tip, one entry
@@ -245,6 +248,7 @@ const CHANNEL_TIP_KEY: Record<string, string> = {
   'system.apps': 'pages.settings.notificationsPanel.channel_tip_apps',
   'system.turn': 'pages.settings.notificationsPanel.channel_tip_turn',
   'system.memory': 'pages.settings.notificationsPanel.channel_tip_memory',
+  'system.relay': 'pages.settings.notificationsPanel.channel_tip_relay',
 }
 
 /** Human label for a channel within its group (drop the source prefix apps

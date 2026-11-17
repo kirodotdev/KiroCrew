@@ -15,7 +15,7 @@ import StatusNotice from '../StatusNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, noteLinkLabel, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, noteActionLabel, noteLinkLabel, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
@@ -385,7 +385,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           return urlActions.length > 0 && (
             <div className="flex gap-3 mt-4 flex-wrap">
               {urlActions.map(a => (
-                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => leave(() => { navigate(safeInternalUrl(a.url)!); onClose() }, safeInternalUrl(a.url)!)}>{a.label}</button>
+                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => leave(() => { navigate(safeInternalUrl(a.url)!); onClose() }, safeInternalUrl(a.url)!)}>{noteActionLabel(n, a)}</button>
               ))}
             </div>
           )

@@ -350,6 +350,12 @@ class NotificationCoordinator:
             return
         if note.get("silenced") or note.get("priority") == "passive" or note.get("quiet"):
             return
+        from kiro_crew.dashboard.ws_event_scope import owner_only_note
+
+        if owner_only_note(note):
+            # A push subscription records no reader, and a Shared Crew teammate may
+            # subscribe, so a note only the machine owner may read stays in the bell.
+            return
         try:
             self._web_push_fanout(dict(note))
         except Exception:
@@ -464,6 +470,81 @@ class NotificationCoordinator:
                         self._keyed_write_in_flight = False
 
         operation = asyncio.create_task(_dismiss_once_written())
+        state._background_tasks.add(operation)
+        operation.add_done_callback(state._background_tasks.discard)
+        return await asyncio.shield(operation)
+
+    async def clear_visible(
+        self, state: Any, hidden: Callable[[dict[str, Any]], bool]
+    ) -> tuple[bool, list[Any]]:
+        """Persist, then clear every note *hidden* does not withhold from this caller.
+
+        Returns ``(persisted, cleared timestamps)``. As :meth:`dismiss`: the rows are
+        written first and only the notes captured are removed from memory once that
+        lands, so a failed write changes nothing and a note delivered meanwhile stays.
+        """
+
+        async def _clear_once_written() -> tuple[bool, list[Any]]:
+            async with self._rewrite_lock():
+                cleared = [note for note in state._notification_log if not hidden(note)]
+                self._keyed_write_in_flight = True
+                try:
+                    rows = [dict(note) for note in state._notification_log if hidden(note)]
+                    if not await asyncio.get_running_loop().run_in_executor(
+                        self._executor_provider(), self._rewrite_all, rows
+                    ):
+                        return False, []
+                    gone = {id(note) for note in cleared}
+                    state._notification_log = [
+                        note for note in state._notification_log if id(note) not in gone
+                    ]
+                    timestamps = [note.get("ts") for note in cleared]
+                    for timestamp in timestamps:
+                        state.broadcast_ws("notification_dismiss", {"ts": timestamp})
+                    return True, timestamps
+                finally:
+                    try:
+                        self._trim_held_notes(state)
+                    finally:
+                        self._keyed_write_in_flight = False
+
+        operation = asyncio.create_task(_clear_once_written())
+        state._background_tasks.add(operation)
+        operation.add_done_callback(state._background_tasks.discard)
+        return await asyncio.shield(operation)
+
+    async def acknowledge_visible(
+        self, state: Any, hidden: Callable[[dict[str, Any]], bool]
+    ) -> bool:
+        """Persist, then mark read every unread note *hidden* does not withhold.
+
+        Returns whether it was written. The acknowledged rows are written first and
+        memory changes only once that lands, so a failed write leaves every note as it
+        was, a single acknowledgment made meanwhile included.
+        """
+
+        async def _ack_once_written() -> bool:
+            async with self._rewrite_lock():
+                targets = [
+                    note
+                    for note in state._notification_log
+                    if not note.get("acked") and not hidden(note)
+                ]
+                chosen = {id(note) for note in targets}
+                rows = [
+                    {**note, "acked": True} if id(note) in chosen else dict(note)
+                    for note in state._notification_log
+                ]
+                if not await asyncio.get_running_loop().run_in_executor(
+                    self._executor_provider(), self._rewrite_all, rows
+                ):
+                    return False
+                for note in targets:
+                    note["acked"] = True
+                    state.broadcast_ws("notification_ack", {"ts": note.get("ts")})
+                return True
+
+        operation = asyncio.create_task(_ack_once_written())
         state._background_tasks.add(operation)
         operation.add_done_callback(state._background_tasks.discard)
         return await asyncio.shield(operation)
