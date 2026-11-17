@@ -116,6 +116,7 @@ async def _row(mgr: Any, row: Any, bound: dict[str, int]) -> dict[str, Any]:
 async def _placement_probe(mgr: Any, instance_id: str, out: dict[str, Any]) -> None:
     """Placement's own probe (version gate, then headroom), under its own bound."""
     from kiro_crew.dashboard.handlers.remote_placement import PROBE_TIMEOUT_S
+    from kiro_crew.dashboard.remote_dispatch_headroom import NO_LOGINS_QUERY
 
     async def _probe() -> None:
         try:
@@ -126,7 +127,9 @@ async def _placement_probe(mgr: Any, instance_id: str, out: dict[str, Any]) -> N
                 return
             raise
         out["version_match"] = True
-        status, payload = await routes.peer_call(mgr, instance_id, "GET", "api/chat/headroom")
+        status, payload = await routes.peer_call(
+            mgr, instance_id, "GET", "api/chat/headroom", params=dict(NO_LOGINS_QUERY)
+        )
         if 200 <= status < 300:
             out["headroom"] = _headroom(payload)
             out["open_workers"] = _open_workers(payload)

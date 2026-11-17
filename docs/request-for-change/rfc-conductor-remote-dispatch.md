@@ -340,7 +340,7 @@ peer's current snapshot:
 | `disk_free_gb` | free space under `scratch_root()` |
 | `open_workers` | peer slots bound to a `hub:` mailbox item and not closed |
 | `tags` | `work_ledger.remote_dispatch_tags`: the operator's own words, each 1-32 of `a-z0-9_-` with a letter, so no path, dotted host or bare account number fits |
-| `logins` | §4: `{"gh": "valid"}` and the like, for `gh`, `glab` and `az`; `unknown` while a first check runs; a tool whose check cannot tell is absent. On `GET api/chat/headroom` only, so no create waits on a login check |
+| `logins` | §4: `{"gh": "valid"}` and the like, for `gh`, `glab` and `az`; `unknown` while a first check runs; a tool whose check cannot tell is absent. On `GET api/chat/headroom` only, and left out when the read carries `logins=0`, which the hub sends unless the item's `requires.logins` is set, so no create and no other placement waits on a login check |
 | `measured_at` | the peer's clock |
 
 **Read before the first create.** A new read-only route

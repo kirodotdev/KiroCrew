@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from kiro_crew.dashboard.remote_dispatch_headroom import (
     CPU_LOAD_THRESHOLD,
+    NO_LOGINS_QUERY,
+    WITH_LOGINS_QUERY,
     remote_dispatch_settings,
 )
 from kiro_crew.remote_dispatch import LOGIN_EXPIRED, LOGIN_UNKNOWN, LOGIN_VALID
@@ -201,6 +203,12 @@ def _connected(mgr: Any, instance_id: str) -> bool:
     return getattr(getattr(status, "state", None), "value", None) == _CONNECTED
 
 
+def _headroom_params(requires: Requires) -> dict[str, str]:
+    """The headroom read's query: ask for logins only when *requires* names one,
+    so an item that needs no login never waits on the peer's login checks."""
+    return dict(WITH_LOGINS_QUERY if requires.logins else NO_LOGINS_QUERY)
+
+
 async def _candidate(
     state: "DashboardState",
     mgr: Any,
@@ -220,7 +228,9 @@ async def _candidate(
 
     async def _probe() -> tuple[int, Any]:
         await routes.check_version(mgr, instance_id)
-        return await routes.peer_call(mgr, instance_id, "GET", "api/chat/headroom")
+        return await routes.peer_call(
+            mgr, instance_id, "GET", "api/chat/headroom", params=_headroom_params(requires)
+        )
 
     try:
         status, payload = await asyncio.wait_for(_probe(), PROBE_TIMEOUT_S)
@@ -266,7 +276,10 @@ async def check_crew_requires(mgr: Any, instance_id: str, name: str, raw: object
         return
     try:
         status, payload = await asyncio.wait_for(
-            routes.peer_call(mgr, instance_id, "GET", "api/chat/headroom"), PROBE_TIMEOUT_S
+            routes.peer_call(
+                mgr, instance_id, "GET", "api/chat/headroom", params=_headroom_params(requires)
+            ),
+            PROBE_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
         status, payload = 0, None
