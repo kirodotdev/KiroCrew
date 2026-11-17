@@ -111,6 +111,8 @@ PUT /api/members/{slug}/goals/schedules api_member_goals_schedules
 POST /api/members/{slug}/import-files api_member_import_files
 DELETE /api/members/{slug}/import-files api_member_import_files_undo
 POST /api/members/{slug}/dashboard/page-offer api_member_page_offer
+POST /api/members/{slug}/dashboard/template api_member_import_dashboard
+DELETE /api/members/{slug}/dashboard/template api_member_import_dashboard_undo
 GET /api/cards/agent/kinds api_cards_agent_kinds
 GET /api/cards/agent/settings api_cards_agent_settings
 GET /api/cards/agent/capabilities api_cards_agent_capabilities

@@ -409,6 +409,16 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/members/{slug}/dashboard/page-offer",
         _deferred("member_page_offer", "api_member_page_offer"),
     )
+    # A ``crewmate.import`` card's dashboard step adopts a shipped page on the new Bot,
+    # and its Undo takes back that same version; card steps only, owner only.
+    app.router.add_post(
+        "/api/members/{slug}/dashboard/template",
+        _deferred("member_import_dashboard", "api_member_import_dashboard"),
+    )
+    app.router.add_delete(
+        "/api/members/{slug}/dashboard/template",
+        _deferred("member_import_dashboard", "api_member_import_dashboard_undo"),
+    )
     # Change cards. Same split as the guide: the agent half is MCP-only under the
     # strict "/api/cards/agent" prefix, the browser half is owner-only cookie auth.
     # The paths are duplicated from ``change_cards.register_change_card_routes``,
