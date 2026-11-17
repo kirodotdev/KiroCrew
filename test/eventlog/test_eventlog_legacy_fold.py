@@ -835,8 +835,7 @@ class TestTheFoldIsSerializedAcrossProcesses:
     two of them a second process is free to run its own fold: both snapshot a log
     with no activity records, both find every legacy row unmatched, and both
     append it. Retirement then makes the duplication permanent and silent. This
-    log has two ordinary writers, so two folds of one member during an upgrade is
-    routine rather than exotic.
+    store does not stop a second process from folding the same member.
     """
 
     @staticmethod
