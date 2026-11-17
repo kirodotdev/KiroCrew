@@ -36,12 +36,12 @@
       "description": "Version, update channel, check for updates, and license"
     },
     {
-      "id": "agent.orchestrator-memory",
-      "label": "Orchestrator memory",
+      "id": "agent.kiro-memory",
+      "label": "Kiro Memory",
       "tab": "agent",
       "route": "/settings/agent?highlight=key%3Aagent.orchestrator_memory",
       "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
-      "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+      "hint": "Uses Kiro Memory alongside Kiro Crew’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. Kiro Crew’s learning behavior and each Bot’s separate memory are unchanged.",
       "configKey": "agent.orchestrator_memory"
     },
     {

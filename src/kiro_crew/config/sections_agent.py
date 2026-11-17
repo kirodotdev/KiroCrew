@@ -1461,7 +1461,7 @@ class AgentConfig:
     orchestrator_memory: bool = field(
         default=False,
         metadata=_meta(
-            "Orchestrator memory",
+            "Kiro Memory",
             "Let a new chat in your own dashboard read the memories the Kiro agent "
             "engine already stored for you, so it recalls your preferences without "
             "being told again. Read-only: the chat never adds, changes or deletes "

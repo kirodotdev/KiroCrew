@@ -50,7 +50,7 @@ try {
     return false
   } })
   await page.goto(`${base}/settings/agent`, { waitUntil: 'domcontentloaded' })
-  const toggle = page.getByRole('switch', { name: 'Orchestrator memory' })
+  const toggle = page.getByRole('switch', { name: 'Kiro Memory' })
   await expect(toggle).toBeVisible()
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
   const row = page.locator('[data-setting-key="agent.orchestrator_memory"]')
@@ -64,7 +64,7 @@ try {
   await expect(page.getByTestId('kiro-sign-in-fold-state')).toBeVisible()
   await page.screenshot({ path: resolve(out, 'fixture-orchestrator-memory-on.png') })
   await row.locator('[data-settings-hint] button').click()
-  await expect(page.getByRole('tooltip')).toHaveText("Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.")
+  await expect(page.getByRole('tooltip')).toHaveText("Uses Kiro Memory alongside Kiro Crew’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. Kiro Crew’s learning behavior and each Bot’s separate memory are unchanged.")
   await expect(toggle).toHaveAttribute('aria-checked', 'true')
   await page.screenshot({ path: resolve(out, 'fixture-orchestrator-memory-details.png') })
   await page.keyboard.press('Escape')
