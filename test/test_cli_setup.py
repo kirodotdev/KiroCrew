@@ -852,3 +852,99 @@ class TestSetupChannelGating:
         out = capsys.readouterr().out
         assert "--whatsapp is ignored with --agent-only" in out
         assert "--slack is ignored" not in out
+
+
+class TestSetupAbortNamesUnfinishedSteps:
+    """A closed stdin stops the wizard; the message names what it did not finish.
+
+    The steps from the one that read the closed stdin onward never ran, so the
+    abort lists them and gives the command that finishes them.
+    """
+
+    _STEPS = (
+        "_setup_workspace_dir",
+        "_setup_sandbox_consent",
+        "_setup_slack_tokens",
+        "_setup_slash_command",
+        "_setup_whatsapp",
+        "_setup_timezone",
+        "_maybe_setup_dashboard_url",
+        "_maybe_setup_custom_domain",
+        "_maybe_setup_cloud",
+    )
+
+    def _abort_at(self, monkeypatch, tmp_path, step: str | None, system="Linux", **kwargs):
+        """Run ``_setup`` with every step stubbed and ``step`` reading a closed stdin."""
+        import kiro_crew.cli_setup as cs
+
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("kiro_crew.agent.install_agent", lambda **_: tmp_path / "agent.json")
+        monkeypatch.setattr("kiro_crew.agent.ensure_kirocrew_on_path", lambda *a, **k: None)
+        monkeypatch.setattr("kiro_crew.mcp_cleanup.clean_stale_managed_mcp", lambda: [])
+        for name in ("_ensure_prerequisites", "_ensure_default_agent_in_config", *self._STEPS):
+            monkeypatch.setattr(cs, name, lambda *a, **k: None)
+        monkeypatch.setattr(
+            cs, "KiroCrewConfig", MagicMock(load=MagicMock(side_effect=RuntimeError("no config")))
+        )
+        monkeypatch.setattr(cs.platform, "system", lambda: system)
+        monkeypatch.setattr(cs, "_find_electron_dir", lambda: tmp_path)
+
+        def _raise_eof(_prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
+        if step is not None:
+            monkeypatch.setattr(cs, step, lambda *a, **k: cs._input_or_skip("? "))
+        cs._setup(**kwargs)
+
+    def test_an_abort_at_the_timezone_names_the_steps_after_it(self, tmp_path, monkeypatch, capsys):
+        self._abort_at(monkeypatch, tmp_path, "_setup_timezone")
+        out = capsys.readouterr().out
+        assert "Setup aborted: stdin closed; setup cannot continue." in out
+        assert "Not finished: timezone, dashboard URL, AWS launch offer." in out
+        assert "run `kirocrew setup` again" in out
+        assert "Done!" not in out
+
+    def test_an_abort_at_the_first_prompt_names_every_step(self, tmp_path, monkeypatch, capsys):
+        self._abort_at(monkeypatch, tmp_path, "_setup_workspace_dir")
+        out = capsys.readouterr().out
+        assert (
+            "Not finished: workspace folder, agent config, sandbox check, timezone, "
+            "dashboard URL, AWS launch offer." in out
+        )
+
+    def test_the_rerun_command_carries_the_flags_given(self, tmp_path, monkeypatch, capsys):
+        self._abort_at(monkeypatch, tmp_path, "_setup_slash_command", slack=True, whatsapp=True)
+        out = capsys.readouterr().out
+        assert "Not finished: slash command, WhatsApp, timezone," in out
+        assert "run `kirocrew setup --slack --whatsapp` again" in out
+
+    def test_agent_only_lists_only_its_own_steps(self, tmp_path, monkeypatch, capsys):
+        self._abort_at(monkeypatch, tmp_path, "_setup_sandbox_consent", agent_only=True)
+        out = capsys.readouterr().out
+        assert "Not finished: sandbox check." in out
+        assert "run `kirocrew setup --agent-only` again" in out
+
+    def test_the_macos_desktop_prompt_aborts_cleanly(self, tmp_path, monkeypatch, capsys):
+        """The desktop-app question reads stdin through the guarded prompt, so a
+        closed stdin there ends in the same message rather than a traceback."""
+        self._abort_at(monkeypatch, tmp_path, None, system="Darwin")
+        out = capsys.readouterr().out
+        assert "Not finished: desktop app, AWS launch offer." in out
+
+    def test_the_dashboard_url_prompt_raises_setup_aborted_on_eof(self, monkeypatch):
+        import kiro_crew.cli_setup as cs
+
+        cfg = MagicMock()
+        cfg.load_credentials.return_value = {"SLACK_APP_TOKEN": "a", "SLACK_BOT_TOKEN": "b"}
+        cfg.dashboard.url = "http://host:1"
+        monkeypatch.setattr(cs, "KiroCrewConfig", MagicMock(load=MagicMock(return_value=cfg)))
+        monkeypatch.setattr(cs, "_resolve_hostname_bounded", lambda _h: "10.0.0.1")
+        monkeypatch.setattr(cs, "_configured_port", lambda: 1)
+
+        def _raise_eof(_prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
+        with pytest.raises(cs._SetupAborted):
+            cs._maybe_setup_dashboard_url()

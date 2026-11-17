@@ -844,6 +844,22 @@ exfiltration redactors run.
 
 The saved project dir enables running `kirocrew` from any directory.
 
+### A closed stdin names what setup did not finish
+
+The wizard's prompts read stdin through `cli_setup._input_or_skip`, which raises
+`_SetupAborted` on EOF (Ctrl+D, `< /dev/null`) or on a stdin the locale cannot
+decode, rather than taking an empty answer and failing at the next prompt. The
+workspace, sandbox, slash-command, WhatsApp, timezone, dashboard URL and macOS
+desktop-app prompts all go through it; the AWS launch offer takes its default on
+EOF instead, and the `--slack` token prompts still read `input()` directly.
+
+`_setup_impl` records the run's planned steps in order, in a
+`cli_setup_progress.SetupProgress`, and marks each one as it starts. On
+`_SetupAborted`, `_setup` prints the reason, `Not finished:` with the running
+step and every step after it, and the `kirocrew setup` command to run again,
+carrying the `--agent-only`, `--clean`, `--slack` and `--whatsapp` flags this run
+was given. Setup exits as before; only the message is longer.
+
 ### Slack credentials are checked before they are stored
 
 `kirocrew setup --slack` asks Slack about each value as it is pasted, so a typo,
