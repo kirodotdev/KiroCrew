@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.apps.bridges_agents import _deregister_agents, _register_agents
 from kiro_crew.apps.bridges_crons import _deregister_crons, _register_crons
 from kiro_crew.apps.bridges_mcp import (
@@ -151,6 +152,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
             ):
                 try:
                     entry.unlink()
+                    note_spec_change(entry)
                     logger.info("Pruned stale app agent %s (absent from manifest)", entry.name)
                 except OSError:
                     pass

@@ -32,6 +32,7 @@ import json
 import logging
 from typing import Any, Callable
 
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.agent_files import AGENT_FILENAME, is_mate_service_agent
 from kiro_crew.agent_sdk import agent_specs
 from kiro_crew.config import paths as paths_mod
@@ -411,10 +412,12 @@ def _retire_shadow(cfg: KiroCrewConfig, name: str, path: Any) -> Callable[[], No
             n += 1
         info = agent_state.get_fork_info(name, strict=True) or {}
         os.replace(path, target)
+        note_spec_change(path)
         try:
             agent_state.clear_fork_info(name)
         except BaseException:
             os.replace(target, path)
+            note_spec_change(path)
             raise
     refresh_materialized_agents(heal_default=False)
     logger.info("crewmate migration: retired %s's private copy to %s", name, target)
@@ -423,6 +426,7 @@ def _retire_shadow(cfg: KiroCrewConfig, name: str, path: Any) -> Callable[[], No
         with agent_mod.agents_spec_lock(agents_dir):
             if not path.exists():
                 os.replace(target, path)
+                note_spec_change(path)
             agent_state.set_fork_info(name, info["forked_from"], info["private_to"])
         refresh_materialized_agents(heal_default=False)
         logger.info("crewmate migration: put %s's private copy back at %s", name, path)

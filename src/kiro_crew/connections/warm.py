@@ -144,7 +144,7 @@ from typing import Any
 
 from kiro_crew import agent as _agent
 from kiro_crew import hooks, platform_compat
-from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_discovery import _read_agent_spec, note_spec_change
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.config.loader import data_home  # noqa: F401
 from kiro_crew.config.paths import project_agents_dir  # noqa: F401
@@ -662,6 +662,7 @@ def _write_warm_mint_specs(plan: _WarmSpecPlan, agents_dir: Path) -> None:
                 _log_warm_event("warm_mint_spec_sweep", path.name, outcome="refused")
                 continue
             path.unlink(missing_ok=True)
+            note_spec_change(path)
     except OSError:
         logger.debug("warm mint spec sweep failed", exc_info=True)
     for name, spec in plan.specs.items():
@@ -693,6 +694,7 @@ def _remove_warm_mint_specs(agents_dir: Path) -> int:
                 _log_warm_event("warm_mint_spec_removal", path.name, outcome="refused")
                 continue
             path.unlink(missing_ok=True)
+            note_spec_change(path)
             removed += 1
     except Exception:  # noqa: BLE001 — startup cleanup is best-effort and fail-closed
         logger.debug("warm mint spec removal failed", exc_info=True)

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Container, Mapping
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.apps.agent_template_values import HOST_PLACEHOLDERS, host_placeholder_values
 from kiro_crew.apps.bridges_mcp_config import (
     _health_reconcile_guard,
@@ -1228,6 +1229,7 @@ def _register_agents(
                     if _agent._declined_foreign_spec_write(link_path):
                         continue
                     atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                    note_spec_change(link_path)
                     try:
                         atomic_write(record_path, json.dumps(record, indent=2) + "\n")
                     except OSError as exc:
@@ -1282,6 +1284,8 @@ def _deregister_agents(app_name: str) -> int:
                 removed += 1
             except OSError:
                 pass
+            else:
+                note_spec_change(entry)
         elif entry.name.startswith(prefix) and entry.name.endswith(_TEMPLATE_RECORD_SUFFIX):
             # The template record goes with its spec (_template_record).
             try:

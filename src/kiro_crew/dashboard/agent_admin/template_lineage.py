@@ -69,6 +69,9 @@ def _write_spec_file(dest: Path, data: dict) -> None:
         # open file with a sharing violation.
         with contextlib.suppress(OSError):
             dest.unlink()
+            from kiro_crew.agent_discovery import note_spec_change
+
+            note_spec_change(dest)
         raise
 
 
@@ -447,6 +450,9 @@ def _unlink_copy_unless_referenced(copy_file: Path, agents_dir: Path, *names: st
             try:
                 with agents_spec_lock(agents_dir):
                     copy_file.unlink(missing_ok=True)
+                    from kiro_crew.agent_discovery import note_spec_change
+
+                    note_spec_change(copy_file)
             except OSError:
                 logger.debug("could not remove superseded copy %r", copy_file.stem, exc_info=True)
                 return None

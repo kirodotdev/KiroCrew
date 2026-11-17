@@ -64,6 +64,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.agent_spec_format import APP_AGENT_LAUNCH_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -475,6 +476,7 @@ def remove_app_agent_launches(app_name: str, *, keep_agents: Collection[str] = (
                 if not is_owned_launch_spec(data):
                     continue
                 path.unlink()
+                note_spec_change(path)
                 removed += 1
             except OSError:
                 continue

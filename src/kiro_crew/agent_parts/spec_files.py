@@ -246,6 +246,11 @@ def _atomic_json_write_unguarded(path: Path, data: dict) -> None:
             pass
         raise
     _notify_if_config_write(path)
+    # Every spec writer that reaches this primitive announces its write here, so a
+    # memo or snapshot pinned to the directory is never served across it.
+    from kiro_crew.agent_discovery import note_spec_change
+
+    note_spec_change(path)
 
 
 def _notify_if_config_write(path: Path) -> None:

@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
+from kiro_crew.agent_discovery import clear_list_agents_cache, note_spec_change, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.platform.governance import sanitize_agent_config_governance
@@ -406,6 +406,7 @@ def _install_agent_templates(zip_path: Path, picked: list[str], summary: dict) -
             except OSError:
                 with contextlib.suppress(OSError):
                     target.unlink()
+                    note_spec_change(target)
                 skipped.append({"name": _clip(stem), "reason": "unwritable"})
                 continue
             installed.add(stem)

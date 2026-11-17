@@ -209,6 +209,8 @@ def _remove_user_level_copy(filename: str, config: dict) -> None:
     import json
     import os
 
+    from kiro_crew.agent_discovery import note_spec_change
+
     path = agent_mod.kiro_agents_dir_path() / filename
     try:
         if not os.path.lexists(path):
@@ -226,6 +228,7 @@ def _remove_user_level_copy(filename: str, config: dict) -> None:
             )
         if ours:
             path.unlink()
+            note_spec_change(path)
             agent_mod.logger.info(
                 "Removed %s left in %s by an earlier build", filename, path.parent
             )

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import agent_state
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import mate_agents_dir
@@ -789,6 +790,7 @@ def put(member: str, body: Any, catalog: dict[str, str]) -> dict:
             revocations.record(path.stem, [], regrants)
             return get(member, catalog)
         atomic_write(path, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True)
+        note_spec_change(path)
         revocations.record(path.stem, [], regrants)
     try:
         from kiro_crew.sel import sel

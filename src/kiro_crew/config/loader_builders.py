@@ -25,6 +25,7 @@ from kiro_crew.config.loader_locations import config_path
 from kiro_crew.config.sections import (
     _DEFAULT_CHAT_TURN_TIMEOUT_SECS,
     _MANAGED_SERVICE_ENV,
+    AGENTS_DIR_REVISION_HOLD_MS_MAX,
     APPROVAL_TURN_MARGIN_SECS,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -269,6 +270,7 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("agent", "subagent_timeout_secs", 0, SUBAGENT_TIMEOUT_MAX),
+    ("agent", "agents_dir_revision_hold_ms", 0, AGENTS_DIR_REVISION_HOLD_MS_MAX),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
     (
         "agent",
@@ -951,6 +953,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
         subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
+        agents_dir_revision_hold_ms=section.read(
+            "agents_dir_revision_hold_ms",
+            _safe_int,
+            0,
+            AGENTS_DIR_REVISION_HOLD_MS_MAX,
+        ),
         windows_background_qos=section.read("windows_background_qos", _safe_bool),
         subagent_light_tier=section.read("subagent_light_tier", _safe_bool),
         spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),

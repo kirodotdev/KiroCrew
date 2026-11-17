@@ -396,6 +396,22 @@ def resolve_projected_spec(
     Bot's file wins over a checkout spec of the same name, and when a checkout
     spec's keys are dropped.
     """
+    from kiro_crew.agent_discovery import agents_dir_revision_scope
+
+    # One resolve asks whether a name is absent and then loads it, per folder; one
+    # fingerprint walk of each folder serves every lookup of this resolve.
+    with agents_dir_revision_scope():
+        return _resolve_projected_spec(agents_dir, agent, work_dir, notices, project_hooks)
+
+
+def _resolve_projected_spec(
+    agents_dir: Path,
+    agent: str,
+    work_dir: str | Path | None,
+    notices: list[str] | None,
+    project_hooks: bool,
+) -> tuple[dict[str, Any], Path]:
+    """:func:`resolve_projected_spec` inside its revision scope."""
     from kiro_crew.agent_files import is_mate_service_agent
 
     if is_mate_service_agent(agent):

@@ -214,6 +214,9 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         return
                 with contextlib.suppress(OSError):
                     dest.unlink(missing_ok=True)
+                    from kiro_crew.agent_discovery import note_spec_change
+
+                    note_spec_change(dest)
                 with contextlib.suppress(Exception):
                     agent_state.prune(copy_name)
 

@@ -326,6 +326,7 @@ from kiro_crew.config.sections_defaults import (  # noqa: F401
 from kiro_crew.config.sections_limits import (  # noqa: F401
     _DEFAULT_CHAT_TURN_TIMEOUT_SECS,
     _WARNED_RESOURCE_LIMIT_KEYS,
+    AGENTS_DIR_REVISION_HOLD_MS_MAX,
     APPROVAL_TURN_MARGIN_SECS,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,

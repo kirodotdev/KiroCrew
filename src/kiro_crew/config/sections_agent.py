@@ -1592,6 +1592,20 @@ class AgentConfig:
             "restart.",
         ),
     )
+    agents_dir_revision_hold_ms: int = field(
+        default=0,
+        metadata=_meta(
+            "Agents Folder Revision Hold (ms)",
+            "How long one fingerprint of the agents folder is reused by every "
+            "agent-spec memo before the folder is checked again. 0 (the default) "
+            "checks the folder on every lookup, so a spec edited by an editor or "
+            "another tool is seen on the next lookup. A hold trades that for "
+            "fewer file checks on a large folder: an outside edit is seen within "
+            "the hold, while a spec Kiro Crew writes itself is still seen at "
+            "once. Clamped to 0..1000. Applies to the next lookup; no restart "
+            "needed.",
+        ),
+    )
     subagent_spawn_stagger_secs: float = field(
         default=0.25,
         metadata=_meta(

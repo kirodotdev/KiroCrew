@@ -72,6 +72,7 @@ from kiro_crew.config.loader_snapshots import (
     _read_hardened_agent_spec,
     dispatch_kiro_agent,
     publish_agent_alias_snapshot,
+    publish_agents_dir_revision_hold_ms,
     publish_autocompact_pct,
     publish_config_timezone,
 )
@@ -706,6 +707,17 @@ class KiroCrewConfig:
             # A publish failure must never make the config unloadable; cron
             # keeps using the zone it already had.
             logger.warning("Publishing config timezone failed: %s", e)
+        # Same placement once more: the agents-folder revision hold is read on
+        # every spec-memo lookup, and a config load refreshes the agent snapshot,
+        # which makes that lookup, so the lookup path must never load config itself.
+        try:
+            publish_agents_dir_revision_hold_ms(
+                cfg.agent.agents_dir_revision_hold_ms, _autocompact_ticket
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            # A publish failure must never make the config unloadable; the memos
+            # keep the hold they already had.
+            logger.warning("Publishing agents_dir_revision_hold_ms failed: %s", e)
         # The digest of the bytes this object was parsed from, recorded ON the object
         # so provenance travels with it and this method's signature stays as every
         # caller has it. ``None`` when the read could not name any bytes -- the files

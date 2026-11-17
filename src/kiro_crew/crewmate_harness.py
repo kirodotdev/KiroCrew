@@ -573,15 +573,24 @@ def _refresh_in_background(key: _VerdictKey) -> None:
 
 def _fresh_verdict(key: _VerdictKey) -> _Verdict:
     """Blocking: the answer for *key*, read from the file when the memory is outdated."""
-    from kiro_crew.agent_discovery import agents_dir_revision, spec_cache_generation
+    from kiro_crew.agent_discovery import agents_dir_revision_scope
+
+    with agents_dir_revision_scope():
+        return _fresh_verdict_in_scope(key)
+
+
+def _fresh_verdict_in_scope(key: _VerdictKey) -> _Verdict:
+    """:func:`_fresh_verdict` inside one revision scope: the stamp's two folder
+    fingerprints serve the spec reads of the detail that follows."""
+    from kiro_crew.agent_discovery import shared_agents_dir_revision, spec_cache_generation
     from kiro_crew.config import paths as paths_mod
     from kiro_crew.mate_worker import kas_only_worker_detail
 
     crew, member_id, _agent, inherited = key
     stamp = (
         spec_cache_generation(),
-        agents_dir_revision(paths_mod.mate_agents_dir()),
-        agents_dir_revision(paths_mod.kiro_agents_dir()),
+        shared_agents_dir_revision(paths_mod.mate_agents_dir()),
+        shared_agents_dir_revision(paths_mod.kiro_agents_dir()),
     )
     with _VERDICT_LOCK:
         hit = _VERDICTS.get(key)

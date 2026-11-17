@@ -15,8 +15,10 @@ import os
 import stat
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, Iterator, TypeVar
 
 from kiro_crew.agent_discovery_parts.spec_reads import _WINDOWS, _fence_refuses, _SpecReadRefused
 from kiro_crew.agent_discovery_parts.spec_snapshot import _iter_spec_entries, spec_cache_generation
@@ -47,6 +49,27 @@ _AGENTS_DIR_MEMO_MAX_KEYS = 256
 # The digest slot of an entry old enough for its metadata alone to pin it.
 _NO_DIGEST = b""
 _DIGEST_CHUNK_BYTES = 64 * 1024
+# One revision per agents directory per resolve: a scope opened by an operation
+# that resolves against the directory more than once (:func:`agents_dir_revision_scope`).
+# Every memo and snapshot inside it reads the revision walked first in that scope,
+# keyed on :func:`spec_cache_generation`, so an in-process write is still seen at
+# once. Outside a scope nothing is shared: every lookup walks for itself.
+_REVISION_SCOPE: ContextVar[dict[str, tuple[int, "AgentsDirRevision | None"]] | None] = ContextVar(
+    "agents_dir_revision_scope", default=None
+)
+# The opt-in time hold (``agent.agents_dir_revision_hold_ms``): a revision walked
+# within it is served to every memo and snapshot without a walk, so a write from
+# OUTSIDE the process is seen within the hold instead of on the next lookup. The
+# default is 0 (no hold); the loader clamps it below :data:`_AGENTS_DIR_RACY_WINDOW_NS`
+# so an entry written during a hold is still young at the next walk and is
+# pinned on its bytes there. Published by every config load into
+# ``config.loader_snapshots`` (like the timezone) and read from there.
+# The hold (ms) the held store was last cleared for; a published change clears it again.
+_hold_ms_seen = 0
+_HELD_REVISIONS_LOCK = threading.Lock()
+# dir -> (monotonic ns the walk started, generation before the walk, revision), for
+# the directories walked within the last hold only: every store evicts the expired.
+_HELD_REVISIONS: dict[str, tuple[int, int, "AgentsDirRevision | None"]] = {}
 
 
 def _young_entry_digest(path: str, st: os.stat_result, limit: int) -> tuple[bytes, int] | None:
@@ -204,6 +227,119 @@ def _revision_pin(revision: AgentsDirRevision) -> bytes:
     return hashlib.sha256(repr(revision).encode("utf-8", "backslashreplace")).digest()
 
 
+@contextmanager
+def agents_dir_revision_scope() -> Iterator[None]:
+    """One walk per agents directory for the resolve inside the block.
+
+    Opened by an operation that resolves against a directory more than once (a
+    KAS spec resolve asks whether a name is absent, then loads it; a crewmate
+    verdict stamps two folders, then reads specs from both). Inside the block,
+    :func:`shared_agents_dir_revision` answers from the revision walked first in
+    the scope, so the memo hits of that one operation cost one walk per directory
+    instead of one each. The scope is a snapshot of the resolve's own start: a
+    write from outside the process that lands during the block is seen by the
+    next operation, as a write landing during one walk is seen by the next walk;
+    an in-process write moves :func:`spec_cache_generation` and is seen inside
+    the block. An enclosing scope is reused, so a nested resolve shares its
+    caller's walk.
+    """
+    if _REVISION_SCOPE.get() is not None:
+        yield
+        return
+    token = _REVISION_SCOPE.set({})
+    try:
+        yield
+    finally:
+        _REVISION_SCOPE.reset(token)
+
+
+def agents_dir_revision_hold_ns() -> int:
+    """The configured hold in nanoseconds; 0 until a config names one.
+
+    Read from the loader's published slot
+    (``config.loader_snapshots.published_agents_dir_revision_hold_ms``), which every
+    :meth:`KiroCrewConfig.load` refreshes under its load ticket, so the lookup path
+    never loads config and an older load cannot put a hold back. A hold that
+    changed since the last read drops every held revision, so the new bound
+    applies to the next lookup.
+    """
+    global _hold_ms_seen
+    # Deferred: the config package reaches this module through the facade.
+    from kiro_crew.config.loader_snapshots import published_agents_dir_revision_hold_ms
+
+    hold_ms = published_agents_dir_revision_hold_ms()
+    if hold_ms != _hold_ms_seen:
+        with _HELD_REVISIONS_LOCK:
+            if hold_ms != _hold_ms_seen:
+                _HELD_REVISIONS.clear()
+                _hold_ms_seen = hold_ms
+    return hold_ms * 1_000_000
+
+
+def fresh_agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
+    """Walk *agents_dir* now; the result is what the scope and the hold serve next.
+
+    The check a memo or snapshot makes AFTER its own read goes through here, never
+    through :func:`shared_agents_dir_revision`: a shared value would always equal
+    the one the read started from, and a write during the read would be stored.
+    A walk that started before the held one leaves the held one in place.
+    """
+    dir_key = str(agents_dir)
+    # Read before the walk, so a clear landing during it keys the next lookup past this entry.
+    generation = spec_cache_generation()
+    # The clock is read only under a hold: with none, this is the bare walk.
+    hold_ns = agents_dir_revision_hold_ns()
+    started = time.monotonic_ns() if hold_ns > 0 else 0
+    revision = agents_dir_revision(agents_dir)
+    scope = _REVISION_SCOPE.get()
+    if scope is not None:
+        scope[dir_key] = (generation, revision)
+    if hold_ns > 0:
+        with _HELD_REVISIONS_LOCK:
+            # An entry past the hold can never be served again; dropping them here
+            # bounds the dict to the directories walked within one hold, so it grows
+            # with neither the directory count nor time.
+            for key in [k for k, h in _HELD_REVISIONS.items() if started - h[0] >= hold_ns]:
+                del _HELD_REVISIONS[key]
+            held = _HELD_REVISIONS.get(dir_key)
+            if held is None or held[0] <= started:
+                _HELD_REVISIONS[dir_key] = (started, generation, revision)
+    return revision
+
+
+def shared_agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
+    """The revision of *agents_dir* for a lookup, shared where sharing is sound.
+
+    Every memo and snapshot pinned to the directory looks it up here before its
+    own read. The answer is, in order: the revision walked earlier in the open
+    :func:`agents_dir_revision_scope` under the current
+    :func:`spec_cache_generation`; the one walked within the configured hold
+    (:func:`agents_dir_revision_hold_ns`, 0 unless set) under that generation;
+    else a fresh walk (:func:`fresh_agents_dir_revision`). With no scope and no
+    hold every lookup walks for itself. ``None`` is shared like any
+    answer: it already means "read uncached", and every holder would otherwise
+    re-walk the folder to learn it again. Two callers missing at once walk
+    redundantly, as the memo's own misses do. The lock guards the dict only.
+    """
+    dir_key = str(agents_dir)
+    generation = spec_cache_generation()
+    scope = _REVISION_SCOPE.get()
+    if scope is not None:
+        scoped = scope.get(dir_key)
+        if scoped is not None and scoped[0] == generation:
+            return scoped[1]
+    hold_ns = agents_dir_revision_hold_ns()
+    if hold_ns > 0:
+        now = time.monotonic_ns()
+        with _HELD_REVISIONS_LOCK:
+            held = _HELD_REVISIONS.get(dir_key)
+        if held is not None and held[1] == generation and 0 <= now - held[0] < hold_ns:
+            if scope is not None:
+                scope[dir_key] = (generation, held[2])
+            return held[2]
+    return fresh_agents_dir_revision(agents_dir)
+
+
 T = TypeVar("T")
 
 
@@ -259,7 +395,7 @@ class AgentsDirMemo(Generic[T]):
         if is_native_skill_alias_name(key):
             return compute()
         dir_key = str(agents_dir)
-        revision = agents_dir_revision(agents_dir)
+        revision = shared_agents_dir_revision(agents_dir)
         if revision is None:
             return compute()
         pin = _revision_pin(revision)
@@ -275,7 +411,7 @@ class AgentsDirMemo(Generic[T]):
             if found is not None and key in found:
                 return found[key]
         answer = compute()
-        if agents_dir_revision(agents_dir) != revision:
+        if fresh_agents_dir_revision(agents_dir) != revision:
             return answer
         with self._lock:
             cached = self._answers.get(dir_key)
@@ -311,7 +447,7 @@ class AgentsDirMemo(Generic[T]):
             answers = prefill()
         except OSError:
             return None
-        if agents_dir_revision(agents_dir) != revision:
+        if fresh_agents_dir_revision(agents_dir) != revision:
             return None
         found = {name: a for name, a in answers.items() if not is_native_skill_alias_name(name)}
         with self._lock:

@@ -364,21 +364,30 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> bool:
     return landed
 
 
-def _memo_key() -> _MemoKey | None:
+def _memo_key(*, fresh: bool = False) -> _MemoKey | None:
     """What a scan reads, pinned: both directories' revisions and the publish count.
 
     ``None`` when a revision cannot be proved (the memo is off, a symlinked spec,
     too many young entries, an unlistable directory), so the scan always runs.
     Never raises: the refresh it keys never does, and an unprovable key costs
     only the scan.
+
+    The key read before a scan is the revision shared with every other holder
+    (:func:`~kiro_crew.agent_discovery.shared_agents_dir_revision`); the one read
+    after it is *fresh*, so a write during the scan moves it.
     """
     # Deferred: agent_discovery imports the config package.
-    from kiro_crew.agent_discovery import _revision_pin, agents_dir_revision
+    from kiro_crew.agent_discovery import (
+        _revision_pin,
+        fresh_agents_dir_revision,
+        shared_agents_dir_revision,
+    )
 
+    revision = fresh_agents_dir_revision if fresh else shared_agents_dir_revision
     try:
         user_dir, mate_dir = kiro_agents_dir(), mate_agents_dir()
-        user = agents_dir_revision(user_dir)
-        mate = agents_dir_revision(mate_dir)
+        user = revision(user_dir)
+        mate = revision(mate_dir)
     except Exception:  # noqa: BLE001 -- an unprovable key scans, as before the memo
         logger.debug("agent snapshot memo key unavailable", exc_info=True)
         return None
@@ -423,7 +432,7 @@ def _refresh_or_reuse() -> tuple[bool, bool]:
         # The installed snapshot is the one before this call, or a later scan's,
         # and the memo still describes it.
         return False, False
-    after = _memo_key() if key is not None else None
+    after = _memo_key(fresh=True) if key is not None else None
     with _MATERIALIZED_AGENTS_LOCK:
         memoize = reusable and after == key and ticket == _MATERIALIZED_REFRESH_APPLIED
         declined = key is not None and not memoize and _MATERIALIZED_MEMO != (key, None)
@@ -1323,6 +1332,55 @@ def publish_config_timezone(config: "KiroCrewConfig", ticket: int | None = None)
             return
         _CONFIG_TIMEZONE_TICKET = ticket
         _CONFIG_TIMEZONE = config.timezone
+
+
+#: ``agent.agents_dir_revision_hold_ms`` as last published by a config load, clamped,
+#: in milliseconds. 0 until a config names one. Read on every agent-spec memo
+#: lookup (``agent_discovery_parts.dir_revision``), so it is a plain int the reader
+#: never locks for; a config load refreshes the agent snapshot, which makes that
+#: lookup, so the lookup path must never load config itself.
+_AGENTS_DIR_REVISION_HOLD_MS: int = 0
+_AGENTS_DIR_REVISION_HOLD_TICKET: int = 0
+_AGENTS_DIR_REVISION_HOLD_LOCK = threading.Lock()
+
+
+def publish_agents_dir_revision_hold_ms(hold_ms: object, ticket: int | None = None) -> None:
+    """Publish the configured agents-folder revision hold for the lookup path.
+
+    Same contract as :func:`publish_config_timezone`: *ticket* is drawn before the
+    read that produced *hold_ms*, and a ticket lower than the one published is
+    dropped, so a load that finishes after a newer one cannot put an older hold
+    back; omitting it draws a fresh ticket, which always wins. A value that is
+    not a real integer publishes 0; the range is the loader's, 0 to
+    ``AGENTS_DIR_REVISION_HOLD_MS_MAX``.
+    """
+    global _AGENTS_DIR_REVISION_HOLD_MS, _AGENTS_DIR_REVISION_HOLD_TICKET
+    from kiro_crew.config.sections_limits import AGENTS_DIR_REVISION_HOLD_MS_MAX
+
+    if ticket is None:
+        ticket = next_config_load_ticket()
+    value = hold_ms if isinstance(hold_ms, int) and not isinstance(hold_ms, bool) else 0
+    value = max(0, min(AGENTS_DIR_REVISION_HOLD_MS_MAX, value))
+    with _AGENTS_DIR_REVISION_HOLD_LOCK:
+        if ticket < _AGENTS_DIR_REVISION_HOLD_TICKET:
+            return
+        _AGENTS_DIR_REVISION_HOLD_TICKET = ticket
+        _AGENTS_DIR_REVISION_HOLD_MS = value
+
+
+def published_agents_dir_revision_hold_ms() -> int:
+    """The published hold in milliseconds; 0 until a config names one."""
+    return _AGENTS_DIR_REVISION_HOLD_MS
+
+
+def reset_agents_dir_revision_hold_for_tests() -> None:
+    """Forget the published hold and its ticket: the cold slot of a process that
+    has loaded no config. Test seam for a harness that boots several homes in
+    one process; the value follows the booted home's config."""
+    global _AGENTS_DIR_REVISION_HOLD_MS, _AGENTS_DIR_REVISION_HOLD_TICKET
+    with _AGENTS_DIR_REVISION_HOLD_LOCK:
+        _AGENTS_DIR_REVISION_HOLD_MS = 0
+        _AGENTS_DIR_REVISION_HOLD_TICKET = 0
 
 
 def published_config_timezone() -> str:
