@@ -263,6 +263,7 @@ async def create_session(
             on_gate_queued=on_gate_queued,
             start_priority=start_priority,
             bg_runtime_start=bg_runtime_start,
+            member_context=member_context,
             harness_options=harness_options,
         )
     agent = await self._source_agent(agent)
