@@ -35,7 +35,7 @@ def _click_window_secs(url: str) -> float:
 
 
 def _reported_link_mins(text: str) -> int:
-    """Return N from ``⏱ Click within Nm · session lasts ...``."""
+    """Return N from ``Click within Nm · session lasts ...``."""
     return int(text.split("Click within ", 1)[1].split("m", 1)[0])
 
 

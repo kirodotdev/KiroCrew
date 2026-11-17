@@ -203,7 +203,7 @@ async def test_a_refused_pin_is_visible_and_not_billed(backend, pin, build, tmp_
     assert stream.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.AUTO_APPROVE
 
     # Visible: the same line a caught model-unavailable error produces.
-    assert result.startswith(f"⚠️ Model '{pin}' unavailable; ran with default.")
+    assert result.startswith(f"Warning: Model '{pin}' unavailable; ran with default.")
 
     # Not billed to the pin: the usage row's explicit model is blank.
     persist.assert_awaited_once()

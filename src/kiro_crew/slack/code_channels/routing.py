@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 _MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 
 NOT_AUTHORIZED_TEXT = (
-    "⛔ You are not authorized to use this bot. Ask the owner to add you to the allowlist."
+    "Blocked: You are not authorized to use this bot. Ask the owner to add you to the allowlist."
 )
 
 
@@ -726,7 +726,7 @@ def _folder_name(state: Any, folder_id: str) -> str:
 def _kickoff_text(title: str, state: Any, folder_id: str) -> str:
     where = _folder_name(state, folder_id) if folder_id else ""
     dashboard = f"the *{where}* folder of your dashboard" if where else "your dashboard"
-    heading = f"🛠️ *{title}*\n" if title else ""
+    heading = f"*{title}*\n" if title else ""
     return (
         f"{heading}This channel is one Kiro Crew session: reply here, no @mention "
         f"needed, and use Stop to interrupt me. It is also open in {dashboard}."

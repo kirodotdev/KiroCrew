@@ -363,7 +363,7 @@ class TestCompactCommandFailureArms:
         slack = FlakySlack("add_reaction")
         sessions.get_provider = MagicMock(return_value=_provider())
         await h._handle_compact_command(slack, sessions, "C1", "t1", "m1", "slack:t1")
-        assert "✅ Context compacted." in _texts(slack)
+        assert "Context compacted." in _texts(slack)
         sessions.release.assert_called_once_with("slack:t1")
 
     @pytest.mark.asyncio
@@ -381,8 +381,8 @@ class TestCompactCommandFailureArms:
         # Every report and cleanup is still attempted after each one before it failed.
         assert _wire_trace(wire) == [
             ("reactions.add", "C1", "recycle"),
-            ("chat.postMessage", "C1", "🔄 Compacting context…"),
-            ("chat.postMessage", "C1", "❌ Compaction failed unexpectedly."),
+            ("chat.postMessage", "C1", "Compacting context…"),
+            ("chat.postMessage", "C1", "Error: Compaction failed unexpectedly."),
             ("reactions.remove", "C1", "recycle"),
         ]
 
@@ -397,8 +397,8 @@ class TestCompactCommandFailureArms:
         sessions.release.assert_called_once_with("slack:t1")
         assert _wire_trace(wire) == [
             ("reactions.add", "C1", "recycle"),
-            ("chat.postMessage", "C1", "🔄 Compacting context…"),
-            ("chat.postMessage", "C1", "✅ Context compacted."),
+            ("chat.postMessage", "C1", "Compacting context…"),
+            ("chat.postMessage", "C1", "Context compacted."),
             ("reactions.remove", "C1", "recycle"),
         ]
 

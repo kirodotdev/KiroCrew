@@ -202,7 +202,7 @@ def signing_key_preflight() -> None:
         " ".join(steps),
     )
     print(
-        f"❌ Truncated token signing key at {key_path}. Repair it by hand:",
+        f"Error: Truncated token signing key at {key_path}. Repair it by hand:",
         *(f"   {step}" for step in steps),
         sep="\n",
         file=sys.stderr,

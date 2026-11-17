@@ -218,7 +218,7 @@ async def _handle_ch_remove(payload: dict, action: dict) -> None:
             resources=cid,
         )
     else:
-        notice = f"⚠️ <#{cid}> removed for now; not saved: {refusal}"
+        notice = f"Warning: <#{cid}> removed for now; not saved: {refusal}"
 
     view_id = payload.get("view", {}).get("id", "")
     if view_id:
@@ -247,7 +247,7 @@ async def _handle_ch_add(payload: dict, action: dict) -> None:
             resources=cid,
         )
     else:
-        notice = f"❌ <#{cid}> not added: {refusal}"
+        notice = f"Error: <#{cid}> not added: {refusal}"
 
     view_id = payload.get("view", {}).get("id", "")
     if view_id:
@@ -277,9 +277,9 @@ async def _handle_allowlist(
             return
         refusal = await _save_then_apply(_orch, new_user_id, channel=False, name=display_name)
         if refusal is not None and new_user_id in _orch._allowed_users:
-            label = f"⚠️ `{who}` stays on the allowlist; not saved: {refusal}"
+            label = f"Warning: `{who}` stays on the allowlist; not saved: {refusal}"
         elif refusal is not None:
-            label = f"❌ `{who}` not added to allowlist: {refusal}"
+            label = f"Error: `{who}` not added to allowlist: {refusal}"
         else:
             sel().log_api_access(
                 caller=approver_id,
@@ -288,7 +288,7 @@ async def _handle_allowlist(
                 source="slack",
                 resources=new_user_id,
             )
-            label = f"✅ `{who}` added to allowlist"
+            label = f"`{who}` added to allowlist"
             # Notify the approved user. Multi-user access is disabled: the gateway
             # keeps the allowlist owner-only and prunes non-owner entries at startup,
             # so a non-owner still cannot message the bot. Tell them that plainly
@@ -298,7 +298,7 @@ async def _handle_allowlist(
                     dm = await _orch.slack.open_dm(new_user_id)
                     await _orch.slack.post_message(
                         dm,
-                        "✅ Your allowlist request was approved by the owner. "
+                        "Your allowlist request was approved by the owner. "
                         "Note: this bot is currently owner-only, so you still "
                         "cannot message it directly yet.",
                     )
@@ -311,7 +311,7 @@ async def _handle_allowlist(
             return
         refusal = await _save_then_apply(_orch, new_user_id, channel=False, remove=True)
         if refusal is not None:
-            label = f"⚠️ `{who}` is off the allowlist for now; not saved: {refusal}"
+            label = f"Warning: `{who}` is off the allowlist for now; not saved: {refusal}"
         else:
             sel().log_api_access(
                 caller=approver_id,
@@ -320,12 +320,12 @@ async def _handle_allowlist(
                 source="slack",
                 resources=new_user_id,
             )
-            label = f"🚫 `{who}` removed from allowlist"
+            label = f"`{who}` removed from allowlist"
             if _orch.slack and new_user_id:
                 try:
                     dm = await _orch.slack.open_dm(new_user_id)
                     await _orch.slack.post_message(
-                        dm, "🚫 Your access request was denied by the owner."
+                        dm, "Your access request was denied by the owner."
                     )
                 except Exception:
                     logger.debug("Failed to DM denied user %s", new_user_id, exc_info=True)
@@ -363,9 +363,9 @@ async def _handle_track_channel(
             return
         refusal = await _save_then_apply(_orch, target_channel_id, channel=True, name=channel_name)
         if refusal is not None and is_tracked_channel(target_channel_id):
-            label = f"⚠️ Still tracking `#{shown}`; not saved: {refusal}"
+            label = f"Warning: Still tracking `#{shown}`; not saved: {refusal}"
         elif refusal is not None:
-            label = f"❌ Not tracking `#{shown}`: {refusal}"
+            label = f"Error: Not tracking `#{shown}`: {refusal}"
         else:
             _probe_tracked_channel_scope({target_channel_id})
             sel().log_api_access(
@@ -375,7 +375,7 @@ async def _handle_track_channel(
                 source="slack",
                 resources=target_channel_id,
             )
-            label = f"✅ Now tracking `#{shown}`"
+            label = f"Now tracking `#{shown}`"
 
     elif action_id == ACTION_TRACK_DENY:
         if not _orch:
@@ -383,7 +383,7 @@ async def _handle_track_channel(
             return
         refusal = await _save_then_apply(_orch, target_channel_id, channel=True, remove=True)
         if refusal is not None:
-            label = f"⚠️ Not tracking `#{shown}` for now; not saved: {refusal}"
+            label = f"Warning: Not tracking `#{shown}` for now; not saved: {refusal}"
         else:
             sel().log_api_access(
                 caller=approver_id,
@@ -392,7 +392,7 @@ async def _handle_track_channel(
                 source="slack",
                 resources=target_channel_id,
             )
-            label = f"🚫 Removed `#{shown}` from tracking"
+            label = f"Removed `#{shown}` from tracking"
 
     # Replace the buttons message with the outcome
     if label and _orch and _orch.slack and channel and msg_ts:
@@ -426,7 +426,7 @@ async def _handle_agent_select(
             await run_config_write(_set_default_agent, "")
         except ValueError:
             return
-        label = "🔄 Reset to default agent."
+        label = "Reset to default agent."
     else:
         # The resolver lists the agents directory and reads the matching spec:
         # filesystem work, off the loop like the other async callers of it.
@@ -437,7 +437,7 @@ async def _handle_agent_select(
             await run_config_write(_set_default_agent, resolved)
         except ValueError:
             return
-        label = f"🔄 Switched to agent: *{resolved}*"
+        label = f"Switched to agent: *{resolved}*"
 
     blks = [{"type": "section", "text": {"type": "mrkdwn", "text": label}}]
 
@@ -594,9 +594,9 @@ async def _handle_allowlist_remove(
         return
 
     refusal = await _save_then_apply(_orch, target_id, channel=False, remove=True)
-    note = f"🚫 Removed <@{target_id}>"
+    note = f"Removed <@{target_id}>"
     if refusal is not None:
-        note = f"⚠️ Removed <@{target_id}> for now; not saved: {refusal}"
+        note = f"Warning: Removed <@{target_id}> for now; not saved: {refusal}"
 
     from kiro_crew.slack.blocks import allowlist_list_block
 
@@ -635,9 +635,9 @@ async def _handle_channel_remove(
         return
 
     refusal = await _save_then_apply(_orch, target_id, channel=True, remove=True)
-    note = f"🚫 Removed <#{target_id}>"
+    note = f"Removed <#{target_id}>"
     if refusal is not None:
-        note = f"⚠️ Removed <#{target_id}> for now; not saved: {refusal}"
+        note = f"Warning: Removed <#{target_id}> for now; not saved: {refusal}"
 
     from kiro_crew.slack.blocks import channel_list_block
 

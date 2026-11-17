@@ -73,7 +73,7 @@ async def _deliver_cron_agent_result(
             # NB: consecutive_dupes is captured here before the reset
             # at the post-delivery state update further below.
             result_text = (
-                f"⚠️ Cron '{job.name}' has produced the same result"
+                f"Warning: Cron '{job.name}' has produced the same result"
                 f" {job.consecutive_dupes} times in a row:\n\n{result_text}"
             )
         else:
@@ -85,7 +85,7 @@ async def _deliver_cron_agent_result(
             if self.dashboard_state:
                 redacted_for_dash, _ = redact_exfiltration_urls(result_text)
                 redacted_for_dash, _ = redact_credentials(redacted_for_dash)
-                title = f"🔇 Cron: {job.name} (dup #{job.consecutive_dupes})"
+                title = f"Cron: {job.name} (dup #{job.consecutive_dupes})"
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
                 self.dashboard_state.notify(
@@ -258,7 +258,7 @@ async def _deliver_cron_agent_result(
         try:
             channel_delivered = await self._deliver_cron_to_channel(
                 job.session_key,
-                f"⏰ Cron: {job.name}\n\n{result_text}",
+                f"Cron: {job.name}\n\n{result_text}",
                 actor_key=session_key,
             )
         except Exception:
@@ -342,7 +342,7 @@ async def _deliver_cron_agent_result(
                 parts = render_for_slack(
                     _cron_body,
                     limit=_CRON_MSG_LIMIT,
-                    header=f"⏰ *Cron: {job.name}*\n\n",
+                    header=f"*Cron: {job.name}*\n\n",
                 )
                 # First part as Block Kit message with ack button
                 blocks: list[dict] = [
@@ -424,7 +424,7 @@ async def _deliver_cron_agent_result(
                 self.dashboard_state.notify(
                     "cron",
                     f"Cron: {job.name}",
-                    f"⚠️ Job completed but Slack delivery failed: {exc_msg}",
+                    f"Warning: Job completed but Slack delivery failed: {exc_msg}",
                     meta={"job_id": job.id},
                 )
     return result_text

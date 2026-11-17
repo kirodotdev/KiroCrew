@@ -1770,7 +1770,7 @@ def test_owner_refusals_use_a_slack_shortcode_not_a_raw_glyph():
         resume.STOP_NOT_OWNER_TEXT.format(owner=cc_surface.owner_name()),
         resume.NOT_ALLOWED_TEXT,
     ):
-        assert text.startswith(":no_entry: ") and "\u26d4" not in text
+        assert text.startswith("Blocked: ") and "\u26d4" not in text
 
 
 def test_an_approval_wait_links_the_session_and_does_not_say_retry(world, monkeypatch):
@@ -1893,7 +1893,7 @@ def test_refusals_name_the_owner(world, monkeypatch):
     ts, button = _held_notice(world)
     asyncio.run(resume.handle_resume_click(None, _click(OTHER, ts, button)))
     assert world.slack.ephemerals[-1][2] == (
-        f":no_entry: Only the Kiro Crew owner (<@{OWNER}>) can resume this channel's work."
+        f"Blocked: Only the Kiro Crew owner (<@{OWNER}>) can resume this channel's work."
     )
 
 
@@ -1909,7 +1909,7 @@ def test_the_stop_refusal_names_the_owner(world, monkeypatch, stops):
     ts, button = _auto_notice(world)
     asyncio.run(resume.handle_stop_click(None, _click(OTHER, ts, button)))
     assert world.slack.ephemerals[-1][2] == (
-        f":no_entry: Only the Kiro Crew owner (<@{OWNER}>) can stop this channel's resumed work."
+        f"Blocked: Only the Kiro Crew owner (<@{OWNER}>) can stop this channel's resumed work."
     )
 
 

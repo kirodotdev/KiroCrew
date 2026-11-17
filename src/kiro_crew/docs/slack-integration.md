@@ -120,17 +120,17 @@ order once the turn stops: everybody in a thread shares its session, so that
 stop only withdraws what its caller sent. A stop that escalates to a hard
 stop, and **Kill Now**, still tear the session down with its whole queue,
 every member's messages included. Three
-answers, one per outcome: "⏹ Execution stopped." when the turn stopped
-cooperatively, "⛔ Execution stopped — session reset." when it had to be
+answers, one per outcome: "Execution stopped." when the turn stopped
+cooperatively, "Execution stopped — session reset." when it had to be
 escalated to a hard stop, and "Nothing running." when no turn was active.
 
 Authorization: owner and allowed users. Unauthorized callers get
-"⛔ Not authorized." and an audit log entry under `slack.stop_command`.
+"Blocked: Not authorized." and an audit log entry under `slack.stop_command`.
 
 ## Streaming
 
 Responses stream in real-time via progressive Slack message edits. A cursor
-(▍) shows during streaming. Tool calls appear as 🔧 _tool name_ inline.
+(▍) shows during streaming. Tool calls appear inline by name.
 
 With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
 ("is working on your request") your message gets no reaction; elsewhere it gets 👀

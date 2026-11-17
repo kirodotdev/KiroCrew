@@ -292,7 +292,7 @@ class TestTaskNotify:
             "[standup] 💀 Task 1: process died",
             "[standup] 💀 Watchdog: ACP process died",
             "[standup] ⏸️ Run not auto-resumed",
-            "[standup] ▶️ Resumed after a gateway restart",
+            "[standup] Resumed after a gateway restart",
         ],
     )
     async def test_a_death_or_restart_notice_reaches_the_tab_that_started_the_run(
@@ -546,7 +546,7 @@ class TestHeartbeatSlackParts:
     def test_caption_is_prepended(self):
         parts = gw._heartbeat_slack_parts("Nightly sweep", "all clear")
         assert parts
-        assert parts[0].startswith("💓 *Nightly sweep*")
+        assert parts[0].startswith("*Nightly sweep*")
         assert "all clear" in parts[0]
 
     def test_long_result_is_split_instead_of_dropped(self):

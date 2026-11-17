@@ -87,9 +87,9 @@ async def _handle_tool_approval(
     # preserve buttons so the authorized owner can still click.
     if _orch and _orch.slack and effective_action:
         label = {
-            "approve_tool": "✅ Approved",
-            "trust_tool": "🤝 Trusted",
-            "reject_tool": "🚫 Rejected",
+            "approve_tool": "Approved",
+            "trust_tool": "Trusted",
+            "reject_tool": "Rejected",
         }.get(effective_action, "")
         if label:
             try:
@@ -104,7 +104,7 @@ async def _handle_tool_approval(
 
 # Shown when a non-authorized user clicks a review-mode button.
 _REVIEW_AUTH_DENIED_MSG = (
-    "⚠️ Only the bot owner or the user who requested this draft can act on it."
+    "Warning: Only the bot owner or the user who requested this draft can act on it."
 )
 
 

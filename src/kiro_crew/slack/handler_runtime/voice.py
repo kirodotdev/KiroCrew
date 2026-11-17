@@ -181,9 +181,9 @@ async def _reply_by_voice(
                 else:
                     hint = "Run `ada credentials update` and ensure `aws` CLI " "is on PATH."
                 if voice_auto_reply:
-                    intro = "🔇 Received your voice memo. Replying as text — "
+                    intro = "Received your voice memo. Replying as text — "
                 else:
-                    intro = "🔇 Voice reply requested but "
+                    intro = "Voice reply requested but "
                 try:
                     await slack.post_ephemeral(
                         channel,

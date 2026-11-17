@@ -92,12 +92,12 @@ class TestPureHelpers:
         _, text = h.build_timing_footer(125.0)
         assert text == "Finished in 2m 5s"
 
-    @pytest.mark.parametrize(("pct", "icon"), [(80, "🔴"), (60, "🟠"), (40, "🟡"), (5, "🟢")])
-    def test_timing_footer_context_icon(self, pct, icon):
+    @pytest.mark.parametrize("pct", [80, 60, 40, 5])
+    def test_timing_footer_context_pct(self, pct):
         client = MagicMock()
         client.context_usage_pct.return_value = pct
         _, text = h.build_timing_footer(1.0, client)
-        assert icon in text and f"ctx {pct}%" in text
+        assert text == f"Finished in 1s · ctx {pct}%"
 
     def test_timing_footer_survives_broken_client(self):
         client = MagicMock()
@@ -124,7 +124,7 @@ class TestPureHelpers:
 
     def test_condense_thinking_short_text(self):
         out = h._condense_thinking("one\n\ntwo")
-        assert out.startswith("💭 *Thinking*")
+        assert out.startswith("*Thinking*")
         assert "> one" in out and "\n>\n" in out
         assert "full reasoning" not in out
 
