@@ -232,6 +232,14 @@ describe('LexicalComposerInput list marker Backspace', () => {
     await waitFor(() => expect(value()).toBe('1. foo\n2. \n3. bar'))
   })
 
+  it('keeps the lines nested under an item below on its text column', async () => {
+    const { enter, value, editor } = await setup('8. h\n9. i\n   - ii', { caret: 4 })
+    enter({ shiftKey: true })
+    await waitFor(() => expect(value()).toBe('8. h\n9. \n10. i\n    - ii'))
+    backspace(editor)
+    await waitFor(() => expect(value()).toBe('8. h\n\n9. i\n   - ii'))
+  })
+
   it('removes only the marker in front of item text', async () => {
     const { value, editor } = await setup('- [ ] todo', { caret: 6 })
     backspace(editor)
