@@ -6450,7 +6450,10 @@ one, and so does every server other than `kirocrew-core`. A forwarded
 (`_PendingRequest.cancelled`). The backend answers a cancelled call with no
 response, so the entry ages forever: the hard ceiling skips it, while the
 two-condition rule still counts it, so a backend whose pings have also stopped
-is recycled as on main. Notification attribution and the last-stub recycle
+is recycled as on main. An open `subscriptions/listen` is skipped by the ceilings
+the same way: a client of the 2026-07-28 protocol keeps that one request open for its
+whole session, so its age says nothing about stuck work, while the two-condition
+rule still counts it. Notification attribution and the last-stub recycle
 (`has_recyclable_in_flight`) still see the entry, so a late progress frame or
 log for it routes or drops exactly as for any pending request, and the last
 stub leaving after a cancel still recycles a backend whose synchronous tool kept
