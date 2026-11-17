@@ -28,7 +28,7 @@ import re
 from collections.abc import Iterator, Mapping
 from typing import Any
 
-from kiro_crew import mcp_core
+from kiro_crew import mcp_core, mcp_tool_image
 from kiro_crew.apps import app_agent_tools
 from kiro_crew.mcp_tools.catalog.app_tools import (  # noqa: F401
     _DOMAIN,
@@ -146,6 +146,12 @@ def app_agent_tool(name: str, args: dict[str, Any]) -> str:
         resp = mcp_core._post(
             _CALL_PATH, body, timeout=tool.decl.timeout_seconds, session_key=session_key
         )
+        if tool.decl.result == "text" and isinstance(resp, dict) and set(resp) == {"text", "image"}:
+            # One PNG of the calling session's own page beside the text, so the model
+            # can see what it made. Only a session-bound tool may send one; a picture
+            # that is not a capped PNG is refused and the text goes alone.
+            mcp_tool_image.attach(resp["image"])
+            resp = {"text": resp["text"]}
     else:
         resp = mcp_core._post(_CALL_PATH, body, timeout=tool.decl.timeout_seconds)
     if tool.decl.result == "text":

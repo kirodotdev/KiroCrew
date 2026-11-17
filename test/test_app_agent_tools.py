@@ -16,22 +16,25 @@ synthetic apps written into the isolated test home, so they name no real app:
   signed proxy, the app's backend receives the exact body that was checked;
 - ``strictSession``: such a tool is posted only from a strictly identified session,
   with that session's key, and the gateway refuses one that arrives without a key;
-  an answer of exactly ``{"text": ...}`` is the tool's text.
+  an answer of exactly ``{"text": ...}`` is the tool's text, and only such a tool may
+  add one capped PNG (``{"text", "image"}``) for the model to see.
 
 What one app's tool does is pinned in that app's own ``tests/``.
 """
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import struct
 from typing import Any
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew import mcp_core
+from kiro_crew import mcp_core, mcp_tool_image
 from kiro_crew.apps import app_agent_tools
 from kiro_crew.apps import manager as apps_manager
 from kiro_crew.apps.discovery import _manifest_to_builtin_dict
@@ -795,6 +798,39 @@ def test_a_plain_tool_keeps_the_lenient_identity(monkeypatch):
     monkeypatch.setattr(mcp_core, "_post", post)
     app_tools.app_agent_tool("fake_app_note", {"item_id": "i"})
     assert post.keys == ["<lenient>"]
+
+
+_PNG_B64 = base64.b64encode(
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+    + struct.pack(">II", 4, 4)
+    + b"\x08\x02\x00\x00\x00"
+    + b"\x00\x00\x00\x00"  # IHDR CRC: this layer checks only the signature and size
+).decode()
+
+
+def test_a_strict_session_text_tool_hands_back_one_picture(monkeypatch):
+    _install(block=_block(_tool(strictSession=True, result="text", maxResultChars=1000)))
+    monkeypatch.setattr(mcp_core, "_post", _FakePost({"text": "drew it", "image": _PNG_B64}))
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:slot-a")
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == "drew it"
+    assert mcp_tool_image.take() == _PNG_B64
+
+
+def test_a_tool_that_is_not_session_bound_cannot_hand_back_a_picture(monkeypatch):
+    _install(block=_block(_tool(result="text", maxResultChars=1000)))
+    monkeypatch.setattr(mcp_core, "_post", _FakePost({"text": "drew it", "image": _PNG_B64}))
+    out = app_tools.app_agent_tool("fake_app_note", {"item_id": "i"})
+    assert out.startswith("Error:"), out
+    assert mcp_tool_image.take() is None
+
+
+def test_a_strict_session_tool_with_an_oversized_picture_sends_the_text_alone(monkeypatch):
+    _install(block=_block(_tool(strictSession=True, result="text", maxResultChars=1000)))
+    big = base64.b64encode(b"\x00" * (mcp_tool_image.MAX_PNG_BYTES + 1)).decode()
+    monkeypatch.setattr(mcp_core, "_post", _FakePost({"text": "drew it", "image": big}))
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:slot-a")
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == "drew it"
+    assert mcp_tool_image.take() is None
 
 
 def test_a_text_answer_is_the_tools_text_redacted_and_capped(monkeypatch):

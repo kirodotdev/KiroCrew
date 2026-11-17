@@ -75,6 +75,7 @@ from kiro_crew.mcp_shared_wire import (
     notify,
     respond,
 )
+from kiro_crew.mcp_tool_image import take as take_tool_image
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
 from kiro_crew.validation import (
@@ -321,10 +322,10 @@ def _run_stdio_dispatch_loop(
 
     _applies_tool_policy = serves_managed_tools(call_tool_fn)
 
-    def _tool_response(text: str) -> dict[str, Any]:
+    def _tool_response(text: str, image: str | None = None) -> dict[str, Any]:
         """Frame a tool result, flagging ``Error:`` prose when opted in."""
         flagged = error_prefix_is_error and text.startswith("Error:")
-        return build_tool_response(text, is_error=flagged)
+        return build_tool_response(text, is_error=flagged, image=image)
 
     def _run_tool(
         req_id: Any,
@@ -375,6 +376,9 @@ def _run_stdio_dispatch_loop(
             set_current_caller(None)
             set_current_tool_call_id("")
             set_current_tenant_nonce("")
+            # The picture this call attached (session-bound app tools only), taken
+            # in the thread that ran it so it can only answer this call.
+            _image = take_tool_image()
         # Audit decision is made atomically with the cancellation check, under
         # the same lock that guards response delivery: exactly ONE audit event
         # per request (a failed+late-cancel race must not emit two).
@@ -383,7 +387,7 @@ def _run_stdio_dispatch_loop(
                 # A DeferredTool is boxed as-is: the loop registers it and
                 # answers the request when a later step settles it.
                 _result_box.append(
-                    result if isinstance(result, DeferredTool) else _tool_response(result)
+                    result if isinstance(result, DeferredTool) else _tool_response(result, _image)
                 )
                 if _tool_errored:
                     # Exception escaped call_tool_fn (may bypass its internal

@@ -7049,7 +7049,10 @@ answer is relayed unchanged; `app_agent_tool` redacts it and then cuts it at the
 its JSON.
 
 A tool declared `result: "text"` answers `{"text": <str>}`, the model-facing text it
-formatted, which `app_agent_tool` redacts and cuts at the cap like a JSON answer. A tool
+formatted, which `app_agent_tool` redacts and cuts at the cap like a JSON answer. A
+`strictSession` tool may answer `{"text": <str>, "image": <base64 PNG>}` instead: the text
+is handled the same, and the picture rides beside it as one MCP image block only when it
+is a PNG within `mcp_tool_image`'s byte and edge caps (otherwise the text goes alone). A tool
 that exists to hand over a credential answers `{"text": [<str>, ...], "credential":
 <str>}` instead: the text cut at each place the credential stands (at most 8 pieces), and
 the credential, one printable token of 16 to 4,096 characters. Each piece is redacted on

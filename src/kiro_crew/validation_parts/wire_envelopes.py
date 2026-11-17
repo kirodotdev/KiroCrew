@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.mcp_tool_image import content_block
 from kiro_crew.validation_parts.field_engine import ValidationError
 from kiro_crew.validation_parts.input_bounds import MAX_MEDIUM_STRING, MAX_RESPONSE_LEN
 from kiro_crew.validation_parts.text_sanitizer import sanitize_response, sanitize_string
@@ -106,7 +107,11 @@ class McpTextContent:
 
 
 def build_tool_response(
-    text: str, max_len: int = MAX_RESPONSE_LEN, *, is_error: bool = False
+    text: str,
+    max_len: int = MAX_RESPONSE_LEN,
+    *,
+    is_error: bool = False,
+    image: str | None = None,
 ) -> dict[str, Any]:
     """Build a validated, sanitized MCP tools/call response.
 
@@ -116,11 +121,15 @@ def build_tool_response(
     This is the single exit point for all tool responses — ensures every
     response conforms to the MCP TextContent schema and is sanitized.
     ``is_error`` adds the MCP ``isError`` flag so a client can tell a refusal
-    from an answer without pattern-matching the prose.
+    from an answer without pattern-matching the prose. ``image`` is one checked
+    base64 PNG (``kiro_crew.mcp_tool_image``) framed after the text; an error
+    answer drops it.
     """
     text = sanitize_response(text, max_len)
     content = McpTextContent(type="text", text=text)
     frame: dict[str, Any] = {"content": [content.to_dict()]}
+    if image is not None and not is_error:
+        frame["content"].append(content_block(image))
     if is_error:
         frame["isError"] = True
     return frame
