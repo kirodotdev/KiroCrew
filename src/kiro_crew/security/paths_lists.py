@@ -1321,6 +1321,12 @@ _KIRO_MATE_STATE_LEAVES: tuple[str, ...] = (
     ".kiro/mates/migrated.json",
 )
 _WRITE_PROTECTED_HOME_PATHS += list(_KIRO_MATE_STATE_LEAVES)
+# Crew's own ``kirocrew-lite`` copy that KAS sessions are sent
+# (``config.paths.kas_service_spec_dir``): the spec those sessions run, fenced like
+# the user-level agents dir it stands in for. Only the gateway's installer and
+# repair write it.
+_KIRO_MATE_SERVICE_DIR = ".kiro/mates/service"
+_WRITE_PROTECTED_HOME_PATHS += [_KIRO_MATE_SERVICE_DIR]
 
 
 # ── kiro-cli global MCP registry (~/.kiro/settings/mcp.json) ──
@@ -1387,6 +1393,7 @@ _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     *_KIRO_PERMISSION_RULE_LEAVES,
     _KIRO_MATE_AGENTS_DIR,
     *_KIRO_MATE_STATE_LEAVES,
+    _KIRO_MATE_SERVICE_DIR,
 )
 
 

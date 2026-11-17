@@ -544,8 +544,31 @@ async def _rewrite_lite_spec(sessions: Any) -> None:
         _lite_rewrites["running"] -= 1
 
 
+def _background_spawn_backend(sessions: Any) -> str | None:
+    """The backend a background session on *sessions* starts under, or ``None``.
+
+    ``agent.acp_backend``, read the way the background runtime reads it
+    (``_configured_bg_backend_raw``). ``None`` when it cannot be read, which the
+    pre-spawn check treats as "not KAS", so it reads the user-level spec as before.
+    """
+    read = getattr(sessions, "_configured_bg_backend_raw", None)
+    if not callable(read):
+        return None
+    try:
+        backend = read()
+    except Exception:
+        return None
+    return backend if isinstance(backend, str) else None
+
+
 async def _lite_spec_unconfirmed(
-    sessions: Any, key: str, client: Any, *, agent: str, authored_before_spawn: bool
+    sessions: Any,
+    key: str,
+    client: Any,
+    *,
+    agent: str,
+    authored_before_spawn: bool,
+    before_spawn_backend: str | None = None,
 ) -> bool:
     """True when a ``kirocrew-lite`` session's spec cannot be confirmed tool-less.
 
@@ -556,8 +579,12 @@ async def _lite_spec_unconfirmed(
     with the read taken before the spawn and the spec the harness loaded, read
     after it (``effective_spec_declares_zero_tools``). Any other agent, or a
     backend that reads no spec of Crew's, answers False. Never raises.
+
+    The pre-spawn read only vouches for the backend it was taken for
+    (*before_spawn_backend*, when the caller passes it): a session that started on
+    another one has it ignored.
     """
-    from kiro_crew.agent_sdk.backends import Routing, routing_for
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, Routing, routing_for
     from kiro_crew.session import BACKGROUND_AGENT  # circular import
 
     try:
@@ -570,6 +597,9 @@ async def _lite_spec_unconfirmed(
     backend = getattr(acp, "backend", None)
     if not isinstance(backend, str) or routing_for(backend) is not Routing.AGENT_SPEC:
         return False
+    read_for_kas = before_spawn_backend == ACP_BACKEND_KAS
+    if before_spawn_backend is not None and read_for_kas != (backend == ACP_BACKEND_KAS):
+        authored_before_spawn = False
     confirm = getattr(acp, "effective_spec_declares_zero_tools", None)
     if not callable(confirm):
         return True
@@ -651,10 +681,13 @@ async def background_turn(
     resolved_agent = agent if agent is not None else BACKGROUND_AGENT
     lite_before_spawn = False
     rewrites_begun = _lite_rewrites["begun"]
+    spawn_backend = _background_spawn_backend(sessions)
     if resolved_agent == BACKGROUND_AGENT:
         from kiro_crew.agent_sdk.agent_specs import authored_spec_toolless_verdict
 
-        verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
+        verdict = await asyncio.to_thread(
+            authored_spec_toolless_verdict, BACKGROUND_AGENT, backend=spawn_backend
+        )
         # Only this first read can vouch for a live session, and not while a rewrite
         # runs: a session started before one may have loaded the old file.
         lite_before_spawn = verdict is True and not _lite_rewrites["running"]
@@ -667,7 +700,9 @@ async def background_turn(
             _lite_rewrite_tasks.add(repair)
             repair.add_done_callback(_lite_rewrite_tasks.discard)
             await asyncio.shield(repair)
-            verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
+            verdict = await asyncio.to_thread(
+                authored_spec_toolless_verdict, BACKGROUND_AGENT, backend=spawn_backend
+            )
         if verdict is False:
             # A spec that mounts something is refused before ``get_or_create``:
             # starting the session would run what it names (an MCP server's startup
@@ -702,7 +737,12 @@ async def background_turn(
     # provider in ``_lite_resets_failed``, refused on its next turn.
     try:
         unconfirmed = await _lite_spec_unconfirmed(
-            sessions, key, client, agent=resolved_agent, authored_before_spawn=lite_before_spawn
+            sessions,
+            key,
+            client,
+            agent=resolved_agent,
+            authored_before_spawn=lite_before_spawn,
+            before_spawn_backend=spawn_backend,
         )
         if not unconfirmed and lite_before_spawn and _lite_rewrites["begun"] != rewrites_begun:
             # A rewrite begun since the pre-spawn read can hide what this session loaded.

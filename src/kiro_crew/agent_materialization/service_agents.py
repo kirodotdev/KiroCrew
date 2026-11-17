@@ -108,14 +108,16 @@ def _repair_spec_from_template(
     source: str,
     operation: str,
     label: str,
+    directory: Path | None = None,
 ) -> bool:
     """Rewrite the existing spec *filename* from the template *build* returns, if it differs.
 
     The one body of :func:`repair_guest_agent_spec` and :func:`repair_lite_agent_spec`;
-    *label* names the spec in its log lines. A missing file is not created. Returns
-    True when it rewrote the file. Never raises. Blocking.
+    *label* names the spec in its log lines. *directory* defaults to the user-level
+    agents folder. A missing file is not created. Returns True when it rewrote the
+    file. Never raises. Blocking.
     """
-    path = agent_mod.kiro_agents_dir_path() / filename
+    path = (directory or agent_mod.kiro_agents_dir_path()) / filename
     try:
         config = build()
         auto_approve.govern_spec(config, agent_filename=filename, source=source, kas_policy="none")
@@ -355,6 +357,16 @@ def _lite_agent_config() -> dict[str, Any]:
     }
 
 
+def _lite_service_path() -> Path:
+    """Where the ``kirocrew-lite`` copy the KAS projection reads lives."""
+    from kiro_crew.config import paths as paths_mod
+
+    folder = paths_mod.kas_service_spec_dir(Path(_LITE_AGENT_FILENAME).stem)
+    if folder is None:
+        raise RuntimeError("kirocrew-lite has no KAS service folder")
+    return folder / _LITE_AGENT_FILENAME
+
+
 def _install_lite_agent_fallback() -> None:
     """Write a bare kirocrew-lite config (cheap background agent)."""
     lite_path = agent_mod.kiro_agents_dir_path() / _LITE_AGENT_FILENAME
@@ -362,6 +374,12 @@ def _install_lite_agent_fallback() -> None:
     # ``includeMcpJson`` pin, without which kiro-cli merges the global ``mcp.json``.
     auto_approve.write_governed_spec(
         lite_path, _lite_agent_config(), source="_install_lite_agent_fallback", kas_policy="none"
+    )
+    # The copy KAS sessions are sent (``config.paths.kas_service_spec_dir``).
+    service = _lite_service_path()
+    service.parent.mkdir(parents=True, exist_ok=True)
+    auto_approve.write_governed_spec(
+        service, _lite_agent_config(), source="_install_lite_agent_fallback", kas_policy="none"
     )
     # Cheap model for the claude_code (CC) provider. kiro-cli resolves the lite
     # model from `model` via --agent; the CC backend can't, so the provider
@@ -530,15 +548,31 @@ def repair_lite_agent_spec() -> bool:
     directory stops every background turn until a rebuild. The helper calls this when
     it is about to refuse, then reads the spec again, and that read still decides.
     Compared and rewritten as :func:`repair_guest_agent_spec` is; a missing file is not
-    created.
+    created. The copy KAS sessions are sent (:func:`_lite_service_path`) is repaired
+    the same way, unless its folder cannot be resolved. Never raises: a repair that
+    could not run leaves the file as it was, and the read after it still decides.
     """
-    return _repair_spec_from_template(
+    user_level = _repair_spec_from_template(
         _LITE_AGENT_FILENAME,
         _lite_agent_config,
         source="repair_lite_agent_spec",
         operation="lite_spec_repair",
         label="background agent spec",
     )
+    try:
+        service_dir = _lite_service_path().parent
+    except Exception:
+        agent_mod.logger.warning("Could not resolve the kirocrew-lite KAS copy", exc_info=True)
+        return user_level
+    service = _repair_spec_from_template(
+        _LITE_AGENT_FILENAME,
+        _lite_agent_config,
+        source="repair_lite_agent_spec",
+        operation="lite_spec_repair",
+        label="background agent spec",
+        directory=service_dir,
+    )
+    return user_level or service
 
 
 def _governed_knowledge_template(source: str) -> dict[str, Any]:

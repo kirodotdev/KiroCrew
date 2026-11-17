@@ -2902,6 +2902,24 @@ by another tool, and a background turn on it is closed right after such a start
 (`llm_helpers_parts/background_turns.py`), so its start does not wait for that
 server first.
 
+On KAS, such a server never reaches the spec the session is sent. KAS is sent the spec Crew reads, and for
+`kirocrew-lite` Crew reads its own copy, `~/.kiro/mates/service/kirocrew-lite.json`
+(`config.paths.kas_service_spec_dir`, resolved by
+`acp.kas_agents.kas_service_spec_folder`), which the installer and
+`repair_lite_agent_spec` write beside the user-level file. A sandbox launcher that
+rewrites every spec in `~/.kiro/agents/` on each kiro-cli start does not reach it.
+The folder keeps the user-level file's two guards: the file-edit tool gate refuses a
+write into it (`security.paths_lists._KIRO_MATE_SERVICE_DIR`), and Crew's sandbox
+seals it read-only beside `~/.kiro/agents/`
+(`sandbox_tiers._resolved_kiro_agents_targets`, created when absent by
+`sandbox_seals._sealable_absent_ceilings`).
+The zero-tool checks read the same copy on KAS (the pre-spawn
+`authored_spec_toolless_verdict` also requires it to mount nothing, and
+`client_mcp_array.effective_spec_declares_zero_tools` judges it after the start),
+so a server written into the copy is still refused. kiro-cli's own `--agent`
+route keeps loading and checking `~/.kiro/agents/kirocrew-lite.json`. With the copy
+missing, KAS falls back to the user-level file.
+
 `person_waits` is the one predicate, and WHO IS WAITING decides it, not the
 queue the start waited in. A person is waiting when the start claimed
 `FOREGROUND` (`kiro_crew.start_priority`: the claim the session manager puts on

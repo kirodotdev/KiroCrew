@@ -1365,6 +1365,27 @@ def mate_agents_dir() -> Path:
     return kiro_home() / "mates" / "agents"
 
 
+def kas_service_spec_dir(name: object) -> Path | None:
+    """The Crew-owned folder the KAS projection reads *name*'s spec from first, or ``None``.
+
+    Only ``kirocrew-lite`` has one: ``<kiro home>/mates/service``, beside
+    :func:`mate_agents_dir`. KAS takes its agent definition from Crew over the wire,
+    so on KAS this copy is what the session runs; kiro-cli's own ``--agent`` route
+    still reads ``~/.kiro/agents/kirocrew-lite.json``. A tool that rewrites every
+    spec in ``~/.kiro/agents/`` on each kiro-cli start therefore cannot reach the
+    definition a KAS lite session is sent. Not :func:`mate_agents_dir` itself:
+    every crewmate scanner reads that folder, and lite is not a crewmate. The
+    projection (``acp.harness.kas.resolve_projected_spec``) and the zero-tool
+    checks (``acp.client_mcp_array``, ``agent_sdk.agent_specs``) take the folder
+    from here, so they read the same file.
+    """
+    from kiro_crew.agent_files import LITE_AGENT_FILENAME
+
+    if name != Path(LITE_AGENT_FILENAME).stem:
+        return None
+    return mate_agents_dir().parent / "service"
+
+
 def spec_dir_for(name: object, agents_dir: Path | None = None) -> Path:
     """The folder a by-name read of *name*'s spec uses: this folder for the mate
     conductor and worker, which Crew writes here, else *agents_dir* (default: the

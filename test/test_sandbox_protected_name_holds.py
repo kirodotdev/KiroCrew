@@ -548,6 +548,11 @@ class TestLeafOnlyPopulationIsRecorded:
     #: it cannot take a stand-in; nothing republishes ``state`` itself (its writers rename
     #: files INSIDE it), and its parents are pinned against rename.
     #:
+    #: ``kiro-mates/service``: Crew's own ``kirocrew-lite`` copy that KAS sessions are
+    #: sent, sealed like the user-level agents dir it stands in for. Its parent
+    #: ``~/.kiro/mates`` holds the crewmate folders the gateway writes, so it cannot
+    #: take a stand-in; the gateway rewrites the file INSIDE it, never the directory.
+    #:
     #: The record is one line per name, not a count per tier: two changes that each
     #: add a different leaf add different lines and stay green merged, where a count
     #: would be rewritten to the same number by both (testing-conventions.md
@@ -680,6 +685,7 @@ class TestLeafOnlyPopulationIsRecorded:
         "<crew>/workspace/md-notebook/vaults.json": (3, "standard cc strict"),
         "<isolated>/kiro-agents": (1, "standard cc strict"),
         "<isolated>/kiro-home/.kiro/crew/run": (1, "standard cc strict"),
+        "<isolated>/kiro-mates/service": (1, "standard cc strict"),
         "~/.aws": (1, "cc strict"),
         "~/.azure": (1, "standard cc strict"),
         "~/.config/gcloud": (1, "standard cc strict"),

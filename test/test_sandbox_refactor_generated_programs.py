@@ -38,6 +38,7 @@ from test_sandbox_launcher_program import program_on_disk, rendered_payload
 
 from kiro_crew import sandbox, sandbox_launcher, sandbox_plan
 from kiro_crew.apps import credential_masks
+from kiro_crew.config import paths as paths_mod
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -126,6 +127,9 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(sandbox, "config_dir", lambda: pinned.crew)
     monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: pinned.home / ".kiro" / "agents")
+    # The KAS lite copy's folder is sealed beside the agents dir; its own test pins
+    # that (``test_lite_kas_service_spec.py``), so the goldens leave it out.
+    monkeypatch.setattr(paths_mod, "kas_service_spec_dir", lambda _name: None)
     monkeypatch.setattr(sandbox, "carveout_chain_has_planted_link", lambda _path: False)
     # The seal-parent walk stops inside the pinned root, so no golden names this machine.
     walk = sandbox._literal_ancestor_guards

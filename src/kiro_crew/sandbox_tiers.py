@@ -55,9 +55,20 @@ def _resolved_kiro_agents_targets() -> list[str]:
     home-relative literal — so a relocated data home is covered by the same
     entry. Same contract as :func:`_relocated_crew_targets`: ``normpath``
     never ``realpath`` (event-loop safety), and never raises.
+
+    The folder of Crew's own ``kirocrew-lite`` copy that KAS sessions are sent
+    (``config.paths.kas_service_spec_dir``) is sealed the same way: it replaces the
+    user-level file as the spec those sessions run.
     """
     try:
-        return [os.path.normpath(str(kiro_agents_dir()))]
+        from kiro_crew.agent_files import LITE_AGENT_FILENAME
+        from kiro_crew.config.paths import kas_service_spec_dir
+
+        targets = [os.path.normpath(str(kiro_agents_dir()))]
+        service = kas_service_spec_dir(LITE_AGENT_FILENAME.removesuffix(".json"))
+        if service is not None:
+            targets.append(os.path.normpath(str(service)))
+        return targets
     except Exception:
         return []
 

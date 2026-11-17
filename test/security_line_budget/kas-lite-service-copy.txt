@@ -1,0 +1,5 @@
++8
+``_KIRO_MATE_SERVICE_DIR`` in ``paths_lists`` (and its export in ``paths.py``): the
+folder holding Crew's own ``kirocrew-lite`` copy that KAS sessions are sent joins the
+file-edit write fence and the kiro-cli write tier, like the user-level agents dir it
+stands in for. No deny pattern or rule is removed.

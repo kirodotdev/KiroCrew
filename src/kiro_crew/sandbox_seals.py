@@ -104,6 +104,15 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
         agents_dir = str(kiro_agents_dir())
         if os.path.isdir(os.path.dirname(agents_dir)):
             dir_targets.append(agents_dir)
+        # The folder of the ``kirocrew-lite`` copy KAS sessions are sent, sealed beside
+        # it (``sandbox_tiers._resolved_kiro_agents_targets``). Its parent, the crewmate
+        # home, is written at every gateway start.
+        from kiro_crew.agent_files import LITE_AGENT_FILENAME
+        from kiro_crew.config.paths import kas_service_spec_dir
+
+        service = kas_service_spec_dir(LITE_AGENT_FILENAME.removesuffix(".json"))
+        if service is not None and os.path.isdir(os.path.dirname(str(service))):
+            dir_targets.append(str(service))
     except Exception:  # pragma: no cover - defensive, same posture as above
         logger.debug("could not resolve the kiro agents dir for sealing", exc_info=True)
     return (dir_targets, file_targets)

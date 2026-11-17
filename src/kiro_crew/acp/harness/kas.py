@@ -404,6 +404,12 @@ def resolve_projected_spec(
         service_dir = paths_mod.mate_agents_dir()
         if not kas_agents_mod.agent_spec_absent(service_dir, agent):
             return kas_agents_mod.load_agent_spec(service_dir, agent), service_dir
+    service = kas_agents_mod.kas_service_spec_folder(agent)
+    if service is not None:
+        # Crew's own copy, outside the folder a sandbox launcher rewrites on every
+        # kiro-cli start (``config.paths.kas_service_spec_dir``). The zero-tool
+        # checks read this same file on KAS.
+        return kas_agents_mod.load_agent_spec(service, agent), service
     if not kas_agents_mod.agent_spec_absent(agents_dir, agent):
         # A user-level template Crew does not own gets the servers the user approved
         # for it merged here, at spawn, and never written into its file
@@ -1398,6 +1404,15 @@ class KasHarness(MembershipHarness):
                 # so a server muted or removed in between is withdrawn from the
                 # session-level array too: this payload is the later reading.
                 withdrawn = withdrawn_worker_stubs(spec, worker_stub_names, scope_muted=scope_muted)
+            elif prompt_dir == kas_agents_mod.kas_service_spec_folder(agent):
+                # Crew's own copy (``resolve_projected_spec``): its stubs were picked
+                # from the user-level spec of this name, which KAS is not sent, so
+                # every stub the copy does not mount unmuted is withdrawn, as for a
+                # worker, and against the names ``session/new`` carries when the
+                # caller captured them.
+                if worker_stub_names is not None:
+                    stubbed = worker_stub_names
+                withdrawn = withdrawn_worker_stubs(spec, stubbed, scope_muted=scope_muted)
             else:
                 # A server this spec declares muted (a checkout's switch-off,
                 # ``_with_project_switch_offs``) is withdrawn from the session-level

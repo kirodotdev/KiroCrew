@@ -1162,6 +1162,22 @@ def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
     return declared is None
 
 
+def kas_service_spec_folder(agent_id: str) -> Path | None:
+    """The Crew-owned folder KAS reads *agent_id* from first, when it holds a spec for it.
+
+    ``config.paths.kas_service_spec_dir``; ``None`` for every other agent, and for
+    lite while the folder or its file is missing, so the user level answers as it
+    did before. The projection and the zero-tool checks both resolve through this.
+    Blocking; raises as :func:`agent_spec_absent` does.
+    """
+    from kiro_crew.config import paths as paths_mod
+
+    folder = paths_mod.kas_service_spec_dir(agent_id)
+    if folder is None or not folder.is_dir() or agent_spec_absent(folder, agent_id):
+        return None
+    return folder
+
+
 def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     """Read a materialized agent spec.
 

@@ -18,7 +18,7 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 ``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
 ``_spec_write_cwd``, ``_spec_zero_tools``.
 
-Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
 ``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_pi_gate_nonce``, ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``,
@@ -52,6 +52,7 @@ from kiro_crew.acp.spec_tools_allowlists import (
     spec_write_globs,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
@@ -148,6 +149,26 @@ def authored_agent_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     return spec_is_toolless(spec)
 
 
+def kas_service_spec_toolless(agent: str) -> bool | None:
+    """Whether *agent*'s Crew-owned KAS copy mounts nothing, or ``None`` when it has none.
+
+    The file the KAS projection sends (``kas_agents.kas_service_spec_folder``), read
+    with the projection's own reader and judged by :func:`spec_is_toolless`.
+    Blocking; fails closed: a copy that cannot be read answers False.
+    """
+    from kiro_crew.acp import kas_agents
+
+    try:
+        folder = kas_agents.kas_service_spec_folder(agent)
+        if folder is None:
+            return None
+        spec = kas_agents.load_agent_spec(folder, agent)
+    except Exception:
+        logger.warning("KAS copy of %r unreadable; not confirming zero tools", agent, exc_info=True)
+        return False
+    return spec_is_toolless(spec)
+
+
 def authored_spec_declares_zero_tools(self: AcpClient) -> bool:
     """True when the authored spec this agent name resolves to mounts nothing.
 
@@ -219,6 +240,12 @@ def effective_spec_declares_zero_tools(
     """
     projection = getattr(self, "_native_skill_projection", None)
     if projection is None:
+        if getattr(self, "_acp_backend", "") == ACP_BACKEND_KAS:
+            # KAS is sent the spec Crew reads, and for an agent with a Crew-owned
+            # copy that copy is the file it reads (``kas_agents.kas_service_spec_folder``).
+            service = kas_service_spec_toolless(self._agent)
+            if service is not None:
+                return authored_before_spawn and service
         return authored_before_spawn and authored_agent_spec_is_toolless(
             self._agent, self._work_dir
         )

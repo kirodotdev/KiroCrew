@@ -88,11 +88,13 @@ class TestAgentStateSidecarWriteProtection:
         # hard-coded literal), and the dir is pre-created so the Linux mount
         # seal has a target on an install where it does not exist yet.
         from kiro_crew import sandbox
-        from kiro_crew.config.paths import kiro_agents_dir
 
         # ``normpath`` on the expected side because the resolver normalizes too, so a
         # ``..``-bearing KIRO_HOME cannot false-red this.
+        from kiro_crew.config.paths import kas_service_spec_dir, kiro_agents_dir
+
         sealed = os.path.normpath(str(kiro_agents_dir()))
+        service = os.path.normpath(str(kas_service_spec_dir("kirocrew-lite")))
         targets = sandbox._resolved_kiro_agents_targets()
         # Equality, and nothing weaker: the contract is that the seal covers EXACTLY
         # the tree the resolver names. An ``or targets`` disjunct here is
@@ -100,7 +102,8 @@ class TestAgentStateSidecarWriteProtection:
         # only ever fail on the resolver's ``except Exception: return []`` branch —
         # a regression to a hard-coded home-relative literal, an extra entry, or a
         # differently spelled path would seal the WRONG tree and still pass.
-        assert targets == [sealed], targets
+        # The second entry is the folder of the ``kirocrew-lite`` copy KAS sessions run.
+        assert targets == [sealed, service], targets
         dirs, _files = sandbox._sealable_absent_ceilings()
         # The pre-create list must name that same resolved dir. A suffix check on
         # ``endswith("agents")`` passes on any entry whose basename merely ends that
