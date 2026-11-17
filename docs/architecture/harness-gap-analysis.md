@@ -93,7 +93,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-SPEC-3 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | tracked privately |
 | R-SPEC-4 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | tracked privately |
 | R-SPEC-5 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | tracked privately |
-| R-SPEC-6 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `CREW_LOADS_SPEC_STEERING` = {claude, codex} `agent_sdk/backends_routing.py`; kiro/KAS native |
+| R-SPEC-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ❓ | ❓ | `CREW_LOADS_SPEC_STEERING` = {claude, codex, opencode, pi} `agent_sdk/backends_routing.py`; kiro/KAS native |
 | R-SPEC-7 | ➖ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | KAS reader `acp/kas_prompt.py` |
 | R-SPEC-8 | ➖ | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | claude imports the fixed readers (`acp/spec_tools_allowlists.py`); other mirrors rule `TOOLS_SETTINGS` withheld/no-channel |
 | R-SPEC-9 | ➖ | ✅ | ✅ | ✅ | ✅ | ✅ | ➖ | ➖ | ➖ | shared payload `agent_sdk/spec_hooks.py`; observer set `agent_sdk/backends_routing.py` |

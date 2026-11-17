@@ -421,7 +421,7 @@ def build_session_context(
     max_context_chars = caps.max_context
 
     # Steering files from agent config resources: only on a harness that reads
-    # no agent ``resources`` (Claude Code, Codex), since kiro-cli loads them
+    # no agent ``resources`` (Claude Code, Codex, OpenCode, Pi), since kiro-cli loads them
     # natively. The gate is shared with post-compaction re-injection.
     steering_ctx = _inclusion.steering_resources_part(
         agent=agent,

@@ -1072,13 +1072,13 @@ def _project_steering_delivered(
     workspace that sets ``chat.disableInheritingDefaultResources`` gets only
     the declared resources, so the folder carries the trees minus the
     documents in the launch record); a harness Crew loads the spec's steering
-    for (``acp_driver.crew_loads_spec_steering``: the Claude Code seam and
-    Codex) receives the explicit ``[Steering resources]`` load in
+    for (``acp_driver.crew_loads_spec_steering``: the Claude Code seam,
+    Codex, OpenCode and Pi) receives the explicit ``[Steering resources]`` load in
     ``build_message``, but only for the Kiro Crew default agent: that load
     sends nothing for a custom *agent*, so there the folder still carries the
     trees (``None`` is the default agent); KAS reports ``native_steering`` on
-    its session provider. Every other harness -- OpenCode, Pi, Goose,
-    DeepSeek -- has NO path for those trees today, so a folder that declares one
+    its session provider. Every other harness -- Goose, DeepSeek and
+    the rest -- has NO path for those trees today, so a folder that declares one
     of them must deliver its documents itself rather than skip them as "already
     delivered" with nothing arriving in their place. A harness that is not
     named (``None``) is not assumed to be kiro-cli: it matches no path here, so

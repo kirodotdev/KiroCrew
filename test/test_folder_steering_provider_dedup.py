@@ -23,8 +23,10 @@ from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.types import (
     PROVIDER_LABEL_BY_BACKEND,
     PROVIDER_LABEL_CODEX,
+    PROVIDER_LABEL_DEEPSEEK,
     PROVIDER_LABEL_KAS,
     PROVIDER_LABEL_OPENCODE,
+    PROVIDER_LABEL_PI,
 )
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -97,7 +99,9 @@ def _opt_out(project: Path) -> None:
         (PROVIDER_CLAUDE_CODE, False, True),
         (PROVIDER_LABEL_KAS, True, True),
         (PROVIDER_LABEL_CODEX, False, True),
-        ("opencode", False, False),
+        (PROVIDER_LABEL_OPENCODE, False, True),
+        (PROVIDER_LABEL_PI, False, True),
+        (PROVIDER_LABEL_DEEPSEEK, False, False),
         ("acme-config-authored-harness", False, False),
         (None, False, False),
     ],
@@ -534,7 +538,7 @@ def test_opted_out_kiro_folder_sends_a_guide_created_after_launch(tmp_path, tree
 
 
 @_needs_pinned_walk
-@pytest.mark.parametrize("harness", [PROVIDER_LABEL_OPENCODE, None], ids=["opencode", "unnamed"])
+@pytest.mark.parametrize("harness", [PROVIDER_LABEL_DEEPSEEK, None], ids=["deepseek", "unnamed"])
 def test_a_launch_record_applies_only_to_a_kiro_cli_harness(tmp_path, trees, monkeypatch, harness):
     """The record names guides kiro-cli loads. A provider on another harness, or
     one that names no harness, has nothing loading them, so the folder skips
@@ -602,10 +606,10 @@ def test_a_plain_chat_naming_no_harness_receives_the_trees_through_the_folder(tm
 
 
 @_needs_pinned_walk
-@pytest.mark.parametrize("harness", [PROVIDER_LABEL_CODEX, PROVIDER_LABEL_OPENCODE])
+@pytest.mark.parametrize("harness", [PROVIDER_LABEL_CODEX, PROVIDER_LABEL_DEEPSEEK])
 def test_an_opted_out_workspace_changes_nothing_for_another_harness(tmp_path, trees, harness):
     """The opt-out is a kiro-cli setting. Codex keeps getting the trees from
-    Crew's steering load and OpenCode through the folder, each rule once."""
+    Crew's steering load and DeepSeek through the folder, each rule once."""
     _declare([SHIPPED_STEERING_RESOURCE])
     _opt_out(trees["project"])
     msg, _ = _builder(tmp_path).build_message(
@@ -692,15 +696,49 @@ def test_codex_receives_project_and_global_steering_once_and_not_agents_md(
     assert AGENTS_GUIDE not in msg
 
 
-def test_crew_loads_spec_steering_only_for_claude_and_codex():
-    """No other harness gets the steering load from this change."""
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "after-compaction"])
+@pytest.mark.parametrize("harness", [PROVIDER_LABEL_OPENCODE, PROVIDER_LABEL_PI])
+def test_opencode_and_pi_receive_project_and_global_steering_once_and_not_agents_md(
+    tmp_path, trees, fresh, harness
+):
+    """OpenCode and Pi read no ``.kiro/steering`` tree themselves, so Crew's load
+    sends the project and global steering once, at session start and after a
+    compaction. An ``inclusion: auto`` document stays out, and so does the
+    project's ``AGENTS.md``, which each harness reads from its working directory."""
+    _declare([SHIPPED_STEERING_RESOURCE])
+    _write(trees["project"] / "AGENTS.md", AGENTS_GUIDE)
+    _write(
+        trees["project"] / ".kiro" / "steering" / "auto.md",
+        "---\ninclusion: auto\ndescription: d\n---\nAUTO-RULE-4c2a",
+    )
+    msg, _ = _builder(tmp_path).build_message(
+        "hello",
+        fresh,
+        f"dashboard:{harness}",
+        provider_type=harness,
+        project=str(trees["project"]),
+        steering_dirs=(),
+        needs_reinjection=not fresh,
+    )
+    for rule in (PROJECT_RULE, GLOBAL_RULE):
+        assert msg.count(rule) == 1, rule
+    assert "AUTO-RULE-4c2a" not in msg
+    assert AGENTS_GUIDE not in msg
+
+
+def test_crew_loads_spec_steering_names_exactly_the_harnesses_handed_no_spec():
+    """kiro-cli and KAS load the trees themselves; the others have no path yet."""
     labels = set(PROVIDER_LABEL_BY_BACKEND.values())
     assert {label for label in labels if acp_driver.crew_loads_spec_steering(label)} == {
         PROVIDER_CLAUDE_CODE,
         PROVIDER_LABEL_CODEX,
+        PROVIDER_LABEL_OPENCODE,
+        PROVIDER_LABEL_PI,
     }
     assert {label for label in labels if acp_driver.reads_project_agents_md(label)} == {
-        PROVIDER_LABEL_CODEX
+        PROVIDER_LABEL_CODEX,
+        PROVIDER_LABEL_OPENCODE,
+        PROVIDER_LABEL_PI,
     }
 
 

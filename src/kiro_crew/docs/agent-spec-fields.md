@@ -376,11 +376,12 @@ context rather than as config — `context.py`'s `_skills_injection_plan` return
 `bool(globs) or not is_custom`, with no backend condition, so Crew injects the
 mapped set on every backend, as a bounded directory plus each `always: true`
 body. The `file://` steering
-load runs on two of them only: it is gated on `ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`,
+load runs on four of them only: it is gated on `ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`,
 asked by provider label through `crew_loads_spec_steering(provider_type)`. The
-members are the `claude` `acp_backend` (its provider label is `claude_code`) and
-`codex`. No other harness gets the load. On `codex` the load leaves out the
-project's `AGENTS.md`, because Codex reads that file from its working directory
+members are the `claude` `acp_backend` (its provider label is `claude_code`),
+`codex`, `opencode` and `pi`. No other harness gets the load. On `codex`, `opencode`
+and `pi` the load leaves out the project's `AGENTS.md`, because each reads that file
+from its working directory
 (`ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`). `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
 the shared reason `RESOURCES_NO_READER` (`providers/mirrors/base.py`), which opens
 with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
