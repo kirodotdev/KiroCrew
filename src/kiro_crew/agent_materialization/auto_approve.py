@@ -397,13 +397,47 @@ def _seed_kas_permissions(config: dict[str, Any]) -> None:
     _write_derived_permissions(config, config.get("allowedTools"), AGENT_FILENAME)
 
 
+def _ceiling_split(refs: Any, servers: Any = None) -> tuple[list[str], list[str]]:
+    """``(kept, withheld)`` for a grant list under :func:`_may_auto_approve`.
+
+    A grant covering a ``NEVER_AUTO_APPROVED`` ref is replaced by
+    ``narrowed_grant``'s grants that the ceiling permits: what else it covered on
+    the mounted *servers* (the config's ``mcpServers``) and the withheld server's
+    other verbs. One that also grants the shell (``*``) is judged as written.
+    Non-string entries are dropped: they are not tool refs and would crash the
+    predicate.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import narrowed_grant  # noqa: PLC0415 - boot path
+
+    names = list(servers) if isinstance(servers, dict) else []
+    kept: list[str] = []
+    withheld: list[str] = []
+    narrowed_any = False
+    for ref in refs:
+        if not isinstance(ref, str):
+            continue
+        narrowed = narrowed_grant(ref, names)
+        if narrowed is None:
+            (kept if _may_auto_approve(ref) else withheld).append(ref)
+            continue
+        narrowed_any = True
+        subs = [sub for sub in narrowed if _may_auto_approve(sub)]
+        withheld.append(
+            f"{ref} (narrowed to {', '.join(subs) or 'nothing'}; "
+            "background_run is never auto-approved)"
+        )
+        kept.extend(subs)
+    return (list(dict.fromkeys(kept)) if narrowed_any else kept), withheld
+
+
 def _may_auto_approve(ref: str) -> bool:
     """Whether ``ref`` may go on an auto-approve list, per the governance ceiling.
 
-    One-line delegate on purpose: the decision AND the ceiling resolution both
-    live in ``platform.governance`` so the five writers of an ``allowedTools``
-    list cannot drift apart. Kept as a named local so it is monkeypatchable in
-    tests without reaching into another module's namespace.
+    The ceiling decision AND its resolution live in ``platform.governance`` so the
+    five writers of an ``allowedTools`` list cannot drift apart. That predicate also
+    refuses every ref reaching ``NEVER_AUTO_APPROVED`` (``agent_sdk.mcp_refs``),
+    ceiling or none. Kept as a named local so it is monkeypatchable in tests without
+    reaching into another module's namespace.
     """
     return may_skip_gate_now(ref)
 
@@ -434,12 +468,7 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str, audit: bool = Tru
     allowed = config.get("allowedTools")
     if not isinstance(allowed, list):
         return
-    kept: list[str] = []
-    withheld: list[str] = []
-    for ref in allowed:
-        if not isinstance(ref, str):
-            continue
-        (kept if _may_auto_approve(ref) else withheld).append(ref)
+    kept, withheld = _ceiling_split(allowed, config.get("mcpServers"))
     config["allowedTools"] = kept
     if withheld and audit:
         try:
@@ -527,16 +556,11 @@ def final_ceiling_pass(config: dict) -> None:
     # mounting a tool is not auto-approving it.
     allowed = config.get("allowedTools")
     if isinstance(allowed, list):
-        kept: list[str] = []
-        withheld: list[str] = []
-        for ref in allowed:
-            if not isinstance(ref, str):
-                # A malformed non-string entry (e.g. a hand-edited config with
-                # `allowedTools: [1]`) would crash may_skip_gate's
-                # ref.startswith() and fault the whole rebuild. It is not a valid
-                # tool ref, so drop it entirely rather than keep or audit it.
-                continue
-            (kept if _may_auto_approve(ref) else withheld).append(ref)
+        # A malformed non-string entry (e.g. a hand-edited config with
+        # `allowedTools: [1]`) would crash may_skip_gate's ref.startswith() and
+        # fault the whole rebuild, so the split drops it rather than keep or audit
+        # it. An on-disk grant covering background_run is narrowed here.
+        kept, withheld = _ceiling_split(allowed, config.get("mcpServers"))
         config["allowedTools"] = kept
         if withheld:
             # Withholding a grant is a permission DECISION, and this final pass is
@@ -587,10 +611,7 @@ def _filter_auto_approve(refs: tuple[str, ...], *, source: str) -> list[str]:
     per-installer difference is ``source`` alone, and the three conductor specs'
     tests pin that the emitted list is unchanged by the extraction.
     """
-    granted: list[str] = []
-    withheld: list[str] = []
-    for ref in refs:
-        (granted if _may_auto_approve(ref) else withheld).append(ref)
+    granted, withheld = _ceiling_split(refs)
     if withheld:
         try:
             agent_mod.sel().log_api_access(

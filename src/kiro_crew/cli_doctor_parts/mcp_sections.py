@@ -240,12 +240,19 @@ def _doctor_mcp_tools(
         granted = any(mcp_ref_owned_by(t, (name,)) for t in allowed)
         # The operator's own ``hooks.confirm_tools`` withholds through the same
         # chokepoint; name it, so it does not read as an enterprise ceiling.
-        by_confirm = withheld_by_confirm_tools(ref)
-        if not may_skip_gate_now(ref) and granted and declined:
+        # The shared predicate refuses a whole-server ref covering a never-auto-approved
+        # verb (``@kirocrew-cron``) whatever the ceiling says; that must not read as a
+        # ceiling and revoke every cron grant. The ceiling answers each verb of a server
+        # alike, so such a server is judged by one of its other verbs (else by *ref*).
+        from kiro_crew.agent_sdk.drivers.acp import narrowed_grant
+
+        judged = next(iter(narrowed_grant(ref) or ()), ref)
+        by_confirm = withheld_by_confirm_tools(judged)
+        if not may_skip_gate_now(judged) and granted and declined:
             config_changed = True
             cause = "withheld by hooks.confirm_tools" if by_confirm else "forbidden by ceiling"
             issues.append(f"{ref} auto-approve {cause} (repair from the owning install)")
-        elif not may_skip_gate_now(ref):
+        elif not may_skip_gate_now(judged):
             # REVOKE, not merely "do not add". A grant can predate the ceiling —
             # the policy arrives on a host whose config was written while it was
             # ungoverned — and leaving it in place means the ceiling applies only
@@ -289,8 +296,15 @@ def _doctor_mcp_tools(
             # decision the user owns); doctor simply never mints one. A gated-off
             # server never gets one minted either: granting auto-approve to a
             # server emission has decided against is the wrong direction.
-            allowed.append(ref)
-            config_changed = True
+            # A bare ref covering ``background_run`` is minted narrowed, so the
+            # repair never auto-approves it; a user's own whole-server grant is
+            # left for the next build to narrow.
+            from kiro_crew.agent_sdk.drivers.acp import narrowed_grant
+
+            minted = narrowed_grant(ref)
+            added = [g for g in ([ref] if minted is None else minted) if g not in allowed]
+            allowed.extend(added)
+            config_changed = config_changed or bool(added)
 
         if gate_closed:
             # Nothing should launch: no emitted spec defines this server, so a

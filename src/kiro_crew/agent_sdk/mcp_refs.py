@@ -382,6 +382,70 @@ class ReachIndex:
         return any(entry_reaches(entry, ref) for entry in (*tried, *self._scan))
 
 
+#: Refs no grant may ever cover, for any agent, on any route, with or without a
+#: ceiling. ``background_run`` starts an arbitrary command, so like ``execute_bash``
+#: each call has to reach the approval gate: an auto-approve would hand a
+#: prompt-injected agent unprompted command execution. Enforced by the shared
+#: gate-skip predicate (``platform.governance.may_skip_gate``), which every grant
+#: writer and projection consults.
+NEVER_AUTO_APPROVED: tuple[str, ...] = ("@kirocrew-cron/background_run",)
+
+
+def reaches_never_auto_approved(entry: str) -> bool:
+    """Whether an approval entry could grant a :data:`NEVER_AUTO_APPROVED` ref."""
+    return isinstance(entry, str) and any(entry_reaches(entry, ref) for ref in NEVER_AUTO_APPROVED)
+
+
+def entry_grants_shell(entry: str) -> bool:
+    """Whether a kiro-cli ``allowedTools`` entry surely grants the shell built-in.
+
+    :func:`entry_grants` against ``execute_bash`` and kiro-cli's own short
+    spellings of it (``platform.tool_names.KIRO_TOOL_ALIASES``), so ``*`` counts.
+    """
+    from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES
+
+    shell = "execute_bash"
+    names = [shell, *(alias for alias, name in KIRO_TOOL_ALIASES.items() if name == shell)]
+    return any(entry_grants(entry, name) for name in names)
+
+
+def withholds_never_auto_approved(entry: str) -> bool:
+    """Whether *entry* must not stand because it could grant a withheld ref.
+
+    True when it reaches a :data:`NEVER_AUTO_APPROVED` ref and does not already
+    grant the shell: ``*`` auto-approves ``execute_bash``, and ``background_run``
+    adds nothing to an unprompted shell, so such an entry is left as written.
+    """
+    return reaches_never_auto_approved(entry) and not entry_grants_shell(entry)
+
+
+def server_scoped_grants(entry: str, servers: Iterable[str], skip: Iterable[str] = ()) -> list[str]:
+    """What *entry* grants on each server in *servers*, as ``@server[/tool]`` refs.
+
+    ``@*`` becomes ``@other`` and ``@*/*_run`` becomes ``@other/*_run``. Server
+    names match case-sensitively, the narrower reading. A bare entry (``*_run``)
+    yields none: kiro-cli never reads a bare name as a server tool's grant
+    (:func:`entry_grants`), so scoping it to a server would widen it. Servers in
+    *skip* and candidates that reach a :data:`NEVER_AUTO_APPROVED` ref are left out.
+    """
+    if not isinstance(entry, str) or not entry.startswith(_MCP_PREFIX):
+        return []
+    server_glob, _, tool = entry[len(_MCP_PREFIX) :].partition("/")
+    if not server_glob:
+        return []
+    skipped = set(skip)
+    out: list[str] = []
+    for name in servers:
+        if not isinstance(name, str) or not name or name in skipped:
+            continue
+        if not fnmatchcase(name, server_glob):
+            continue
+        sub = f"{_MCP_PREFIX}{name}" if tool in ("", "*") else f"{_MCP_PREFIX}{name}/{tool}"
+        if sub not in out and not reaches_never_auto_approved(sub):
+            out.append(sub)
+    return out
+
+
 #: Glob syntax kiro-cli documents in the tool part of an ``allowedTools`` entry.
 #: Anything else (brackets, braces, negation) is not pinned down for kiro-cli, so
 #: :func:`entry_grants` reads it as no grant.

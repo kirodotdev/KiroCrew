@@ -855,7 +855,10 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 6, from 36,891, to 36,897, for ``memory_provider_consent.json`` on the
 #: crew secret-leaf list, beside ``decisions_consent.json``: the record authorizes
 #: memory to leave the machine, so the file-tool gate fences it like that one.
-_PACKAGE_LINE_BUDGET = 36_897
+#: Raised by one, from 36,897, for the ``background`` leaf on the write-protected home
+#: paths (``paths_lists``): one entry, so a file tool cannot forge the gateway's
+#: background command records; the floor only grows.
+_PACKAGE_LINE_BUDGET = 36_898
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

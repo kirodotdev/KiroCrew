@@ -189,10 +189,17 @@ def with_default_crew_servers(agent: str | None, spec: dict[str, Any]) -> dict[s
         out["tools"] = [*tool_list, *refs]
     allowed = out.get("allowedTools")
     if isinstance(allowed, list):
-        from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+        from kiro_crew.agent_sdk.drivers.acp import narrowed_grant
+        from kiro_crew.agent_sdk.mcp_refs import NEVER_AUTO_APPROVED, entry_reaches
         from kiro_crew.platform.governance import may_skip_gate_now
 
-        gated = [f"@{server}" for server in added if not may_skip_gate_now(f"@{server}")]
+        def judged(server: str) -> str:
+            # A whole-server ref covering ``background_run`` is refused for that one
+            # verb whatever the ceiling says; the ceiling answers each verb of a
+            # server alike, so ask it about one of the server's other verbs.
+            return next(iter(narrowed_grant(f"@{server}") or ()), f"@{server}")
+
+        gated = [f"@{server}" for server in added if not may_skip_gate_now(judged(server))]
 
         def reaches_gated(ref: object) -> bool:
             # Only entries that reach a server added here are judged: a per-tool
@@ -206,8 +213,30 @@ def with_default_crew_servers(agent: str | None, spec: dict[str, Any]) -> dict[s
                 for server in gated
             )
 
-        withheld = [ref for ref in allowed if reaches_gated(ref)]
-        out["allowedTools"] = [ref for ref in allowed if not reaches_gated(ref)]
+        mounted = list(out["mcpServers"])
+        added_withheld = [r for r in NEVER_AUTO_APPROVED if r[1:].partition("/")[0] in added]
+        withheld: list[Any] = []
+        kept: list[Any] = []
+        for ref in allowed:
+            if reaches_gated(ref):
+                withheld.append(ref)
+                continue
+            # A grant reaching an added server's never-auto-approved verb keeps
+            # everything else it covered (``narrowed_grant``); ``*`` stands.
+            narrowed = (
+                narrowed_grant(ref, mounted)
+                if isinstance(ref, str) and any(entry_reaches(ref, r) for r in added_withheld)
+                else None
+            )
+            if narrowed is None:
+                kept.append(ref)
+                continue
+            withheld.append(ref)
+            # An entry the author also wrote on its own keeps its own place.
+            kept.extend(
+                s for s in narrowed if s not in kept and s not in allowed and may_skip_gate_now(s)
+            )
+        out["allowedTools"] = kept
         if withheld:
             from kiro_crew.acp.kas_agents import _audit_permission_decision
 

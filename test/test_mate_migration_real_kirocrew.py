@@ -113,8 +113,42 @@ def test_a_kirocrew_crewmate_moves_with_a_tiny_kit(generated, monkeypatch):
 _OLDER_INSTALL_GRANTS = ("@kirocrew-cron", "@kirocrew-guide/rename_self")
 
 
+def test_an_on_disk_star_grant_survives_the_rebuild_intact(generated, monkeypatch):
+    """``*`` already grants the shell, so the never-auto-approve rule leaves it as written.
+
+    ``@*`` grants no shell, so it is expanded to what else it covered: each other
+    mounted server whole and the cron server's other verbs, never ``background_run``.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
+    monkeypatch.setattr(agent, "_in_linked_git_worktree", lambda *_a, **_k: False)
+    user, _mates = generated
+    path = user / AGENT_FILENAME
+    spec = _spec(user, AGENT_FILENAME)
+    spec["allowedTools"] = [*spec["allowedTools"], "*", "@*"]
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    agent.rebuild_agent_config()
+    written = _spec(user, AGENT_FILENAME)
+    kept = written["allowedTools"]
+    assert "*" in kept
+    assert "@*" not in kept
+    assert "@kirocrew-cron/cron_list" in kept
+    others = [name for name in written["mcpServers"] if name != "kirocrew-cron"]
+    assert others and all(f"@{name}" in kept for name in others), (others, kept)
+    assert [g for g in kept if entry_reaches(g, "@kirocrew-cron/background_run")] == ["*"]
+
+
 def test_an_upgraded_kirocrew_still_moves(generated, monkeypatch):
-    """The live shape: the older install's grants survive the rebuild, the base has none."""
+    """The live shape: the older install's grants survive the rebuild, the base has none.
+
+    The whole-server cron grant survives narrowed to the server's other verbs, since
+    no grant may cover ``background_run``; those verbs are still grants the base lacks.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
+    # The rewrite below has to run: an existing shared agent home is declined to a
+    # linked-worktree checkout, which would leave the hand-written file as it was.
+    monkeypatch.setattr(agent, "_in_linked_git_worktree", lambda *_a, **_k: False)
     user, mates = generated
     path = user / AGENT_FILENAME
     spec = _spec(user, AGENT_FILENAME)
@@ -123,7 +157,10 @@ def test_an_upgraded_kirocrew_still_moves(generated, monkeypatch):
     agent.rebuild_agent_config()
     kept = set(_spec(user, AGENT_FILENAME)["allowedTools"])
     base = set(_spec(mates, MATE_WORKER_AGENT_FILENAME).get("allowedTools", []))
-    assert set(_OLDER_INSTALL_GRANTS) <= kept - base  # the shape Ray's dry run skipped
+    extra = kept - base  # the shape Ray's dry run skipped
+    assert "@kirocrew-guide/rename_self" in extra
+    assert "@kirocrew-cron" not in kept and "@kirocrew-cron/cron_add" in extra
+    assert not [g for g in kept if entry_reaches(g, "@kirocrew-cron/background_run")]
     cfg = KiroCrewConfig()
     cfg.agents = {"josh": KiroCrewAgentConfig(member_id="josh", kiro_agent="kirocrew")}
     monkeypatch.setattr(
