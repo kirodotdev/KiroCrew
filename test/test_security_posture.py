@@ -1299,6 +1299,9 @@ class TestRedactionSinkRegistry:
         assert len(labels) == len(set(labels))
 
 
+# One worker for the class, so the cached package census its tests read is built once
+# per run rather than once on every worker they land on.
+@pytest.mark.xdist_group(name="tree_scan_security_posture_log_census")
 class TestGateSideLogRedactorSpelling:
     """The second axis: WHICH redactor spelling a gate-side log line reads.
 
