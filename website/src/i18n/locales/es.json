@@ -23348,10 +23348,6 @@
       "system": "Sistema"
     },
     "tabs": {
-      "advanced": {
-        "description": "Todos los ajustes en una sola lista",
-        "label": "Avanzado"
-      },
       "about": {
         "description": "Versión, canal de actualizaciones, buscar actualizaciones y licencia",
         "label": "Acerca de"

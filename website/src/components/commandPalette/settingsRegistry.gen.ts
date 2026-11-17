@@ -53,15 +53,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
-    "id": "advanced.all-settings",
-    "labelKey": "settings.advanced.title",
-    "tab": "advanced",
-    "type": "input",
-    "occurrence": 1,
-    "label": "All settings",
-    "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
-  },
-  {
     "id": "agent.orchestrator-memory",
     "label": "Orchestrator memory",
     "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",

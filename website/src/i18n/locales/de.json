@@ -22789,10 +22789,6 @@
       "system": "System"
     },
     "tabs": {
-      "advanced": {
-        "description": "Alle Einstellungen in einer Liste",
-        "label": "Erweitert"
-      },
       "about": {
         "description": "Version, Aktualisierungskanal, nach Aktualisierungen suchen und Lizenz",
         "label": "Über"

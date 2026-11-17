@@ -22230,10 +22230,6 @@
       "system": "시스템"
     },
     "tabs": {
-      "advanced": {
-        "description": "모든 설정을 한 목록에",
-        "label": "고급"
-      },
       "about": {
         "description": "버전, 업데이트 채널, 업데이트 확인, 라이선스",
         "label": "정보"
