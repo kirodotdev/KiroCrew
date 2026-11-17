@@ -305,16 +305,16 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                 async with _get_config_lock():
                     # Re-read under the lock: the copy above was read before
                     # the lock and a concurrent PATCH may have superseded it.
-                    # The branch writes this data back, so bind the same
-                    # agents directory and apply the stricter no-symlink /
-                    # no-escape fence before the hardened read.  Keep the
-                    # filesystem work off the event loop while the shared
-                    # config lock is held.
-                    agents_dir = kiro_agents_dir_path()
-
+                    # The branch writes this data back, so fence the file
+                    # against the folder the scan found it in -- the
+                    # user-level or the crewmate folder; the scan lists each
+                    # root flat, so that is ``f.parent`` -- and apply the
+                    # stricter no-symlink / no-escape fence before the
+                    # hardened read.  Keep the filesystem work off the event
+                    # loop while the shared config lock is held.
                     def _reread_under_lock(
                         spec_file: Path = f,
-                        root: Path = agents_dir,
+                        root: Path = f.parent,
                     ) -> dict[str, Any] | None:
                         if not _spec_path_is_safe(spec_file, root):
                             return None
