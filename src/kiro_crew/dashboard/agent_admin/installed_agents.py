@@ -316,6 +316,9 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                                         f"memory store {store_name!r} ownership changed concurrently"
                                     )
                                 retired_stores.append(store_name)
+                                from kiro_crew.member_memory_adopt import stamp_former_owner
+
+                                stamp_former_owner(doc, snap_entry, aname)
                             del agents[aname]
                             deleted_names.append(aname)
                             changed = True
