@@ -1598,10 +1598,9 @@ export function AgentBackendTab() {
           {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_saved')}
         </p>
       )}
-      <SettingsCard>
-        <p className="mb-0 text-[13px] leading-relaxed text-muted">
-          {i18nT('pages.developer.agentBackendTab.new_sessions_use_this_agent_a_session_that_is_al')}
-        </p>
+      {/* The picker rows are framed choices of their own, so the list sits on the
+          page directly rather than inside a group box (no card inside a card). */}
+      <div className="space-y-3 mb-8 max-w-[720px]">
         {/* One radio group, laid out like first-run setup's picker: each harness is a
             row, the checked row opens its detail directly under itself, and the
             browser supplies the keyboard (one tab stop, arrows move check and focus
@@ -1829,7 +1828,7 @@ export function AgentBackendTab() {
             {i18nT('pages.developer.agentBackendTab.set_is_fixed_at_gateway_start')}
           </p>
         </details>
-      </SettingsCard>
+      </div>
     </>
   )
 }
@@ -1884,7 +1883,7 @@ function CrewmateHarnessLine({
       data-testid="crewmate-harness"
       data-source={readout.source}
       role={fallback ? 'alert' : undefined}
-      className={`m-0 text-[13px] leading-relaxed ${fallback ? 'text-warn' : 'text-text'}`}
+      className={`m-0 mb-3 text-[13px] leading-relaxed ${fallback ? 'text-warn' : 'text-text'}`}
     >
       {text}
     </p>

@@ -45,7 +45,7 @@ import { LOCKED_FEATURE_PREVIEWS, useControlLocked } from '../../utils/editionLo
  * keys across fourteen catalogs buys no user-visible change.
  *
  * ONE ROW PER FEATURE, grouped by what the feature is about: each group is a
- * heading over one boxed card (`PreviewGroup`), and every direct child of that
+ * heading over one group box (`PreviewGroup`), and every direct child of that
  * card is one feature's row. Everything that belongs to a feature lives inside
  * its row: the headline, the sentence explaining what state it is in, its
  * toggle, and any ingress that only appears once it is on. A reader scanning the
@@ -161,21 +161,22 @@ export const FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR = 'feature-previews-section'
 export const SHARED_CREW_RESTART_VERIFY_TIMEOUT_MS = 60_000
 
 /**
- * One group of preview rows: a heading over ONE boxed card, each direct child of
+ * One group of preview rows: a heading over ONE group box, each direct child of
  * the card a row. The whole group, heading included, is hidden while its box
- * holds no row (`:has` over the box's `:empty`): an LTS build withholds the flag
+ * holds no row (`:has` over the box's `:empty`, the group's OWN box only, so a
+ * row that is itself a box and renders empty never hides the group): an LTS build withholds the flag
  * rows, and a config-backed card renders nothing until its read answers, so a
  * heading is never left standing over an empty box.
  */
 function PreviewGroup({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <div className="mt-6 first:mt-0 has-[[data-settings-box]:empty]:hidden">
+    <div className="mt-6 first:mt-0 has-[>[data-settings-card]>[data-settings-box]:empty]:hidden has-[>div>[data-settings-card]>[data-settings-box]:empty]:hidden">
       {title ? (
         <SettingsSection title={title}>
-          <SettingsCard boxed>{children}</SettingsCard>
+          <SettingsCard>{children}</SettingsCard>
         </SettingsSection>
       ) : (
-        <SettingsCard boxed>{children}</SettingsCard>
+        <SettingsCard>{children}</SettingsCard>
       )}
     </div>
   )
@@ -510,14 +511,17 @@ export function FeaturePreviewsSection() {
             plain view of every KAS user. Unlike the rows around it, the switch is not
             a preview flag but its own config value; the card writes it through the
             same config PATCH it always did, and says itself that it needs a
-            restart. Its own SettingsCard so a capture or test can find the card's
-            frame; isolated so a throwing card cannot take the group down. */}
+            restart. A plain row of the group box, not a box of its own: a nested
+            group box that renders empty (status still loading, or the boundary's
+            null fallback) would match the group's `:empty` hide rule and take the
+            whole group down. `data-settings-card` keeps the capture/test anchor;
+            isolated so a throwing card cannot take the group down. */}
         {kasOffered && (
-          <SettingsCard>
+          <div data-settings-card="">
             <ErrorBoundary scope="feature-preview-kas-bundle" fallback={null}>
               <KasBundleCard />
             </ErrorBoundary>
-          </SettingsCard>
+          </div>
         )}
         {/* Conductor remote dispatch (`work_ledger.remote_dispatch`). Like the KAS card
             above, its switch is the gateway's own config value, not a preview flag:

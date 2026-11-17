@@ -79,9 +79,7 @@ function Row({ label, desc, state, testId }: { label: string; desc: string; stat
   )
 }
 
-/** `boxed` draws the card as one bordered box, a hairline between its rows
- *  (`SettingsCard boxed`), for a page that boxes its other cards too. */
-export function DefaultMcpGrantsSection({ boxed }: { boxed?: boolean } = {}) {
+export function DefaultMcpGrantsSection() {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
   const [outcome, setOutcome] = useState<Outcome | null>(null)
@@ -143,7 +141,7 @@ export function DefaultMcpGrantsSection({ boxed }: { boxed?: boolean } = {}) {
           }
         />
       )}
-      <SettingsCard boxed={boxed}>
+      <SettingsCard>
         <div className="pb-2 text-[13px] text-muted">{i18nT('pages.settings.defaultMcpGrantsSection.intro')}</div>
         <Row
           label={i18nT('pages.settings.defaultMcpGrantsSection.dashboard_label')}
@@ -179,7 +177,11 @@ export function DefaultMcpGrantsSection({ boxed }: { boxed?: boolean } = {}) {
           <Btn onClick={() => mut.mutate('add')} disabled={busy || !states.includes('off')}>
             {i18nT('pages.settings.defaultMcpGrantsSection.add_button')}
           </Btn>
-          <Btn onClick={() => { void remove() }} disabled={busy || !states.includes('recorded')}>
+        </div>
+        {/* The removal sits apart from Add, on its own row, so a destructive
+            action is never one slip away from the constructive one. */}
+        <div className="mt-6 pt-4 border-t border-border">
+          <Btn danger onClick={() => { void remove() }} disabled={busy || !states.includes('recorded')}>
             {i18nT('pages.settings.defaultMcpGrantsSection.remove_button')}
           </Btn>
         </div>
