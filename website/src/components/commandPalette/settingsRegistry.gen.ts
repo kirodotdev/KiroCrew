@@ -3215,6 +3215,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Fallback sound when no category-specific override is set"
   },
   {
+    "id": "notifications.do-not-disturb",
+    "label": "Do not disturb",
+    "labelKey": "pages.settings.notificationsPanel.do_not_disturb",
+    "hint": "Stops notification badges, banners, sounds, push and chat app messages on every device for a while, then turns them back on by itself. Notifications still land in the bell as read. Critical notifications and approvals still come through.",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
+  },
+  {
     "id": "notifications.sound-category-heartbeat",
     "params": {
       "sub": "percategory"

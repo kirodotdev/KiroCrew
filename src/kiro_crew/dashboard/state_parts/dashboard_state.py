@@ -47,6 +47,7 @@ from kiro_crew.messaging import turn_ceiling
 from kiro_crew.notifications.bridge import BridgeDispatcher, composite_sink
 from kiro_crew.notifications.bridge_actions import BridgeActionRegistry
 from kiro_crew.notifications.bus import NotificationBus
+from kiro_crew.notifications.dnd import DoNotDisturb
 from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
@@ -180,6 +181,7 @@ class DashboardState:
     notification_bridge: BridgeDispatcher
     bridge_actions: BridgeActionRegistry
     notification_channel_settings: ChannelSettings
+    notification_dnd: DoNotDisturb
     resource_pressure_notifier: ResourcePressureNotifier
     repeated_failures_notifier: RepeatedFailuresNotifier
     file_indexes: FileIndexRegistry
@@ -662,6 +664,8 @@ class DashboardState:
         # Per-channel user settings (RFC Phase 3): mute + priority override,
         # applied at the delivery sink so the bus stays pure.
         self.notification_channel_settings = ChannelSettings()
+        # Gateway-wide timed Do Not Disturb, checked at the same delivery sink.
+        self.notification_dnd = DoNotDisturb()
         # Resource-pressure producer: samples host posture (driven from the
         # event-loop heartbeat) and pushes episode-deduped notes to
         # system.resources. State-owned like the bus/limiter/settings so its

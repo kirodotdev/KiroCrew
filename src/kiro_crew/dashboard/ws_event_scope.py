@@ -455,6 +455,8 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # Channel mute/priority metadata only ({muted, priority}) -- same domain as
     # the notification events themselves, so it rides the same declaration.
     "notification_channel_settings": "notification",
+    # The gateway's Do Not Disturb end time ({until}) -- settings, no note content.
+    "notification_dnd": "notification",
     "sessions_restarting": "sessions",
     # A bare {"ts": ...} refresh signal -- no slot, no session key, no counts.
     # It says the session-health verdict moved and nothing about what it says, so

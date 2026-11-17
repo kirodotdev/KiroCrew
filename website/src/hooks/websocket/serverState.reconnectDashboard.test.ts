@@ -22,6 +22,7 @@ import {
   setRuntimeMonitorContract,
   type StructuredMonitor,
 } from '../../monitoring/automation'
+import { NOTIFICATION_DND_KEY } from '../useNotificationDnd'
 import { structuredMonitorLoop } from '../../test/monitorFixtures'
 
 let qc: QueryClient
@@ -59,6 +60,21 @@ async function open(keys: string[][], held: string[] = []) {
 }
 
 describe('refreshServerStateAfterReconnect', () => {
+  it('re-reads Do Not Disturb changed while the socket was down', async () => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    qc.setQueryData(NOTIFICATION_DND_KEY, { until: null })
+    const changed = { until: 1_800_000_000 }
+    const queryFn = vi.fn().mockResolvedValue(changed)
+    const observer = new QueryObserver(qc, { queryKey: NOTIFICATION_DND_KEY, queryFn })
+    unsubscribe.push(observer.subscribe(() => {}))
+    expect(queryFn).not.toHaveBeenCalled()
+
+    refreshServerStateAfterReconnect(qc)
+
+    await vi.waitFor(() => expect(qc.getQueryData(NOTIFICATION_DND_KEY)).toEqual(changed))
+    expect(queryFn).toHaveBeenCalledTimes(1)
+  })
+
   it('re-reads an open crewmate dashboard and an open session dashboard', async () => {
     const member = [MEMBER_DASHBOARD_QUERY_PREFIX, 'atlas', 'Atlas', 'en', 'live']
     const session = [SESSION_DASHBOARD_QUERY_PREFIX, 'chat-1', 'en', 'live']

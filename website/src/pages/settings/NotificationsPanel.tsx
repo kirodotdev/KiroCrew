@@ -26,6 +26,8 @@ import { useNotificationPermission } from '../../hooks/useNotificationPermission
 
 import { i18nT } from '../../i18n/t'
 import { compareText, fmtTime, fmtUnit } from '../../i18n/format'
+import { MUTE_CHOICES, MUTED_NOW, muteEnd, muteLabel, type MuteChoice } from './muteChoices'
+import { DoNotDisturbRow } from './NotificationsDndRow'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -161,30 +163,6 @@ const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, ...Object.keys(PRIORITY_LABEL_KEYS)
  *  not know (a newer backend) shows as-is rather than as a blank. */
 function priorityLabel(priority: string): string {
   return Object.hasOwn(PRIORITY_LABEL_KEYS, priority) ? i18nT(PRIORITY_LABEL_KEYS[priority]) : priority
-}
-
-/** Timed-mute choices; while one runs the select also shows `MUTED_NOW`. */
-const MUTE_CHOICES = ['off', '1h', '2h', 'morning'] as const
-type MuteChoice = typeof MUTE_CHOICES[number]
-const MUTED_NOW = 'muted'
-const MORNING_HOUR = 8
-
-/** When a mute chosen at `now` ends: one or two hours later, or the next 8:00. */
-function muteEnd(choice: Exclude<MuteChoice, 'off'>, now: number): number {
-  if (choice !== 'morning') return now + (choice === '1h' ? 1 : 2) * 3_600_000
-  const at = new Date(now)
-  at.setHours(MORNING_HOUR, 0, 0, 0)
-  if (at.getTime() <= now) at.setDate(at.getDate() + 1)
-  return at.getTime()
-}
-
-const muteLabel = (choice: MuteChoice, now: number): string => {
-  switch (choice) {
-    case 'off': return i18nT('pages.settings.notificationsPanel.mute_off')
-    case '1h': return i18nT('pages.settings.notificationsPanel.mute_for_1h')
-    case '2h': return i18nT('pages.settings.notificationsPanel.mute_for_2h')
-    case 'morning': return i18nT('pages.settings.notificationsPanel.mute_until', { time: fmtTime(muteEnd('morning', now)) })
-  }
 }
 
 /** Shortest-turn choices for the toast, in seconds; `0` means every turn. A
@@ -853,6 +831,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       <>
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
+          <DoNotDisturbRow />
           <SystemNotificationsRow />
           {/* Adopted into local state only when the write lands, so the switch
               never shows a value that vanishes on reload. */}

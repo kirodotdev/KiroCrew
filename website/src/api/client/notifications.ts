@@ -1,6 +1,6 @@
 /**
- * The notification center: list, delete, clear, ack/unack/ack-all, and the
- * per-channel notification settings.
+ * The notification center: list, delete, clear, ack/unack/ack-all, the
+ * per-channel notification settings and the gateway's Do Not Disturb.
  */
 
 import type { ClientTransport } from './transport'
@@ -17,6 +17,10 @@ export function createNotificationsEndpoints({ post, put, del, j, jfetch: fetch 
     notificationChannels: () => fetch('/api/notifications/channels').then(j),
     updateNotificationChannelSettings: (channel: string, settings: { muted?: boolean; priority?: string | null; deliver_to?: string[]; deliver_min_priority?: string }) =>
       put('/api/notifications/channels/settings', { channel, ...settings }).then(j),
+    // The gateway's Do Not Disturb: `until` is epoch seconds, null when off.
+    notificationDnd: () => fetch('/api/notifications/dnd').then(j) as Promise<{ until: number | null }>,
+    setNotificationDnd: (until: number | null) =>
+      put('/api/notifications/dnd', { until }).then(j) as Promise<{ until: number | null }>,
     // Web Push (browser subscription lifecycle)
     vapidPublicKey: () => fetch('/api/notifications/push/vapid-public-key').then(j) as Promise<{ publicKey: string }>,
     subscribePush: (subscription: PushSubscriptionJSON) =>

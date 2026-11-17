@@ -3,7 +3,9 @@ import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroSignInSegment, kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
 import { ResourcePostureChip } from './resourcePostureChip'
-import { Bell, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
+import { Bell, BellOff, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
+import { useNotificationDnd } from '../../hooks/useNotificationDnd'
+import { fmtTime } from '../../i18n/format'
 import { motion } from 'framer-motion'
 import { isWinElectron } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
@@ -99,13 +101,50 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
 }
 
 /**
+ * Beside the bell: when the gateway's Do Not Disturb ends, or a failed read.
+ * It is started and ended in Settings > Notifications > Desktop alerts.
+ * Hidden below 768px, where the phone bar keeps to two controls.
+ */
+export function DoNotDisturbBadge() {
+  const { endMs, loadFailed } = useNotificationDnd()
+  if (loadFailed) return (
+    <span className="hidden md:flex shrink-0">
+      <ErrorNotice
+        message={i18nT('app.do_not_disturb_unknown')}
+        variant="inline"
+        impact="partial"
+        askAgent
+        className="h-6"
+        messageClassName="text-[11px] truncate"
+      />
+    </span>
+  )
+  if (endMs === null) return null
+  const label = i18nT('app.do_not_disturb_until', { time: fmtTime(endMs) })
+  return (
+    // Icon and end time only, so the badge does not crowd the readout capsule
+    // out of the bar; the full sentence is its tooltip and accessible name.
+    <span
+      role="status"
+      title={label}
+      aria-label={label}
+      className="hidden md:flex items-center gap-1 h-6 px-1.5 rounded-md bg-bg-hover text-muted text-[11px] whitespace-nowrap shrink-0"
+      data-testid="dnd-badge"
+    >
+      <BellOff size={12} aria-hidden="true" />
+      <span aria-hidden="true">{fmtTime(endMs)}</span>
+    </span>
+  )
+}
+
+/**
  * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
  * this is its entry point. Click opens an Activity Feed popover
  * (portaled to the body-level overlay root to escape the topbar's
  * backdrop-filter containing block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
  */
-function NotificationsBellButton() {
+function NotificationsBellButton({ dndBadge = true }: { dndBadge?: boolean } = {}) {
   // The Notifications surface is `hiddenFromNav`, so this bell — not a rail row —
   // is the control Alt+N operates. Resolved through the same route-keyed helper
   // the rail uses, so the chord has exactly one derivation in the dashboard.
@@ -123,6 +162,8 @@ function NotificationsBellButton() {
   }, [unacked.length])
 
   return (
+    <>
+    {dndBadge && <DoNotDisturbBadge />}
     <div ref={containerRef} className="relative">
       <button
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
@@ -156,6 +197,7 @@ function NotificationsBellButton() {
         <NotificationSheet sheet={sheet} />
       </GuideRevealScope>
     </div>
+    </>
   )
 }
 
@@ -744,7 +786,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 <UpdatePill showLabel />
               </Suspense>
             )}
-            <NotificationsBellButton />
+            <NotificationsBellButton dndBadge={false} />
             <div id="mobile-topbar-trail-slot" data-testid="mobile-topbar-trail-slot" className="flex items-center empty:hidden" />
           </div>
         )}

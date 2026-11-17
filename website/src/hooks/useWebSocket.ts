@@ -1,11 +1,12 @@
 import { isRelayCrewWindow } from '../utils/offlineReason'
 import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerRefreshExceptCatalog, triggerLiveRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
+import { NOTIFICATION_DND_KEY, notificationDndQueryOptions } from './useNotificationDnd'
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveElicitationRow, sseSubagentPending, setSubagentApprovalTarget, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
@@ -142,6 +143,9 @@ const getDashboardState = () => store.getState().dashboard
 export function useWebSocket() {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
+  // Completion reads the cache even in panes without the header or Settings.
+  // Keep it observed for loading/refetching, without re-rendering the socket.
+  useQuery({ ...notificationDndQueryOptions, notifyOnChangeProps: [] })
   const socket = useSocketConnection()
   const { reconnectingRef } = socket
   // The silence watchdog: one instance for the hook's whole lifetime, re-seeded
@@ -502,6 +506,11 @@ export function useWebSocket() {
             // Another view cleared the inbox; drop this view's copy so the
             // bell badge (derived from items) converges to 0. Idempotent.
             dispatch(clearAllNotifications())
+            break
+          case 'notification_dnd':
+            // Do Not Disturb started or ended from another view: {until} as the GET returns it.
+            void queryClient.cancelQueries({ queryKey: NOTIFICATION_DND_KEY })
+            queryClient.setQueryData(NOTIFICATION_DND_KEY, { until: typeof data.until === 'number' ? data.until : null })
             break
           case 'approval': {
             // The approvals module refreshes the shared `global-approvals` cache,
