@@ -324,7 +324,7 @@ describe('CI supplies a base commit on both paths', () => {
   // tests above would still pass.
   // Both blocking workflows, not just ci.yml. The cheap diff-scoped gates moved
   // into fast-gate.yml, which ci.yml blocks on through `await-fast-gate`; reading
-  // ci.yml alone would have silently dropped nine of the fourteen wirings out of this
+  // ci.yml alone would have silently dropped nine of the thirteen wirings out of this
   // file's view while every assertion below still passed on the remaining four.
   const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => ({
     name,
@@ -340,10 +340,28 @@ describe('CI supplies a base commit on both paths', () => {
   const wirings = wiringsBySource.flatMap((source) => source.lines)
 
   it('wires every diff-scoped gate step', () => {
-    // A count, not a set: the point is that a gate ADDED to either workflow
-    // cannot skip this file's `base.sha` assertion below by going unnoticed. Bump
-    // it when a diff-scoped gate lands, and check the new wiring is in the loop.
-    expect(wirings).toHaveLength(14)
+    // One line per wiring, not a total: a gate ADDED to either workflow cannot
+    // skip this file's `base.sha` assertion below by going unnoticed, and two PRs
+    // that each add a gate edit different lines here instead of both bumping one
+    // number (a merge-unsafe count, see testing-conventions "merge-safe ratchets").
+    // Add the new gate's env name when it lands, and check its wiring is in the loop.
+    const names = wirings.map((line) => line.trim().split(':')[0]).sort()
+    expect(names).toEqual([
+      'BRAND_BASE_REF',
+      'CHANGELOG_BASE_REF',
+      'COMMENT_HISTORY_BASE_REF',
+      'DECISIONS_BASE_REF',
+      'EMOJI_ICON_BASE_REF',
+      'FEATURE_MAP_BASE_REF',
+      'FOCUS_CUE_BASE_REF',
+      'HARNESS_BASE_REF',
+      'I18N_BASE_REF',
+      'I18N_BASE_REF',
+      'I18N_BASE_REF',
+      'MEMSTORE_BASE_REF',
+      'METRICS_SCHEMA_BASE_REF',
+      'PHANTOM_BASE_REF',
+    ])
   })
 
   it('still sees a wiring in each workflow it reads', () => {
