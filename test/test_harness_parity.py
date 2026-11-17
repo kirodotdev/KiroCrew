@@ -1407,6 +1407,14 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "create_session",
+    ): "the KAS engine that registered a member's agent loads the operator's global "
+    "~/.kiro/steering tree itself, with no switch for it "
+    "(kas_steering.inheritance_off_notice), so that session records the load as "
+    "native; kiro-cli's launch record already carries it, a Kiro Cloud sandbox "
+    "registers no agent, and no other harness reads that tree",
+    (
         "src/kiro_crew/acp/runtime_spawn_entry.py",
         "spawn",
     ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "

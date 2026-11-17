@@ -63,6 +63,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     METHOD_SESSION_NEW,
@@ -550,7 +551,10 @@ async def create_session(
 
     projected_sources: dict[str, str] = {}
     if self._member_context if member_context is None else member_context:
-        from kiro_crew.member_essential_context import projected_resource_documents
+        from kiro_crew.member_essential_context import (
+            global_always_steering_documents,
+            projected_resource_documents,
+        )
 
         for definition in kas_agents or ():
             if definition.get("id") == active_agent:
@@ -559,6 +563,14 @@ async def create_session(
                         projected_resource_documents, definition, str(session_work_dir)
                     )
                 )
+                # The KAS engine that registered the agent also loads the global
+                # steering tree itself, whatever the inheritance setting says
+                # (kas_steering.inheritance_off_notice). A harness that registers
+                # no agent records none of it.
+                if self.acp_backend == ACP_BACKEND_KAS:
+                    projected_sources.update(
+                        await asyncio.to_thread(global_always_steering_documents)
+                    )
 
     budget = await self._session_start_budget()
     # The init scope opens BEFORE the admission gate, not after: the gate's

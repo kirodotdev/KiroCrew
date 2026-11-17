@@ -1786,10 +1786,19 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
             declared[source] = body
     if not inherits:
         return list(declared.items())
+    declared.update(global_always_steering_documents())
+    return list(declared.items())
+
+
+def global_always_steering_documents() -> dict[str, str]:
+    """The operator's global ``~/.kiro/steering`` always-included documents.
+
+    The engine loads this tree itself, so a member snapshot blanks these bodies.
+    """
     # A link here is left out, as in the snapshot: kiro-cli follows it natively.
     # Steering past the document cap is left out too, as in the snapshot: only the
     # always-included files kept here count against it.
-    kept = 0
+    documents: dict[str, str] = {}
     for path in _matches(Path.home(), ".kiro/steering/**/*.md", linked=[], over_cap=[]):
         try:
             body = _read(path, Path.home())
@@ -1798,14 +1807,13 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
             continue
         fields, _ = split_frontmatter(body, STEERING_LOADER)
         if _steering_inclusion(fields, path) == "always":
-            if kept >= _MAX_DOCUMENTS:
+            if len(documents) >= _MAX_DOCUMENTS:
                 logger.warning(
                     "Steering %s left out: the %d-document cap is reached", path, _MAX_DOCUMENTS
                 )
                 continue
-            kept += 1
-            declared[str(path)] = body
-    return list(declared.items())
+            documents[str(path)] = body
+    return documents
 
 
 def render_essentials(documents: list[tuple[str, str]], *, identity: str) -> str:

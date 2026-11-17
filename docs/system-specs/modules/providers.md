@@ -1088,6 +1088,13 @@ walk error records no launch documents and does not stop the spawn.
 SOUL is native-owned only when explicitly declared.
 The mirrored steering reference records engine/version differences for conditional
 modes, so Kiro uses the fallback selector instead of claiming full native support.
+A KAS member session records the `file://` resources its activated wire definition
+declares and, beside them, the operator's global always-steering
+(`global_always_steering_documents`, the same scan `kiro_launch_documents` runs):
+the KAS engine that registered the agent loads that tree itself whatever the
+inheritance setting says, so the snapshot a fresh session starts with blanks those
+bodies instead of sending them a second time. A Kiro Cloud sandbox registers no
+agent and never reads this machine's files, so it records neither.
 
 Folder steering is deliberately NOT part of that launch contract. A chat filed
 into a folder that declares `steering_dirs` (see [config](config.md)) has those
