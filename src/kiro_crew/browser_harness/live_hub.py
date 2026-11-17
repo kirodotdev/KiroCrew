@@ -162,6 +162,10 @@ class LiveSession:
     #: the op runs is checked against it, so a daemon restart mid-op cannot carry the
     #: op onto a browser that has no such context.
     bound_relay: Any = None
+    #: A popup moved ``target_id`` (followed it, or went back to its opener) and no
+    #: answer has told the agent yet. Page-targeted ops are refused while it is set;
+    #: the next answer the route returns carries it and clears it.
+    tab_moved: dict[str, Any] | None = None
     #: The relay the last stream ran on, kept after the stream stops so the finished
     #: card's "Open in Chrome" can still activate the retained tab.
     last_relay: Relay | None = None
@@ -916,6 +920,29 @@ class LiveHub:
     def add_target(self, session_key: str, target_id: str) -> None:
         """Make *target_id* one of this session's tabs without moving its current tab."""
         self._session(session_key).targets.add(str(target_id))
+
+    def note_tab_moved(self, session_key: str, notice: dict[str, Any]) -> None:
+        """Record that a popup moved this session's tab and no answer has said so yet.
+
+        *notice* holds ``popup`` (a popup was followed) and/or ``popup_closed`` (the
+        session went back to a closed popup's opener); a later move of the same kind
+        replaces the earlier one.
+        """
+        sess = self._session(session_key)
+        sess.tab_moved = {**(sess.tab_moved or {}), **notice}
+
+    def pending_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The unreported tab move, if any, left in place."""
+        sess = self._sessions.get(session_key)
+        return dict(sess.tab_moved) if sess is not None and sess.tab_moved else None
+
+    def take_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The unreported tab move, cleared: the caller is about to report it."""
+        sess = self._sessions.get(session_key)
+        if sess is None or not sess.tab_moved:
+            return None
+        notice, sess.tab_moved = sess.tab_moved, None
+        return notice
 
     def owner_of_target(self, target_id: str) -> str | None:
         """The session key that owns *target_id*, if any session does."""

@@ -594,6 +594,31 @@ async def test_a_click_that_closes_its_popup_answers_ok_and_returns_to_the_opene
 
 
 @pytest.mark.asyncio
+async def test_a_closed_popup_that_sent_its_opener_to_a_refused_url_answers_the_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``window.opener.location = <private host>; window.close()``: the gate's refusal stands."""
+    sup = _ClosingPopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    audits: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        mod, "_audit", lambda _req, outcome, code="": audits.append((outcome, code))
+    )
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a")
+    monkeypatch.setattr(mod, "committed_url_allowed", lambda url: url != "https://T1")
+    sup.close_on_next_op = True
+    audits.clear()
+    answer = await _op("chat-a", "click", ref="e1")
+    assert answer["ok"] is False and answer["code"] == "redirect_refused"
+    assert "popup_closed" not in answer
+    assert audits == [("denied", "redirect_refused")]
+    assert ("goto", {"url": "about:blank"}) in sup.calls, "the refused page was left"
+
+
+@pytest.mark.asyncio
 async def test_a_failure_on_a_tab_that_is_not_a_closed_popup_stays_an_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -613,6 +638,182 @@ async def test_a_failure_on_a_tab_that_is_not_a_closed_popup_stays_an_error(
     monkeypatch.setattr(sup, "call", _raise)
     answer = await _op("chat-a", "click", ref="e1")
     assert answer["ok"] is False and answer["code"] == "browser_error"
+
+
+@pytest.mark.asyncio
+async def test_a_popup_whose_opener_popup_closed_is_still_claimed_and_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T1 opens P1, P1 opens P2, P1 closes before the next op: P2 is still A's."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    sup.open_popup("P2", "P1")
+    sup.ledger.remove("P1")  # the middle popup closed, its opener link kept
+    answer = (await _op("chat-a"))["result"]
+    assert answer["popup"]["target_id"] == "P2"
+    assert hub.target_of("chat-a") == "P2" and "P2" in hub.targets_of("chat-a")
+
+
+def test_claiming_through_closed_popups_stops_at_another_chats_tab() -> None:
+    hub = hub_mod.get_live_hub()
+    hub.bind_target("a", "T1")
+    hub.bind_target("b", "TB")
+    relay = MagicMock()
+    relay.agent_targets.return_value = ["T1", "TB", "Q2"]
+    # Q2's opener Q1 is gone; Q1 was opened by B's tab, which was opened from A's.
+    relay.opener_of.side_effect = {"Q2": "Q1", "Q1": "TB", "TB": "T1"}.get
+    assert mod.claim_popups(hub, "a", relay) == []
+    assert mod.claim_popups(hub, "b", relay) == ["Q2"]
+
+
+class _BindRaceSupervisor(_PopupSupervisor):
+    """The bound popup closes while the bind reads ``current_tab``: the switch fails."""
+
+    close_during_bind = ""
+
+    async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper == "current_tab" and self.close_during_bind:
+            closing, self.close_during_bind = self.close_during_bind, ""
+            self.ledger.remove(closing)
+            self.current = "T-other"
+            self.calls.append((helper, kwargs))
+            return {"targetId": "T-other", "url": "https://T-other", "title": "t"}
+        if helper == "switch_tab" and kwargs["target"] not in self.ledger:
+            self.calls.append((helper, kwargs))
+            raise mod.HelperError("RuntimeError: No target with given id found")
+        return await super().call(helper, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_popup_that_closes_during_the_bind_still_runs_the_op_on_its_opener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bind's ledger snapshot still lists the popup; its switch fails. The op runs."""
+    sup = _BindRaceSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a")
+    assert hub.target_of("chat-a") == "P1"
+    sup.close_during_bind = "P1"
+    sup.calls.clear()
+    answer = await _op("chat-a", "snapshot")
+    assert answer["ok"] is True
+    assert "snapshot" in answer["result"], "the op itself ran"
+    assert answer["result"]["url"] == "https://T1", "the snapshot ran on the opener"
+    assert answer["result"]["popup_closed"]["returned_to"] == "T1", "and the move is reported"
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+
+
+@pytest.mark.asyncio
+async def test_a_ref_op_after_the_popup_closed_is_refused_and_a_navigate_still_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ref from the popup's snapshot must not land on the opener's ``e1``."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a")
+    assert hub.target_of("chat-a") == "P1"
+    sup.ledger.remove("P1")  # the popup closed between ops
+    sup.calls.clear()
+    clicked = await _op("chat-a", "click", ref="e1")
+    assert clicked["ok"] is False and clicked["code"] == "popup_closed"
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert not any(h in ("click", "js") for h, _ in sup.calls), "nothing touched the opener's page"
+    snap = (await _op("chat-a", "snapshot"))["result"]
+    assert snap["ok"] is True and snap["url"] == "https://T1"
+
+
+@pytest.mark.asyncio
+async def test_a_ref_op_after_a_late_popup_opened_is_refused_until_a_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")  # opened after the last answer
+    typed = await _op("chat-a", "type", ref="e1", text="x")
+    assert typed["ok"] is False and typed["code"] == "popup_opened"
+    assert hub.target_of("chat-a") == "P1"
+    again = await _op("chat-a", "click", ref="e1")
+    # The click itself ran on P1: the fake page has no elements, so its ref is stale.
+    assert again["code"] == "ref_stale" and sup.current == "P1"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_op_after_a_late_popup_still_reports_the_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``wait_for`` on the followed popup times out: the refusal carries ``popup``."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")  # opened after the last answer
+
+    async def _refuse(op: str, args: Any, ctx: Any) -> dict[str, Any]:
+        return harness_ops.refusal("wait_timeout", "the text did not appear")
+
+    monkeypatch.setattr(harness_ops, "run_op", _refuse)
+    answer = await _op("chat-a", "wait_for", text="Welcome")
+    assert answer["ok"] is False and answer["code"] == "wait_timeout"
+    assert answer["popup"]["target_id"] == "P1" and "popup window opened" in answer["popup"]["hint"]
+    assert hub.pending_tab_move("chat-a") is None, "reported once, then cleared"
+
+
+def test_a_move_no_answer_reported_stays_pending_and_refuses_page_targeted_ops() -> None:
+    """A HOLD or an interrupted op is not an answer: the move waits for the next one."""
+    hub = hub_mod.get_live_hub()
+    hub.bind_target("k", "P1")
+    hub.note_tab_moved("k", {"popup": {"target_id": "P1"}})
+    held = object()
+    assert mod._with_tab_move(hub, "k", held) is held
+    assert hub.pending_tab_move("k") is not None
+    assert mod._refused_for_tab_move(hub, "k", "snapshot") is None, "reads still run"
+    refused = mod._refused_for_tab_move(hub, "k", "click")
+    assert refused is not None and refused["code"] == "popup_opened"
+    told = mod._with_tab_move(hub, "k", refused)
+    assert told["popup"]["target_id"] == "P1" and hub.pending_tab_move("k") is None
+    assert mod._refused_for_tab_move(hub, "k", "click") is None, "told once, then the op runs"
+
+
+def test_a_governance_deny_leaves_the_tab_move_pending() -> None:
+    hub = hub_mod.get_live_hub()
+    hub.bind_target("k", "P1")
+    hub.note_tab_moved("k", {"popup": {"target_id": "P1"}})
+    denied = harness_ops.refusal(mod.DENIED_CODE, mod.DENIED_TEXT)
+    assert "popup" not in mod._with_tab_move(hub, "k", denied)
+    assert hub.pending_tab_move("k") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_quick_ask_answer_leaves_the_tab_move_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ask's text shows only its outcome, so the notice must wait for the next op."""
+    hub = hub_mod.get_live_hub()
+    hub.bind_target("k", "P1")
+    hub.note_tab_moved("k", {"popup": {"target_id": "P1"}})
+
+    async def _ask_answer(*_a: Any, **_kw: Any) -> dict[str, Any]:
+        return {"ok": True, "outcome": "done"}
+
+    monkeypatch.setattr(mod, "_run_fenced_op", _ask_answer)
+    answer = await mod._fenced_op(_request({}), hub, "k", object(), MagicMock(), "ask", {}, 1.0)
+    assert "popup" not in answer and hub.pending_tab_move("k") is not None
 
 
 @pytest.mark.asyncio
@@ -653,6 +854,31 @@ async def test_a_popup_that_opened_after_the_answer_is_followed_by_the_next_op(
     answer = (await _op("chat-a"))["result"]
     assert answer["popup"]["target_id"] == "P1"
     assert hub.target_of("chat-a") == "P1" and sup.current == "P1"
+
+
+class _LongTitledPopupSupervisor(_PopupSupervisor):
+    """A popup whose page picked a URL and title far longer than any real one."""
+
+    async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper == "current_tab" and self.current == "P1":
+            self.calls.append((helper, kwargs))
+            return {"targetId": "P1", "url": "https://P1/" + "a" * 50_000, "title": "t" * 50_000}
+        return await super().call(helper, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_popups_url_and_title_are_capped_before_they_reach_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The page chooses both, so they get the live hub's caps like every other page text."""
+    sup = _LongTitledPopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    popup = (await _op("chat-a"))["result"]["popup"]
+    assert popup["url"] == ("https://P1/" + "a" * 50_000)[: mod.POPUP_URL_CAP]
+    assert popup["title"] == "t" * mod.POPUP_TITLE_CAP
 
 
 @pytest.mark.asyncio

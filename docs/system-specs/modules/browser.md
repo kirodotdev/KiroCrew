@@ -526,7 +526,11 @@ undo a page already read.
   no ledgered opener and stays out. The discovery events
   (`targetCreated` / `targetInfoChanged` / `targetDestroyed`) reach a daemon
   client only after that client sends `Target.setDiscoverTargets` itself, so the
-  daemon's event buffer is unchanged.
+  daemon's event buffer is unchanged. The op route binds first (which records the
+  context this op browses in) and then follows a new popup only if it sits in that
+  context: after a flip of `browser.isolation`, a popup opened by the chat's tab
+  from the other side is still claimed (session end closes it) but never switched
+  to, streamed or described.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -665,11 +669,14 @@ and otherwise opens a tab of its own; a daemon whose current tab was closed (an
 ended chat's, or one the person closed) counts as having none. Chat B therefore
 never clicks on chat A's page, `tabs` lists and switches only the caller's own
 tabs, and a takeover in chat A fences A's tab while B keeps browsing. A popup
-belongs to the chat that owns its opener (`browser_ops.claim_popups`): before the
+belongs to the chat that owns its nearest owned ancestor by opener links, which
+outlive a closed popup, and the walk stops at another chat's tab
+(`browser_ops.claim_popups`): before the
 bind and again after the op, a popup that chat has not claimed yet becomes its
 current tab (`follow_popup`, `switch_tab` with `activate=False`), and the op's
 answer carries `popup: {target_id, url, title, hint}`, with `url` and `title`
-left out when the navigate gate refuses the address. When the bound tab is gone
+left out when the navigate gate refuses the address, and capped at 2048 and 300
+characters (the live hub's page caps) when it admits it. When the bound tab is gone
 and it was a popup, the bind walks the opener links back to the nearest tab the
 chat still has instead of opening a blank one, so a sign-in window that closes
 itself returns the agent to the page that opened it. When the op's own action
@@ -677,7 +684,19 @@ closes the popup (a "Log in" button that calls `window.close()`), the daemon los
 its session mid-op; if the bound tab was a popup and leaves the ledger within
 `POPUP_CLOSE_GRACE_S` (1 s), the route returns the session to the opener and the
 op answers `ok` with `popup_closed: {target_id, returned_to, hint}` instead of
-`browser_error`. Any other failure stays an error. `tabs list` claims first,
+`browser_error`. A bind whose bound popup closed under it binds again onto the
+opener. Every popup move of the chat's tab (following a popup, or going back to
+a closed popup's opener) is kept on the live session until an answer reports it
+(`LiveHub.note_tab_moved`); the route adds it to the next answer it returns, as
+`popup` or `popup_closed` with a hint, whether that answer succeeded, refused or
+failed (the browser tool prints it after the error text too), and a HOLD, an
+interrupted op, a quick ask's answer or a governance deny leaves it pending,
+because their text cannot carry it. While it is pending, an
+op that acts on an element or point of the page (`click`, `drag`, `scroll`,
+`type`, `press_key`, `hover`, `select_option`, `dialog`, `reflex`) is refused
+with `popup_opened` or `popup_closed` and `ok: false`, because a ref or coordinate
+belongs to the page it came from; every other op still runs on the new tab. A failure caused by the op's own action
+closing its popup is answered `ok` with `popup_closed`. If following the opener then hits the navigate gate (the popup sent the opener to a refused address as it closed), the answer is that refusal, audited `denied`. Any other failure stays an error. `tabs list` claims first,
 and a chat's end claims before it closes its tabs, so its popups close with it.
 With `browser.live.enabled` off
 the hub publishes no event at all, so no card is mounted; the ops still run. While the owner's Chrome shows its Allow sheet the op route tells
