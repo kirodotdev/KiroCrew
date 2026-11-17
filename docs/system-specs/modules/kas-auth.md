@@ -594,7 +594,21 @@ engine instead ([aws-control.md](aws-control.md)).
   own copy as well: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
   and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
   model-list caches (`clearCachedModels`, a reset of `['available-models']`),
-  because that query is otherwise refetched only when a session spawns.
+  because that query is otherwise refetched only when a session spawns. The
+  authorized sign-in also asks for a fresh credit reading
+  (`POST /api/sessions/usage/refresh`) and writes it into the top bar's
+  `['kiro-usage']`, because the GET serves its cached "sign in" marker while it
+  refreshes and the bar's next poll is 30 s away; a 409 or refused refresh falls
+  back to re-reading the GET. It re-reads the Team Crews list
+  (`RELAY_VIEWER_CREWS_KEY`) at once too, which otherwise holds its signed-out
+  refusal for its 60 s poll.
+- The device-code screen (`DeviceWaiting`) does not open a browser: it shows the
+  verification URL as a link with a labelled Copy link beside it, and the user code
+  as large, selectable text with its own Copy code, so a host with no browser to
+  open (a Linux desktop, a remote gateway) can still finish. A Copy that reaches no
+  clipboard says Copied nowhere and shows an inline `ErrorNotice` under the steps
+  ("Couldn't copy the code. Select it and copy it by hand.", or the link's form);
+  the attempt keeps polling, and the next copy that works clears it.
 - The dashboard surfaces that NAME the signed-in account read the vault, never
   `kiro-cli whoami`, whenever the vault is the harness's credential (the KAS bundle
   route whatever the vault holds, or the relay route with a usable Crew sign-in --

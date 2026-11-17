@@ -78,3 +78,35 @@ describe('KasLoginGate device verification link copy', () => {
     expect(screen.getByRole('button', { name: 'Copy link' })).toBeTruthy()
   })
 })
+
+describe('KasLoginGate device-code screen without a browser that opens by itself', () => {
+  it('says the code did not copy, and keeps the sign-in attempt on screen', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValue(false)
+    await openDeviceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }))
+    expect(await screen.findByText("Couldn't copy the code. Select it and copy it by hand.")).toBeTruthy()
+    // Still the same attempt: its code and link are there, and Copy did not say Copied.
+    expect(screen.getByTestId('kas-login-user-code').textContent).toBe('ABCD-1234')
+    expect(screen.getByTestId('kas-login-verification-link')).toBeTruthy()
+    expect(screen.getByTestId('kas-login-copy-code').textContent).toBe('Copy code')
+    // A copy that works afterwards clears the notice.
+    vi.mocked(copyToClipboard).mockResolvedValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
+    await waitFor(() => expect(screen.queryByTestId('kas-login-copy-error')).toBeNull())
+  })
+  it('shows the link as a link, a labelled Copy link, and the code in plain text with its own Copy', async () => {
+    await openDeviceScreen()
+    const link = screen.getByTestId('kas-login-verification-link')
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('https://example.com/verify?code=ABCD-1234')
+    // A visible word, not only an icon's accessible name.
+    expect(screen.getByTestId('kas-login-copy-link').textContent).toBe('Copy link')
+    const code = screen.getByTestId('kas-login-user-code')
+    expect(code.textContent).toBe('ABCD-1234')
+    expect(code.className).toContain('select-all')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }))
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('ABCD-1234'))
+    await waitFor(() => expect(screen.getByTestId('kas-login-copy-code').textContent).toBe('Copied'))
+  })
+})

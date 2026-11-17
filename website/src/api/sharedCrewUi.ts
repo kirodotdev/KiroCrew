@@ -142,6 +142,11 @@ export function someoneJoined(rows: readonly PeopleRow[] | null | undefined): bo
   return (rows ?? []).some(row => !row.is_owner && !isUnknownPrincipal(row.principal) && (row.sources ?? []).includes('observed'))
 }
 
+/** Here now: an open tab in presence, or the viewer, who is on this page. */
+export function isHereNow(row: PeopleRow): boolean {
+  return !!row.live || !!row.is_viewer
+}
+
 /** The invites listed under "Invites": every pending email invite the server
  *  returns, and an accepted one until its accepting login is a current member
  *  (a row carrying `member.invite_id`), so a share that outlives its person's

@@ -8,7 +8,7 @@
  * Console manages access) and `invalid` (a team setup exists but is refused).
  * Nothing here decides access: a mode only chooses what is shown.
  */
-import type { CreatorFilter, PublicPrincipal, SessionAttribution, SetupPath, SetupPathCapability } from './sharedCrew'
+import type { PublicPrincipal, SessionAttribution, SetupPath, SetupPathCapability } from './sharedCrew'
 import { isUnknownPrincipal, principalName } from './sharedCrewUi'
 import { i18nT } from '../i18n/t'
 
@@ -25,7 +25,16 @@ export interface CrewModeResponse {
   console: { state: 'available' | 'not_offered' | 'invalid'; url: string }
   adapters: Partial<Record<SetupPath, SetupPathCapability>>
   workload_identity_ref: string
+  /** The path the viewer came in on. Absent from an older gateway. */
+  viewer_via?: ViewerVia
+  /** Whether the viewer is this machine's owner. Absent from an older gateway. */
+  viewer_is_owner?: boolean
+  /** The owner's one name (the backend's `owner.owner_name`: their signed-in
+   *  e-mail, Tailscale name, or this machine's name), for "Only <owner> …" copy. */
+  owner_label?: string
 }
+
+export type ViewerVia = 'kiro_login' | 'tailscale' | 'ssm' | 'local' | 'unknown'
 
 const MODES: ReadonlySet<string> = new Set<CrewMode>(['personal', 'network', 'console', 'invalid'])
 
@@ -67,11 +76,6 @@ export function consoleUrl(resp: CrewModeResponse | null | undefined): string {
   }
 }
 
-/** The older `unknown` filter spelling reads as `unattributed`. */
-export function normalizeCreatorFilter(value: CreatorFilter): CreatorFilter {
-  return value === 'unknown' ? 'unattributed' : value
-}
-
 const FILTER_KEY_PREFIX = 'kc.shared-crew.creator-filter.'
 const PRINCIPAL_ID = /^p_[a-z0-9_]{1,64}$/
 
@@ -83,29 +87,47 @@ function storage(): Storage | null {
   }
 }
 
-/** The filter last chosen on this Crew, or All. Unrecognised values read as All. */
-export function loadCreatorFilter(crewId: string): CreatorFilter {
-  if (!crewId) return 'all'
+/** One stored "Started by" key: `mine`, `unattributed` (`unknown` is its older
+ *  spelling) or a person's principal id. `''` for anything else. */
+function creatorFilterKey(value: unknown): string {
+  if (value === 'mine' || value === 'unattributed') return value
+  if (value === 'unknown') return 'unattributed'
+  if (typeof value === 'string' && PRINCIPAL_ID.test(value)) return value
+  return ''
+}
+
+/** The "Started by" keys last chosen on this Crew; empty is every session. The
+ *  value is a JSON array; the single key the older one-choice filter stored
+ *  reads as a one-key selection, and `all` or anything unrecognised as none. */
+export function loadCreatorFilter(crewId: string): string[] {
+  if (!crewId) return []
   let raw: string | null = null
   try {
     raw = storage()?.getItem(FILTER_KEY_PREFIX + crewId) ?? null
   } catch {
     raw = null
   }
-  if (raw === 'all' || raw === 'mine' || raw === 'unattributed') return raw
-  if (raw === 'unknown') return 'unattributed'
-  if (raw && PRINCIPAL_ID.test(raw)) return raw as CreatorFilter
-  return 'all'
+  if (!raw) return []
+  let parsed: unknown = raw
+  if (raw.startsWith('[')) {
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return []
+    }
+  }
+  const values = Array.isArray(parsed) ? parsed : [parsed]
+  return [...new Set(values.map(creatorFilterKey).filter(Boolean))]
 }
 
-export function saveCreatorFilter(crewId: string, value: CreatorFilter): void {
+export function saveCreatorFilter(crewId: string, keys: Iterable<string>): void {
   if (!crewId) return
   try {
     const s = storage()
     if (!s) return
-    const v = normalizeCreatorFilter(value)
-    if (v === 'all') s.removeItem(FILTER_KEY_PREFIX + crewId)
-    else s.setItem(FILTER_KEY_PREFIX + crewId, v)
+    const v = [...new Set([...keys].map(creatorFilterKey).filter(Boolean))]
+    if (v.length === 0) s.removeItem(FILTER_KEY_PREFIX + crewId)
+    else s.setItem(FILTER_KEY_PREFIX + crewId, JSON.stringify(v))
   } catch {
     // A full or blocked store only loses the remembered choice.
   }

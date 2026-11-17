@@ -19,6 +19,8 @@ vi.mock('../api/client', async importOriginal => {
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
       kasLoginBeginLoopback: vi.fn(),
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
+      // A landed sign-in asks for a fresh credit reading; refused, so no network.
+      sessionsUsageRefresh: vi.fn().mockRejectedValue(new Error('no refresh in this test')),
     },
   }
 })

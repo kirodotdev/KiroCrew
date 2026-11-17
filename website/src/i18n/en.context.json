@@ -1416,6 +1416,11 @@
     "pages.developer.featurePreviewsTab.decisions_provider_saved_refused": "Small tag beside the name of a refused model still saved in the settings, where In use would sit: it is the saved choice, and the administrator does not allow it.",
     "pages.developer.featurePreviewsTab.decisions_egress": "The egress sentence beside the main switch: what leaves the machine while it is on, and that it goes to the decision model the reader picks below.",
     "components.crewPrFacts.read": "On the work board, after a pull request's state tags: the time the app itself last looked the pull request up on GitHub ('read at 19:22'); {{time}} is a clock time.",
-    "components.relayCrews.new_crew": "Small tag after a Team Crew's name in the Crew switcher: this Crew was just shared with the reader and they have not looked at it yet. An adjective about the Crew, not a button that creates one."
+    "components.relayCrews.new_crew": "Small tag after a Team Crew's name in the Crew switcher: this Crew was just shared with the reader and they have not looked at it yet. An adjective about the Crew, not a button that creates one.",
+    "sharedCrew.started_by_heading": "Heading of the \"Started by\" section in the session sidebar's Sort & filter menu, which lists the people whose sessions the list can be narrowed to.",
+    "sharedCrew.started_by_chip": "Filter chip under the session search box while the \"Started by\" filter is on; {{names}} is the ticked people joined with \"or\" (for example \"You or Bob\").",
+    "sharedCrew.show_only_started_by": "Hover text on an unticked person row in the Sort & filter menu's \"Started by\" section; {{name}} is the person, \"You\" or \"Unattributed\".",
+    "sharedCrew.stop_filtering_by_creator": "Hover text on a ticked person row in the Sort & filter menu's \"Started by\" section: clicking it stops filtering by {{name}}.",
+    "sharedCrew.filter_counts": "Line under the \"Started by\" filter chip in the session sidebar: how many sessions the filter shows ({{shown}}) and how many it leaves out ({{hidden}})."
   }
 }

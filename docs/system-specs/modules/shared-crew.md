@@ -124,7 +124,7 @@ Evidence, strongest first (`identity.derive_principal`):
 | Tailnet peer on the direct tailnet listener, admitted by daemon `whois` of its own TCP `ip:port` (`tailnet_direct.DirectGate`) | `human` keyed by tailnet login (the stable user id is an alias); `machine` keyed by node for a tagged node | `tailscale_listener` |
 | Tailnet peer reaching a widened bind on its tailnet address, no forwarding header, resolved by daemon `whois` of the socket address (`tailnet.resolve_direct_peer`) | `human` keyed by tailnet login; `machine` keyed by node | `tailscale_direct` |
 | A request on the SSM listener's loopback port, admitted by a Crew invite (`dashboard.ssm_gate`) | `human` keyed by the invite id | `ssm_invite` |
-| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled with this machine's name when the subject is one of the owner's (see Owner label) | `local_operator` |
+| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled `owner.owner_name` when the subject is one of the owner's (see Owner label) | `local_operator` |
 | Anything else auth admitted | `Principal.unknown()` | `none` |
 
 A relayed principal's email and name are display only. Its display `login` is always
@@ -332,9 +332,29 @@ subjects `local-app` and `local-startup`, the configured owner id
 person (`owner.owner_principal_ids`). Principal ids never change: they come from
 the token subject or the login alone.
 
-The label shown for the owner's local principals is this machine's name
-(`owner.machine_name`, applied in `identity.local_operator_principal` to the
-owner's subjects only): macOS `ComputerName` read once through the fixed path
+The one name shown for the owner is `owner.owner_name`, read from caches only
+(never a spawn or a daemon read on the request), first non-empty wins:
+
+1. A name the Kiro relay or control plane gives the owner. None exists in this
+   build: a relay stream names only its caller (`userName`/`userEmail`) and the
+   lease names the Crew, not its owner, so the step has no source.
+2. The e-mail of the Kiro account this machine is signed in to
+   (`owner.login_email`). The gateway reads it once after the bind
+   (`owner.warm_login_email`, started by `lifecycle.install_lifecycle`'s
+   maintenance starter) from `sessions.fetch_local_identity`: `kiro-cli whoami` on
+   the kiro-cli route; the vault stores no e-mail, so on Crew's own sign-in the
+   first usage reading brings it. Every usage reading the dashboard publishes
+   (`sessions._publish_usage`) records the e-mail it names, or none, so a sign-in
+   change moves the label with the next reading. A value that is not an e-mail
+   (`relay_client.protocol.is_display_email`) records none.
+3. The owner's Tailscale `DisplayName` (`SelfNode.display_name`, from the status
+   `User` entry of `Self.UserID`, published with the owner), else their Tailscale
+   login (`access_set.owner_login`).
+4. This machine's name, `owner.machine_name`.
+
+It labels the owner's local principals (`identity.local_operator_principal`, the
+owner's subjects only) and the mode route's `owner_label`, so the Sessions creator
+filter and the host sandbox line show the same name. `owner.machine_name` is macOS `ComputerName` read once through the fixed path
 `/usr/sbin/scutil` (never `PATH`), else the Tailscale daemon's `Self.HostName`
 (`SelfNode.host_name`, published when the owner is learned), else the OS host
 name, else the token subject. It never raises. The `scutil` lookup never runs on an
@@ -409,6 +429,15 @@ again. One rule decides it for every surface
 `useSharedCrewListView`); with the preview off the browser reads no mode or People
 for them. Until then the dashboard looks as it does for one person.
 
+The same rule shows the sidebar's identity row (`SidebarIdentityRow`, under the
+header): "<name> via Kiro Login", "via Tailscale" or "via Systems Manager" (the
+name alone at this machine or on an unnamed path, from the mode body's
+`viewer_via`), naming who this tab's sends are recorded as before they are sent,
+and a read-only "Shared · N here now", where N counts People rows with an open tab
+plus the viewer (`sharedCrewUi.isHereNow`). It has no toggle. Because it follows
+the same rule, a relay teammate on a Crew whose preview is off sees no identity
+row, as they see no bylines.
+
 A team configuration is refused (`crew_mode.team_config_problem`) with reason
 `network_identity_config_unreadable` while the tailnet login allowlist could not be
 read (`config.resolution.tailnet_identity_unknown`, recorded by `access.note_tailnet`).
@@ -422,7 +451,12 @@ as an error, not as personal.
 The mode body: `mode`, `crew_id` (the gateway id; it keys the browser's remembered
 list filter), `viewer`, `team_config` (`state` `not_configured` | `invalid`, with
 `reason`, `capability`, `cause`), `console` (always `not_offered`), `adapters` (the
-setup paths) and `workload_identity_ref` (always `unavailable`). The Tailscale link
+setup paths) and `workload_identity_ref` (always `unavailable`). It also carries
+`viewer_via` (the viewer's path, `crew_mode.viewer_via`: `kiro_login`,
+`tailscale`, `ssm`, `local` or `unknown`), `viewer_is_owner` (the viewer is this
+machine's owner) and `owner_label` (`owner.owner_name`). Display only: none of them
+grants or refuses anything.
+The Tailscale link
 is a fixed public documentation page.
 Identity is never inferred from the OS user or a typed label, and loopback alone
 yields the local operator only together with a dashboard token.
@@ -589,6 +623,32 @@ view is the machine owner's. A teammate's owner socket carries
 reads: the hub's fan-out, its awaited owner deliveries (`deliver_ws_owners`: question,
 change and guide cards), the connect snapshot, the browser-live snapshot and the
 subagent replay all send it every frame redacted in full while the switch is off.
+The same edges hand a teammate the plain copy of a chat the host could not start
+for want of an OS sandbox, whatever the switch reads: no backend
+(`SandboxUnavailableError`) or a launcher that failed as the agent started
+(`AcpSandboxInitFailed`). That row's text is the machine owner's runbook for the
+host (the probe's errno, the kernel sysctl, the OS family, the launcher's stderr,
+`kirocrew service install`, the owner's config key), so `_on_error`, the ACP error
+card and the background-start stop row type it: `meta.code` `host_sandbox_unavailable` with the
+failure time `meta.at` (and `meta.retryable` for a momentary refusal), and the
+content prefix `host_sandbox_unavailable: `, which the chat SSE stream carries
+since it sends no row meta. `_on_error` looks for the refusal in the cause chain
+before its capability arms, so one wrapped in a `CapabilityError` or
+`CapabilityStartupError` is typed too. `dashboard.host_sandbox_refusal.for_non_owner` replaces
+such a row's content with one fixed line and drops its gateway-notice meta for
+every reader who is not the machine owner: on a non-owner socket (`for_socket`),
+the status stream (`for_reader`), the chat SSE stream (`SseEvents`) and every JSON
+buffered response body of a non-owner request (`redaction_audience_middleware`),
+whatever its content type: one JSON document or JSON lines (an archived transcript,
+`/api/session/archive/{name}`), and a body the handler gzipped
+(`conditional_json_response`), which is read decompressed and sent gzipped again
+with an `ETag` of the scrubbed body. The
+audience is the host-owner split above (`is_host_owner_dashboard_request`, and
+`redaction_audience.socket_reads_as_owner` for a socket), never the owner gate,
+which admits a teammate. The owner's socket, stream and reads keep the whole
+diagnostic, and the persisted row keeps it. A session export (`GET
+/api/chat/slots/{slot}/export`, either format) carries user and assistant turns
+only, so no reader's file holds the row.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
 
@@ -928,17 +988,32 @@ that id; when it names any local owner principal folded into the People row, it
 matches every local owner principal id represented by that row. Filters change
 visibility only; every session stays reachable with All.
 
-The browser shows All by default, Mine, each person seen and Unattributed, labels
-the verified viewer You, and remembers the choice per Crew in local storage keyed
-by the mode route's `crew_id` (`kc.shared-crew.creator-filter.<crew id>`). A
-personal Crew, one that cannot attribute, one with the preview off or one nobody
-else has joined hides the control and the bylines (`useSharedCrewListView`,
-`SharedCrewBylineContext`; see People and setup modes). A creator-filtered row
-matches its catalog key against the full local live-slot roster by normalized
-session identity, including slots outside the chat-only sidebar projection.
-A live Bot conversation opens its owning surface through `opensElsewhereOf`;
-a live chat switches with the actual slot key and passes that key to the host.
-Only a catalog row with no live match goes through `resumeFromHistory`.
+The dashboard sidebar does not call this route. Its creator filter is the
+**Started by** section of the session list's Sort & filter menu, one more
+client-side filter dimension beside tags and models (`chat-sidebar/creators.ts`,
+the `creators` dimension of `chat-sidebar/rows.ts`): it narrows the rows the
+list already holds, live and peer rows alike, from each row's own
+`attribution`, so closed sessions are reached through Older Sessions as before.
+The section lists You (the verified viewer), each person in People (named
+through `principalName`, so the owner reads `owner.owner_name`), anyone a row
+names that People does not, and Unattributed, each with its session count over
+every row; a long name or e-mail is cut with an ellipsis and shown in full on
+hover. Rows are checkboxes and ticked rows OR together. A row reads as the
+byline does: the viewer's creator id is You, a human creator is that person, a
+creator nobody can name with no trigger is Unattributed, a triggered session is
+no one's, and a row with no attribution (a peer row) is hidden while the filter
+narrows. You matches the viewer's one principal id, not the other owner ids the
+route folds into `mine`. While any row is ticked, a chip under the search box
+names the selection ("Started by You or Bob") and its line says how many
+sessions it keeps and how many it leaves out, counted over the rows every other
+filter keeps ("3 matching · 3 hidden by this filter"); its × clears the
+selection. The selection is remembered per Crew in local storage keyed by the
+mode route's `crew_id` (`kc.shared-crew.creator-filter.<crew id>`, a JSON array;
+the one key the older single-choice filter stored reads as a one-key
+selection); a stored person no longer listed is ignored rather than allowed to
+blank the list. A personal Crew, one that cannot attribute, one with the preview
+off or one nobody else has joined hides the section, the chip and the bylines
+(`useSharedCrewListView`, `SharedCrewBylineContext`; see People and setup modes).
 
 ### Audit
 
@@ -1512,9 +1587,24 @@ the viewer wrote carries no extra label and keeps the filled bubble; a message
 anyone else wrote, the session's creator included, is drawn in an outlined bubble
 (`OtherSenderBubble`) and carries the sender's name (`MessageByline`,
 `sharedCrewUi.bylineFor`), so a filled message without a name is always the
-reader's own. The name is shown once per run of one person's consecutive messages
+reader's own. The side follows the same rule, decided per viewer: only the
+viewer's own messages sit on the end side; another person's message sits on the
+start side with the agent's replies, keeping its outlined bubble and name so it
+does not read as the agent's, and its actions and timestamp go with it. The row
+marks itself `data-user-side="start"` and the transcript's row wrappers follow it
+(`has-[[data-user-side=start]]:items-start`, in `ChatPage`'s transcript and the
+SDK `ChatMessageList` that split panes, embeds and the crew window draw
+through). The sides are logical, so a right-to-left locale mirrors them. The name
+is shown once per run of one person's consecutive messages
 (`sharedCrewUi.continuesAuthorRun`): a different author, a steer, or any drawn row
-between them, such as an agent reply, starts a new run. Until the viewer read lands, the session's recorded creator stands in
+between them, such as an agent reply, starts a new run. A queued send reaches open
+tabs only as the drain's `queue_pop` frame, which the client rebuilds the row
+from, so that frame carries the entry's server-stamped author too
+(`chat_turn.queue_drain`); without it a teammate's queued message showed no name
+until a reload. A send steered into a running turn carries the author the same way:
+on its row, on its `steer_push` frame and on the entry a requeue drains
+(`chat_delivery.steer_into_running_turn`'s `author`, set by `chat_send` for a
+person's send). Until the viewer read lands, the session's recorded creator stands in
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
 labelled. A single-operator transcript is unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
@@ -1694,6 +1784,7 @@ that never learned a revision sends none and is not compared.
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
 | `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
 | `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state |
+| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via`, `viewer_is_owner` and `owner_label` |
 | `GET` / `PUT /api/shared-crew/preview` `{enabled}` | owner only, registered with the preview off: `{enabled, active, env_override, restart_required}` (Release gate) |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |
@@ -1748,7 +1839,7 @@ authoritative. Send-state snapshots are not cancelled by send-state frames: a se
 already waiting on the snapshot keeps its original revision, while revision-aware
 structural sharing retains the newest value in the query cache. Presence and work
 frames invalidate People, and sidebar slot, history and catalog changes invalidate
-People and every creator-filter page, including inactive cached queries.
+People.
 The client never resubmits a send on its own.
 
 ## 7. UI states
@@ -1758,18 +1849,20 @@ the Settings > People tab (with its share card and invite dialog) and the
 direct tailnet link in the phone dialog render only while
 `GET /api/shared-crew/capabilities` reports `shared_crew_preview: true`
 (`sharedCrewUi.sharedCrewPreviewOn`). A missing field, an older gateway or a
-failed read keeps them hidden, and no browser setting turns them on.
+failed read keeps them hidden, and no browser setting turns them on. The sidebar
+identity row follows the team-attribution rule of §2 People and setup modes; it
+owns no read failure (the read notices at the top of the session list do).
 
 Shared Crew query failures render through `ErrorNotice`. A failed refresh keeps
 cached content mounted, including invite emails, name, picture and API-key drafts,
-creator filters, queued sends and collaboration state. An
+the "Started by" selection, queued sends and collaboration state. An
 initial failure without data shows the error alone; optional routes returning
 404/null still mean unavailable, not failed. An unreadable mode remains an error.
 
 People and the invite dialog offer retry beside cached form content and
 omit the agent hand-off to protect its drafts. Initial failures and read-only
 surfaces offer the hand-off. The phone dialog owns its capability-read failure;
-the creator-filter bar owns capabilities, mode and People failures for the sidebar.
+the session list's read notices (`SharedCrewReadNotices`) own capabilities, mode and People failures for the sidebar.
 The open chat's collaboration strip also owns those reads for message bylines and
 the viewer/typing-lease reads for the composer, including when the sidebar is
 closed, so notices never repeat per message. The one queued-send label owns work
@@ -1796,6 +1889,23 @@ its newest user message carries a small "Queued" line with its own Cancel (`Queu
 tooltip names the personal or Crew-wide limit. Cancel sends `POST
 /api/shared-crew/work/{id}/cancel` at the shown revision once; a stale click adopts
 the current record. A busy session's queued sends stay the queue stack's rows.
+
+A chat the Crew's host cannot start because it has no OS sandbox
+(`meta.code: host_sandbox_unavailable`) renders for the machine owner as any other
+error row: the full diagnostic, with Resume. For anyone else
+(`useViewerIsNotOwner`, the host-owner split of §2, never the owner gate) the row
+is one line, "This Crew's computer can't start chats right now. Ask <owner> to
+check it.", where <owner> is "<name> (Crew owner)" with the mode route's
+`owner_label`, or "the Crew's owner" when the route is unavailable, and a Copy
+details button that copies only the code and the failure time
+(`host_sandbox_unavailable <ISO time>`). The row offers Resume to a teammate only
+when the refusal was momentary (`meta.retryable`); otherwise the next start meets
+the same host and fails the same way. A momentary row's line says so instead of
+naming whom to ask: "This Crew couldn't start this chat just now. Press Resume to
+try again." For the same reason the composer withholds
+its own Resume while the newest error row is a non-retryable
+`host_sandbox_unavailable` one (`transcriptRenderers.newestErrorOwnsRecovery`).
+The sidebar's interrupted-session count is unchanged.
 
 | State | Shown as | Draft |
 |---|---|---|
@@ -1826,6 +1936,19 @@ in `TailscaleInvites.tsx`, theme tokens, rows wrap at narrow widths):
 | the direct link's Copy is refused by the browser | an inline `ErrorNotice` with the agent hand-off; the link stays selectable in its field |
 | Remove key | a confirm, then `DELETE .../credential` with the irreversible-confirm header |
 | teammate or a gateway without the routes | nothing |
+
+### Team Crews in the desktop app's Crew switcher
+
+The Crew switcher's relay group is labelled "From your Kiro account"
+(`components.relayCrews.group_team_crews`), because the Kiro account the viewer
+signed in with is what lists them. Each online row's one visible action is a small
+Connect (accessible name "Connect <name>"); an offline row shows none. Connect
+hands only the endpoint ID to the desktop shell (`relayCrewAPI.open`), which opens
+the Crew in a window of its own. Only a click connects one: nothing connects when
+the list loads, when the menu opens or when the dashboard reloads.
+
+The window's notices (access removed, access turned off, Crew unavailable) are in
+the [desktop README, Relay Crew windows](../../../website/electron/README.md#relay-crew-windows).
 
 ## 8. Capabilities
 

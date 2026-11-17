@@ -1,8 +1,9 @@
 /** The sender of a user message in a shared session, from the server's
  *  `meta.author` stamp. The viewer's own messages carry no label and keep the
  *  filled bubble; a message anyone else wrote, the session creator included, is
- *  outlined (`OtherSenderBubble`) and named once per run of that person's
- *  messages, so a filled message without a name is always the reader's own. Until
+ *  outlined (`OtherSenderBubble`), drawn on the start side with the agent's
+ *  replies (UserMessage), and named once per run of that person's messages, so
+ *  a filled message on the end side is always the reader's own. Until
  *  the viewer read lands the session's creator stands in for the viewer
  *  (`bylineSelfId`). Bylines follow the same mode gate as the session list: a
  *  personal Crew, one that cannot attribute, or one whose mode is not known yet
@@ -34,7 +35,7 @@ function useSlotAttribution(slotKey: string | undefined): SessionAttribution | n
 
 function SenderLine({ name }: { name: string }) {
   return (
-    <div className="text-[12px] leading-5 text-muted mb-0.5 pr-1 truncate max-w-full" data-testid="message-byline">
+    <div className="text-[12px] leading-5 text-muted mb-0.5 px-1 truncate max-w-full" data-testid="message-byline">
       {name}
     </div>
   )

@@ -23,7 +23,7 @@ the import this module replaces.
 
 from __future__ import annotations
 
-from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
+from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpSandboxInitFailed, AcpTimeoutError
 from kiro_crew.acp.engine_fallback import (
     EngineFallbackWalk,
     ModelFallbackNotice,
@@ -86,6 +86,7 @@ from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE, EV
 
 __all__ = [
     "is_runtime_death",
+    "is_sandbox_init_failure",
     "is_user_worded_failure",
     "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
@@ -167,6 +168,17 @@ def is_runtime_death(exc: BaseException) -> bool:
     a class test that application code must not spell itself.
     """
     return isinstance(exc, AcpProcessDied)
+
+
+def is_sandbox_init_failure(exc: BaseException) -> bool:
+    """Whether *exc* is an OS sandbox refusing to start the agent child.
+
+    The transport raises ``AcpSandboxInitFailed`` when a backend exists but the
+    host's sandbox will not initialize, so no chat can start until someone fixes
+    the host. The dashboard's host-sandbox notice walks a turn's cause chain with
+    this test, which application code must not spell itself.
+    """
+    return isinstance(exc, AcpSandboxInitFailed)
 
 
 def is_user_worded_failure(exc: BaseException) -> bool:

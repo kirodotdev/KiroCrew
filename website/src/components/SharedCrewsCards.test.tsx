@@ -65,7 +65,7 @@ describe('SharedCrewsCards', () => {
     const rows = screen.getAllByTestId('shared-crew-row')
     expect(rows).toHaveLength(2)
     expect(rows[0]).toHaveTextContent('Platform team')
-    expect(rows[0]).toHaveTextContent('Team')
+    expect(rows[0]).toHaveTextContent('Shared')
     expect(rows[1]).toHaveTextContent('Personal')
     expect(rows[1]).toHaveAttribute('aria-disabled', 'true')
 

@@ -35,7 +35,8 @@ import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { clearCachedModels } from '../providers/adapters/acp'
-import { closeRelayCrews } from '../hooks/useRelayViewerCrews'
+import { closeRelayCrews, RELAY_VIEWER_CREWS_KEY } from '../hooks/useRelayViewerCrews'
+import { parseKiroUsagePayload } from '../api/kiroUsage'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
 import { i18nT } from '../i18n/t'
@@ -178,7 +179,15 @@ function ViewShell({ aside, children }: { aside: ShellAsideCopy; children: React
  * in a new tab (a click is a user gesture, so a popup blocker lets it through),
  * and a separate always-visible button copies it for approval on ANOTHER device.
  */
-function LinkField({ value }: { value: string }) {
+/** A Copy button that names what it copies (its visible label) and says Copied
+ *  for a moment after a copy that worked. `onCopied` hears every outcome, so the
+ *  screen can say when nothing reached the clipboard. */
+function CopyButton({ value, label, testId, onCopied }: {
+  value: string
+  label: string
+  testId?: string
+  onCopied?: (ok: boolean) => void
+}) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(
@@ -188,15 +197,35 @@ function LinkField({ value }: { value: string }) {
     [],
   )
   const onCopy = async () => {
+    const ok = await copyToClipboard(value)
+    onCopied?.(ok)
     // Both clipboard paths failed: do not announce a copy that did not happen.
-    if (!(await copyToClipboard(value))) return
+    if (!ok) return
     setCopied(true)
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => setCopied(false), 1500)
   }
-  const label = copied
-    ? i18nT('components.kasLogin.copied')
-    : i18nT('components.kasLogin.copy_link')
+  const shown = copied ? i18nT('components.kasLogin.copied') : label
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      data-testid={testId}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2 text-[12px] font-medium text-muted hover:bg-bg-hover hover:text-text focus-ring"
+    >
+      {copied ? (
+        <Check className="lucide-inline text-ok" aria-hidden="true" />
+      ) : (
+        <Copy className="lucide-inline" aria-hidden="true" />
+      )}
+      {shown}
+    </button>
+  )
+}
+
+/** The device flow's verification link: a real link (the browser does not open
+ *  by itself on every desktop, Linux included) with a labelled Copy beside it. */
+function LinkField({ value, onCopied }: { value: string; onCopied: (ok: boolean) => void }) {
   // The URL comes from the issuer's response: only an http(s) URL becomes a
   // link, so no other scheme (javascript:, data:) can run on a click.
   const href = safeHref(value)
@@ -217,19 +246,7 @@ function LinkField({ value }: { value: string }) {
           {value}
         </code>
       )}
-      <button
-        type="button"
-        onClick={onCopy}
-        aria-label={label}
-        title={label}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-bg text-muted hover:bg-bg-hover hover:text-text focus-ring"
-      >
-        {copied ? (
-          <Check className="lucide-inline text-ok" />
-        ) : (
-          <Copy className="lucide-inline" />
-        )}
-      </button>
+      <CopyButton value={value} label={i18nT('components.kasLogin.copy_link')} testId="kas-login-copy-link" onCopied={onCopied} />
     </div>
   )
 }
@@ -613,6 +630,9 @@ function DeviceWaiting({
   onCancel: () => void
 }) {
   const chrome = useChrome()
+  // A copy that reached no clipboard says so here; the attempt keeps polling.
+  const [copyFailed, setCopyFailed] = useState<'code' | 'link' | null>(null)
+  const copied = (what: 'code' | 'link') => (ok: boolean) => setCopyFailed(ok ? null : what)
   return (
     <ViewShell
       aside={{
@@ -654,7 +674,7 @@ function DeviceWaiting({
             </span>
             {i18nT('components.kasLogin.open_this_link')}
           </p>
-          <LinkField value={session.verification_uri_complete} />
+          <LinkField value={session.verification_uri_complete} onCopied={copied('link')} />
         </li>
         <li>
           <p className="flex items-center gap-2 text-[13px] font-medium text-text">
@@ -663,16 +683,33 @@ function DeviceWaiting({
             </span>
             {i18nT('components.kasLogin.enter_this_code')}
           </p>
-          <div className="mt-1.5 rounded-lg border border-accent/60 bg-accent-subtle/40 px-4 py-3 text-center">
+          <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-accent/60 bg-accent-subtle/40 py-3 pl-4 pr-2">
+            {/* Selectable as one unit, and with its own Copy: the issuer's
+                page asks for it typed, and a browser on another machine
+                cannot take it from this screen any other way. */}
             <span
-              className="font-mono text-2xl font-bold tracking-[0.2em] text-text-strong"
+              className="min-w-0 flex-1 select-all text-center font-mono text-2xl font-bold tracking-[0.2em] text-text-strong"
               data-testid="kas-login-user-code"
             >
               {session.user_code}
             </span>
+            <CopyButton value={session.user_code} label={i18nT('components.kasLogin.copy_code')} testId="kas-login-copy-code" onCopied={copied('code')} />
           </div>
         </li>
       </ol>
+      {/* Hand-off per chrome, as the settle notice below. */}
+      <ErrorNotice
+        className="mt-4 max-w-md"
+        askAgent={chrome.card}
+        message={
+          copyFailed === 'code'
+            ? i18nT('components.kasLogin.copy_code_failed')
+            : copyFailed === 'link'
+              ? i18nT('components.kasLogin.copy_link_failed')
+              : null
+        }
+        testId="kas-login-copy-error"
+      />
       <p className="mt-6 flex items-center gap-2 text-[13px] text-muted" aria-live="polite">
         <Loader2 className="lucide-inline animate-spin text-accent" />
         {i18nT('components.kasLogin.waiting_for_you_to_approve')}
@@ -1000,10 +1037,21 @@ function KasLoginFlow({
     clearCachedModels()
     void queryClient.resetQueries({ queryKey: ['available-models'] })
     // The usage reading names the previous account too (the Kiro sign-in card
-    // shows its e-mail): drop it rather than show that name until the next poll.
-    void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
+    // shows its e-mail): drop it rather than show that name, then ask the gateway
+    // for a fresh one. A plain re-read is not enough: the GET serves its cached
+    // "sign in" marker while it refreshes in the background, and the top bar's
+    // next poll is 30 s away, so the bar kept saying "no active Kiro sign-in".
+    // A refresh already running (409) or refused falls back to the re-read.
+    queryClient.setQueryData(['kiro-usage'], null)
+    void api.sessionsUsageRefresh().then(
+      res => queryClient.setQueryData(['kiro-usage'], parseKiroUsagePayload(res)),
+      () => queryClient.invalidateQueries({ queryKey: ['kiro-usage'] }),
+    )
     // A switch can keep every status field unchanged while replacing the account.
     void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
+    // The Team Crews list answers "sign in" until it is read again, and its own
+    // poll is a minute away while it holds that refusal.
+    void queryClient.invalidateQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
   }, [queryClient])
 
   const authorized = pollQuery.data?.status === 'authorized'

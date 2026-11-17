@@ -168,8 +168,19 @@ class TestRefreshFromVault:
         assert sessions_mod._usage_cache == {"available": False}
 
     @pytest.mark.asyncio
-    async def test_auth_rejected_reports_signin(self):
+    async def test_api_refusing_the_served_credential_is_no_reading_not_no_signin(self):
+        # The vault served a live credential, the one the engine runs on, and
+        # GetUsageLimits refused it. A fresh Company SSO sign-in kept the top bar on
+        # "no active Kiro sign-in" because of this mapping; it is a failed read, and
+        # the plain marker renders the "no balance reading yet" dash instead.
         resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_REJECTED)))
+        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._vault_signin_marker is None
+        resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_vault_credential_reports_signin(self):
+        resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_NO_CREDENTIAL)))
         assert sessions_mod._usage_cache == {"available": False, "reason": "signin_required"}
         resolve.assert_not_called()
 

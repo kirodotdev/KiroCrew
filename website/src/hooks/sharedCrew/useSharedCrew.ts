@@ -8,7 +8,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { api } from '../../api/client'
 import { noteSendRevision } from '../../api/sendRace'
-import type { CreatorFilter, SendState } from '../../api/sharedCrew'
+import type { SendState } from '../../api/sharedCrew'
 import { effectiveMode, showsTeamAttribution } from '../../api/sharedCrewMode'
 import { ALL_UNAVAILABLE, capabilityUsable, sharedAccessConfigured, sharedCrewPreviewOn, someoneJoined } from '../../api/sharedCrewUi'
 import { timedPoll } from '../../lib/pollRule'
@@ -140,17 +140,5 @@ export function useSessionTypingLease(sessionKey: string | null | undefined, ena
     queryFn: () => api.sharedCrewTypingLease(sessionKey ?? ''),
     enabled: enabled && !!sessionKey,
     retry: false,
-  })
-}
-
-/** One server-filtered page per cursor; the caller holds the cursor list. */
-export function useSharedCrewSessionsPage(creator: CreatorFilter, q: string, cursor: string, enabled = true) {
-  return useQuery({
-    queryKey: [...sharedCrewKeys.sessions(creator, q), cursor],
-    queryFn: () => api.sharedCrewSessions({ creator, q: q || undefined, cursor: cursor || undefined, limit: 50 }),
-    staleTime: 0,
-    enabled,
-    retry: false,
-    placeholderData: prev => prev,
   })
 }

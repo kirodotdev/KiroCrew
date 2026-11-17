@@ -7,6 +7,7 @@ import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../components/KiroAccountModal'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { api, type KasLoginStatus } from '../api/client'
+import { RELAY_VIEWER_CREWS_KEY } from '../hooks/useRelayViewerCrews'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -34,6 +35,9 @@ vi.mock('../api/client', async importOriginal => {
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
       kasLoginBeginLoopback: vi.fn(),
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
+      // A landed sign-in asks for a fresh credit reading. Refused by default, so a
+      // test that does not care keeps the plain re-read fallback and no network.
+      sessionsUsageRefresh: vi.fn().mockRejectedValue(new Error('no refresh in this test')),
     },
   }
 })
@@ -424,7 +428,28 @@ describe('KiroSignInCard', () => {
     expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
     // The previous account's usage reading names it: dropped, not shown until the next poll (#36156).
-    expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
+    await waitFor(() => expect(queryClient.getQueryData(['kiro-usage'])).toBeNull())
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('an authorized sign-in puts a fresh reading in the top bar and re-reads the Team Crews list at once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    vi.mocked(api.sessionsUsageRefresh).mockClear()
+    // The gateway's own refresh answers with the new account's plan; its cached
+    // GET would still have said "sign in" until the bar's next 30 s poll.
+    vi.mocked(api.sessionsUsageRefresh).mockResolvedValueOnce({
+      usage: { available: true, credits_used: 3, credits_plan: 50, email: 'grace@example.com' },
+    } as Awaited<ReturnType<typeof api.sessionsUsageRefresh>>)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['kiro-usage'], 'signin-required')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() => expect(api.sessionsUsageRefresh).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ used: 3, limit: 50, email: 'grace@example.com' }),
+    )
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: RELAY_VIEWER_CREWS_KEY })
     vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
   })
 

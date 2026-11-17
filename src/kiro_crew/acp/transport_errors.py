@@ -695,11 +695,11 @@ _RE_5XX_HINT = re.compile(r"(please try again|try your request again)", re.IGNOR
 # models, neither of which can succeed against an expired login. Status is the
 # primary signal because the rejection carries no explanatory wording.
 _RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.IGNORECASE)
-# Session expiry, by wording. Complements the status match for backends that
-# describe the expiry in prose without a machine-readable code. Deliberately
-# excludes Bedrock's named exceptions, which _RE_AUTH already owns.
+# Session expiry, by wording, or KAS's ``SignInRequiredError`` errorType (no
+# sign-in at all; its sentence names no expiry). Deliberately excludes
+# Bedrock's named exceptions, which _RE_AUTH already owns.
 _RE_SESSION_EXPIRED = re.compile(
-    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
+    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out|SignInRequiredError"
     r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
     r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
     r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",

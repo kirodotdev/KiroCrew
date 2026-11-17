@@ -244,6 +244,7 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
     refused = await _refusal(request)
     if refused is not None:
         return refused
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
     from kiro_crew.gateway_identity import gateway_id
     from kiro_crew.shared_crew.access import setup_paths_dict
     from kiro_crew.shared_crew.crew_mode import mode_view
@@ -258,6 +259,8 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
         crew_id=crew_id,
         creators=creators,
         owner_id=_owner_id(request),
+        owner_label=owner_label.owner_name(),
+        viewer_is_owner=is_host_owner_dashboard_request(request),
     )
     return web.json_response(body)
 

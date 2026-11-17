@@ -269,7 +269,10 @@ class TestQuoteThroughTheHandler:
             if c.args and c.args[0] == "queue_pop"
         ]
         pop = next(p for p in pops if p.get("content") == "> q\n\nwhy?")
-        assert pop["meta"] == {"files": ["/tmp/a.pdf"], "quote": _QUOTE}
+        assert {k: v for k, v in pop["meta"].items() if k != "author"} == {
+            "files": ["/tmp/a.pdf"],
+            "quote": _QUOTE,
+        }
 
     @pytest.mark.asyncio
     async def test_the_drained_row_s_quote_follows_the_row_s_redaction_rule(

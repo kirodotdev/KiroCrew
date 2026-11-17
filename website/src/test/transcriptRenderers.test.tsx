@@ -886,3 +886,15 @@ describe('a usage-limit row hands the card its chat, so the card can offer one c
     }
   })
 })
+
+describe('a host that cannot build an OS sandbox withholds the composer Resume', () => {
+  const user = msg('user', { content: 'hi', meta: { sendId: 's-h', mid: 'u-h' } })
+  it('owns recovery while the refusal is not momentary', () => {
+    const row = msg('error', { content: 'host_sandbox_unavailable: x', meta: { code: 'host_sandbox_unavailable' } })
+    expect(newestErrorOwnsRecovery([user, row])).toBe(true)
+  })
+  it('leaves Resume for a momentary refusal', () => {
+    const row = msg('error', { content: 'host_sandbox_unavailable: x', meta: { code: 'host_sandbox_unavailable', retryable: true } })
+    expect(newestErrorOwnsRecovery([user, row])).toBe(false)
+  })
+})

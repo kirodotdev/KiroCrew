@@ -25,11 +25,12 @@
  * another account, and that one window closes at its own next renewal.
  *
  * A window stops waiting for its Crew, and shows a notice in place of the
- * Crew's page, when renewal stops on CREW_OFFLINE or CREW_ACCESS_NOT_GRANTED,
- * or when the window reports the Crew unreachable (its retries ran out). The
- * renewal is stopped either way, so nothing retries behind the notice. Check
- * again is one fresh attempt through `restart`; a refusal puts the notice back.
- * Access refusals are noticed at the next renewal, up to 240 s after the change.
+ * Crew's page, when renewal stops on CREW_OFFLINE, CREW_ACCESS_NOT_GRANTED or
+ * REMOTE_ACCESS_DISABLED, or when the window reports the Crew unreachable (its
+ * retries ran out). The renewal is stopped either way, so nothing retries
+ * behind the notice. Check again is one fresh attempt through `restart`; a
+ * refusal puts the notice back. Access refusals are noticed at the next
+ * renewal, up to 240 s after the change.
  */
 
 // The relay's endpoint ID grammar has one definition, in the window module.

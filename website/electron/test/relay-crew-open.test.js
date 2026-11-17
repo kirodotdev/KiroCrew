@@ -321,13 +321,17 @@ test("a restart whose window closes mid-mint stops the new renewal, and a second
   assert.equal(w.opts.getToken(), null);
 });
 
-// Real renewals, recorded so a test can read isStopped(). A main-frame 401 makes
-// a renewal mint again at once, so no timer has to fire.
+// Real renewals, recorded so a test can read isStopped(). renewNow() makes a
+// renewal mint again at once, so no timer has to fire.
 function recordedRenewals() {
   const made = [];
   const createRenewal = (opts) => { const r = createRelayCrewRenewal(opts); made.push(r); return r; };
   return { made, createRenewal };
 }
+
+// A renewal mint now, standing in for its timer: the current renewal's own
+// main-frame 401 hook (the last status listener attached).
+function renewNow(w) { w.cbs.status[w.cbs.status.length - 1](401); }
 const okFor = (token) => ({ ok: true, grant: { ...GRANT, accessToken: token }, crewUrl: CREW_URL, name: "Team Crew" });
 const refusal = (code) => ({ ok: false, code, retryAfter: null });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -351,7 +355,7 @@ test("a SIGNED_OUT renewal stops every renewal, empties every holder and closes 
   const [a, b] = s.win.opened;
   assert.equal(b.opts.getToken(), `${TOKEN}-b`);
 
-  a.cbs.status[0](401); // A mints again and the gateway answers SIGNED_OUT
+  renewNow(a); // A mints again and the gateway answers SIGNED_OUT
   await settle();
   assert.equal(made.length, 2);
   assert.ok(made.every((r) => r.isStopped()), "every renewal stopped");
@@ -374,9 +378,9 @@ test("CREW_OFFLINE and RENEW_FAILING close nothing", async () => {
   await s.opener.open(ID);
   await s.opener.open(OTHER);
   const [a, b] = s.win.opened;
-  a.cbs.status[0](401); // CREW_OFFLINE: A's renewal stops, its window stays
+  renewNow(a); // CREW_OFFLINE: A's renewal stops, its window stays
   await settle();
-  b.cbs.status[0](401); // UNREACHABLE: B reports RENEW_FAILING and backs off
+  renewNow(b); // UNREACHABLE: B reports RENEW_FAILING and backs off
   await settle();
   assert.equal(made[0].isStopped(), true);
   assert.equal(made[1].isStopped(), false);
@@ -405,7 +409,7 @@ test("a SIGNED_OUT while a restart mint is in flight leaves no renewal running a
   await settle();
   assert.equal(s.requests.length, 3, "the restart mint is in flight");
 
-  b.cbs.status[0](401); // B's renewal sees SIGNED_OUT
+  renewNow(b); // B's renewal sees SIGNED_OUT
   await settle();
   assert.ok(a.closed && b.closed);
   release(okFor(`${TOKEN}-2`)); // the restart's mint lands after the sign-out
@@ -454,7 +458,7 @@ test("a new open whose mint lands after everything closed opens nothing and stop
   const [a] = s.win.opened;
   const opening = s.opener.open(OTHER);
   await settle();
-  a.cbs.status[0](401); // A's renewal sees SIGNED_OUT while OTHER's mint is in flight
+  renewNow(a); // A's renewal sees SIGNED_OUT while OTHER's mint is in flight
   await settle();
   assert.equal(a.closed, true);
   release(okFor(`${TOKEN}-b`)); // OTHER's mint read the sign-in before the sign-out
@@ -513,7 +517,7 @@ test("closeAll while a window's renewal mint is in flight never sets the late to
   const s = setup({ createRenewal, answers: [okFor(TOKEN), late, refusal("SIGNED_OUT")] });
   await s.opener.open(ID);
   const [a] = s.win.opened;
-  a.cbs.status[0](401); // the renewal mints again
+  renewNow(a); // the renewal mints again
   await settle();
   assert.equal(s.requests.length, 2, "the renewal mint is in flight");
   s.opener.closeAll("SIGNED_OUT");
@@ -539,9 +543,9 @@ test("a first open sends no marker and each window's renewal sends its own", asy
   await s.opener.open(ID);
   await s.opener.open(OTHER);
   const [a, b] = s.win.opened;
-  a.cbs.status[0](401);
+  renewNow(a);
   await settle();
-  b.cbs.status[0](401);
+  renewNow(b);
   await settle();
   assert.deepEqual(s.markers, [null, null, MARK_A, MARK_B]);
   for (const w of s.win.opened) w.close();
@@ -556,7 +560,7 @@ test("SIGN_IN_CHANGED on one window's renewal closes only that window", async ()
   await s.opener.open(ID);
   await s.opener.open(OTHER);
   const [a, b] = s.win.opened;
-  a.cbs.status[0](401); // A's renewal: the vault now holds another account
+  renewNow(a); // A's renewal: the vault now holds another account
   await settle();
   assert.equal(a.closed, true);
   assert.equal(a.opts.getToken(), null);
@@ -598,7 +602,7 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
   });
   await s.opener.open(ID);
   const [a] = s.win.opened;
-  a.cbs.status[0](401); // A's renewal mint goes out and is held
+  renewNow(a); // A's renewal mint goes out and is held
   await settle();
   a.close();
   assert.deepEqual(await s.opener.open(OTHER), { ok: true });
@@ -607,7 +611,7 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
   await settle();
   assert.equal(b.closed, false);
   assert.equal(a.opts.getToken(), null, "the stale grant is never set");
-  b.cbs.status[0](401);
+  renewNow(b);
   await settle();
   assert.equal(b.closed, false);
   assert.equal(s.markers[3], MARK_B, "B renews with its own marker");
@@ -626,6 +630,12 @@ const NO_ACCESS_TEXT = {
   check: "",
   close: "Close window",
 };
+const ACCESS_OFF_TEXT = {
+  title: "Team Crew's owner turned off access",
+  body: "You can open it again when they turn it back on.",
+  check: "Check again",
+  close: "Close window",
+};
 
 test("a CREW_OFFLINE renewal stop shows the unavailable notice in that window and closes nothing", async () => {
   const { made, createRenewal } = recordedRenewals();
@@ -633,7 +643,7 @@ test("a CREW_OFFLINE renewal stop shows the unavailable notice in that window an
   await s.opener.open(ID);
   await s.opener.open(OTHER);
   const [a, b] = s.win.opened;
-  a.cbs.status[0](401); // A mints again and the gateway answers CREW_OFFLINE
+  renewNow(a); // A mints again and the gateway answers CREW_OFFLINE
   await settle();
   assert.equal(made[0].isStopped(), true);
   assert.deepEqual(a.notices, [UNAVAILABLE_TEXT]);
@@ -648,7 +658,7 @@ test("a CREW_ACCESS_NOT_GRANTED stop shows the lost-access notice with no Check 
   const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_ACCESS_NOT_GRANTED")] });
   await s.opener.open(ID);
   const w = s.win.opened[0];
-  w.cbs.status[0](401);
+  renewNow(w);
   await settle();
   assert.equal(made[0].isStopped(), true, "retrying stops");
   assert.deepEqual(w.notices, [NO_ACCESS_TEXT]);
@@ -661,17 +671,31 @@ test("a Crew with no name gets a neutral one in the notice", async () => {
   const { createRenewal } = recordedRenewals();
   const s = setup({ createRenewal, answers: [{ ...okFor(TOKEN), name: "" }, refusal("CREW_OFFLINE")] });
   await s.opener.open(ID);
-  s.win.opened[0].cbs.status[0](401);
+  renewNow(s.win.opened[0]);
   await settle();
   assert.equal(s.win.opened[0].notices[0].title, "This Crew is currently unavailable");
 });
 
+test("a REMOTE_ACCESS_DISABLED stop shows the access-off notice with Check again", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("REMOTE_ACCESS_DISABLED")] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  renewNow(w);
+  await settle();
+  assert.equal(made[0].isStopped(), true, "retrying stops");
+  assert.deepEqual(w.notices, [ACCESS_OFF_TEXT]);
+  assert.equal(w.closed, false);
+  assert.ok(s.logs.includes(`relay crew ${ID}: open -> notice (access_off)`));
+  assertNoSecrets([...s.logs]);
+});
+
 test("other stops and a failing renewal show no notice", async () => {
-  for (const code of ["REMOTE_ACCESS_DISABLED", "ACCESS_DENIED", "UNREACHABLE"]) {
+  for (const code of ["ACCESS_DENIED", "UNREACHABLE"]) {
     const { createRenewal } = recordedRenewals();
     const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal(code)] });
     await s.opener.open(ID);
-    s.win.opened[0].cbs.status[0](401);
+    renewNow(s.win.opened[0]);
     await settle();
     assert.deepEqual(s.win.opened[0].notices, [], code);
     s.win.opened[0].close();

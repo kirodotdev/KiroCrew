@@ -136,6 +136,58 @@ describe('a shared chat draws other people apart from the viewer', () => {
   })
 })
 
+/** Per user message: the side its row sits on. `end` is the viewer's own
+ *  column; `start` is the agent's, which the row wrappers follow through
+ *  `data-user-side` (ChatMessageList.userSide.test.tsx pins that half). */
+function sides(container: HTMLElement, messages: ChatMessage[]) {
+  return messages.filter(m => m.role === 'user').map(m => {
+    const root = container.querySelector(`[data-row="${m.content}"] [data-role="user"]`) as HTMLElement
+    const side = root.dataset.userSide === 'start' && root.classList.contains('items-start') && !root.classList.contains('items-end') ? 'start' : 'end'
+    return [m.content, side]
+  })
+}
+
+describe('only the viewer\'s own messages sit on the end side', () => {
+  it('the viewer\'s own message stays on the end side; a teammate\'s moves to the start side with its name', async () => {
+    const msgs = [said(OWNER, 'mine'), reply('agent'), said(ANA, 'a1')]
+    const { container } = mount(msgs)
+    expect(await settled(container, msgs)).toEqual([
+      ['mine', '', 'filled'],
+      ['a1', 'ana@example.com', 'outlined'],
+    ])
+    expect(sides(container, msgs)).toEqual([['mine', 'end'], ['a1', 'start']])
+  })
+
+  it('a teammate\'s steer into the running turn is named and on the start side too', async () => {
+    const steer = { ...said(ANA, 'a-steer'), meta: { ...said(ANA, 'a-steer').meta, steer: true, steerState: 'consumed' } }
+    const msgs = [said(OWNER, 'mine'), reply('agent'), steer]
+    const { container } = mount(msgs)
+    await screen.findAllByTestId('message-byline', {}, { timeout: CHAIN_TIMEOUT_MS })
+    const row = container.querySelector('[data-row="a-steer"]')!
+    expect(row.querySelector('[data-testid="message-byline"]')?.textContent).toBe('ana@example.com')
+    expect(sides(container, msgs)).toEqual([['mine', 'end'], ['a-steer', 'start']])
+  })
+
+  it('the same message is on the end side for its author and the start side for everyone else', async () => {
+    viewer.mockResolvedValue(ANA)
+    const msgs = [said(OWNER, 'o1'), said(ANA, 'a1')]
+    const { container } = mount(msgs)
+    await settled(container, msgs)
+    expect(sides(container, msgs)).toEqual([['o1', 'start'], ['a1', 'end']])
+  })
+
+  it('a chat only the viewer writes to looks as it did: every row on the end side, no side mark', async () => {
+    const msgs = [said(OWNER, 'm1'), reply('agent'), said(OWNER, 'm2')]
+    const { container } = mount(msgs)
+    // Mode, People and viewer are read once the capabilities land; a byline
+    // never shows here, so wait for the queries the side rule reads.
+    await waitFor(() => expect(api.sharedCrewPeople).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(viewer).toHaveBeenCalled())
+    expect(sides(container, msgs)).toEqual([['m1', 'end'], ['m2', 'end']])
+    expect(container.querySelector('[data-user-side]')).toBeNull()
+  })
+})
+
 describe('the index.css hook', () => {
   it('clears the theme tint on an outlined bubble', () => {
     // kiro-light and the OLED / colour-blind light themes tint `.user-bubble` at (0,2,0).

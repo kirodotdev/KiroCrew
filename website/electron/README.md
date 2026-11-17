@@ -139,6 +139,23 @@ shrink as each moves onto it, and each stands down whenever its app's record is
 one the host serves (`hostOwnsAppWindows`); `test/app-window-host-independence.test.js`
 holds all three rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
 
+### Relay Crew windows
+
+A Crew reached over the Kiro relay opens in a window of its own.
+`relay-crew-open.js` mints its first token before anything opens,
+`relay-crew-renewal.js` keeps it fresh, `relay-crew-window.js` hosts the page and
+watches it, and `relay-crew-notice.js` holds the words of the local notice shown
+in place of the Crew's page (English only: main-process copy).
+
+| Renewal stop | Notice | Check again |
+|---|---|---|
+| `CREW_OFFLINE`, or the window's retries ran out | "<Crew> is currently unavailable" | yes |
+| `CREW_ACCESS_NOT_GRANTED` | "You no longer have access to <Crew>." / "To get access back, ask your admin." | no |
+| `REMOTE_ACCESS_DISABLED` | "<Crew>'s owner turned off access" / "You can open it again when they turn it back on." | yes |
+
+The notice closes with **Close window**. A host that stopped (the relay's 503
+`crew_not_connected`) is the reachability watch's, not this table's.
+
 ## Install as macOS App
 
 Build a native `.app` bundle and install to `/Applications`:

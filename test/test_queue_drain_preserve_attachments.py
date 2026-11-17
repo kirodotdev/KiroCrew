@@ -312,7 +312,11 @@ class TestDrainedRow:
             if c.args and c.args[0] == "queue_pop"
         ]
         pop = next(p for p in pops if p.get("content") == _WIRE)
-        assert pop.get("meta") == {"files": [_PATH], "dirs": [_DIR]}
+        # The author stamp rides beside the lists (test_shared_crew_queue_pop_author).
+        assert {k: v for k, v in pop["meta"].items() if k != "author"} == {
+            "files": [_PATH],
+            "dirs": [_DIR],
+        }
 
     @pytest.mark.asyncio
     async def test_queue_pop_frame_without_attachments_has_no_meta_key(self, tmp_path, monkeypatch):
@@ -329,7 +333,8 @@ class TestDrainedRow:
             if c.args and c.args[0] == "queue_pop"
         ]
         pop = next(p for p in pops if p.get("content") == "plain text")
-        assert "meta" not in pop
+        # Only the author stamp, never an empty attachment list.
+        assert set(pop.get("meta") or {}) <= {"author"}
 
 
 class TestSteeredAttachments:

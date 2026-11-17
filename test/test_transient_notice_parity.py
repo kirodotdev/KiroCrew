@@ -259,7 +259,6 @@ _TOKENIZED_SITES = (
     "chat_turn/acp_recovery.py model_server_error_fallback",
     "chat_turn/acp_recovery.py model_throttled_fallback",
     "chat_turn/acp_recovery.py reasoning_mismatch_rebuilding",
-    "chat_turn/eager_spawn.py eager_spawn_stopped",
     "chat_turn/model_fallback.py model_access_fallback",
     "chat_turn/model_fallback.py model_unavailable",
     "chat_turn/queue_cycle.py local_command_failed_before_start",
@@ -374,6 +373,7 @@ def test_run_time_chosen_tokens_match_their_wording() -> None:
         SESSION_NOT_FOUND_GIVE_UP_TEXT,
         SESSION_NOT_FOUND_RETRY_TEXT,
     )
+    from kiro_crew.dashboard.chat_turn.eager_spawn import EAGER_SPAWN_STOPPED_TEXT
     from kiro_crew.llm_helpers import CREDENTIAL_RELOAD_RETRY_NOTICE
 
     # The acp_recovery module reads the give-up text through chat_runner at run
@@ -381,6 +381,12 @@ def test_run_time_chosen_tokens_match_their_wording() -> None:
     assert _legacy_token(SESSION_NOT_FOUND_GIVE_UP_TEXT) == "session_reconnect_give_up"
     assert _legacy_token(SESSION_NOT_FOUND_RETRY_TEXT) == "session_reconnecting"
     assert _legacy_token(CREDENTIAL_RELOAD_RETRY_NOTICE) == "credentials_reloading"
+    # The background-start stop row fills a template, and a host sandbox refusal
+    # prefixes the same sentence, so its text is chosen at run time.
+    assert (
+        _legacy_token(EAGER_SPAWN_STOPPED_TEXT.format(failures=7, detail="7"))
+        == "eager_spawn_stopped"
+    )
     assert (
         _legacy_token("ℹ The capacity retry was cancelled — your message takes over.")
         == "capacity_retry_cancelled_superseded"

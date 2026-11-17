@@ -627,6 +627,10 @@ def _publish_usage(
     _usage_cache_vault_fp = vault_fp
     _usage_cache_user_id = user_id
     _vault_signin_marker = None
+    # The owner's label follows the account each reading names (owner.owner_name).
+    from kiro_crew.shared_crew.owner import set_login_email
+
+    set_login_email(payload.get("email"))
 
 
 def _cache_vault_failure(
@@ -812,9 +816,15 @@ async def _refresh_from_vault() -> None:
 
     Called only on a :func:`_vault_owns_usage` verdict, so the vault is
     authoritative: every failure -- including the identity vanishing between that
-    verdict and this read -- reports unavailable (``signin_required`` when
-    auth-class) instead of falling back to kiro-cli, whose readiness gate was
-    skipped and whose login may be a different account.
+    verdict and this read -- reports unavailable instead of falling back to
+    kiro-cli, whose readiness gate was skipped and whose login may be a different
+    account. ``signin_required`` comes from the vault's own verdict only: no
+    stored identity, ``NotAuthenticated``, or a refresh the issuer rejected or
+    that cannot run. A ``GetUsageLimits`` refusal of the credential the vault has
+    just served (the one the engine runs on) is a failed read, not a missing
+    sign-in: a new sign-in mints the same kind of token, so "sign in again" would
+    be false, and a token that really is revoked reaches the rejected-refresh
+    verdict at its next refresh.
 
     Identity invariant, mirroring the whoami bracketing on the kiro-cli path: the
     vault identity fingerprint is read immediately before the credential and
@@ -922,7 +932,8 @@ async def _refresh_from_vault() -> None:
             usage.get("credits_plan", "?"),
         )
         return
-    _cache_vault_failure(before, _unavailable_reason(result), stamp=stamp)
+    no_credential = result.auth_state == kiro_usage_api.AUTH_NO_CREDENTIAL
+    _cache_vault_failure(before, _REASON_SIGNIN_REQUIRED if no_credential else None, stamp=stamp)
 
 
 def _publish_account_unproven(
