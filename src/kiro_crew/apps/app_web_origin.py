@@ -32,8 +32,9 @@ The trust model is the app backend's own loopback port's, unchanged:
   party's scripts), so a signature here would let that page call the backend's
   gateway-only API. Every ``X-KiroCrew-*`` header, the dashboard's cookies and
   ``Authorization`` are dropped.
-* The response may set only host-only cookies, cannot clear the dashboard's site
-  data, and may be framed only by the dashboard's own loopback origins.
+* The response may set only host-only cookies, cannot clear site data (on the
+  one site every app origin shares, that would clear every app's cookies), and
+  may be framed only by the dashboard's own loopback origins.
 """
 
 from __future__ import annotations
@@ -146,22 +147,27 @@ def _drop_request_headers() -> frozenset[str]:
 #: cannot present one as the gateway's.
 _DROP_REQUEST_PREFIXES = ("x-kirocrew-",)
 
-#: Response headers never relayed. ``Clear-Site-Data`` is dropped so a framed
-#: page cannot ask the browser to wipe storage on the user's behalf.
-_DROP_RESPONSE_HEADERS = frozenset(
-    {
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-connection",
-        "te",
-        "trailer",
-        "trailers",
-        "transfer-encoding",
-        "upgrade",
-        "clear-site-data",
-    }
-)
+#: Response headers never relayed on top of the API proxy's hop-by-hop list (see
+#: :func:`_drop_response_headers`), matched lower-case: the hop-by-hop spellings
+#: that list does not name, and ``Clear-Site-Data``. A browser applies its
+#: ``"cookies"`` to the whole site, which every app origin shares, so one app's
+#: response would clear every app's cookies.
+_EXTRA_DROP_RESPONSE_HEADERS = frozenset({"proxy-connection", "trailer", "clear-site-data"})
+
+
+@functools.cache
+def _drop_response_headers() -> frozenset[str]:
+    """Every response header never relayed, matched lower-case.
+
+    The API proxy's hop-by-hop headers, read from its one list so a name added
+    there is dropped here too, plus :data:`_EXTRA_DROP_RESPONSE_HEADERS`. Read
+    through the routes facade, lazily, for the same reason as
+    :func:`_drop_request_headers`.
+    """
+    from kiro_crew.apps.routes import _PROXY_HOP_HEADERS
+
+    return _PROXY_HOP_HEADERS | _EXTRA_DROP_RESPONSE_HEADERS
+
 
 #: The dashboard's own cookie names (``dashboard/refresh_tokens.py``). They are
 #: host-only today, so a browser never sends them to an app host; dropping them by
@@ -293,9 +299,10 @@ def hardened_response_headers(
     of the backend's CSP still applies.
     """
     headers: CIMultiDict[str] = CIMultiDict()
+    drop = _drop_response_headers()
     for key, value in upstream:
         lowered = key.lower()
-        if lowered in _DROP_RESPONSE_HEADERS:
+        if lowered in drop:
             continue
         if lowered == "set-cookie":
             headers.add(key, host_only_set_cookie(value))
