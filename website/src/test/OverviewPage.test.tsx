@@ -303,10 +303,12 @@ describe('OverviewPage — whole-sentence lines', () => {
   })
 
   it('puts the uptime where the language puts it, and says running in German', async () => {
-    await act(async () => { await i18next.changeLanguage('hi') })
-    const hindi = renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(screen.getByText(line('DIV', '2h 30m से चालू · v0.1.0'))).toBeInTheDocument()
-    hindi.unmount()
+    // Bengali puts the uptime first. Hindi no longer does: there it would sit
+    // right before the postposition से, which is also its seconds unit (#36385).
+    await act(async () => { await i18next.changeLanguage('bn') })
+    const bengali = renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByText(line('DIV', '2h 30m ধরে চালু · v0.1.0'))).toBeInTheDocument()
+    bengali.unmount()
 
     await act(async () => { await i18next.changeLanguage('de') })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
