@@ -657,6 +657,11 @@ custom-rules:
       ChatSidebar.tsx), scene components (src/pages/scenes/), hooks/useTheme.tsx,
       or themeEditor.tsx (theme display names). These are intentional decorative/data uses.
 
+      Deterministic half: `scripts/check_emoji_icons.py` (Fast Gate) fails an
+      added code line that carries such a glyph. Code that only MATCHES text the
+      gateway writes (a leading tool glyph, a notice prefix) takes an
+      `emoji-ok: <whose text>` comment on that line.
+
       Bad:
       ```tsx
       <span>🔍 Search</span>

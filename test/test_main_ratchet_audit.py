@@ -415,6 +415,7 @@ class TestGateParityWithCi:
         {
             "check_brand_name.py",
             "check_comment_history.py",
+            "check_emoji_icons.py",
             "check_focus_cue.py",
             "check_harness_parity.py",
             # Only added lines are enforced; the whole-tree backlog is a report.
