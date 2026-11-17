@@ -234,6 +234,7 @@ _FLOOR_PARTS = (
     "conftest_floor_determinism",
     "conftest_floor_reporting",
     "conftest_floor_git",
+    "conftest_floor_read_budget",
 )
 
 
@@ -434,6 +435,17 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
 # Defined by conftest_floor_tmp only in per-test mode.
 if _TMP_PER_TEST:
     from conftest_floor_tmp import _isolate_tempfile_base_per_test  # noqa: E402,F401
+
+# The crew-log read-budget check, and its fixture only when the switch is on.
+from conftest_floor_read_budget import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _READ_BUDGET_ENV,
+    _READ_BUDGET_RAISE,
+    KNOWN_OVER_BUDGET_SITES,
+    check_read_budget,
+)
+
+if _READ_BUDGET_RAISE:
+    from conftest_floor_read_budget import _crew_log_read_budget_check  # noqa: E402,F401
 
 
 @pytest.fixture(autouse=True)

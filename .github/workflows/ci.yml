@@ -1290,6 +1290,9 @@ jobs:
       # A temp entry a test leaves behind fails the job instead of warning
       # (test/conftest_floor_tmp.py `_TMP_RESIDUE_STRICT_ENV`). Each `Backend Tests*` job below sets it too.
       KIROCREW_TMP_RESIDUE_STRICT: "1"
+      # A gateway crew-log read over budget at a site not on the list fails its test
+      # (test/conftest_floor_read_budget.py); the gateway itself reads `raise` as `report`.
+      KIROCREW_CREW_LOG_READ_BUDGET: raise
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

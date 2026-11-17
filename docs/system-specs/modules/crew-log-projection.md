@@ -890,7 +890,12 @@ crew log read over budget: slot=<slot> fold=<fold> unit=<unit> records=<n> delta
 ```
 
 `KIROCREW_CREW_LOG_READ_BUDGET` picks the mode, read per call: `report` (the default,
-and any unknown value) counts and warns and changes no read; `off` counts nothing. A
+and any unknown value) counts and warns and changes no read; `off` counts nothing. `raise`
+is the CI mode: the gateway still reads it as `report`, and the Linux `Backend Tests` job
+sets it so the test suite counts every test as the gateway (except a test module that
+resets the budget in its own fixture, as the budget's own tests do) and fails a test whose
+reads went over budget at a site not on the list in `test/conftest_floor_read_budget.py`;
+a test's own reads are not checked, and a fixed site leaves the list. A
 mode that answers "not ready" instead of folding cold comes with the first change that
 opts a real caller into it. `test_crew_log_read_budget.py` pins today's gateway callers
 of the cold-fold API per file, and `test_crew_log_read_budget_gaps.py` pins the callers

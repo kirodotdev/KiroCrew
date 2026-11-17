@@ -1320,7 +1320,12 @@ whichever test it outlives into. They report before they may fail anyone, so the
 are read from a full CI run before a strict switch (set to `1`) is turned on. The
 worker's last test is checked after that warning is written, so its findings are not in
 it. The package-attribute floor also undoes a replacement made by a wider-scoped fixture
-that a test created lazily (`request.getfixturevalue`) at that test's teardown.
+that a test created lazily (`request.getfixturevalue`) at that test's teardown. One more
+floor acts only under a switch: with `KIROCREW_CREW_LOG_READ_BUDGET=raise` (the Linux
+`Backend Tests` job) every test counts its crew-log reads as the gateway and fails at
+teardown on an over-budget read at a product site not listed in
+`test/conftest_floor_read_budget.py`, unless its module resets the budget in its own
+fixture.
 
 Eight members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
