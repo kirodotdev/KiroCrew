@@ -456,6 +456,11 @@ says why): run `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before 
     miss. A longer wait or a looser assertion hides those. Worked cases are in
     `docs/system-specs/common/testing-conventions.md` § A Playwright spec that passed
     only on a retry.
+  - A spec that changes a slot after `goto('/chat')` and then asserts the page shows
+    the change waits for the page's first `GET /api/chat/slots` to finish before the
+    change. A row on screen is not that barrier: the socket snapshot renders it
+    first. When you add this wait to one test, add it to every test with the same shape,
+    in the file and its sibling specs (same section of the testing spec).
   - A spec cleans up only the ids it created. A global reset races every other spec
     sharing the gateway.
 

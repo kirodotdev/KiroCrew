@@ -6289,6 +6289,42 @@ the spec would have hidden a real defect. So before you touch the spec, read the
   `--retries=0`, idle and under the same load. A user can hit the same reorder. If that ever matters, the fix is a
   version check on the read in the product, not a wait.
 
+  The fix covered test 8 only. Test 22 in the same file drags a card with
+  `DragEvent`s instead of posting the drop, and has the same race. It went red on
+  2026-11-17 with the same `element(s) not found` on the Done column, while the
+  server already listed the slot as Done
+  ([issue #37561](https://github.com/kirodotdev/KiroCrew/issues/37561),
+  [PR #38482](https://github.com/kirodotdev/KiroCrew/pull/38482)). Waiting for the
+  card in the source column is no barrier: the socket's connect snapshot renders
+  it while the read is still in flight. So when you fix this shape, fix every
+  test with it in the same change. Search the spec file and its siblings for a
+  `goto('/chat')` followed by a slot write (`/drop`, `/tags`, `/folder`, a
+  `DragEvent('drop')`, a row-menu click) and then a page assertion on that
+  slot. A test that reloads before it asserts, or asserts only over `request`,
+  does not have the race.
+
+  ```ts
+  // WRONG: the row is on screen before the read returns, so the drag can still
+  // land between the read's serialization and its reply
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${colTodo.id}"] [data-slot-key="${slotKey}"]`)
+  await page.evaluate(dispatchDrop, [slotKey, colDone.id])
+
+  // RIGHT: the same barrier as test 8, armed before goto
+  const slotListRead = page.waitForResponse(r =>
+    r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${colTodo.id}"] [data-slot-key="${slotKey}"]`)
+  await (await slotListRead).finished()
+  await page.evaluate(dispatchDrop, [slotKey, colDone.id])
+  ```
+
+  Measured on Linux (32 cores, all busy, `--retries=0`, the harness gateway):
+  unforced, test 22 passed 30 of 30 before the fix and 30 of 30 after, so load
+  alone does not reproduce it. With the page's first slot read held until the
+  drop's push had moved the card (`page.route`, then `route.fulfill`), it failed
+  20 of 20 before the fix, with the CI error, and passed 20 of 20 after.
+
 - **Received is a real miss.** `chat-form-switch-anchor.spec.ts` found the reader's row
   33 to 54 px lower after a 1400 -> 382 px resize. Two virtualizer defects caused it. The
   anchor was dropped on the scroll event its own write raised
