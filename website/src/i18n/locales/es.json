@@ -12010,6 +12010,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "Un servidor añadido aquí no llega a los workers de los Bots. Los workers de un Bot solo lo reciben si se añade a ese Bot.",
       "title": "Servidores MCP",
       "view_servers": "Servidores",
       "view_sharing": "Compartir"

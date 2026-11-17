@@ -54,6 +54,10 @@ export default function McpPage({ embedded }: { embedded?: boolean } = {}) {
         ? <div className="mb-4">{restart}</div>
         : <PageHeader title={t('pages.mcpPage.title')} actions={restart} />}
       <div className={embedded ? 'min-w-0' : 'px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0'}>
+        {/* A Bot's worker gets a server only from that Bot's own abilities
+            (docs/architecture/agent-mcp-and-skill-reach.md,
+            docs/decisions/2026-11-04-conductors-stay-simple-and-new-abilities-go-to-workers.md). */}
+        <p className="mb-3 text-[11.5px] leading-snug text-muted">{t('pages.mcpPage.bot_workers_note')}</p>
         {/* The provider lets MCP sharing withhold its "Ask the agent" hand-off
             while the server list holds unapplied edits a /chat navigation
             would drop. */}

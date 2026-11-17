@@ -11750,6 +11750,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "Ein hier hinzugefügter Server erreicht die Worker von Bots nicht. Die Worker eines Bots erhalten ihn nur, wenn er diesem Bot hinzugefügt wird.",
       "title": "MCP-Server",
       "view_servers": "Server",
       "view_sharing": "Freigabe"
