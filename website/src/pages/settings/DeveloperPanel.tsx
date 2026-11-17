@@ -29,6 +29,8 @@ const ConfigPage = lazy(() => import('../overview').then(m => ({
 })))
 const DebugToolsTab = lazy(() => import('../developer/DebugToolsTab').then(m => ({ default: m.DebugToolsTab })))
 const MemoryGraphTab = lazy(() => import('../overview/MemoryGraphTab'))
+/** Its own chunk too: the Settings chunk sits at its 500 KB budget (`scripts/check-bundle-size.mjs`). */
+const SessionControlSection = lazy(() => import('./SessionControlSection').then(m => ({ default: m.SessionControlSection })))
 
 /** One lazy page under its loading skeleton. */
 const loading = (page: ReactNode) => (
@@ -107,6 +109,8 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
               </SettingsSection>
               {/* The default agent's opt-in MCP sets (`DefaultMcpGrantsSection.tsx`). */}
               <DefaultMcpGrantsSection boxed />
+              {/* The agent.session_control switch (`SessionControlSection.tsx`). */}
+              <Suspense fallback={null}><SessionControlSection /></Suspense>
               {localGatewaySupported && (
                 <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
                   <SettingsCard boxed>

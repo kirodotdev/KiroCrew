@@ -239,6 +239,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Opt-in KAS memory recall for the owner's own new dashboard chats. Read at
     # session creation, so no restart; see ``acp/kas_memory.py``.
     "agent.orchestrator_memory": {"type": "bool"},
+    # Settings > Developer > Feature Previews > Session control. Read on every
+    # session-control call, so no restart.
+    "agent.session_control": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",
