@@ -59,6 +59,11 @@ def _serves_endorsed_copy(leaf: str, disk: bytes) -> bool:
     return True
 
 
+def position_sentence(path: Path | str, line: int, column: int, message: str) -> str:
+    """The one sentence that says where a config file stops parsing and the parser's reason."""
+    return f"{path} has a JSON syntax error on line {line}, column {column}: {message}."
+
+
 @dataclass(frozen=True)
 class ConfigSyntaxError:
     """One config file that does not parse as JSON, and where."""
@@ -80,7 +85,7 @@ class ConfigSyntaxError:
 
     def summary(self) -> str:
         """One line: the file, the position and the parser's reason."""
-        return f"{self.path} has a JSON syntax error on line {self.line}, column {self.column}: {self.message}."
+        return position_sentence(self.path, self.line, self.column, self.message)
 
     def explain(self) -> str:
         """The summary and the fix, for a terminal or a note body."""
