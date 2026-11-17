@@ -21996,7 +21996,7 @@
         "default_tag": "Predefinita",
         "delete": "Elimina…",
         "delete_crew": "Elimina {{name}}",
-        "delete_warning": "Elimina termina l’istanza EC2 e i suoi costi. Non si può annullare.",
+        "delete_warning": "Elimina termina l’istanza EC2 e cancella anche il suo disco, il ruolo IAM e il gruppo di sicurezza, così i suoi costi si fermano. Le chat, la memoria, i file e le impostazioni della crew sono su quel disco, quindi vanno persi e non si possono recuperare.",
         "deleting": "Eliminazione in corso…",
         "doesnt_manage": "{{productName}} non gestisce questa crew",
         "edit_crew": "Modifica {{name}}",

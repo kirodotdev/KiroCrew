@@ -11469,7 +11469,7 @@
         "default_tag": "Default",
         "delete": "Delete…",
         "delete_crew": "Delete {{name}}",
-        "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
+        "delete_warning": "Delete terminates the EC2 instance and also removes its disk, IAM role and security group, which ends its charges. The crew's chats, memory, files and settings are stored on that disk, so they are lost and cannot be recovered.",
         "deleting": "Deleting…",
         "doesnt_manage": "{{productName}} does not manage this crew",
         "edit_crew": "Edit {{name}}",

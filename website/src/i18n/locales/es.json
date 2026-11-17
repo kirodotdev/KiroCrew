@@ -21996,7 +21996,7 @@
         "default_tag": "Predeterminado",
         "delete": "Eliminar…",
         "delete_crew": "Eliminar {{name}}",
-        "delete_warning": "Eliminar termina la instancia EC2 y detiene sus cargos. No se puede deshacer.",
+        "delete_warning": "Eliminar termina la instancia EC2 y también borra su disco, su rol de IAM y su grupo de seguridad, con lo que se detienen sus cargos. Los chats, la memoria, los archivos y la configuración del crew están en ese disco, así que se pierden y no se pueden recuperar.",
         "deleting": "Eliminando…",
         "doesnt_manage": "{{productName}} no administra este crew",
         "edit_crew": "Editar {{name}}",

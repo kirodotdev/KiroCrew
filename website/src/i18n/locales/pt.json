@@ -21996,7 +21996,7 @@
         "default_tag": "Padrão",
         "delete": "Excluir…",
         "delete_crew": "Excluir {{name}}",
-        "delete_warning": "Excluir encerra a instância EC2 e interrompe as cobranças dela. Não é possível desfazer.",
+        "delete_warning": "Excluir encerra a instância EC2 e também apaga o disco, a função do IAM e o grupo de segurança dela, o que interrompe as cobranças. Os chats, a memória, os arquivos e as configurações da crew ficam nesse disco, então são perdidos e não podem ser recuperados.",
         "deleting": "Excluindo…",
         "doesnt_manage": "O {{productName}} não gerencia esta crew",
         "edit_crew": "Editar {{name}}",
