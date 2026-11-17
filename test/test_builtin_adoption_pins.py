@@ -300,6 +300,26 @@ _SHIPPED_PINS = [
         "minAppSdkLevel": 10,
         "legacyNav": {"route": "/code-review-sage", "icon": "ScanSearch"},
     },
+    {
+        "name": "agent-worlds",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-agent-worlds",
+        "commit": "433c1e48900b816aa7ff87f400adc6d5dec2eff4",
+        "version": "1.0.2",
+        "treeSha256": "a8302b3b1464d9e9d15390b49b5e559d891f3081766289df11dd7a8273ceef6f",
+        "archiveSha256": "3cbed22f55671500fabc09c07ca8327131992390b3a23dbe506c0fd6ae894150",
+        "minAppSdkLevel": 8,
+        "legacyNav": {"route": "/worlds", "icon": "Gamepad2"},
+    },
+    {
+        "name": "ops-mission-control",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-ops-mission-control",
+        "commit": "92e26de80e09f5ce1cbb2051eab43bd5c919eb31",
+        "version": "0.1.2",
+        "treeSha256": "d87d3c89a5473ccacade61b1ccf6d8d6d0d936dd7f666309eaae850584bf310e",
+        "archiveSha256": "7c509880e56284bc7788d19e6562f514a6884bfc1686989a9d7bc12cdd028474",
+        "minAppSdkLevel": 10,
+        "legacyNav": {"route": "/ops-mission-control", "icon": "Radio"},
+    },
 ]
 
 
