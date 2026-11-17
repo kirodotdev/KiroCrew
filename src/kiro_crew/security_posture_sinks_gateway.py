@@ -1058,4 +1058,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the credential redactor (`redact_via_context`) and is cut to 200 "
         "characters; anything else leaves the text the gateway wrote itself.",
     ),
+    (
+        "The prompt a turn sent",
+        "dashboard/handlers/prompt_as_sent.py",
+        "The Context tab's prompt as sent: the text one turn sent the agent, read from "
+        "the in-memory prompt record, passes the exfiltration-URL and credential "
+        "redactors before it reaches the owner's browser.",
+    ),
 )

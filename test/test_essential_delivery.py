@@ -4,12 +4,14 @@ import asyncio
 import json
 import os
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from test_member_essential_context import env as _essential_env
 
+from kiro_crew import prompt_trace
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -176,6 +178,27 @@ async def test_actual_wire_fresh_and_twenty_unchanged_warm_turns(env):
     sizes = [len(m.encode("utf-8")) for m in messages]
     print(f"WIRE_BYTES fresh={sizes[0]} warm={sizes[1:]} total={sum(sizes)} envelopes=1")
     env.forbidden.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prompt_as_sent_is_the_text_the_wire_received(env, monkeypatch):
+    """The Context tab's record is the receipt-swapped text, never the assembled one."""
+    monkeypatch.setattr(prompt_trace, "_sessions", OrderedDict())
+    monkeypatch.setattr(prompt_trace, "_total", 0)
+    target = provider(env.project)
+    await send(target, build(env, target, fresh=True))
+    warm = build(env, target)
+    prompt_trace.expect(target, warm, "unit", 2)
+    await send(target, warm)
+    assert HEADER in warm
+    assert prompt_trace.read("unit", 2) == target.client.messages[-1]
+    assert HEADER not in target.client.messages[-1]
+    # Another stream drops the report, so a later send is never filed as turn 3.
+    later = build(env, target)
+    prompt_trace.expect(target, later, "unit", 3)
+    await send(target, "/context")
+    await send(target, later)
+    assert prompt_trace.read("unit", 3) is None
 
 
 @pytest.mark.asyncio
