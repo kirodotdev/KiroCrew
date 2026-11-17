@@ -528,6 +528,45 @@ def merge_mcp_sources(config: dict) -> McpSources:
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
 
 
+def reconcile_raw_key_tool_overrides(config: dict, sources: McpSources) -> None:
+    """Carry a raw slash key's ``disabledTools`` onto the alias it renders as.
+
+    A non-clean rebuild starts from the previous spec, which holds the raw key
+    ``npm:@playwright/mcp`` under its alias ``playwright-mcp``, and the source merge
+    then adds the raw key again beside it. Once the source's list has changed, the
+    two entries differ only by ``disabledTools``, so key normalization would keep the
+    stale alias and mount the raw key a second time as ``playwright-mcp-2``. Aligning
+    the alias's list with the merged raw entry first lets them converge on one mount
+    that carries the source's list; a merged entry with no list clears the alias's.
+    The merged entry is read, not one scope's copy, so a Kiro global guard survives a
+    store entry that omits the field, exactly as the source merge keeps it.
+
+    :func:`mcp_aliases.raw_tools_project_onto_alias` decides when the alias is that
+    rendering: no scope declares the alias itself, and the specs match apart from
+    ``disabledTools``. Any other pair keeps the normal collision handling.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    declared = (sources.kirocrew, sources.kiro_global, sources.provider_global)
+    for raw_name in dict.fromkeys(itertools.chain.from_iterable(declared)):
+        alias = mcp_server_alias(raw_name)
+        if alias == raw_name:
+            continue
+        raw_entry = servers.get(raw_name)
+        alias_entry = servers.get(alias)
+        if not isinstance(raw_entry, dict) or not isinstance(alias_entry, dict):
+            continue
+        if not mcp_aliases.raw_tools_project_onto_alias(alias, raw_entry, alias_entry, declared):
+            continue
+        if "disabledTools" in raw_entry:
+            value = raw_entry["disabledTools"]
+            # A copy, so a later pass mutating one entry never edits the other.
+            alias_entry["disabledTools"] = list(value) if isinstance(value, list) else value
+        else:
+            alias_entry.pop("disabledTools", None)
+
+
 def _mute_withheld(entry: dict) -> dict:
     """*entry* muted in place, with the record that this rebuild muted it.
 

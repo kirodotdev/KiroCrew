@@ -13,7 +13,7 @@ ownership transaction and commits it once the spec is durable.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,27 @@ def _norm_mcp_spec(spec: Any) -> Any:
     return {
         k: v for k, v in spec.items() if k != DERIVED_KEY and not (k in ("env", "args") and not v)
     }
+
+
+def raw_tools_project_onto_alias(
+    alias: str, raw_spec: Any, alias_spec: Any, declared: Iterable[Mapping[str, Any]]
+) -> bool:
+    """Whether the alias entry is the rebuild's own rendering of a raw slash key.
+
+    Only then does the raw key's ``disabledTools`` belong on the alias mount. No
+    source scope in *declared* may hold the *alias* key itself: such an entry is a
+    declaration with its own guard, and the dashboard's per-tool writer sends a
+    row's overrides to an alias-keyed store entry in that case. The two specs must
+    also match apart from ``disabledTools``; specs that differ in anything else are
+    distinct servers, and the raw key keeps mounting as a ``-<n>`` sibling.
+    """
+    if not isinstance(raw_spec, dict) or not isinstance(alias_spec, dict):
+        return False
+    if any(alias in scope for scope in declared):
+        return False
+    raw_rest = {k: v for k, v in raw_spec.items() if k != "disabledTools"}
+    alias_rest = {k: v for k, v in alias_spec.items() if k != "disabledTools"}
+    return bool(_norm_mcp_spec(raw_rest) == _norm_mcp_spec(alias_rest))
 
 
 def _alias_family_base(key: str) -> str:

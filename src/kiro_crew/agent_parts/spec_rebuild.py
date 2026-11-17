@@ -814,6 +814,8 @@ def rebuild_agent_config(
         )
 
     resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
+    # After resolution, so both entries carry the resolved command they are compared on.
+    mcp_sources.reconcile_raw_key_tool_overrides(config, sources)
     mounted = mcp_aliases.normalize_server_keys(config, resolved.unresolved)
 
     # Sync shared (user-installed) servers to tools/allowedTools.
