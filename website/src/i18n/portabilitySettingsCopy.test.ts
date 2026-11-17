@@ -61,7 +61,8 @@ describe('portability settings-document copy', () => {
 
   it('names all three files on the import checkbox in every locale', () => {
     // en-XA is generated from English and rewrites every letter, so it is not checked by name.
-    for (const f of files.filter(name => name !== 'en-XA.json')) {
+    // en.json carries no copy of this key (the first test pins which files do).
+    for (const f of files.filter(name => name !== 'en-XA.json' && name !== 'en.json')) {
       const doc = JSON.parse(readFileSync(path.join(LOCALES_DIR, f), 'utf-8'))
       const label = lookup(doc, 'import_include_settings')
       expect(label, f).toEqual(expect.stringContaining('config.local.json'))
