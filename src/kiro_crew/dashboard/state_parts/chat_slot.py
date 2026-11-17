@@ -869,6 +869,19 @@ class _ChatSlot:
         write_project(self._binding, value)
 
     @property
+    def _project_picked(self) -> bool:
+        """Whether a person picked the project, held in the binding beside it.
+
+        A Bot worker keeps a picked project instead of moving to the Bot's worktree
+        (``crewmate_worktree_scope``). Any write that changes the project clears it.
+        """
+        return self._binding.picked
+
+    @_project_picked.setter
+    def _project_picked(self, value: bool) -> None:
+        self._binding.picked = value
+
+    @property
     def autocompact_pct(self) -> float | None:
         """The session's compaction threshold override, held in the binding aliases share."""
         return self._binding.autocompact_pct

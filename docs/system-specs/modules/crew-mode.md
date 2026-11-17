@@ -4820,7 +4820,21 @@ things here and leaves every other git step to the worker's prompt
    repository (the same subfolder when the path named one, unless that folder
    is a link out of the worktree or holds a control character or bracket). A
    path in the worktree the worker already runs in, or in that repository's own
-   checkout, moves nothing. The binding is re-captured under the dispatch lock,
+   checkout, moves nothing. A project a person picked for the session
+   (`POST /api/chat/slots/{slot}/project`, the folder the slot already has
+   included) is kept on every later turn and no worktree is applied over it,
+   re-checked after the lookup so a pick made meanwhile stands. The pick is held
+   on the `TranscriptBinding` beside `project` (`_ChatSlot._project_picked`), so
+   every live alias on the transcript keeps and saves it, and a fork carries it;
+   it is saved on the metadata line as `project_picked` and restored together
+   with the project, only when that non-empty project is restored. An app's
+   write to the route is not a pick and leaves the flag as it is. Clearing the
+   project hands the choice back, and any other write that moves the project (a
+   workspace or agent switch, an app, the `set_project` tool) drops the pick.
+   The metadata line sits in the agent-writable data home, so an agent that
+   forges `project_picked` beside its own `project` keeps that folder after a
+   restart; this is an accepted exception, since the worktree keeps two Bots off
+   one working tree and is not a security boundary. The binding is re-captured under the dispatch lock,
    and a session already running takes the deferred reset `set_project` uses.
    Git failing (or no sandbox) leaves the turn on its project. The
    repository's `aws.project_profiles` binding still applies in the worktree:

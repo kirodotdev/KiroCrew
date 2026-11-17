@@ -833,6 +833,43 @@ def test_a_new_worktree_moves_the_project_and_resets_a_running_session(monkeypat
     assert not hasattr(idle, "_pending_reset_history_key")
 
 
+def test_a_project_a_person_picked_is_kept_on_later_turns(monkeypatch):
+    """A pick made in the dashboard is not replaced by the Bot's worktree."""
+    from kiro_crew.dashboard import crewmate_worktree_scope as scope
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    hit = cw.CrewmateWorktree(repo="/r", path="/ws/wt/atlas/r", branch="crew/atlas/r", cwd="/ws/a")
+    monkeypatch.setattr(scope, "_worker_crewmate", lambda *_a: "Atlas")
+    monkeypatch.setattr(scope, "resolve_worker_project", lambda *_a: hit)
+    slot = _ChatSlot("w3")
+    slot.project = "/r"
+    slot._project_picked = True
+    slot._dirty = False
+    assert asyncio.run(scope.scope_worker_turn(None, slot, None, None, "edit /r/x")) == ""
+    assert (slot.project, slot._dirty) == ("/r", False)
+    # A cleared pick hands the choice back to the worktree.
+    slot._project_picked = False
+    assert asyncio.run(scope.scope_worker_turn(None, slot, None, None, "")) == hit.cwd
+
+
+def test_a_pick_made_during_the_worktree_lookup_stands(monkeypatch):
+    from kiro_crew.dashboard import crewmate_worktree_scope as scope
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("w4")
+    slot.project = "/r"
+    hit = cw.CrewmateWorktree(repo="/r", path="/ws/wt/atlas/r", branch="crew/atlas/r", cwd="/ws/a")
+
+    def lookup(*_a):
+        slot._project_picked = True  # the person picks while git runs
+        return hit
+
+    monkeypatch.setattr(scope, "_worker_crewmate", lambda *_a: "Atlas")
+    monkeypatch.setattr(scope, "resolve_worker_project", lookup)
+    assert asyncio.run(scope.scope_worker_turn(None, slot, None, None, "")) == ""
+    assert slot.project == "/r"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="a drive path is absolute on Windows")
 def test_a_drive_path_on_a_posix_gateway_never_reaches_the_gateways_own_checkout(
     tmp_path, git_here, monkeypatch
