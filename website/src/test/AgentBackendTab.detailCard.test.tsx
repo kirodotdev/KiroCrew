@@ -895,7 +895,9 @@ describe('AgentBackendTab standing caveats', () => {
     wrap()
     await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     highlight('Kiro Agent')
-    await waitFor(() => expect(detail().textContent).toContain('Default.'))
+    await waitFor(() =>
+      expect(detail().textContent).toContain('Kiro Agent is installed and ready to use.'),
+    )
     expect(screen.queryByText('Run: kiro login')).toBeNull()
   })
 

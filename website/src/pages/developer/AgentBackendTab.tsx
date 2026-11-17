@@ -60,7 +60,7 @@ const PINNED_ORDER = [KAS, KIRO, STRANDS]
 /**
  * The harnesses that never carry the Experimental tag: the default a new install
  * runs (`DEFAULT_ACP_BACKEND`) and Kiro CLI, the all-supported governance floor.
- * Only the default gets the "Default." line; keying it on the constant keeps the
+ * Only the default gets the Recommended tag; keying it on the constant keeps the
  * page from naming a different harness than the one a new user is on.
  */
 const stable = (value: string) => value === DEFAULT_ACP_BACKEND || value === KIRO
@@ -1224,12 +1224,12 @@ export function AgentBackendTab() {
    * `restart_required` names the cheap remedy, the Check again button beside it,
    * before the gateway restart — in first-run setup's own sentence, so the two
    * screens built from one picker give one remedy for one state. Only then do
-   * the descriptor lines apply:
-   * `DEFAULT_ACP_BACKEND` gets the default line; anything else installed is ready
-   * to use, and marked Experimental unless it is Kiro CLI, the stable floor.
+   * the descriptor lines apply: an installed harness is ready to use, tagged
+   * Recommended when it is `DEFAULT_ACP_BACKEND`, untagged for Kiro CLI (the
+   * stable floor) and Experimental for the rest.
    *
    * With no probe answer at all (a 404, a 403, a query in flight) the block says
-   * only what it can: the default line for the default, nothing for Kiro CLI,
+   * only what it can: the default sentence for the default, nothing for Kiro CLI,
    * Experimental for the rest — never "installed and ready", which nobody measured.
    */
   const lead = (value: string) => {
@@ -1261,21 +1261,27 @@ export function AgentBackendTab() {
           {i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', { name })}
         </p>
       )
+    if (row?.installed === 'installed')
+      return (
+        // One line, with Recommended or Experimental as a tag on the sentence it
+        // qualifies: as a paragraph of its own it read as an orphaned second status.
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-relaxed text-text">
+          <span>{i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}</span>
+          {value === DEFAULT_ACP_BACKEND ? (
+            <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.recommended')}</Badge>
+          ) : (
+            !stable(value) && (
+              <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.experimental')}</Badge>
+            )
+          )}
+        </p>
+      )
+    // No install verdict: the default still says why it is the default, since a
+    // bare word ("Default.") under the agent the user already picked explains nothing.
     if (value === DEFAULT_ACP_BACKEND)
       return (
         <p className="text-[13px] leading-relaxed text-text">
           {i18nT('pages.developer.agentBackendTab.default_harness')}
-        </p>
-      )
-    if (row?.installed === 'installed')
-      return (
-        // One line, with Experimental as a tag on the sentence it qualifies: as a
-        // paragraph of its own it read as an orphaned second status.
-        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-relaxed text-text">
-          <span>{i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}</span>
-          {!stable(value) && (
-            <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.experimental')}</Badge>
-          )}
         </p>
       )
     // A stable harness with no install verdict has nothing measured to say.

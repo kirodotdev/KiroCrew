@@ -439,7 +439,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
         ?.closest('.sr-only') as HTMLElement
       // A sentence that already names its agent is not led by the name again.
       expect([...block.children].map(p => `${p.tagName} ${p.textContent}`)).toEqual([
-        'P Kiro Agent：デフォルト。',
+        'P Kiro Agent：推奨。新しくインストールすると、このエージェントで始まります。',
         'P Kiro CLI はインストール済みで、すぐに使用できます。',
         'P Claude Code：使用中。このマシンにありません: claude-agent-acp',
       ])
@@ -902,15 +902,18 @@ describe('AgentBackendTab status strip', () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Kiro Agent')
-    expect(detail().textContent).toContain('Default.')
+    expect(detail().textContent).toContain('Recommended. New installs start on this agent.')
+    expect(detail().textContent).not.toContain('Default.')
     highlight('Claude Code')
     expect(detail().textContent).toContain('Experimental')
     expect(screen.queryByText(/OS sandbox|Anthropic|steered mid-turn/)).toBeNull()
   })
 
-  it('puts the default line on DEFAULT_ACP_BACKEND, not on Kiro CLI', async () => {
+  it('tags DEFAULT_ACP_BACKEND Recommended, not Kiro CLI', async () => {
     // New installs run KAS. A page that called Kiro CLI the default and tagged KAS
     // Experimental would tell a new user the harness they are on is the risky one.
+    // An installed default reads like any installed harness plus the tag: a bare
+    // "Default." under the agent the user already picked explained nothing.
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro', card()), probeRow('kas', card()), probeRow('claude', card())],
     })
@@ -919,34 +922,40 @@ describe('AgentBackendTab status strip', () => {
     expect(DEFAULT_ACP_BACKEND).toBe('kas')
 
     highlight('Kiro Agent')
-    await waitFor(() => expect(detail().textContent).toContain('Default.'))
+    await waitFor(() =>
+      expect(detail().textContent).toContain('Kiro Agent is installed and ready to use.'),
+    )
+    expect(panel().getByText('Recommended')).toBeInTheDocument()
+    expect(detail().textContent).not.toContain('Default.')
     expect(panel().queryByText('Experimental')).toBeNull()
-    expect(document.getElementById('agent-backend-row-status-kas')?.textContent).toBe('Default.')
+    expect(document.getElementById('agent-backend-row-status-kas')?.textContent).toBe(
+      'Recommended. New installs start on this agent.',
+    )
 
     // Kiro CLI is the stable floor: neither the default nor Experimental.
     highlight('Kiro CLI')
     await waitFor(() =>
       expect(detail().textContent).toContain('Kiro CLI is installed and ready to use.'),
     )
-    expect(detail().textContent).not.toContain('Default.')
+    expect(detail().textContent).not.toContain('Recommended')
     expect(panel().queryByText('Experimental')).toBeNull()
     const kiroStatus = document.getElementById('agent-backend-row-status-kiro')?.textContent ?? ''
-    expect(kiroStatus).not.toMatch(/Default|Experimental/)
+    expect(kiroStatus).not.toMatch(/Recommended|Experimental/)
 
     // Any other harness is still Experimental.
     highlight('Claude Code')
     await waitFor(() => expect(panel().getByText('Experimental')).toBeInTheDocument())
-    expect(detail().textContent).not.toContain('Default.')
+    expect(detail().textContent).not.toContain('Recommended')
     expect(document.getElementById('agent-backend-row-status-claude')?.textContent).toBe(
       'Experimental',
     )
   })
 
-  it('says neither Default nor Experimental for Kiro CLI with no probe answer', async () => {
+  it('says neither Recommended nor Experimental for Kiro CLI with no probe answer', async () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Kiro CLI')
-    expect(detail().textContent).not.toMatch(/Default\.|Experimental/)
+    expect(detail().textContent).not.toMatch(/Recommended|Experimental/)
   })
 
   it('says what to install and offers the install command to copy', async () => {
