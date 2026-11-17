@@ -18,6 +18,7 @@ from kiro_crew.doctor_checks import render
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.config.sections import KiroCrewAgentConfig
 
 
 #: Printed by the two member sections when the redaction policy that decides
@@ -210,6 +211,24 @@ def _open_slot_agent_names() -> list[tuple[str, str]]:
         return []
 
 
+def is_shipped_alias_entry(crew_name: str, crew: KiroCrewAgentConfig) -> bool:
+    """True for the crew entry the agent sync writes for a shipped deprecated alias.
+
+    That entry is recorded with source "builtin" and binds the alias to itself,
+    so the user has nothing to rename there: the alias and its row in
+    ``DEPRECATED_AGENT_SPECS`` are deleted together on the deprecation
+    schedule. A builtin-sourced entry bound to anything else (the first
+    crewmate, a rebound spec) is the user's binding and still reports.
+    """
+    from kiro_crew.agent import DEPRECATED_AGENT_SPECS
+
+    return (
+        crew.source == "builtin"
+        and crew.kiro_agent == crew_name
+        and crew_name in DEPRECATED_AGENT_SPECS
+    )
+
+
 def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Report configs that still name a deprecated agent spec.
 
@@ -236,8 +255,9 @@ def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> No
     # A cron job, chat slot, or config selector may name a CREW rather than a
     # kiro agent spec; the crew row owns that report, so those names are
     # skipped on the leaf surfaces rather than double-flagged through the
-    # crew's binding.
-    crew_names = set(cfg.agents)
+    # crew's binding. The shipped alias entry is not reported (see below), so
+    # it shields nothing: a user's cron naming the alias is still flagged.
+    crew_names = {n for n, c in cfg.agents.items() if not is_shipped_alias_entry(n, c)}
 
     def _add(holder: str, name: object) -> None:
         # config.json is hand-editable and agent-writable, and the loader
@@ -254,8 +274,11 @@ def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> No
     # Crew bindings: config.json agents.<name>.kiro_agent. A crew name is not
     # skipped here -- crew_names shields only the LEAF surfaces that resolve
     # through a crew, and a kiro_agent that happens to equal a crew name is
-    # not resolved again.
+    # not resolved again. The shipped alias entry is skipped: Kiro Crew writes
+    # it, so the user has nothing to rename (is_shipped_alias_entry).
     for crew_name, crew in cfg.agents.items():
+        if is_shipped_alias_entry(crew_name, crew):
+            continue
         name = crew.kiro_agent
         if not isinstance(name, str) or not name:
             continue
