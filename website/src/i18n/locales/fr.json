@@ -9198,6 +9198,7 @@
       "save_edit": "Enregistrer la modification",
       "send_now": "Envoyer maintenant",
       "wont_survive_a_restart": "ne survivra pas à un redémarrage",
+      "restored_held": "Restauré après un redémarrage. Ne partira pas tout seul.",
       "sub_agent_results_ready_many": "{{count}} résultats de sous-agent prêts — traitement après le tour en cours",
       "sub_agent_results_ready_one": "{{count}} résultat de sous-agent prêt — traitement après le tour en cours",
       "sub_agent_results_ready_other": "{{count}} résultats de sous-agent prêts — traitement après le tour en cours",

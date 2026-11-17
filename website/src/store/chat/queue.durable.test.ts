@@ -34,3 +34,12 @@ describe('queued row durable verdict', () => {
     expect(hydrateQueuedBubbles([], queue).map(r => r.meta?.durable)).toEqual([undefined, false])
   })
 })
+
+describe('queued row held flag', () => {
+  it('rides a card rebuilt from the slot-detail queue only while the server says the entry is held', () => {
+    const before = normalizeQueueEntries([{ id: 'r1', content: 'accepted', meta: { restored: true } }])
+    expect(hydrateQueuedBubbles([], before).map(r => r.meta?.held)).toEqual([undefined])
+    const after = normalizeQueueEntries([{ id: 'r1', content: 'accepted', meta: { restored: true, held: true } }])
+    expect(hydrateQueuedBubbles([], after).map(r => [r.meta?.restored, r.meta?.held])).toEqual([[true, true]])
+  })
+})

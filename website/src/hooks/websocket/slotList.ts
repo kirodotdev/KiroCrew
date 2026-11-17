@@ -211,6 +211,13 @@ export function useSlotListSync(
         : []
       const prevPaneRows = new Map(otherPanes.map(slot =>
         [slot, store.getState().dashboard.slots.find(s => s.key === slot)] as const))
+      // Held depth per open pane, read before the frame replaces the rows: a
+      // change means an entry's held verdict moved (the startup drain released
+      // its acceptance, say), and the per-entry flag rides only the queue a
+      // slot read returns.
+      const openPanes = activeKey ? [activeKey, ...otherPanes] : otherPanes
+      const prevHeldDepth = new Map(openPanes.map(slot =>
+        [slot, store.getState().dashboard.slots.find(s => s.key === slot)?.queue_held_depth ?? 0] as const))
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
       // localStorage is a side effect, so the orphan sweep runs here, after the
@@ -253,11 +260,20 @@ export function useSlotListSync(
         : undefined
       const missedWholeTurn = !!endedIdentity && !!knownEnded
         && knownEnded.gen === endedIdentity.gen && endedIdentity.turn > knownEnded.turn
+      let refreshedActive = false
       if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
           && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning || missedWholeTurn)
           && afterSettle.slotState === 'idle' && !afterSettle.slotRunning) {
         recordIdleRowRefresh(activeKey, endedIdentity)
         dispatch(refreshSlot(activeKey))
+        refreshedActive = true
+      }
+      // The active pane's held depth moved (an entry's held verdict changed,
+      // which only a slot read carries) and no refresh above re-read it. Other
+      // panes are warmed by the turn-end loop below, once per frame.
+      const activeRow = Array.isArray(data) && activeKey ? data.find(s => s.key === activeKey) : undefined
+      if (activeRow && !refreshedActive && (activeRow.queue_held_depth ?? 0) !== prevHeldDepth.get(activeKey!)) {
+        dispatch(refreshSlot(activeKey!))
       }
       // Seed the ['chat-folders'] query cache from the folder tree carried
       // on this frame so the sidebar groups sessions correctly on the FIRST
@@ -402,16 +418,22 @@ export function useSlotListSync(
         if (firstList) { warmOtherPane(slot); continue }
         const row = data.find(s => s.key === slot)
         const prev = prevPaneRows.get(slot)
+        // A moved held depth means an entry's held verdict changed, which only
+        // a slot read carries; it warms the pane whether or not a turn ended.
+        const heldMoved = !!row && (row.queue_held_depth ?? 0) !== prevHeldDepth.get(slot)
         const identity = row ? wireTurnIdentity(row) : null
-        if (!row || !prev || row.running !== false || !identity) continue
+        if (!row || !prev || row.running !== false || !identity) { if (heldMoved) warmOtherPane(slot); continue }
         // A turn ended here if the row was running, its activity moved, or it
         // names a newer turn than the row before it: a regenerated reply can
         // keep the same row count and preview.
         const prevIdentity = wireTurnIdentity(prev)
         const newerTurn = !!prevIdentity && (prevIdentity.gen !== identity.gen || prevIdentity.turn !== identity.turn)
-        if (!prev.running && !newerTurn && rowActivity(prev) === rowActivity(row)) continue
         const ended = beforeSettle.endedTurn?.[slot]
-        if (ended && ended.gen === identity.gen && ended.turn === identity.turn) continue
+        if ((!prev.running && !newerTurn && rowActivity(prev) === rowActivity(row))
+            || (ended && ended.gen === identity.gen && ended.turn === identity.turn)) {
+          if (heldMoved) warmOtherPane(slot)
+          continue
+        }
         recordIdleRowRefresh(slot, identity)
         warmOtherPane(slot)
       }

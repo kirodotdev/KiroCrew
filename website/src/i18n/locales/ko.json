@@ -8748,6 +8748,7 @@
       "save_edit": "편집 내용 저장",
       "send_now": "지금 보내기",
       "wont_survive_a_restart": "재시작하면 사라집니다",
+      "restored_held": "재시작 후 복원되었습니다. 자동으로 전송되지 않습니다.",
       "sub_agent_results_ready_other": "서브 에이전트 결과 {{count}}개 준비 완료 — 현재 턴이 끝난 뒤 처리합니다",
       "queued_count_other": "{{count}}개 대기 중"
     },

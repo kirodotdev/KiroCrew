@@ -150,3 +150,59 @@ describe('useSlotListSync: an on-screen pane that is not the active slot', () =>
     }
   })
 })
+
+/** A queued entry's held verdict rides only the queue a slot read returns, so
+ *  a `slots` frame whose held depth moved for an open pane re-reads that pane. */
+describe('useSlotListSync: held depth moved on an open pane', () => {
+  const SLOT = 'slot-held'
+  const row = (over: Partial<ChatSlot> = {}) =>
+    ({ key: SLOT, title: 'T', agent: 'kirocrew', running: false, messages: 2, last_message: 'x', queue_depth: 1, ...over }) as ChatSlot
+  const buffers = { hasPendingChunks: () => false, flushChunks: () => {} } as unknown as StreamBuffers
+  let queryClient: QueryClient
+
+  beforeEach(() => {
+    vi.mocked(api.chatSlotDetail).mockClear()
+    store.dispatch(clearSlotState())
+    store.dispatch(setActiveSlot(SLOT))
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  })
+
+  afterEach(() => {
+    queryClient.clear()
+    store.dispatch(setActiveSlot(null))
+  })
+
+  const deliver = (sync: SlotListSync, rows: ChatSlot[]) => {
+    const msg = { type: 'slots', data: rows }
+    act(() => { sync.onSlots(msg, rows, JSON.stringify(msg)) })
+  }
+
+  it('re-reads the active pane when its held depth changes, and not on a repeat', () => {
+    const sync = renderHook(() => useSlotListSync(store.dispatch, queryClient, buffers)).result.current
+    deliver(sync, [row({ queue_held_depth: 0 })])
+    vi.mocked(api.chatSlotDetail).mockClear()
+    deliver(sync, [row({ queue_held_depth: 1, last_message: 'y' })])
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.some(c => c[0] === SLOT)).toBe(true)
+    vi.mocked(api.chatSlotDetail).mockClear()
+    deliver(sync, [row({ queue_held_depth: 1, last_message: 'z' })])
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.some(c => c[0] === SLOT)).toBe(false)
+  })
+
+  it('warms another open pane once when its held depth changes with no turn ending there', async () => {
+    const OTHER = 'slot-held-other'
+    const observer = new QueryObserver(queryClient, {
+      queryKey: slotMessagesQueryKey(OTHER, undefined),
+      queryFn: () => new Promise(() => {}),
+      staleTime: Infinity,
+    })
+    const stop = observer.subscribe(() => {})
+    const other = (over: Partial<ChatSlot> = {}) => row({ key: OTHER, turn: 1, turn_gen: 'g', ...over } as Partial<ChatSlot>)
+    const sync = renderHook(() => useSlotListSync(store.dispatch, queryClient, buffers)).result.current
+    deliver(sync, [row(), other({ queue_held_depth: 0 })])
+    await vi.waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    vi.mocked(api.chatSlotDetail).mockClear()
+    deliver(sync, [row(), other({ queue_held_depth: 1 })])
+    await vi.waitFor(() => expect(vi.mocked(api.chatSlotDetail).mock.calls.filter(c => c[0] === OTHER)).toHaveLength(1))
+    stop()
+  })
+})
