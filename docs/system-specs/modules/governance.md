@@ -589,11 +589,19 @@ in an oss build). One fetch is the Kiro control plane's
   `agents` list), and the on/off `messaging`, `cron`, `memory_writes`, `theme_persona`,
   `tailnet_origin`, `browser_use` and `theme_install` to `capabilities.messaging`,
   `.cron`, `.memory_writes`, `.theme_persona`, `.tailnet_origin`, `.browse` and
-  `.theme_install`. Not read yet: `harness_use`, `app_use`, `script_hook` and
-  `embedding_model_use`, and `skill` / `mcp` / `subagent` for installs. RFC D13
-  records how each will map (a closed `kas` / `kiro` / `claude` list for
-  `harness_use`, installs following the item's own term), and each row lands with its
-  code. A rule on a meta-capability
+  `.theme_install`. `harness_use` lands in `agent_backend` over the closed list `kas` /
+  `kiro` / `claude` with `kas` as the floor, so no rule shape reaches another
+  registered harness and a deny of `kas` has no effect. `app_use` (`<app>@<version>`)
+  lands in `app_versions` as written and in `apps` by app name; only a deny of every
+  version (`<app>@*`, or a bare name) takes the app away. `script_hook` lands in
+  `capabilities.script_hooks` (its `events` list). `skill`, `mcp` and `subagent` also
+  land in the one `capabilities.extension_install` gate, by kind (`skill:`, `mcp:`,
+  `agent:`): a scope-less allow, or an `allow all` / `allow builtin` copied onto them,
+  grants install of that kind (D13); an `mcp` grant installs a whole server only
+  (`server` or `server/*`); a named deny on `skill` or `subagent` turns that kind's
+  install off, because the install id is a package; plugin sync stays off. A row may
+  land in more than one key (`Managed.also`). Not read yet: `embedding_model_use`
+  (D13). A rule on a meta-capability
   (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
   `acp/kas_permissions.py` `META_CAPABILITY_EXPANSION`; a deny on `all` reaches
   every managed capability, the stricter reading. An
