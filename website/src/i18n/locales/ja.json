@@ -22230,10 +22230,6 @@
       "system": "システム"
     },
     "tabs": {
-      "advanced": {
-        "description": "すべての設定をひとつの一覧に",
-        "label": "詳細"
-      },
       "about": {
         "description": "バージョン、更新チャネル、更新確認、およびライセンス",
         "label": "バージョン情報"

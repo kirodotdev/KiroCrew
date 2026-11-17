@@ -11212,10 +11212,6 @@
       "connections_client_secret_manage": "Manage in Connections"
     },
     "tabs": {
-      "advanced": {
-        "description": "Every setting in one list",
-        "label": "Advanced"
-      },
       "about": {
         "description": "Version, update channel, check for updates, and license",
         "label": "About"

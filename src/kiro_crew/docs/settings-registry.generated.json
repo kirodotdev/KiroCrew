@@ -36,13 +36,6 @@
       "description": "Version, update channel, check for updates, and license"
     },
     {
-      "id": "advanced.all-settings",
-      "label": "All settings",
-      "tab": "advanced",
-      "route": "/settings/advanced?highlight=advanced.all-settings",
-      "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
-    },
-    {
       "id": "agent.orchestrator-memory",
       "label": "Orchestrator memory",
       "tab": "agent",

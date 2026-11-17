@@ -22230,10 +22230,6 @@
       "system": "系统"
     },
     "tabs": {
-      "advanced": {
-        "description": "所有设置都在一个列表里",
-        "label": "高级"
-      },
       "about": {
         "description": "版本、更新渠道、检查更新与许可证",
         "label": "关于"

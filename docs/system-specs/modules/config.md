@@ -5143,7 +5143,10 @@ safety rules, and date/runtime identity stay whole. This does not change the fix
 
 Settings → Advanced (`website/src/pages/settings/AdvancedPanel.tsx`, rows in
 `website/src/components/allSettings/AllSettingsList.tsx`) lists every config key in
-one list, so a person can change one without editing `config.json`. A key with a
+one list, so a person can change one without editing `config.json`. The page is
+hidden: `SettingsPage.tsx` lists no `advanced` tab, so `/settings/advanced` opens
+the first tab, and Settings search has no entry for it. The panel code, the schema
+records below and the generic PATCH rule stay in place. A key with a
 control of its own elsewhere in Settings is a row with a link to it, never a second
 control. The frontend holds no list of keys. `GET /api/config/schema` adds an
 `allSettings` record to each entry the page lists, built by
