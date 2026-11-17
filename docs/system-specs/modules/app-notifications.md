@@ -199,7 +199,7 @@ Settings › Notifications › "Mark sessions unread only when they need you" (`
 
 A member DM thread (`slot.mode === 'member'`, key prefix `member-`, which `slot_registry.py` reserves for that mode) is narrower in both modes: `memberThreadRowMarksUnread` badges it only on a row the Bot wrote to the user, `assistant` or `permission`, with the opt-in still applied on top. Its `tool_call`, `tool_result`, `inject` and streaming rows never badge it: the Bots rail dot means "a Bot said something to you", not "a Bot ran a tool". `isMemberThreadSlot` reads the mode from `dashboard.slots` and falls back to the reserved prefix for a thread the list has not caught up to. Its `chat_done` is narrowed the same way (`turnCompletion.ts`): `chatStream` records every such row on the thread's running turn (`noteMemberThreadRow`, on or off screen), and the finished turn badges only when the turn delivered one (`takeMemberThreadSpoke`, which also clears the record) or paused for input (`needs_input` / a live question card). A patrol turn that only ran tools and ended quietly badges nothing. The question-card path is unchanged.
 
-`GET /api/notifications` returns `{"notifications": [...], "unread": N}`, and `unread` is counted from the notes it returns on every read (`notification_coordinator.unread_count`): a note counts while it is not `acked`, not `passive` and not `silenced`, the bell badge's rule (`shell/topbar/shellHeader.tsx`). So an ack, Mark all read and a delete each lower it, and a restarted gateway reports the persisted feed's true count rather than zero. A relayed teammate's count covers only the notes their view returns. `test_notification_unread_count.py` pins the ack, ack-all and restart cases.
+`GET /api/notifications` returns `{"notifications": [...], "unread": N}`, and `unread` is counted from the notes it returns on every read (`notification_coordinator.unread_count`): a note counts while it is not `acked`, not `passive` and not `silenced`, the bell badge's rule (`shell/topbar/shellHeader.tsx`). So an ack, Mark all read and a delete each lower it, and a restarted gateway reports the persisted feed's true count rather than zero. `test_notification_unread_count.py` pins the ack, ack-all and restart cases.
 
 ## Plain-text previews
 
@@ -275,6 +275,9 @@ pause (`turn_limit`) and the default-model applied and failed notes
 and the notice that open tabs left the sidebar for History, one id for the startup
 restore budget (`moved_to_history_startup`) and one for the idle sweep
 (`moved_to_history_idle`), whose `count` param picks the catalog's plural form;
+and the note that a Bot's carried-over limits now ask a person
+(`bot_limits_held`, `dashboard/mate_thread_wakes.py::_notify_held`, with the
+Bot's `name` param and a link to its profile);
 every other producer still writes English only. `test_notification_dashboard_copy.py` pins the turn-ceiling
 producer, its English against the catalog and the meta refusal;
 `test_config_live_server_appliers.py` pins the default-model ids;

@@ -576,6 +576,21 @@ describe('RemoteCrewPanel — instance actions', () => {
     expect(screen.queryByRole('button', { name: /Deleting/ })).not.toBeInTheDocument()
   })
 
+  it('warns before Delete that the disk and the crew data go with the instance', async () => {
+    // Delete removes the whole stack, root volume included, so the warning must say
+    // what `kirocrew cloud destroy` says: nothing the crew stored survives it.
+    vi.mocked(api.listInstances).mockResolvedValue(list([CLOUD_INSTANCE]))
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/ }))
+    const warning = await screen.findByText(/terminates the EC2 instance/i)
+    expect(warning).toHaveTextContent(/removes its disk, IAM role and security group/)
+    expect(warning).toHaveTextContent(/chats, memory, files and settings .* cannot be recovered/)
+  })
+
   it('reports a cancel that the gateway refuses', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(list([]))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [RUNNING_JOB] })

@@ -177,7 +177,6 @@ oldest such start goes next, so none is starved.
 | `agent.max_subagents` | `0` | `0` = auto: the `subagent_auto_max` ceiling (default); `>0` = explicit cap |
 | `agent.subagent_mem_buffer_pct` | `20` | % of memory reserved for the OS and other processes when sizing the TaskRunner's auto parallel-step cap; it sizes the sub-agent auto cap only while `spawn_min_memory_gb <= 0` disables the floor |
 | `agent.subagent_cost_gb` | `0.5` | Minimum price of a warming dedicated start in the admission gate (the measured or learned projection applies when higher); also the TaskRunner figure's fallback (GB/agent) until a learned cost exists, and the sub-agent auto cap's while `spawn_min_memory_gb <= 0` |
-| `agent.subagent_cpu_cost_cores` | `1.0` | **Deprecated, inert.** CPU no longer sizes anything; kept so an existing config is not rewritten |
 | `agent.subagent_auto_max` | `32` | The sub-agent count ceiling when `max_subagents=0` (provider-concurrency and fd/PID stand-in); memory binds below it on most hosts. With the floor disabled it caps the memory-sized figure instead |
 | `agent.spawn_min_memory_gb` | `2.0` | Free memory (GB) that must remain after admitting a start; a spawn that does not fit waits in the queue, never refused (one in temporary or incognito memory mode, or with `agent.task_queue_enabled` off, is lost if the gateway restarts), for at most `agent.subagent_queue_max_wait_secs` before it ends as `never started: waiting for memory (not enough memory freed up in time); retry once memory frees up`. `0` disables the gate, and the sub-agent auto cap is then sized from memory like the TaskRunner figure |
 | `agent.subagent_spawn_stagger_secs` | `0.25` | Delay between successive spawns (initial fill and queued drain), so a high cap never bursts on cold start |
@@ -361,10 +360,9 @@ What the floor guarantees, stated plainly: admission never takes the host below
 the floor, except that a nested sub-agent sharing its parent's runtime can take it
 below by that one start's shared price (above). It does not shed running work: a settled sub-agent that later runs a
 build or a test suite, or another application, can still push free memory below
-it, and then new starts wait. On Windows the floor reads available physical
-memory, not the commit charge, so a host near its commit limit can admit a
-start that later fails to commit (an accepted gap, tracked as
-[#16983](https://github.com/kirodotdev/KiroCrew/issues/16983)).
+it, and then new starts wait. On Windows the floor reads the smaller of
+available physical memory and commit headroom, so a host near its commit
+limit waits even while physical memory is free.
 
 ## Notes
 

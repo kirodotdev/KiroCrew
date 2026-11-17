@@ -20,11 +20,12 @@ from aiohttp.test_utils import make_mocked_request
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.papyrus.backend import gitops, routes, store
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _CLONE = "/api/apps/papyrus/projects/clone"
 _URL = "https://example.com/g/6a16ddbf.git"
 _FOLDER = "6a16ddbf"
-_FAKE_PAT = "ghp_" + "A" * 36
+_FAKE_PAT = github_classic(seed=311)
 
 
 @pytest.fixture()

@@ -182,6 +182,12 @@ class ApprovalCoordinator:
         open_and_broadcast(
             state, decision_id, DecisionKind.APPROVAL, slot or "state", system_initiator(source)
         )
+        # A code-channel conductor's worker: its channel's work board shows this
+        # wait too, and clears it when answered (one dict lookup otherwise).
+        from kiro_crew.slack.code_channels.board import note_session_turn
+
+        note_session_turn(slot)
+        future.add_done_callback(lambda _done: note_session_turn(slot))
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is
         # what moves the parent slot into the Needs Approval lane. Without it
@@ -194,6 +200,11 @@ class ApprovalCoordinator:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
+            # A tool permission request waiting on this prompt hears that nobody
+            # answered, rather than reading the ``False`` as a person's no.
+            from kiro_crew.llm_helpers import note_approval_expired
+
+            note_approval_expired()
             if on_host_decision is not None:
                 on_host_decision(DENY_CAUSE_APPROVAL_TIMEOUT)
             return False

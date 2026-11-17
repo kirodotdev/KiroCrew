@@ -561,6 +561,21 @@ class RuntimeOwnership:
             if entry.key is not entry.runtime and entry.leases and self._alive(entry)
         ]
 
+    def placed_by_sharing(self, runtime: object) -> bool:
+        """Whether this runtime OBJECT is live and placed under a compatibility key.
+
+        The same selection as :meth:`keyed_lease_counts` for one runtime, by
+        identity: ``True`` for a process chat runtime sharing placed (founder or
+        joiner), ``False`` for one only a registration lease names. For telemetry.
+        """
+        return any(
+            entry.runtime is runtime
+            and entry.key is not entry.runtime
+            and entry.leases
+            and self._alive(entry)
+            for entry in list(self._entries)
+        )
+
     def live_keys(self, exclude: object = None) -> list[Hashable]:
         """The key of each LIVE runtime placed under a compatibility key, for diagnostics.
 
@@ -1409,11 +1424,21 @@ async def acquire_session_lease(provider: object) -> None:
     Called where the session joins the registry, so the lease and registry
     membership mean the same thing. A provider with no runtime to lease -- a
     non-ACP backend, a placeholder client before startup swapped in the real one
-    -- simply has no holder and is skipped.
+    -- simply has no holder and is skipped. A client that owns its process alone
+    (``AcpClient``) is marked registered instead, which telemetry reads.
     """
     holder = _lease_holder(provider)
     if holder is not None:
         await holder.acquire_runtime_lease()  # type: ignore[attr-defined]
+        return
+    # A client that owns its process alone (``AcpClient``) has no lease to take.
+    # It is marked registered instead, so its turn-start telemetry reads one
+    # tenant exactly where a leased session would. Recognised by its bool SLOT,
+    # for the reason ``_lease_holder`` gives about test stand-ins.
+    for candidate in (provider, getattr(provider, "_client", None)):
+        if candidate is not None and getattr(candidate, "_registered_session", None) is False:
+            setattr(candidate, "_registered_session", True)  # noqa: B010 -- duck-typed slot
+            return
 
 
 async def release_session_lease(provider: object) -> None:

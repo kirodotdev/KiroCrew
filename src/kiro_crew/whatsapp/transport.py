@@ -380,6 +380,21 @@ class WhatsAppTransport(MessagingTransport):
             jid, content, on_sent=lambda message_id: self.echo.remember(jid, message_id)
         )
 
+    async def send_rendered(self, conversation_id: str, chunk: str) -> str:
+        """Send ONE chunk the renderer already converted, as it is, echo-tracked.
+
+        :meth:`edit_text`'s counterpart for a new bubble. ``send_message`` converts
+        Markdown, and converting a converted chunk turns its bold into italic.
+        """
+        jid = normalize_jid(conversation_id)
+        ids = await self._client.send_text(
+            jid,
+            chunk,
+            on_sent=lambda message_id: self.echo.remember(jid, message_id),
+            rendered=True,
+        )
+        return ids[-1] if ids else ""
+
     async def send_image(self, conversation_id: str, data: bytes, caption: str = "") -> str:
         """Upload one image, echo-tracked like every other send this makes."""
         jid = normalize_jid(conversation_id)

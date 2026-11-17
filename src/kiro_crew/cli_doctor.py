@@ -1086,6 +1086,9 @@ def _doctor(
     # ── Loop-stall crash dumps ──
     workload._doctor_crash_dumps(issues)
 
+    # ── Session tree checkpoint ──
+    workload._doctor_session_tree_checkpoint(issues)
+
     # ── Connectivity ──
     print("\nConnectivity")
     relay_entry = services.kas_relay_entry(kiro) if relay_kas_role else None

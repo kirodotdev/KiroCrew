@@ -28,6 +28,7 @@ from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
 from kiro_crew.pod import windows as pod_windows
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Per-worktree context: issue/ticket links + purpose one-liner
 
@@ -382,7 +383,7 @@ async def test_fleet_payload_marks_an_inferred_main_checkout():
 
 @pytest.mark.asyncio
 async def test_fleet_payload_redacts_credentials_in_main_repo():
-    sensitive = f"/tmp/ghp_{'A' * 40}/checkout"
+    sensitive = f"/tmp/{github_classic(seed=142)}/checkout"
     with patch.object(repository_mod, "_repo", return_value=sensitive):
         fleet = await _fleet_with([{"path": "/repo", "branch": "main", "is_main": True}])
 

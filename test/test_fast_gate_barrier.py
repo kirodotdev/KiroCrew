@@ -56,6 +56,7 @@ _SOURCE_GATE_SCRIPTS = (
     "scripts/check_brand_name.py",
     "scripts/check_comment_history.py",
     "scripts/check_focus_cue.py",
+    "scripts/check_emoji_icons.py",
     "scripts/check_feature_map.py",
     "scripts/check_changelog_history.py",
     "scripts/check_decisions_history.py",
@@ -74,7 +75,7 @@ _SOURCE_GATES_JOB = "source-gates"
 #: so needs a step of its own. Every other gate self-tests inside its own step.
 _SOURCE_GATE_SELF_TEST_STEPS = 1
 # Every job in fast-gate.yml, in file order: the stdlib gates share one job so
-# a push holds one runner slot for all fourteen instead of fourteen; the two
+# a push holds one runner slot for all fifteen instead of fifteen; the two
 # pytest-backed ratchets keep their own because each installs the package.
 # Explicit for the same reason as _SOURCE_GATE_SCRIPTS -- a job added without
 # the push/variable clause would be the one job left running on a queue-landed
@@ -119,6 +120,7 @@ _LINT_JOBS = ("backend-lint", "frontend-lint")
 _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
+    "metrics-schema-history": "stdlib manifest diff against the base; seconds, no install",
     # These two hold the baselined ratchets. They are OFF the gate path
     # deliberately, and the trade is real: a ratchet failure does not SAVE the
     # matrix, it reds the pull request alongside it. What is bought is the
@@ -509,7 +511,7 @@ class TestTheGatesLiveInTheGateWorkflow:
         assert not strays, f"gate(s) back in ci.yml, racing the matrix again: {strays}"
 
     def test_every_gate_step_runs_unless_the_run_was_cancelled(self, fast_gate: dict) -> None:
-        # One job, fourteen gates: without the condition the first red gate ends
+        # One job, fifteen gates: without the condition the first red gate ends
         # the job and the author learns about the others one push at a time.
         # Exactly `!cancelled()`, not `always()`: a cancelled run (a superseding
         # push) must not keep spending its runner on gates nobody will read.

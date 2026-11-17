@@ -10,17 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from slack_code_channels_helpers import store_channel_binding
+from slack_code_workspace_repo import build_repo_template
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as cc_binding
+from kiro_crew.slack.code_channels.client import SCOPE_REFUSED
 from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.workspace import diff as diff_mod
 from kiro_crew.slack.code_channels.workspace import git_ops, service
@@ -29,6 +33,7 @@ from kiro_crew.slack.code_channels.workspace.diff import MAX_VIEW_BYTES, assembl
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
@@ -53,7 +58,11 @@ def _feature_on(_floor_monkeypatch):
 
 
 def _cfg(on: bool):
-    return SimpleNamespace(slack=SimpleNamespace(code_channels=on))
+    # Every channel at its default activation (a refresh obeys Off and Review).
+    return SimpleNamespace(
+        slack=SimpleNamespace(code_channels=on),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
+    )
 
 
 async def _until(predicate, timeout: float = FALLBACK_TIMEOUT_SECS) -> None:
@@ -81,27 +90,29 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
+@pytest.fixture(scope="session")
+def _repo_template(tmp_path_factory) -> Path:
+    """The ``repo`` layout built once per session; ``repo`` copies it for each test.
+
+    Building it costs ~11 ``git`` spawns, which on a Windows runner made up most of
+    this file's setup time. Session scope is safe because the template is never
+    handed to a test, only copied from.
+    """
+    base = tmp_path_factory.mktemp("code-channel-repo")
+    build_repo_template(base)
+    return base
+
+
 @pytest.fixture
-def repo(tmp_path) -> Path:
-    """A repo on ``main`` with an ``origin`` remote, so ``origin/HEAD`` resolves."""
-    remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    root = tmp_path / "proj"
-    root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
-        _git("config", key, value, cwd=root)
-    (root / "README.md").write_text("hello\n", newline="\n")
-    (root / "pkg").mkdir()
-    (root / "pkg" / "mod.py").write_text("x = 1\n", newline="\n")
-    _git("add", ".", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
-    _git("remote", "add", "origin", "https://user:s3cret@github.com/acme/widgets.git", cwd=root)
-    # Push through a local URL, then keep the https form as the configured URL.
-    _git("push", "-q", str(remote), "main:main", cwd=root)
-    _git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
-    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
-    return root
+def repo(tmp_path, _repo_template) -> Path:
+    """A repo on ``main`` with an ``origin`` remote, so ``origin/HEAD`` resolves.
+
+    Its bare remote sits beside it at ``tmp_path / "remote.git"``. Neither copy
+    names an absolute path, so nothing needs rewriting after the copy.
+    """
+    shutil.copytree(_repo_template / "remote.git", tmp_path / "remote.git")
+    shutil.copytree(_repo_template / "proj", tmp_path / "proj")
+    return tmp_path / "proj"
 
 
 @dataclass
@@ -112,6 +123,7 @@ class FakeBinding:
     project_dir: str | None = None
     title: str = "Fix the widget"
     archived_at: float = 0.0
+    origin_channel_id: str = ""  # a real Binding always carries it
 
 
 class FakeClient:
@@ -126,7 +138,10 @@ class FakeClient:
         self.calls: list[tuple[str, str, dict]] = []
         self.fail: dict[str, str] = {}
 
-    async def _record(self, method: str, channel_id: str, **kwargs):
+    async def _record(self, method: str, channel_id: str, gate=None, **kwargs):
+        if gate is not None and not gate():
+            # The real client asks the gate last, right before the send.
+            raise CodeChannelApiError(f"agents.conversations.{method}", SCOPE_REFUSED)
         self.calls.append((method, channel_id, kwargs))
         code = self.fail.get(method)
         if code:
@@ -137,10 +152,11 @@ class FakeClient:
     async def set_context_bar(self, channel_id, items):
         return await self._record("set_context_bar", channel_id, context_bar_items=items)
 
-    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch=""):
+    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch="", gate):
         return await self._record(
             "set_diff_view",
             channel_id,
+            gate=gate,
             content=content,
             base_branch=base_branch,
             head_branch=head_branch,
@@ -1116,7 +1132,9 @@ def test_the_core_client_sends_the_workspace_writes_and_latches_refusals():
     client = CodeChannelsClient(api_call)
     items = [{"key": "repo", "label": "a/b", "icon": "folder", "url": "https://github.com/a/b"}]
     asyncio.run(client.set_context_bar("C1", items))
-    view_id = asyncio.run(client.set_diff_view("C1", "diff --git a/x b/x\n", base_branch="main"))
+    view_id = asyncio.run(
+        client.set_diff_view("C1", "diff --git a/x b/x\n", base_branch="main", gate=None)
+    )
     assert sent[0] == (
         "agents.conversations.setProperties",
         {"channel_id": "C1", "code_channel": {"context_bar_items": items}},
@@ -1137,7 +1155,7 @@ def test_the_core_client_sends_the_workspace_writes_and_latches_refusals():
     assert err.value.code == "missing_scope"
     assert not features.code_channels_available()  # the client latched it itself
     with pytest.raises(CodeChannelRequestError):
-        asyncio.run(client.set_diff_view("C1", "x" * 1_000_001))
+        asyncio.run(client.set_diff_view("C1", "x" * 1_000_001, gate=None))
     assert len(sent) == 3  # refused locally, never sent
 
 
@@ -1219,7 +1237,7 @@ class FakeDashboard:
 
     def add_slot(self, key: str, folder_id: str, *, running: bool = False) -> SimpleNamespace:
         slot = SimpleNamespace(
-            folder_id=folder_id, turn_running=running, project="", _turn_generation=0
+            key=key, folder_id=folder_id, turn_running=running, project="", _turn_generation=0
         )
         self._slots[key] = slot
         return slot
@@ -1228,6 +1246,7 @@ class FakeDashboard:
 def _conductor_harness(tmp_path, monkeypatch):
     h = Harness(tmp_path)
     dash = FakeDashboard()
+    store_channel_binding(tmp_path, monkeypatch)
     made: list[tuple[str, str, str]] = []
 
     async def create_folder(state, parent_id, name, project_dir):
@@ -1549,6 +1568,7 @@ def test_core_plan_session_resolves_the_default_project_with_the_cores_own_helpe
     cfg = SimpleNamespace(
         slack=SimpleNamespace(code_channels=True),
         dashboard=SimpleNamespace(default_project=str(repo)),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
     )
     monkeypatch.setattr(cc_binding, "live_config", lambda orch=None: cfg)
     seen: list[str] = []
@@ -1666,7 +1686,7 @@ def test_the_folder_reuse_scan_resolves_paths_off_the_event_loop(tmp_path, monke
 # ── outbound redaction ──────────────────────────────────────────────────────
 
 # A synthetic 40-character AWS secret, split so no source line spells one.
-_FAKE_KEY = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
+_FAKE_KEY = github_classic(seed=141)  # a bare 40-character run is no credential
 
 
 def test_a_credential_written_into_a_file_never_reaches_slack(tmp_path, repo, audits):
@@ -1881,7 +1901,9 @@ def test_the_installed_credential_policy_applies_to_every_slack_bound_string(
     monkeypatch.setattr(context_bar, "redact", policy)
     h = Harness(tmp_path)
     binding, rec = _bound(h, repo)
-    (Path(rec.worktree) / "README.md").write_text(f"token: {house}\n", newline="\n")
+    # No label the base table reads, so only the companion's pattern can mask it: a
+    # ``token:`` label would let the rule table mask the value first.
+    (Path(rec.worktree) / "README.md").write_text(f"see {house}\n", newline="\n")
     (Path(rec.worktree) / "new.txt").write_text(f"{house}\n", newline="\n")
     h.run(h.svc.refresh(binding))
     assert house not in repr(h.client.calls)

@@ -53,6 +53,7 @@ from kiro_crew.apps.builtins.issue_radar.backend.errors import (
     ProviderCliError,
     RepoUrlError,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 MODERN_URL = "https://dev.azure.com/contoso/Widgets/_git/widget-service"
 LEGACY_URL = "https://contoso.visualstudio.com/Widgets/_git/widget-service"
@@ -1306,16 +1307,14 @@ class TestCommentBodiesAreRedacted(unittest.TestCase):
         return seen["body"]
 
     def test_a_credential_is_not_published_on_a_work_item(self):
-        sent = self._posted_text(
-            azure_client.add_issue_comment, "token is ghp_0123456789abcdefghijklmnopqrstuvwxyz"
-        )
-        self.assertNotIn("ghp_0123456789abcdefghijklmnopqrstuvwxyz", str(sent))
+        token = github_classic(seed=131)
+        sent = self._posted_text(azure_client.add_issue_comment, f"token is {token}")
+        self.assertNotIn(token, str(sent))
 
     def test_a_credential_is_not_published_on_a_pull_request(self):
-        sent = self._posted_text(
-            azure_client.add_pr_comment, "token is ghp_0123456789abcdefghijklmnopqrstuvwxyz"
-        )
-        self.assertNotIn("ghp_0123456789abcdefghijklmnopqrstuvwxyz", str(sent))
+        token = github_classic(seed=132)
+        sent = self._posted_text(azure_client.add_pr_comment, f"token is {token}")
+        self.assertNotIn(token, str(sent))
 
     def test_ordinary_prose_survives_intact(self):
         # Redaction must not mangle a normal comment, or the feature is unusable.

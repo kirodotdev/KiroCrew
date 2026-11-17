@@ -213,6 +213,18 @@ _TIER0_ALWAYS = frozenset({
     "models_changed",
 })
 
+#: Owner-only ``dashboard`` status fields (the checkout and a path in the operator's
+#: home), removed for every app reader on the WebSocket and the SSE stream alike.
+OWNER_ONLY_STATUS_FIELDS = ("branch", "commit", "update_policy_file")
+
+
+def strip_owner_only_status(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove :data:`OWNER_ONLY_STATUS_FIELDS` from a status frame, in place."""
+    for field in OWNER_ONLY_STATUS_FIELDS:
+        data.pop(field, None)
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Slot-scoped event types: events that carry a ``slot`` key and are
 # subject to slot-visibility filtering.  Subagent events are a subset.
@@ -406,43 +418,30 @@ def notification_source_app(source: str) -> str:
     return ""
 
 
-def is_app_channel(channel: str) -> bool:
-    """Whether a notification channel belongs to an app rather than the system."""
-    owner = notification_channel_owner(channel)
-    return bool(owner) and owner != _SYSTEM_SOURCE
+#: System channels whose notes describe the machine owner's own accounts, not this
+#: Crew: ``system.relay`` names the Team Crews the owner's sign-in can open
+#: (``relay_viewer/crew_notices.py``). Only the machine owner receives them, on
+#: every transport; anyone else (a Shared Crew teammate, a non-owner dashboard
+#: session, an app token) is withheld them, even where they pass the owner gate.
+OWNER_ONLY_CHANNELS = frozenset({"system.relay"})
 
 
-def app_origin_frame(event_type: str, data: object) -> bool:
-    """Whether a frame carries an app's own output.
-
-    An app-published event, an app's push notification, or a setting on one of an
-    app's notification channels. A socket with no app surface (a relayed teammate's,
-    see ``kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG``) is withheld all three.
-    """
-    if event_type == _APP_EVENT_WS_TYPE:
-        return True
-    fields = data if isinstance(data, dict) else {}
-    if event_type in _SOURCE_FILTERED_EVENTS:
-        return bool(notification_source_app(str(fields.get("source", ""))))
-    if event_type == _CHANNEL_SETTINGS_EVENT:
-        return is_app_channel(str(fields.get("channel", "")))
-    return False
+def owner_only_note(note: object) -> bool:
+    """Whether *note* is on an owner-only channel (``OWNER_ONLY_CHANNELS``)."""
+    fields = note if isinstance(note, dict) else {}
+    return str(fields.get("channel", "")) in OWNER_ONLY_CHANNELS
 
 
-#: Why a relayed teammate was withheld an app's output, on any transport.
-RELAY_TEAMMATE_APP_FRAME = "relay_teammate_app_frame"
+#: Why a caller other than the machine owner was withheld an owner-only note.
+OWNER_ONLY_NOTE = "owner_only_note"
 
 
-def audit_teammate_withheld(event_type: str) -> None:
-    """Record, best-effort, that a relayed teammate was withheld an app's output.
-
-    The one denied row every transport writes for that decision: the WebSocket
-    gate, the SSE stream and the notification reads.
-    """
+def audit_owner_only_withheld(event_type: str) -> None:
+    """Record, best-effort, that a non-owner was withheld an owner-only note."""
     try:
-        _audit_deny(DASHBOARD_USER_AUDITEE, event_type, RELAY_TEAMMATE_APP_FRAME)
+        _audit_deny(DASHBOARD_USER_AUDITEE, event_type, OWNER_ONLY_NOTE)
     except Exception:
-        logger.debug("ws_event_scope: SEL audit for a teammate withhold failed", exc_info=True)
+        logger.debug("ws_event_scope: SEL audit for an owner-only withhold failed", exc_info=True)
 
 
 _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
@@ -1232,7 +1231,9 @@ def _load_expose_to(target_app: str) -> frozenset[str]:
 # for one refresh interval never widens anything.
 # ---------------------------------------------------------------------------
 
-_declared_cache: dict[str, tuple[float, bool, frozenset[str]]] = {}
+# ``(read_at, enabled, events, unreadable)``: *events* is the WebSocket's mapping (an
+# unreadable set stored as empty); *unreadable* is :func:`declared_events_unreadable`'s.
+_declared_cache: dict[str, tuple[float, bool, frozenset[str], bool]] = {}
 _declared_refreshing: set[str] = set()
 
 
@@ -1262,27 +1263,59 @@ def _read_declared_events(app: str) -> tuple[bool, frozenset[str]]:
     revocation and blanking the app's own chat over one would be a costly false
     positive. It still declares nothing, so every DECLARED scope is withheld.
     """
+    enabled, events = _read_declared_events_checked(app)
+    return (enabled, frozenset() if events is None else events)
+
+
+def _read_declared_events_checked(app: str) -> tuple[bool, frozenset[str] | None]:
+    """:func:`_read_declared_events`, with ``None`` for a set that could not be read.
+
+    The WebSocket maps ``None`` to the empty set (own slots only, see above); the
+    SSE doors, which have no socket to keep alive, send Tier 0 only on it instead.
+    A successful read that declares nothing stays ``frozenset()``. The set counts
+    as read only when ``read_declared`` returned the manifest's entries: a manifest
+    that is missing or does not parse (``get_app_manifest`` returns ``None``), or
+    ``staged_app_grants`` returning before it reads (an update moving the tree),
+    is unreadable too, where the grants call alone would report approving nothing.
+    """
     try:
         enabled = is_app_enabled(app)
     except Exception:
-        # Indeterminate — not positive evidence of disablement. Withhold the
-        # declared scopes, but leave the own-slot default alone.
+        # Indeterminate — not positive evidence of disablement.
         logger.debug("ws_event_scope: could not read enablement for %r", app)
-        return (True, frozenset())
+        return (True, None)
     if not enabled:
         return (False, frozenset())
     try:
+        read = False
 
         def _declared() -> list[str] | None:
+            nonlocal read
             manifest = get_app_manifest(app)
-            return None if manifest is None else list(manifest.permissions.events)
+            if manifest is None:
+                return None
+            declared = list(manifest.permissions.events)
+            read = True
+            return declared
 
         # An update's added entries stay out until the owner approves them.
         approved = staged_app_grants(app, "events", _declared)
+        if not read:
+            return (True, None)
         return (True, build_allowed_event_set(approved))
     except Exception:
         logger.debug("ws_event_scope: could not reload declarations for %r", app)
-        return (True, frozenset())
+        return (True, None)
+
+
+def _store_declared(app: str, enabled: bool, events: frozenset[str] | None) -> None:
+    """Cache one checked read: the WebSocket's mapping plus the unreadable marker."""
+    _declared_cache[app] = (
+        time.monotonic(),
+        enabled,
+        frozenset() if events is None else events,
+        events is None,
+    )
 
 
 def _schedule_declared_refresh(app: str) -> None:
@@ -1292,14 +1325,13 @@ def _schedule_declared_refresh(app: str) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        enabled, events = _read_declared_events(app)
-        _declared_cache[app] = (time.monotonic(), enabled, events)
+        _store_declared(app, *_read_declared_events_checked(app))
         return
 
     _declared_refreshing.add(app)
 
     try:
-        future = loop.run_in_executor(None, _read_declared_events, app)
+        future = loop.run_in_executor(None, _read_declared_events_checked, app)
     except RuntimeError:
         _declared_refreshing.discard(app)
         return
@@ -1307,8 +1339,7 @@ def _schedule_declared_refresh(app: str) -> None:
     def _store(fut: Any) -> None:
         _declared_refreshing.discard(app)
         try:
-            enabled, events = fut.result()
-            _declared_cache[app] = (time.monotonic(), enabled, events)
+            _store_declared(app, *fut.result())
         except BaseException:
             # BaseException: a cancelled future raises CancelledError, which is
             # not an Exception, and letting it escape a call_soon callback only
@@ -1334,9 +1365,37 @@ def load_declared_events_for_connect(app: str) -> tuple[bool, frozenset[str]]:
     This is also the only place the connect snapshot is built, so the connect
     path cannot drift from what the live narrowing path reads.
     """
-    enabled, events = _read_declared_events(app)
-    _declared_cache[app] = (time.monotonic(), enabled, events)
+    enabled, events = _read_declared_events_checked(app)
+    _store_declared(app, enabled, events)
+    return (enabled, frozenset() if events is None else events)
+
+
+def load_declared_events_checked(app: str) -> tuple[bool, frozenset[str] | None]:
+    """:func:`load_declared_events_for_connect`, reporting an unreadable set as ``None``.
+
+    The cache is primed as a WebSocket connect primes it, with the marker kept in
+    its own field for :func:`declared_events_unreadable`.
+    """
+    enabled, events = _read_declared_events_checked(app)
+    _store_declared(app, enabled, events)
     return (enabled, events)
+
+
+def declared_events_unreadable(app: str) -> bool:
+    """Whether *app*'s cached declarations were last found unreadable. Never blocks.
+
+    The SSE doors check it before each live decision and send Tier 0 only on it,
+    as they do on an unreadable connect read; the WebSocket keeps the own-slot
+    default. A cold miss schedules the refresh and reports readable: the stream's
+    connect read primed the cache and carries its own marker.
+    """
+    cached = _declared_cache.get(app)
+    if cached is None:
+        _schedule_declared_refresh(app)
+        return False
+    if (time.monotonic() - cached[0]) >= _MANIFEST_EXPOSE_TTL_SECS:
+        _schedule_declared_refresh(app)
+    return cached[3]
 
 
 def effective_allowed_events(app: str, connect_snapshot: frozenset[str]) -> frozenset[str]:

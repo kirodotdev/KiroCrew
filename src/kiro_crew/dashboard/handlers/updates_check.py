@@ -47,6 +47,7 @@ from kiro_crew.dashboard.handlers.updates_verdict import (
     remediation_command,
 )
 from kiro_crew.git_divergence import DivergenceUnreadable, count_divergence
+from kiro_crew.git_tmp_packs import UPDATE_FETCH_TIMEOUT_S
 from kiro_crew.platform import feed_trust
 from kiro_crew.platform.update_capability import (
     CHECK_DEFERRED,
@@ -109,14 +110,9 @@ _CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
 _FEED_MAX_BYTES = 65536
 _FEED_TIMEOUT_SECS = 15
 
-#: Total deadline for a source checkout's update fetch. A killed fetch keeps none
-#: of what it downloaded, so a deadline shorter than the transfer fails the same
-#: way on every later check and a far-behind checkout never recovers. 300s is the
-#: largest bound ``git_tmp_packs`` vouches for, so its reaper still cannot take a
-#: pack this fetch is writing.
-#: shortcut: a total-time bound; a fetch still slower than this still fails every
-#: time, upgrade to a no-progress bound if that is reported.
-_GIT_FETCH_TIMEOUT_S = 300.0
+#: Total deadline for a source checkout's update fetch, shared with
+#: ``kirocrew update`` (see ``git_tmp_packs.UPDATE_FETCH_TIMEOUT_S``).
+_GIT_FETCH_TIMEOUT_S = UPDATE_FETCH_TIMEOUT_S
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")

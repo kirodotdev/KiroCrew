@@ -627,11 +627,14 @@ class _Lifecycle:
         if not install_ok:
             self.install_result["error"] = "provenance write failed"
 
-        async def _install(name, log_lines=None, *, resolved_entry=None, start_disabled=False):
+        async def _install(
+            name, log_lines=None, *, resolved_entry=None, start_disabled=False, via="store"
+        ):
             self.calls.append("install")
             self.install_kwargs = {
                 "resolved_entry": resolved_entry,
                 "start_disabled": start_disabled,
+                "via": via,
             }
             if cancel_at == "before_landing":
                 raise asyncio.CancelledError
@@ -683,7 +686,11 @@ async def test_install_transaction_requests_a_disabled_record(monkeypatch, enabl
     entry = _row()
 
     assert (await di._install_transaction("chorus", entry, enabled=enabled))["ok"] is True
-    assert life.install_kwargs == {"resolved_entry": entry, "start_disabled": True}
+    assert life.install_kwargs == {
+        "resolved_entry": entry,
+        "start_disabled": True,
+        "via": "default",
+    }
     assert life.install_kwargs["resolved_entry"] is entry
 
 

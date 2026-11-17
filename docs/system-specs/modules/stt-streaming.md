@@ -1153,6 +1153,46 @@ stderr is not quiet, so no test may assert it empty.
 
 `redirect_whispercpp_logs_to` stays at its `False` default. Its binding governs stderr rather than the log callback, and `None` redirects process-wide fd 2 during model loading, silencing unrelated threads while leaving stdout behavior unchanged.
 
+## Muting a dictation
+
+A recording can be muted and unmuted without ending it, from the button on the
+recording strip or the dictation panel, or with the rebindable
+`toggle-dictation-mute` chord (Alt+Shift+Q, Control+Shift+M on macOS). The macOS
+chord has no Option in it because the default push-to-talk key there is a bare
+right Option, and pressing that during a recording stops it. The chord
+broadcasts `dictation-mute-toggle` (`website/src/lib/dictationMute.ts`), and only
+the composer that owns the live recording acts on it.
+
+Push-to-talk can also be set to a lone modifier the mute chord uses (either Alt
+or Right Shift with the default Alt+Shift+Q; Right Control or Right Shift with
+the macOS default). The chord then begins with the push-to-talk key going down
+by itself, which during a recording is the stop. For those bindings only,
+`usePushToTalk` waits for the key's release before stopping: released alone it
+stops the recording, joined by another key it is a chord and the recording
+carries on. `pttKeyCouldStartMuteChord` reads the chord as the user has it
+bound, so a rebind moves the rule with it. Every other binding still stops on
+the press.
+
+The microphone stays open while muted. Releasing it would mean re-acquiring the
+device on unmute, which is slow and can prompt for permission again.
+
+- **Streaming.** The track is disabled and every frame read while muted goes out
+  as zeros of the same length (`useStreamingStt.setMuted`). Frames keep flowing
+  because Amazon Transcribe ends a stream that has had no audio for 15 seconds.
+  Zeroing on the page, not only disabling the track, means a frame still holding
+  sound from before the press, or a browser that ignores `enabled`, sends nothing.
+  An `endpoint` frame is ignored while muted, so the silence cannot be judged a
+  finished request and sent.
+- **Batch.** The `MediaRecorder` pauses, so the muted stretch is left out of the
+  file instead of reaching the transcriber as silence. A paused recorder is still
+  a live microphone, so stop and cancel treat any state but `inactive` as one.
+
+A mute that cannot be confirmed (no audio track, or the recorder refusing to
+pause) stops the recording instead. The timer keeps counting, the level meter
+reads zero, and a screen lock while muted still stops the recording as a draft.
+A device switched to mid-dictation starts muted if the old one was. The mute ends
+with the recording.
+
 ## Sending on a deliberate stop
 
 `stt.submit_on_release`, off by default, sends the message when the person
@@ -1315,17 +1355,17 @@ Five properties, each with a test:
   outcome as a failure. The two rejections are logged distinctly, because a word
   rejection means the prompt is not holding and a length one only means the model
   rambled.
-- **Redacted both ways, and a redaction that BITES declines the reply.** Credentials
-  and exfiltration URLs are stripped from the text before it is sent, and again from
+- **Redacted both ways, and a redaction that BITES declines the reply.** Credentials,
+  inside URLs too, are stripped from the text before it is sent, and again from
   the model's reply, which is new text the outbound pass says nothing about. The second
   pass runs after the word check, so if it changes anything the text is no longer the
   text that passed: a marker has replaced a span the user dictated, which is the exact
   failure the word check exists to prevent, arriving after it ran. Ordering cannot fix
   this -- redacting first would validate a string the user never dictated either -- so
   the reply is declined and the original returned. Reachable in practice: the words
-  `send it to https evil test steal data AKIA...` re-punctuate into a URL whose letters
-  are identical, every original division survives as a mark, and the scrubber then
-  rewrites the whole span.
+  `send it to https evil test steal data token ghp_...` re-punctuate into a URL whose
+  letters are identical, every original division survives as a mark, and the scrubber
+  then masks the token inside it.
 - **Belongs to the composer that asked.** The originating `sessionId` is captured when
   the request goes out and re-checked before the replacement is applied. A value check
   alone is not enough and the gap was not theoretical: two slots routinely hold

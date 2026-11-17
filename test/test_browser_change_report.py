@@ -625,9 +625,20 @@ def _row_token(row: Any) -> str:
 
 
 def _secret_token_rows() -> list[Any]:
+    """The secret token formats with a fixed prefix: only those read run-together text.
+
+    Telegram and Discord tokens start with any digit or letter, so a split one in page
+    text is a known gap of the run-together read; whole, the redaction replaces it.
+    """
     from kiro_crew.security.redaction_structured import ROWS, SECRET
 
-    return [r for r in ROWS if r["detector"] == "token_format" and r["tier"] == SECRET]
+    return [
+        r
+        for r in ROWS
+        if r["detector"] == "token_format"
+        and r["tier"] == SECRET
+        and all(len(p) >= change_report._MIN_FIXED_PREFIX for p in r["prefixes"])
+    ]
 
 
 def test_a_split_google_api_key_is_left_out() -> None:

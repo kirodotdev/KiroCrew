@@ -626,6 +626,46 @@ async def test_assignment_is_revalidated_and_revocation_unbinds(env: Env) -> Non
     assert env.store.get_binding("C0CODE") is None
 
 
+async def test_a_revocation_takes_an_owed_code_tab_down_after_it_unbinds(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lead's row 20, GPT's race: the tab comes down once no send gate admits the board."""
+    from kiro_crew.slack.code_channels.board import source
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    taken: list[tuple[str, str, bool]] = []
+
+    async def take_down(team: str, channel: str) -> bool:
+        taken.append((team, channel, source._still_the_stored_binding(bound)))
+        return True
+
+    monkeypatch.setattr(workspace, "service", lambda: SimpleNamespace(_take_down_owed=take_down))
+    _bind(env)
+    bound = env.store.get_binding("C0CODE")
+    assert source._still_the_stored_binding(bound)  # a refresh's send gate admits it now
+    env.info("C0CODE", bots=("UOTHERBOT",))
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "hi"}
+    assert (await _gate(env, event)).gate is Gate.PASS
+    assert taken and taken[0][1:] == ("C0CODE", False)  # no send gate admits it any more
+    assert env.store.get_binding("C0CODE") is None
+
+
+async def test_a_revocation_unbinds_even_when_the_takedown_raises(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    async def take_down(team: str, channel: str) -> bool:
+        raise RuntimeError("slack down")
+
+    monkeypatch.setattr(workspace, "service", lambda: SimpleNamespace(_take_down_owed=take_down))
+    _bind(env)
+    env.info("C0CODE", bots=("UOTHERBOT",))
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "302.0", "text": "hi"}
+    assert (await _gate(env, event)).gate is Gate.PASS
+    assert env.store.get_binding("C0CODE") is None
+
+
 async def test_a_revoked_channels_anchor_thread_no_longer_reaches_the_old_session(
     env: Env,
 ) -> None:
@@ -1085,6 +1125,79 @@ async def test_bang_stop_in_a_code_channel_stops_the_bound_session(env: Env) -> 
     event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
     assert (await _gate(env, event)).gate is Gate.DROP
     assert env.slack.posts == [("C0CODE", "Nothing running.", None)]
+
+
+async def test_bang_stop_with_helper_agents_running_says_where_to_stop_one(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """UX review on 71814c435c: the reply sent people to a board row with no link."""
+    from kiro_crew.slack.code_channels.board import links
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    helpers = SimpleNamespace(
+        running_helpers=lambda binding: [("chat-w1", "Fix login"), ("chat-w2", "")],
+        _forget_worker_status=lambda binding: None,
+    )
+    monkeypatch.setattr(workspace, "service", lambda: helpers)
+    monkeypatch.setattr(links, "link_builder", lambda: lambda key: f"https://dash.example/{key}")
+    _bind(env)
+    env.info("C0CODE")
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
+    assert (await _gate(env, event)).gate is Gate.DROP
+    [(_channel, text, _ts)] = env.slack.posts
+    assert text.startswith(
+        "This channel's session isn't running, but 2 helper agents still are: "
+        "<https://dash.example/chat-w1|Fix login> and 1 more. To stop one, open it (the rest "
+        "from <https://dash.example/"
+    )
+    assert "work board" not in text and "*Stop generation*" in text
+
+
+async def test_an_idle_stop_names_helpers_only_if_the_board_still_admits_them_at_the_send(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GPT on f4d2c8f6aa: the channel turned shared during the link builder's await."""
+    from kiro_crew.slack.code_channels.board import links
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    admitted = [True]
+    helpers = SimpleNamespace(
+        running_helpers=lambda binding: [("chat-w1", "Fix login")] if admitted[0] else [],
+        _forget_worker_status=lambda binding: None,
+    )
+
+    def builder():
+        admitted[0] = False  # the audience refresh lands while the builder runs
+        return lambda key: f"https://dash.example/{key}"
+
+    monkeypatch.setattr(workspace, "service", lambda: helpers)
+    monkeypatch.setattr(links, "link_builder", builder)
+    _bind(env)
+    env.info("C0CODE")
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
+    assert (await _gate(env, event)).gate is Gate.DROP
+    assert env.slack.posts == [("C0CODE", "Nothing running.", None)]
+
+
+async def test_an_idle_stop_lets_the_watch_show_the_helper_agents_state_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GPT on 4bfd4f1556: Stop set ``active`` while the watch still thought it showed ``suspended``."""
+    from kiro_crew.slack.code_channels.board import links
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    forgot: list[str] = []
+    helpers = SimpleNamespace(
+        running_helpers=lambda binding: [("chat-w1", "")],
+        _forget_worker_status=lambda binding: forgot.append(binding.channel_id),
+    )
+    monkeypatch.setattr(workspace, "service", lambda: helpers)
+    monkeypatch.setattr(links, "link_builder", lambda: lambda key: "")
+    _bind(env)
+    env.info("C0CODE")
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
+    assert (await _gate(env, event)).gate is Gate.DROP
+    assert forgot == ["C0CODE"]
 
 
 async def test_whole_channel_stop_reaches_us_through_the_agent_session_runtime(

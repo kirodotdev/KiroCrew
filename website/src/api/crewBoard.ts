@@ -165,6 +165,13 @@ export interface CrewBoardActionResult {
  *  still at the desk. No websocket in this PR. */
 export const CREW_BOARD_POLL_MS = 10_000
 
+/** How long a board nobody shows stays cached, so going back to a session paints
+ *  its last board at once instead of an empty one while the read runs. React
+ *  Query's 5-minute default is shorter than an ordinary stay in another session.
+ *  The same 30 minutes as `APP_CACHE_RETENTION_MS`, and bounded for its reason: a
+ *  long-lived tab keeps only the boards shown in the last 30 minutes. */
+export const CREW_BOARD_GC_MS = 30 * 60_000
+
 /** React Query key. A board belongs to ONE conductor, so the key carries it —
  *  two conductors open in two tabs must not share a cache entry. */
 export function crewBoardQueryKey(conductor: string): readonly unknown[] {

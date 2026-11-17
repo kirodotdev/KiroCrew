@@ -1868,6 +1868,12 @@ packages at all.
     "agentTurns": false,
     "chatSlots": false,
     "hiddenSessions": false,
+    "chatLaunch": {
+      "keyPrefix": "my-app-chat-",
+      "agents": ["my-agent"],
+      "folder": "My App",
+      "memoryModes": ["persistent"]
+    },
     "workerAutoApprove": false,
     "reachableByUserSessions": [],
     "desktopCapabilities": [],
@@ -1896,9 +1902,10 @@ packages at all.
 | `permissions.agentTurns` | boolean | May run agent turns on sessions keyed `<app>-<id>` through `ctx.turns`: every tool goes through the host's tool gate under this app's identity, and every turn is admitted as Crew automation. Gates a real capability like `spawn`: `ctx.turns` is absent unless the value is literally `true` ([api-reference](api-reference.md#agent-turns-ctxturns)) |
 | `permissions.chatSlots` | boolean | May open and drive dashboard chat slots keyed `<app>-<id>` through `ctx.chat_slots`: turns through the host's own chat runner under this app's identity, the slot's queue, stop, archive, transcript and the AutoNudge loops on those slots, never another slot. Shown at the trust prompt. `ctx.chat_slots` is absent unless the value is literally `true` (App Kit seam level 7, [api-reference](api-reference.md#chat-slots-ctxchat_slots)) |
 | `permissions.hiddenSessions` | boolean | Keeps the chats this app creates out of the session lists: the chat sidebar, the Sessions page, recently closed and Older sessions. The app creates such a chat with `mode` set to its own app id on `POST /api/chat/slots`, from its backend (app token) or its page (the SDK adds `embed_app`); any other mode is refused with `invalid_mode`, so it never hides another app's chat or yours, and an existing chat keeps its mode. Taken only while the app is installed, enabled and trusted, and only as the literal `true`; once that stops, its closed chats are listed in Older sessions again. Hides the list row only: the chat's approvals and questions still chime and notify like any chat's, and nothing is deleted. Open them from the app's page (an embedded `ChatPanel` shows its own bound chat). Shown at the trust prompt and on the app's detail page |
+| `permissions.chatLaunch` | object | The one shape of the person's chat your page may create or reopen through `useChatLauncher().createChat`, without declaring `/api/chat/slots`: `keyPrefix` (lowercase words joined and ended by `-`, never one the host uses for its own chats such as `chat-`, `cron-`, `workflow-`, `member-` or `task-review-`), `agents` (1 to 16 agent names), `folder` (optional; the name of the folder a chat may be filed in) and `memoryModes` (optional, from `persistent`, `incognito`, `temporary`; `["persistent"]` by default). Any malformed part declares nothing. A prefix is one installed app's: while another installed app, enabled or not, declares a prefix that overlaps yours (one starts with the other), neither app's `createChat` is admitted, so start yours with your app's name. The chat is the person's and follows their approval rules. Shown whole (agents, folder, key prefix and memory modes) at the trust prompt, on the app's page and in the install summary (App Kit seam level 10, [api-reference](api-reference.md#app-sdk-hooks-dashboard-ui)) |
 | `permissions.workerAutoApprove` | boolean | May hold a bounded, audited auto-approve grant on the app's OWN worker slots through `ctx.auto_approve`, so an unattended session's tool calls run without a prompt. Absent unless the value is literally `true`; shown at the trust prompt; an update that adds it waits for the owner's approval; never above the approval-mode policy; ended when the app is disabled or removed ([api-reference](api-reference.md#worker-auto-approve-ctxauto_approve)) |
 | `permissions.reachableByUserSessions` | string[] | What the owner's own chats may do, through the session tools, to the sessions this app owns: `"read"` (`session_read_message`, `session_summary`) and `"send"` (`session_send`). Empty by default, which keeps every app session refused as `app_scoped_target`. Other entries are ignored. Shown at the trust prompt; an update that adds a verb waits for the owner's approval on the app's page. Only a persistent chat the owner opened is admitted, never an incognito, scheduled, agent-created, channel-linked or Bot session, and stop, close and revive stay refused ([session control](../system-specs/modules/session-control.md#app-sessions-the-owners-chats-may-reach)) |
-| `permissions.desktopCapabilities` | string[] | What the app's [desktop windows](#desktop--windows-and-global-shortcuts-in-the-desktop-app) may ask the desktop app for: `"screenCapture"` (be granted a screen through `getDisplayMedia`), `"localFiles"` (reveal a local file in the system file manager, open a local image in the system viewer) and `"gatewayChoice"` (list the operator's gateways, remote ones over SSH or SSM included, and load the app's windows from the one picked). Empty by default, which refuses all three. Other entries are ignored. Shown at the trust prompt and on the app's page; an update that adds one waits for the owner's approval there. The desktop app serves a capability only to a window of an enabled app that declares it and whose owner approved it |
+| `permissions.desktopCapabilities` | string[] | What the app's [desktop windows](#desktop--windows-and-global-shortcuts-in-the-desktop-app) may ask the desktop app for: `"screenCapture"` (be granted a screen through `getDisplayMedia`), `"localFiles"` (reveal a local file in the system file manager, open a local image in the system viewer) and `"gatewayChoice"` (list the operator's gateways, remote ones over SSH or SSM included, and load the app's windows from the one picked). Empty by default, which refuses all three. Other entries are ignored. Shown at the trust prompt and on the app's page; an update that adds one waits for the owner's approval there. The desktop app serves a capability only to a window of an app that declares it and whose owner approved it, and to a window loaded from another gateway only what the app also holds there. An app switched off on this computer keeps them in the windows a gateway chosen with `gatewayChoice` still serves it, so `screenCapture` and `localFiles` still act on this computer there |
 | `permissions.webhookSource` | boolean | Takes inbound webhook deliveries on the app's own routes, governed by the security policy's `webhooks` scope as the source named by the app's name ([`ctx.webhook_source`](api-reference.md#webhook-source-ctxwebhook_source), seam level 7). Absent unless the value is literally `true`; shown, with the source id, at the trust prompt. Grants no route or authentication of its own |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
@@ -2040,9 +2047,15 @@ in-gateway code your app runs.
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.
+- The agent's own file tools (read, write, edit) refuse every listed file and listed
+  directory too, with the `.tmp` and `.lock` files in the folder that holds each one
+  (for `"state/"`, that is `data/`), on every host, sandbox or not. If your `app.json`
+  (or Kiro Crew's copy of the list) is there but cannot be read, they refuse your whole
+  data directory until it can.
 - Hosts at App Kit seam level 3 or later honour the field; read `ctx.sdk_level` and
   treat a lower level as "nothing masks the file". A directory entry needs level 8: an
-  older host refuses to install a manifest that has one.
+  older host refuses to install a manifest that has one. Below level 10 only the sandbox
+  masks the files, not the agent's file tools.
 
 ## Agent read-only directories
 
@@ -2372,7 +2385,7 @@ Pair it with `platform.requiresDesktopApp` when the window is the app's own inte
 | `desktop.windows[].id` | string | `^[a-z][a-z0-9-]{0,31}$`, unique within the app |
 | `desktop.windows[].entry` | string | ESM module mounted in the window, relative to the app's `ui/` directory (like `contributes.panelTabs[].entry`), ending in `.js` or `.mjs` |
 | `desktop.windows[].kind` | `"overlay"` \| `"panel"` \| `"background"` | `overlay`: covers the display under the cursor, transparent, always on top, click-through outside the hit regions your page reports, never focused unless it asks. `panel`: a frameless always-on-top window of the size below. `background`: a page that is never shown, for work that must keep running while the app is on (a notification socket, a reminder poll); reopened at once if it dies. At most one per app |
-| `desktop.windows[].openOnEnable` | boolean | Open while the app is enabled (default `false`: opened by a shortcut or by another of your windows) |
+| `desktop.windows[].openOnEnable` | boolean | Open while the app is served: enabled here, or switched off here while the gateway chosen for its windows with `gatewayChoice` has it on (default `false`: opened by a shortcut or by another of your windows) |
 | `desktop.windows[].displays` | `"cursor"` \| `"all"` | Overlay only. `all`: one copy on every display, with your avatar on exactly one of them; dragging it across a display edge moves it (default `cursor`). At most one per app |
 | `desktop.windows[].width` / `height` | integer | Panel only. 160 to 1600 / 120 to 1200 (default 400 / 560) |
 | `desktop.windows[].position` | string | Panel only. `bottom-right` (default), `top-right` or `center` of the work area |
@@ -2402,7 +2415,9 @@ call `ready()` once your first frame is painted (the window stays hidden until t
 that take the pointer, `setFocusable(true)` while an overlay needs the keyboard,
 `open(id)` to open another of your windows, `close()`, and `onShortcut(cb)`. Check
 `level` before using a call newer than the bridge you built against. The window is
-closed when the app is disabled, and a module that fails to load or throws closes it.
+closed when the app is disabled, unless it loads from another gateway chosen with
+`gatewayChoice` that still has the app on (see that capability below), and a module
+that fails to load or throws closes it.
 
 Level 2 of the bridge (App Kit seam level 7) adds:
 
@@ -2434,7 +2449,7 @@ the ones this window was opened with:
 |------------|---------------|
 | `screenCapture` | `navigator.mediaDevices.getDisplayMedia(...)` is granted a screen, the way the desktop app's own snip surfaces are. Without it the call is refused |
 | `localFiles` | `revealFile(path)` shows an existing regular file in the system file manager; `openImage(path)` resolves `true` once the system viewer opened an existing regular `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp` or `.svg` file (a link is judged by what it points at) |
-| `gatewayChoice` | `listGateways()` resolves `{ state, gateways, chosen, showing }`, each gateway `{ id, name, state, connected, appEnabled }` (no host names, ports or credentials); `chooseGateway(id)` loads your windows from that gateway (`"self"` is this computer's) and resolves `{ ok, chosen, showing }`. A gateway is used only while it is connected and your app is enabled there with every window this computer opens declared and `gatewayChoice` approved, so your windows can always come back (`appEnabled` reads `false` otherwise); otherwise your windows stay on this computer's gateway, and a gateway that does not answer leaves them where they are. The choice is kept per computer |
+| `gatewayChoice` | `listGateways()` resolves `{ state, gateways, chosen, showing }`, each gateway `{ id, name, state, connected, appEnabled }` (no host names, ports or credentials); `chooseGateway(id)` loads your windows from that gateway (`"self"` is this computer's) and resolves `{ ok, chosen, showing }`. A gateway is used only while it is connected and your app is enabled there with every window this computer opens declared and `gatewayChoice` approved, so your windows can always come back (`appEnabled` reads `false` otherwise); otherwise your windows stay on this computer's gateway, and a gateway that does not answer leaves them where they are. While the app is switched off on this computer, its windows and shortcuts are served only from the chosen gateway while the app is on there, with what it holds on both gateways; otherwise they close, and a gateway that does not answer keeps the windows that are open and opens none. To stop them, choose `"self"` or switch the app off on that gateway too. The choice is kept per computer |
 
 When the owner withdraws a capability, every window opened with it is closed (an
 `openOnEnable` one reopens without it).

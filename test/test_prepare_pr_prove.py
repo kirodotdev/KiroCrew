@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from skill_script_helpers import no_bytecode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -83,15 +87,53 @@ EXIT_BASELINE_RED = 30
 EXIT_ENV = 2
 
 
+def _git_env() -> dict[str, str]:
+    """The suite's env with no host git config and auto maintenance off.
+
+    The module-scoped template below runs before the per-test git isolation does,
+    so without this its commit would read the host's global and system config.
+    """
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    env.update(git_maintenance_off_entries(env))
+    return env
+
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(
-        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True, encoding="utf-8"
+        ["git", *args],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_git_env(),
     )
+
+
+_TEMPLATE: list[Path] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _repo_template(tmp_path_factory):
+    """Build the base repo once per module; ``_repo`` copies it for each test.
+
+    Safe to share because no test is handed the template, only a copy of it.
+    """
+    root = _build_repo(tmp_path_factory.mktemp("prove-seed"))
+    _TEMPLATE.append(root)
+    yield
+    _TEMPLATE.remove(root)
 
 
 def _repo(tmp_path: Path) -> Path:
     """A git repo on branch main with one production module and one test file."""
     repo = tmp_path / "repo"
+    shutil.copytree(_TEMPLATE[-1], repo)
+    return repo
+
+
+def _build_repo(parent: Path) -> Path:
+    repo = parent / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "prove@test")

@@ -1,14 +1,14 @@
 """Windows sources for the System page's process count and network counters.
 
 Windows has neither ``ps`` nor ``/proc``, so the two probes in
-``handlers_system`` read these instead:
+``handlers_system`` read these instead, both without spawning a process:
 
-- process command lines from WMI ``Win32_Process`` through PowerShell
-  ``Get-CimInstance``, the same source ``platform_compat.process_command_line``
-  uses for a single pid;
+- process command lines from a Toolhelp snapshot of the pids plus
+  ``ntdll!NtQueryInformationProcess(ProcessCommandLineInformation)`` per pid,
+  which reads a busy host's table in well under a second;
 - interface byte counters from ``iphlpapi!GetIfTable2``, which reports 64-bit
-  ``InOctets`` / ``OutOctets`` per interface without spawning a process, so it is
-  cheap enough for the page's live network graph.
+  ``InOctets`` / ``OutOctets`` per interface, cheap enough for the page's live
+  network graph.
 
 Each reader answers ``None`` when its source cannot be read, so a caller can tell
 "could not measure" apart from a real zero.
@@ -17,97 +17,124 @@ Each reader answers ``None`` when its source cannot be read, so a caller can tel
 from __future__ import annotations
 
 import ctypes
-import json
 import logging
-import re
-import subprocess
-from typing import Any, Sequence
+from typing import Callable, Sequence
 
-from kiro_crew.platform_compat_native import _SUBPROCESS_NO_WINDOW
-from kiro_crew.platform_compat_trust import trusted_system_bin
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
-
-#: The characters a process signature may hold. Each signature is written into
-#: PowerShell source, so anything PowerShell or WQL could read as syntax is out.
-_SIGNATURE_SHAPE = re.compile(r"[A-Za-z0-9_.-]+")
-
-
-def _wql_literal(text: str) -> str:
-    """Quote *text* as a WQL ``LIKE`` pattern inside a single-quoted PowerShell string.
-
-    WQL treats ``[`` and ``_`` as pattern characters, so they are bracketed to
-    match literally; the PowerShell single quote is doubled.
-    """
-    escaped = text.replace("[", "[[]").replace("_", "[_]")
-    return "%" + escaped.replace("'", "''") + "%"
 
 
 def windows_process_command_lines(signatures: Sequence[str]) -> list[tuple[int, str]] | None:
     """Return ``(pid, command line)`` for every process whose command line holds a signature.
 
-    One PowerShell call lists the matching processes as JSON; the WQL filter keeps
-    the output to the processes the caller counts. Answers ``None`` when PowerShell
-    is not found, fails, or prints something that is not the expected JSON.
+    Reads the process table in this process: one Toolhelp snapshot for the pids, then
+    each process's command line through ``NtQueryInformationProcess``, matched
+    case-insensitively. A process this user cannot open, or one that exits during the
+    walk, is skipped. Answers ``None`` when the process table itself cannot be read.
     """
     if not signatures:
         return []
-    if not all(_SIGNATURE_SHAPE.fullmatch(sig) for sig in signatures):
-        raise ValueError("a process signature must be letters, digits, '_', '.' or '-'")
-    powershell_bin = trusted_system_bin("powershell")
-    if powershell_bin is None:
-        return None
-    wql = " OR ".join(f"CommandLine LIKE '{_wql_literal(sig)}'" for sig in signatures)
-    # The WQL filter sits inside a double-quoted PowerShell string, so a ``"``,
-    # a ``$`` or a backtick in a signature would end it or expand into code;
-    # ``_SIGNATURE_SHAPE`` admits none of them. The querying PowerShell carries
-    # every signature in its own command line, so ``$PID`` (its own pid) is
-    # dropped from the rows.
-    command = (
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-        f'$rows = @(Get-CimInstance Win32_Process -Filter "{wql}" '
-        "| Where-Object { $_.ProcessId -ne $PID } "
-        "| Select-Object ProcessId, CommandLine); "
-        "ConvertTo-Json -InputObject $rows -Compress"
-    )
     try:
-        out = subprocess.check_output(
-            [powershell_bin, "-NoProfile", "-NonInteractive", "-Command", command],
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            creationflags=_SUBPROCESS_NO_WINDOW,
-            **UTF8_TEXT,
-        )
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        logger.debug("Win32_Process query failed: %s", exc)
+        reader = _command_line_reader()
+        pids = sorted(platform_compat._windows_process_parent_map()) if reader else []
+    except OSError as exc:
+        logger.debug("Windows process table unreadable: %s", exc)
         return None
-    return _parse_process_rows(out)
-
-
-def _parse_process_rows(out: str) -> list[tuple[int, str]] | None:
-    """Read the ``ConvertTo-Json`` output of :func:`windows_process_command_lines`."""
-    text = out.strip()
-    if not text:
-        return []
-    try:
-        parsed: Any = json.loads(text)
-    except ValueError:
-        logger.debug("Win32_Process query printed non-JSON output")
+    if reader is None:
         return None
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    if not isinstance(parsed, list):
-        return None
+    wanted = [sig.lower() for sig in signatures]
     rows: list[tuple[int, str]] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        pid = item.get("ProcessId")
-        cmd = item.get("CommandLine")
-        if isinstance(pid, int) and not isinstance(pid, bool) and isinstance(cmd, str):
+    for pid in pids:
+        cmd = reader(pid)
+        if cmd is not None and any(sig in cmd.lower() for sig in wanted):
             rows.append((pid, cmd))
     return rows
+
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: ``PROCESSINFOCLASS.ProcessCommandLineInformation`` (Windows 8.1 and later).
+_PROCESS_COMMAND_LINE_INFORMATION = 60
+#: ``STATUS_INFO_LENGTH_MISMATCH``, ``STATUS_BUFFER_TOO_SMALL`` and
+#: ``STATUS_BUFFER_OVERFLOW``: the answer needs the larger buffer it names.
+_STATUS_TOO_SMALL = frozenset({0xC0000004, 0xC0000023, 0x80000005})
+#: The first buffer tried; a longer command line is read again at the length asked for.
+_COMMAND_LINE_FIRST_BUFFER = 4096
+#: Windows caps a command line at 32,767 UTF-16 units, so no answer is longer than this.
+_COMMAND_LINE_MAX_BUFFER = 65536 + 64
+
+
+class _UnicodeString(ctypes.Structure):
+    _fields_ = [
+        ("Length", ctypes.c_uint16),
+        ("MaximumLength", ctypes.c_uint16),
+        ("Buffer", ctypes.c_void_p),
+    ]
+
+
+def _command_line_reader() -> Callable[[int], str | None] | None:
+    """A function reading one pid's command line, or ``None`` off Windows."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        ntdll = ctypes.WinDLL("ntdll")  # type: ignore[attr-defined]
+        open_process = kernel32.OpenProcess
+        close_handle = kernel32.CloseHandle
+        query = ntdll.NtQueryInformationProcess
+    except (AttributeError, OSError) as exc:
+        logger.debug("process command line reader unavailable: %s", exc)
+        return None
+    open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    open_process.restype = ctypes.c_void_p
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    query.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    query.restype = ctypes.c_uint32
+
+    def read(pid: int) -> str | None:
+        handle = open_process(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        if not handle:
+            return None
+        try:
+            size = _COMMAND_LINE_FIRST_BUFFER
+            while True:
+                buf = ctypes.create_string_buffer(size)
+                needed = ctypes.c_uint32(0)
+                status = query(
+                    handle, _PROCESS_COMMAND_LINE_INFORMATION, buf, size, ctypes.byref(needed)
+                )
+                if status in _STATUS_TOO_SMALL and size < needed.value:
+                    if needed.value > _COMMAND_LINE_MAX_BUFFER:
+                        return None
+                    size = needed.value
+                    continue
+                if status != 0:
+                    return None
+                return _command_line_from_buffer(buf)
+        finally:
+            close_handle(handle)
+
+    return read
+
+
+def _command_line_from_buffer(buf: ctypes.Array[ctypes.c_char]) -> str | None:
+    """The command line in a ``ProcessCommandLineInformation`` answer.
+
+    The answer is a ``UNICODE_STRING`` whose ``Buffer`` points into the same block;
+    a pointer or length outside the block is refused rather than read.
+    """
+    head = _UnicodeString.from_buffer(buf)
+    start = ctypes.addressof(buf)
+    offset = (head.Buffer or 0) - start
+    length = int(head.Length)
+    if not head.Buffer or length % 2 or offset < 0 or offset + length > len(buf):
+        return None
+    return bytes(buf.raw[offset : offset + length]).decode("utf-16-le", errors="replace")
 
 
 # ``MIB_IF_ROW2`` from netioapi.h, laid out field by field so ctypes computes the

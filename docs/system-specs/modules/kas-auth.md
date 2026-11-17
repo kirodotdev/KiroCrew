@@ -49,6 +49,9 @@
 > names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
 > recognises it), so the dashboard draws it in the user's language, led by the
 > route in plain words; beside the card's sign-in button the copy points at that button.
+> The sentence counts when it leads the row, alone or followed by more text after a
+> space: the ACP error formatter appends its model-switch note and a request id. The
+> translated copy leaves that tail out; the row's own text keeps it.
 > Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
 > Kiro sign-in when kiro-cli's own store is what answers. A terminal names the card
@@ -279,6 +282,15 @@ reads the code, not the text: `invalid_region`, `invalid_start_url` and
 `start_url_or_region_rejected` get a headline naming the Region, the start URL or
 both, and those inputs are marked `aria-invalid` and described by the error; every
 other begin error keeps the "Check your connection" headline.
+
+The company SSO form starts filled in from `GET /api/kas-login`'s `company_sign_in`
+(`{start_url, region}`, both `""` when nothing supplies one;
+`auth/company_sign_in.company_sign_in_default`): the saved `agent.kas_sso_start_url` /
+`agent.kas_sso_region` pair first, then the edition's
+`DashboardContributor.company_sign_in_defaults()` (the public default supplies none).
+The pair travels together, and each value is checked the way a submitted one is, so
+a URL sign-in would refuse fills nothing. The form stays editable, and the URL this
+browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
 
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity

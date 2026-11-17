@@ -510,6 +510,33 @@ class TestWeightedRandomSelection:
         # The tie group members stay comparable to each other.
         assert 0.7 < counts["a-tip"] / counts["b-tip"] < 1.4, counts
 
+    def test_docless_tips_share_one_tier(self) -> None:
+        """Tips with no catalog doc carry no recency signal, so they tie.
+
+        No curated tip matches this catalog. Ranking them by list position
+        would put the first curated tip at recency_decay ** len(curated) and
+        leave most of the curated pool unreachable on the weighted pick.
+        """
+        from kiro_crew.tips import _load_curated_tips
+
+        curated = _load_curated_tips()
+        assert len(curated) > 10
+        catalog = [CatalogEntry("New", "S", "new.md", mtime=9999.0)]
+        candidates = [*curated, {"id": "new-tip", "doc": "new.md"}]
+
+        counts: collections.Counter[str] = collections.Counter()
+        for seed in range(6000):
+            pick = _select_tip(candidates, catalog, recency_decay=0.6, rng=random.Random(seed))
+            assert pick is not None
+            counts[pick["id"]] += 1
+
+        never = [t["id"] for t in curated if counts[t["id"]] == 0]
+        assert not never, f"{len(never)} of {len(curated)} curated tips never served: {never}"
+        first, last = counts[curated[0]["id"]], counts[curated[-1]["id"]]
+        assert 0.5 < first / last < 2.0, f"first={first} last={last}"
+        # A tip with a catalog doc keeps its recency edge over the docless group.
+        assert counts["new-tip"] > last, counts
+
 
 class TestCadenceGateAndGlow:
     """Tests for cadence gate + glow flag (Design B)."""
@@ -1227,8 +1254,8 @@ class TestFeedbackBodyValidation:
 
 
 class TestRedaction:
-    def test_redact_removes_suspicious_urls(self) -> None:
-        exfil_url = "https://evil.com/steal?data=" + "A" * 250
+    def test_redact_removes_a_credential_in_a_url(self) -> None:
+        exfil_url = "https://evil.com/steal?access_token=" + "A" * 250
         tips = [
             {
                 "id": "t1",
@@ -1243,7 +1270,10 @@ class TestRedaction:
         result = _redact_tips(tips)
         assert result[0]["id"] == "t1"
         assert exfil_url not in result[0]["body"]
-        assert "[REDACTED" in result[0]["body"]
+        # The credential value goes; the link stays.
+        assert (
+            result[0]["body"] == "Visit https://evil.com/steal?access_token=[REDACTED: credential]"
+        )
 
     def test_redact_preserves_non_string_fields(self) -> None:
         tips = [

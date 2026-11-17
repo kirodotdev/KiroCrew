@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sage_lib import store
 
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
@@ -144,12 +145,12 @@ class TestPinnedAtomicWrite(unittest.TestCase):
 class TestSeedConfigUpgrade(unittest.TestCase):
     """_seed_config upgrade path must add resolved_paths if missing."""
 
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.root = Path(self.tmp) / "apps" / "code-review-sage"
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+    def setUp(self):
+        self.root = Path(self.tmp) / "apps" / "code-review-sage"
 
     def test_empty_config_gets_resolved_paths(self):
         """Simulates the scenario where the generic handler already wrote {}."""
@@ -212,14 +213,14 @@ class TestReadConfigQuiet(unittest.TestCase):
     run on every pasted URL reads it — so a planted symlink must be refused,
     never dereferenced into whatever the gateway can read."""
 
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         self.data = self.root / "data"
         self.data.mkdir(parents=True)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_normal_config_reads(self):
         (self.data / "config.json").write_text(

@@ -790,6 +790,21 @@ class TestReachabilityCheck:
         assert "did not resolve" in r["note"]
         assert "Unable to locate credentials" in r["detail"]
         assert r["credential_helper_missing"] == ""
+        assert r.get("env_credentials") is False
+
+    @pytest.mark.parametrize("profile, expected", [("", True), ("work", False)])
+    def test_env_credentials_are_flagged_only_without_a_profile(
+        self, monkeypatch, profile, expected
+    ):
+        # The sandbox scrubs the secret key, so the CLI sees only the key id.
+        err = "aws: [ERROR]: Partial credentials found in env, missing: AWS_SECRET_ACCESS_KEY"
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", err))
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "example-secret")
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check(profile)
+        assert r.get("env_credentials") is expected
+        assert r["note"] == aws.env_credentials_hint()
+        assert r["detail"] == err
 
     def test_a_credential_helper_missing_from_path_is_named(self, monkeypatch):
         # The AWS CLI's own words when the profile's credential_process command is

@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
 from kiro_crew.dashboard.handlers.mobile_connect import api_mobile_connect_methods
 from kiro_crew.dashboard.handlers.relay_viewer import (
     api_relay_viewer_crews,
+    api_relay_viewer_crews_seen,
     api_relay_viewer_token,
 )
 from kiro_crew.platform import current_context, safe_context_call
@@ -211,4 +212,5 @@ def register(app: web.Application) -> None:
     # desktop app's access token mint (loopback plus the local secret, checked in
     # the handler, which token auth lets through for POST only).
     app.router.add_get("/api/relay-viewer/crews", api_relay_viewer_crews)
+    app.router.add_post("/api/relay-viewer/crews/seen", api_relay_viewer_crews_seen)
     app.router.add_post("/api/relay-viewer/token", api_relay_viewer_token)

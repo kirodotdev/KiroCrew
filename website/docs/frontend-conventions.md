@@ -77,6 +77,10 @@ There is deliberately no `Select` primitive: use `SimpleSelect`,
 `SettingsSelect`, `SearchableSelect`, or `SettingsMultiSelect` for a searchable
 checkbox list in Settings.
 
+`SettingsToggle` accepts a `labelBadge` for status such as Preview, placed after
+the label and before its info tip. Keep `label` plain text so settings search and
+the switch's accessible name remain unchanged.
+
 `SimpleSelect` accepts optional decorative `optionIcons` alongside its text
 labels. Desktop rows and the selected value show those identities; touch devices
 retain the native text option list and show the selected icon beside the control.
@@ -254,7 +258,7 @@ and every other concern has one owner under `components/markdown/`.
 | `markdown/MarkdownTable.tsx` | a table, its Markdown / CSV copy row, and the Widen / Narrow toggle |
 | `markdown/useMarkdownTableColumns.tsx` | resizable table columns (the second `ColumnResizer` consumer) |
 | `markdown/markdownSniff.ts` | whether an untagged or generic-tagged fence holds a markdown document, so the transcript may offer it the Formatted \| Raw card |
-| `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images (local-path routing, the layout reserve, the broken-image chip) and the click-to-load gate for remote images, video and audio |
+| `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images and local video and audio players (local-path routing, the layout reserve for an image or a video, the broken-image chip) and the click-to-load gate for remote images, video and audio |
 | `markdown/MermaidBlock.tsx` | lazily loaded mermaid, its `initialize` config (`securityLevel: 'strict'`), and the diagram's box and font gates, source view and downloads |
 | `markdown/Lightbox.tsx` | the image viewer and `dispatchLightbox` |
 

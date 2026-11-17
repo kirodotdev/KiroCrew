@@ -5,8 +5,8 @@ from the lease (``RenewCrewLease``). The client only ever talks to a
 :class:`HostTokenSource`, so where the token comes from never touches the
 connection code. The lease client is
 :class:`~kiro_crew.relay_client.lease.LeaseHostTokenSource`; this module ships the
-seam and :class:`UnavailableHostTokenSource`, the default while no lease service
-is configured: it refuses, so turning the relay on without a source reports why
+seam and :class:`UnavailableHostTokenSource`, the default for a provider built
+with no source: it refuses, so turning the relay on without a source reports why
 it cannot connect instead of dialling with nothing.
 
 A credential is never logged and never part of a ``repr``.
@@ -156,11 +156,12 @@ class HostTokenSource(Protocol):
 
 
 class UnavailableHostTokenSource:
-    """The default source: no lease service is configured, so there is no host token."""
+    """The default source when an edition names the relay but brings no host token source."""
 
     MESSAGE = (
-        "Remote Control has no host token source: set tunnel.relay_lease_url and "
-        "tunnel.relay_lease_credential so the Crew can hold a lease"
+        "Remote Control has no host token source: set tunnel.relay_lease_credential "
+        "(and tunnel.relay_lease_url for a lease service other than the built-in one) "
+        "so the Crew can hold a lease"
     )
 
     async def current(self) -> HostCredential:

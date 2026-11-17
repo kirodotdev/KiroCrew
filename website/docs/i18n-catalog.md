@@ -241,7 +241,7 @@ other languages keep, so a shared key forces a translator to guess:
 - `schedulePage.type` was both a table column header (the noun "Type") and the
   imperative verb in "Type `delete` to confirm". es/pt/ru picked the noun and
   broke the instruction; zh-CN/hi/bn picked the verb, so the column header read
-  "please enter". It is two keys now, the verb one named `type_verb_to_confirm`.
+  "please enter". It is two keys now, the verb one named `type_token_to_confirm`.
 
 If a value's part of speech is not obvious from the key, **put it in the key**.
 

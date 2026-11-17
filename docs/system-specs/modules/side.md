@@ -704,7 +704,7 @@ so it still loads. `_run_side_turn` requests the base agent's session with
 `AcpProvider` to `AcpClient`. A pooled child was started without that shape, and
 none can serve the session: a `side:` (or `thread:`) key is stateless, so it never
 claims from the warm pool (`bypass_stateless`). The claude client then starts the
-session confined (`AcpClient._claude_session_meta`):
+session confined (`ClaudeAcpClient._claude_session_meta`):
 
 - `tools` holds only the read built-ins (`Read`, `Grep`, `Glob`, `WebFetch`,
   `WebSearch`; `acp/harness_tool_names.CLAUDE_READ_ONLY_BUILTINS`), so no write

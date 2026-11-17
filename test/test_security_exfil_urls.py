@@ -3,8 +3,9 @@
 ``redact_exfiltration_urls`` / ``scan_exfiltration_urls`` on payload shape, URL paths and raw-IP
 hosts, and the exact-host exemption a companion credential policy supplies; then the links that
 meet the redactor: Kiro Crew's own Slack app-create link, a dashboard access token in every host
-form, and the GitHub issue-prefill link, redacted when a model writes it and delivered whole
-through the trusted structured-field channel instead.
+form, and the GitHub issue-prefill link, flagged when a model writes it and delivered whole
+through the trusted structured-field channel instead. The redactor never replaces a URL whole:
+it masks only a credential value inside one, and the scan decides what is suspicious.
 """
 
 from __future__ import annotations
@@ -20,79 +21,29 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     scan_exfiltration_urls,
 )
+from kiro_crew.testing.synthetic_credentials import aws_secret, github_classic
 
 
 class TestRedactExfiltrationUrls:
     """Tests for redact_exfiltration_urls — domain-agnostic payload detection."""
 
-    def test_substitution_is_built_from_the_exported_prefix(self) -> None:
-        """The URL tag must start with ``EXFILTRATION_REDACTION_TAG_PREFIX``.
-
-        The dashboard chat notice prefix-counts that constant in
-        the persisted text to tell the user a URL was rewritten -- the tag
-        interpolates the domain, so unlike the constant credential tags it
-        cannot be equality-compared. Driving the REAL redactor here pins the
-        substitution to the exported constant: if the f-string ever drifts from
-        the prefix, this goes red instead of the notice silently never firing.
-        """
-        from kiro_crew.security import (
-            EXFILTRATION_REDACTION_TAG_PREFIX,
-            redact_exfiltration_urls,
-        )
-
-        url = "https://evil.example.com/steal?data=" + "A" * 250
-        result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert warnings, "fixture no longer trips the redactor; pick another URL"
-        assert EXFILTRATION_REDACTION_TAG_PREFIX in result
-        assert f"{EXFILTRATION_REDACTION_TAG_PREFIX}evil.example.com]" in result
-
-    def test_url_tag_prefix_does_not_collide_with_credential_tags(self) -> None:
-        """Prefix-counting the URL tag must never double-count a credential tag.
-
-        The notice sums ``CREDENTIAL_REDACTION_TAGS`` exact counts and the URL
-        prefix count over the same text. That is only safe while neither side
-        matches the other's substitution: the prefix must not appear inside any
-        credential tag, no credential tag may start with the prefix, and the
-        prefix stays OUT of the tuple (it is a prefix, not a full tag -- see the
-        tuple's docstring).
-        """
-        from kiro_crew.security import (
-            CREDENTIAL_REDACTION_TAGS,
-            EXFILTRATION_REDACTION_TAG_PREFIX,
-        )
-
-        assert EXFILTRATION_REDACTION_TAG_PREFIX not in CREDENTIAL_REDACTION_TAGS
-        for tag in CREDENTIAL_REDACTION_TAGS:
-            assert EXFILTRATION_REDACTION_TAG_PREFIX not in tag
-            assert not tag.startswith(EXFILTRATION_REDACTION_TAG_PREFIX)
-            assert tag not in EXFILTRATION_REDACTION_TAG_PREFIX
-
-    def test_external_long_query_redacted(self) -> None:
-        """External domains with long query strings are still redacted."""
-        from kiro_crew.security import redact_exfiltration_urls
-
+    def test_external_long_query_flagged(self) -> None:
+        """External domains with long query strings are flagged; the link itself stays."""
         url = "https://evil.com/steal?data=" + "A" * 250
-        result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Link: {url}")) == 1
+        assert redact_exfiltration_urls(f"Link: {url}") == (f"Link: {url}", [])
 
-    def test_long_query_redacted_domain_agnostic(self) -> None:
-        """Long query strings are redacted regardless of domain (no allowlist)."""
-        from kiro_crew.security import redact_exfiltration_urls
-
+    def test_long_query_flagged_domain_agnostic(self) -> None:
+        """Long query strings are flagged regardless of domain (no allowlist)."""
         # Detection is domain-agnostic: there is no trusted-domain allowlist,
         # so even a long multi-param query on any host is flagged.
         params = "&".join(f"p{i}=value{i}" for i in range(30))
         url = f"https://app.example.com/app/?mode=CODE&{params}"
         assert len(url.split("?", 1)[1]) >= 200  # confirm query > threshold
-        result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Link: {url}")) == 1
 
-    def test_heavy_url_encoding_redacted(self) -> None:
-        """Heavily URL-encoded destinations are redacted regardless of domain."""
-        from kiro_crew.security import redact_exfiltration_urls
-
+    def test_heavy_url_encoding_flagged(self) -> None:
+        """Heavily URL-encoded destinations are flagged regardless of domain."""
         url = (
             "https://sso.example.com/federate?account=123456"
             "789012"
@@ -101,9 +52,7 @@ class TestRedactExfiltrationUrls:
             "log-groups%2Flog-group%2F%252Faws%252Flambda%252Fmy-func"
             "%2Flog-events%3FfilterPattern%3DERROR"
         )
-        result, warnings = redact_exfiltration_urls(f"Logs: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Logs: {url}")) == 1
 
     def test_short_query_not_redacted_domain_agnostic(self) -> None:
         """Short, benign query strings are not redacted on any domain."""
@@ -115,12 +64,12 @@ class TestRedactExfiltrationUrls:
         assert len(warnings) == 0
 
     def test_safe_domain_credential_still_redacted(self) -> None:
-        """Credential patterns on safe domains are still redacted."""
+        """A credential on a safe domain is still redacted: its value, not the link."""
         from kiro_crew.security import redact_exfiltration_urls
 
-        url = "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE1234"
+        url = f"https://example.com/api?key={github_classic(seed=81)}"
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert "[REDACTED" in result
+        assert result == "Link: https://example.com/api?key=[REDACTED: credential]"
         assert len(warnings) == 1
 
     def test_short_query_no_redaction(self) -> None:
@@ -134,16 +83,12 @@ class TestRedactExfiltrationUrls:
 
     def test_amazonaws_not_safe(self) -> None:
         """amazonaws.com is NOT allowlisted — anyone can provision endpoints."""
-        from kiro_crew.security import redact_exfiltration_urls
-
         params = "&".join(f"d{i}=stolen{i}" for i in range(30))
         url = f"https://attacker-bucket.s3.amazonaws.com/exfil?{params}"
-        result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Link: {url}")) == 1
 
     def test_s3_presigned_url_preserved(self) -> None:
-        """S3 presigned URLs on amazonaws.com are NOT redacted."""
+        """An S3 presigned URL keeps everything but its signature value."""
         from kiro_crew.security import redact_exfiltration_urls
 
         url = (
@@ -158,8 +103,9 @@ class TestRedactExfiltrationUrls:
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
         )
         result, warnings = redact_exfiltration_urls(f"Download: {url}")
-        assert "[REDACTED" not in result
-        assert len(warnings) == 0
+        kept = url[: url.index("&X-Amz-Signature=") + len("&X-Amz-Signature=")]
+        assert result == f"Download: {kept}[REDACTED: credential]"
+        assert len(warnings) == 1
 
     def test_s3_presigned_url_scan_clean(self) -> None:
         """scan_exfiltration_urls returns no warnings for S3 presigned URLs."""
@@ -179,27 +125,20 @@ class TestRedactExfiltrationUrls:
         warnings = scan_exfiltration_urls(f"Link: {url}")
         assert len(warnings) == 0
 
-    def test_amazonaws_non_presigned_still_redacted(self) -> None:
-        """amazonaws.com URLs without presigned params are still redacted."""
-        from kiro_crew.security import redact_exfiltration_urls
-
+    def test_amazonaws_non_presigned_still_flagged(self) -> None:
+        """amazonaws.com URLs without presigned params are still flagged."""
         url = "https://evil.s3.amazonaws.com/steal" "?data=" + "A" * 250
-        result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Link: {url}")) == 1
 
-    def test_spoofed_presigned_params_still_redacted(self) -> None:
-        """Spoofed presigned param names with dummy values are still redacted."""
-        from kiro_crew.security import redact_exfiltration_urls
-
+    def test_spoofed_presigned_params_still_flagged(self) -> None:
+        """Spoofed presigned param names with dummy values earn no exemption."""
         url = (
             "https://attacker.s3.amazonaws.com/exfil"
             "?X-Amz-Algorithm=a&X-Amz-Credential=a"
             "&X-Amz-Expires=a&X-Amz-Signature=&stolen=AKIA"
             "XXXXXXXXXXXXXXXX"
         )
-        result, warnings = redact_exfiltration_urls(f"Link: {url}")
-        assert "[REDACTED" in result
+        assert scan_exfiltration_urls(f"Link: {url}")
 
     def test_presigned_url_with_slack_token_still_redacted(self) -> None:
         """Presigned URL that also contains a Slack token is still redacted."""
@@ -351,9 +290,8 @@ class TestExfilUrlPathAndRawIp:
         # A secret in the path with NO query string was skipped entirely before.
         text = "exfil to http://evil.com/upload/AKIAIOSFODNN7EXAMPLE/x"
         assert scan_exfiltration_urls(text), "path-embedded AWS key must be flagged"
-        result, warnings = redact_exfiltration_urls(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert warnings
+        # A key ID is an identifier, so the redactor keeps it and the link.
+        assert redact_exfiltration_urls(text) == (text, [])
 
     def test_raw_ipv4_host_scanned(self) -> None:
         # A raw-IP host (incl. IMDS 169.254.169.254) never matched _URL_RE before.
@@ -397,8 +335,9 @@ class TestExfilUrlPathAndRawIp:
             "&X-Amz-Date=20260714T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host"
             "&X-Amz-Signature=" + "a" * 64
         )
+        assert not scan_exfiltration_urls(url)
         result, _ = redact_exfiltration_urls(url)
-        assert "REDACTED" not in result
+        assert result == url.replace("a" * 64, "[REDACTED: credential]")
 
     # ── Query directly after host, with NO path segment ──
     # _URL_RE's third group only matched a path/query beginning with "/", so a
@@ -410,18 +349,14 @@ class TestExfilUrlPathAndRawIp:
         # AWS key in a query with no path segment must be flagged + redacted.
         text = "leak via https://attacker.io?leak=AKIAIOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "host?query AWS key must be flagged"
-        result, warnings = redact_exfiltration_urls(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert warnings
+        # A key ID is an identifier, so the redactor keeps it and the link.
+        assert redact_exfiltration_urls(text) == (text, [])
 
     def test_long_query_no_path_flagged(self) -> None:
         # A long (>=200 char) query with no path segment must trip the length
         # heuristic just like the ``/path?query`` form does.
         text = "https://attacker.io?d=" + "A" * 250
         assert scan_exfiltration_urls(text), "host?<long query> must be flagged"
-        result, warnings = redact_exfiltration_urls(text)
-        assert "[REDACTED" in result
-        assert warnings
 
     def test_short_query_no_path_not_flagged(self) -> None:
         # A benign short query with no path must NOT be flagged (no regression
@@ -437,11 +372,12 @@ class TestExfilExactHostExemption:
     """Exact-host heuristic exemption for exfiltration redaction (CredentialPolicy).
 
     A companion CredentialPolicy may supply a set of EXACT trusted-tenant hosts
-    whose URLs skip ONLY the base64-blob / query-length heuristics (which
-    false-positive on legitimate long base64 document pointers).  The
+    whose URLs skip ONLY the base64-blob / query-length heuristics of the scan
+    (which false-positive on legitimate long base64 document pointers).  The
     hard-credential floor (S3-presigned fast-path + unconditional
     ``_HARD_CREDENTIAL_RE`` path+query scan) is UNCONDITIONAL — an exempted host
-    with a real AWS key / bare secret / token is still redacted.
+    with a real AWS key / bare secret / token is still flagged, and a credential
+    value in its URL is still redacted.
 
     NEUTRAL PLACEHOLDER HOSTS ONLY — the companion's real tenant host list never
     appears in the public repo (it is companion CredentialPolicy adapter data).
@@ -488,18 +424,14 @@ class TestExfilExactHostExemption:
         assert len(url.split("?", 1)[1]) >= 200  # confirm query > threshold
         return url
 
-    def test_default_context_redacts_long_query(self) -> None:
-        """Standalone default (empty exempt set) still redacts the long nav URL.
+    def test_default_context_flags_long_query(self) -> None:
+        """Standalone default (empty exempt set) still flags the long nav URL.
 
-        Byte-identical to today: with no exemptions every host runs the
-        heuristics, so a long base64 query is redacted regardless of host.
+        With no exemptions every host runs the heuristics, so a long base64 query
+        is flagged regardless of host.
         """
-        from kiro_crew.security import redact_exfiltration_urls
-
         url = self._long_nav_url("contoso.sharepoint.com")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 1
 
     def test_exempted_host_long_query_preserved(self) -> None:
         """An exact-member host's long base64 nav URL is NOT redacted."""
@@ -570,30 +502,21 @@ class TestExfilExactHostExemption:
         url = "https://contoso.sharepoint.com/doc?p=" + "%41" * 25
         assert len(url.split("?", 1)[1]) < _EXFIL_QUERY_MIN_LEN
         assert scan_exfiltration_urls(f"Doc: {url}")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        # No credential value in it, so the redactor keeps the link as written.
+        assert redact_exfiltration_urls(f"Doc: {url}") == (f"Doc: {url}", [])
 
-    def test_non_exempted_tenant_still_redacted(self) -> None:
+    def test_non_exempted_tenant_still_flagged(self) -> None:
         """A non-member host is NOT exempt (exact match only, not suffix)."""
-        from kiro_crew.security import redact_exfiltration_urls
-
         self._install_exempt_hosts(self._EXEMPT)
         # Same registrable domain family, different subdomain — must NOT match.
         url = self._long_nav_url("attacker.sharepoint.com")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 1
 
-    def test_exempted_host_credential_query_still_redacted(self) -> None:
-        """A hard AWS key in the QUERY on an exempted host is still redacted."""
-        from kiro_crew.security import redact_exfiltration_urls
-
+    def test_exempted_host_credential_query_still_flagged(self) -> None:
+        """A hard AWS key in the QUERY on an exempted host is still flagged."""
         self._install_exempt_hosts(self._EXEMPT)
         url = "https://contoso.sharepoint.com/doc?key=AKIAIOSFODNN7EXAMPLE1234"
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 1
 
     def test_exempted_host_akia_in_path_still_redacted(self) -> None:
         """BINDING: an exempted host with an AKIA key in the URL PATH is still
@@ -604,10 +527,8 @@ class TestExfilExactHostExemption:
         self._install_exempt_hosts(self._EXEMPT)
         url = "https://contoso.sharepoint.com/upload/AKIAIOSFODNN7EXAMPLE/report"
         assert scan_exfiltration_urls(f"Doc: {url}")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert len(warnings) == 1
+        # A key ID is an identifier, so the redactor keeps it and the link.
+        assert redact_exfiltration_urls(f"Doc: {url}") == (f"Doc: {url}", [])
 
     def test_exempted_host_base64_encoded_credential_still_flagged(self) -> None:
         """A hard credential base64-ENCODED into the query on an EXEMPT host is
@@ -648,11 +569,13 @@ class TestExfilExactHostExemption:
         from kiro_crew.security import redact_exfiltration_urls
 
         self._install_exempt_hosts(self._EXEMPT)
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        # A synthetic secret of the real shape: the documentation example stays visible.
+        secret = aws_secret()
         url = f"https://trusted.example.com/doc?SecretAccessKey={secret}"
         result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert secret not in result
+        assert (
+            result == "Doc: https://trusted.example.com/doc?SecretAccessKey=[REDACTED: credential]"
+        )
         assert len(warnings) == 1
 
     def test_unbooted_path_does_no_context_resolution(self) -> None:
@@ -701,7 +624,7 @@ class TestExfilExactHostExemption:
 
     def test_composition_error_degrades_to_full_redaction(self) -> None:
         """PlatformCompositionError from the adapter degrades to the empty set =
-        full redaction, and MUST NOT propagate: this lookup can only ever RELAX
+        every heuristic runs, and MUST NOT propagate: this lookup can only ever RELAX
         the heuristics, so the empty set is already the strictest answer.
         Propagation aborted the calling operation -- every pooled MCP
         backend spawn in gatewayd died building its own log line."""
@@ -719,9 +642,8 @@ class TestExfilExactHostExemption:
         base = build_default_context(KiroCrewConfig())
         set_context(dataclasses.replace(base, credentials=_RaisingCredentialPolicy(frozenset())))
         url = self._long_nav_url("contoso.sharepoint.com")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 1
+        assert redact_exfiltration_urls(f"Doc: {url}") == (f"Doc: {url}", [])
 
     def test_unbooted_nonstandalone_profile_still_redacts(self) -> None:
         """``redact()`` in an UNBOOTED worker under a
@@ -757,10 +679,10 @@ class TestExfilExactHostExemption:
                 # substring test is the incomplete-URL-sanitization pattern.
                 line = "cmd --flag https://example.com"
                 assert redact(line) == line
-                # Heuristic-tripping URL is still redacted (empty exempt set =
+                # Heuristic-tripping URL is still flagged (empty exempt set =
                 # maximum strictness, never fail-open).
                 url = self._long_nav_url("contoso.sharepoint.com")
-                assert "[REDACTED" in redact(f"Doc: {url}")
+                assert scan_exfiltration_urls(f"Doc: {url}")
             finally:
                 reset_context()
 
@@ -781,9 +703,8 @@ class TestExfilExactHostExemption:
         base = build_default_context(KiroCrewConfig())
         set_context(dataclasses.replace(base, credentials=_BrokenCredentialPolicy(frozenset())))
         url = self._long_nav_url("contoso.sharepoint.com")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 1
+        assert redact_exfiltration_urls(f"Doc: {url}") == (f"Doc: {url}", [])
 
     def test_pre_method_adapter_degrades_to_empty(self) -> None:
         """A pre-method companion adapter (no ``exempt_exact_hosts``) degrades to
@@ -802,9 +723,8 @@ class TestExfilExactHostExemption:
         base = build_default_context(KiroCrewConfig())
         set_context(dataclasses.replace(base, credentials=_LegacyCredentialPolicy()))
         url = self._long_nav_url("contoso.sharepoint.com")
-        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
-        assert "[REDACTED" in result
-        assert len(warnings) == 1
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 1
+        assert redact_exfiltration_urls(f"Doc: {url}") == (f"Doc: {url}", [])
 
 
 class TestKiroCrewSlackAppCreateLink:
@@ -1074,7 +994,7 @@ def _issue_link(
 
 
 class TestPrefilledGitHubIssueUrl:
-    """A model-authored GitHub issue-prefill link IS redacted — no shape earns a waiver.
+    """A model-authored GitHub issue-prefill link IS flagged — no shape earns a waiver.
 
     An earlier version pinned the opposite. Two waivers were tried and both
     removed: one keyed to the prefill SHAPE, one additionally pinned to this
@@ -1089,17 +1009,16 @@ class TestPrefilledGitHubIssueUrl:
     Pinning the repository does not close that, because this project's tracker is
     world-readable by design. A URL's shape says nothing about who authored it, and
     an in-band marker travels in the channel the injection controls — so provenance
-    has to come from a different channel. It already does: ``diagnostics._issue_url``
+    has to come from a different channel. The verdict is the scan's
+    (``scan_exfiltration_urls``); the redactor masks only credential values and keeps
+    every link. It already does: ``diagnostics._issue_url``
     assembles the prefill link from STRUCTURED fields and the dashboard renders its
     own anchor from ``BundleResult.github_issue_url``, a JSON field no redactor
     scans. ``TestTrustedIssueLinkChannel`` below pins that seam.
     """
 
-    def _assert_redacted(self, url: str) -> None:
-        cleaned, warnings = redact_exfiltration_urls(f"see {url} for detail")
-        assert "[REDACTED: suspicious URL to" in cleaned, cleaned
-        assert url not in cleaned, cleaned
-        assert warnings
+    def _assert_flagged(self, url: str) -> None:
+        assert scan_exfiltration_urls(f"see {url} for detail"), url
 
     # ── guards: keep the positive case from passing for the wrong reason ──
 
@@ -1120,36 +1039,36 @@ class TestPrefilledGitHubIssueUrl:
 
     # ── the exfiltration case, and it is the CANONICAL tracker ──
 
-    def test_a_prefill_link_to_this_projects_own_tracker_is_redacted(self) -> None:
+    def test_a_prefill_link_to_this_projects_own_tracker_is_flagged(self) -> None:
         """The finding that removed the second waiver, pinned as a regression.
 
         This URL is maximally trustworthy by shape AND by destination: exact
         ``https``, host exactly ``github.com``, no port, the path is literally this
         repository's ``issues/new``, and every query key is one GitHub documents.
-        It is still redacted, because none of that establishes that the model was
+        It is still flagged, because none of that establishes that the model was
         not steered into emitting it, and a submitted issue here is public.
         """
-        self._assert_redacted(_issue_link())
+        self._assert_flagged(_issue_link())
 
-    def test_a_prefill_link_to_an_attacker_owned_repository_is_redacted(self) -> None:
-        self._assert_redacted(_issue_link(path="/attacker/exfil-sink/issues/new"))
+    def test_a_prefill_link_to_an_attacker_owned_repository_is_flagged(self) -> None:
+        self._assert_flagged(_issue_link(path="/attacker/exfil-sink/issues/new"))
 
     def test_a_cased_host_does_not_change_the_verdict(self) -> None:
         """RFC 4343 leaves DNS case insignificant; with no waiver it changes nothing."""
-        self._assert_redacted(_issue_link(host="GitHub.com"))
+        self._assert_flagged(_issue_link(host="GitHub.com"))
 
     # ── the other signals are independent and must still fire ──
 
-    def test_a_credential_in_a_documented_parameter_is_redacted(self) -> None:
+    def test_a_credential_in_a_documented_parameter_is_flagged(self) -> None:
         """The unconditional credential floor is unchanged by removing the waiver."""
-        self._assert_redacted(_issue_link(query=f"{_ISSUE_QUERY}%20AKIAIOSFODNN7EXAMPLE"))
+        self._assert_flagged(_issue_link(query=f"{_ISSUE_QUERY}%20AKIAIOSFODNN7EXAMPLE"))
 
-    def test_a_base64_blob_in_a_documented_parameter_is_redacted(self) -> None:
+    def test_a_base64_blob_in_a_documented_parameter_is_flagged(self) -> None:
         blob = "A" * 30 + "b3Rvb2xvbmdibG9i"
-        self._assert_redacted(_issue_link(query=f"title=x&body={blob}&labels=bug"))
+        self._assert_flagged(_issue_link(query=f"title=x&body={blob}&labels=bug"))
 
-    def test_heavy_percent_encoding_in_a_documented_parameter_is_redacted(self) -> None:
-        self._assert_redacted(_issue_link(query=f"title=x&body={'%41' * 21}&labels=bug"))
+    def test_heavy_percent_encoding_in_a_documented_parameter_is_flagged(self) -> None:
+        self._assert_flagged(_issue_link(query=f"title=x&body={'%41' * 21}&labels=bug"))
 
     def test_the_length_gate_is_the_rule_that_fires(self) -> None:
         """Names the RULE, so a future waiver cannot pass this class by accident.
@@ -1189,14 +1108,14 @@ class TestPrefilledGitHubIssueUrl:
         """
         assert oauth_url_contains_credential(_issue_link()) is True
 
-    def test_a_generic_long_query_url_is_redacted_the_same_way(self) -> None:
+    def test_a_generic_long_query_url_is_flagged_the_same_way(self) -> None:
         """The other host in the report. It gets the same verdict as the prefill link.
 
-        Both were false positives in the report and both stay redacted: the fix for
+        Both were false positives in the report and both stay flagged: the fix for
         a long legitimate URL is to narrow this heuristic for every host on its own
         merits, not to carve out one shape.
         """
-        self._assert_redacted(
+        self._assert_flagged(
             "https://metrics.example.com/metrics?namespace=AWS/SageMaker"
             "&metricName=Invocations&dimensions=EndpointName%3Dmy-endpoint"
             "&startTime=2026-09-01T00%3A00%3A00Z&endTime=2026-09-07T00%3A00%3A00Z"
@@ -1211,8 +1130,8 @@ class TestTrustedIssueLinkChannel:
     channel: ``diagnostics._issue_url`` assembles the query from STRUCTURED fields
     and the dashboard renders its own anchor from the ``github_issue_url`` JSON
     field (``ReportProblemModal``, ``ReportProblemCard``). Nothing on that path is
-    text a model wrote, and no redactor scans a JSON response body — which is why
-    the link survives there while the same URL in chat does not.
+    text a model wrote, and no scan reads a JSON response body — which is why
+    the link is trusted there while the same URL in chat is flagged.
 
     These tests pin the two halves of that claim that live in Python.
     """
@@ -1265,19 +1184,17 @@ class TestTrustedIssueLinkChannel:
         result.github_issue_url = diagnostics._issue_url(result, "note")
         assert "context=" in result.as_dict()["github_issue_url"]
 
-    def test_the_prefilled_variant_would_not_survive_model_prose(self) -> None:
+    def test_the_prefilled_variant_is_flagged_in_model_prose(self) -> None:
         """The reason the trusted channel is needed rather than a waiver.
 
-        The same URL the dashboard renders intact IS redacted once it travels as
+        The same URL the dashboard renders intact IS flagged once it travels as
         text, and that is now true with no exception. Pinned so nobody 'fixes' the
-        asymmetry by reaching back into the redactor.
+        asymmetry by reaching back into the scan.
         """
         from kiro_crew import diagnostics
 
         url = diagnostics._issue_url(self._bundle(), "chat drops long links")
-        cleaned, warnings = redact_exfiltration_urls(f"file it here: {url}")
-        assert url not in cleaned
-        assert warnings
+        assert scan_exfiltration_urls(f"file it here: {url}")
 
     def test_the_terminal_variant_is_the_bounded_alternative_for_prose(self) -> None:
         """``terminal_issue_url`` drops the free-form fields so it survives unwaived.

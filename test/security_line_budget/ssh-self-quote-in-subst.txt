@@ -1,0 +1,10 @@
++112
+A quote inside a double-quoted `$( )` body, or in a static `echo`/`printf` output the
+ssh-to-self floor splices in place of a substitution, closed the outer quote in the
+floor's reading, so a later `; ssh -p 22 <this host> id` read as quoted text. The
+floor now takes each proven body's span (`_double_quoted_substitution_spans`) and
+masks it in one step (quotes blanked in the walk's copy), skipping bodies in heredoc text, and it
+splices a static output with each quote and a trailing backslash written as `_`. The floor also
+reads the line as before these rewrites (`_MAIN_READING`) and refuses if either reading does. A
+splice in heredoc text keeps its quotes. The span readers moved to `shell_commands`. Each verdict
+in one gate call is judged once per reading depth (in `_CALL_VIEWS`), so nested bodies add calls linearly.

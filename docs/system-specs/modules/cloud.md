@@ -520,7 +520,10 @@ all matter more to the operator than a pointer -- and those flags reach the stac
   six-character suffix and nothing marks the boundary. The `aws` CLI resolves AWS
   credentials via its own provider chain. Env-var-only
   credentials are unsupported (the sandbox scrubs `AWS_SECRET*`/`AWS_SESSION*`);
-  `env_credentials_hint()` detects that and prints an actionable message.
+  `env_credentials_hint()` detects that and prints an actionable message. The
+  preflight also returns `env_credentials`, set when the check fails without a
+  profile and those variables are present, and the dashboard's credentials row
+  then says it in the reader's language with the CLI's own error under it.
 - **The credential recipient is confirmed at launch.** `cloud.json` is dangerous
   only because of what it decides: `fargate.image` chooses the container a launch
   runs, and the task's execution role delivers the model credential into it. So the

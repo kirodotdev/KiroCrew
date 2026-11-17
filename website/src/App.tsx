@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -56,7 +56,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { ChangelogModal, UpdateErrorDialogFrame } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
-import { LocalOverlayRoot } from './components/overlayRoot'
+import { LocalOverlayRoot, OffScreenOverlayScope } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import AppConfirmHost from './components/AppConfirmHost'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
@@ -265,7 +265,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
             const active = currentIdx === i && !isFailed
             return (
               <div key={s} className={`flex items-center gap-2.5 text-[13px] transition-colors ${done ? 'text-ok' : active ? 'text-accent font-medium' : 'text-muted/40'}`}>
-                <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : '○'}</span>
+                <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : <Circle className="lucide-inline" />}</span>
                 <span>{i18nT(UPDATE_STEP_LABEL_KEY[s])}</span>
                 {active && <span className="ml-auto text-[11px] text-muted animate-pulse">{elapsedStr}</span>}
               </div>
@@ -408,7 +408,7 @@ export default function App() {
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
-    gatewayStatusAnnounce, relayCrewWindow, relayRetrying, focusModeExitMsg, focusChromeInert,
+    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
@@ -417,6 +417,8 @@ export default function App() {
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
+  // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
+  const contentCovered = offlineCoverKind !== null
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
   usePinnedScrollOrigin(shellRef)
@@ -746,6 +748,12 @@ export default function App() {
             ? `${FOCUS_INSET}px minmax(0,1fr) auto`
             : `${FOCUS_INSET}px minmax(0,1fr)`,
         }),
+        // A relay Crew pane has no header of its own (the desktop app's top bar
+        // sits above it), so the header row takes no height. Last, so it also
+        // wins over focus mode's gutter.
+        ...(relayCrewPane && {
+          gridTemplateRows: bottomDock ? '0px minmax(0,1fr) auto' : '0px minmax(0,1fr)',
+        }),
       }}
     >
       {/* Theme decoration slot (#7377). ThemeExperienceLayer portals a pack's
@@ -831,13 +839,17 @@ export default function App() {
               text it mounts with, only later changes, which is the case that
               matters (the gateway dropping mid focus mode). Only while the
               header is actually aria-hidden (focusChromeInert). */}
-          {!topChromeShown && focusChromeInert && (
+          {!relayCrewPane && !topChromeShown && focusChromeInert && (
             <span role="status" className="sr-only" data-testid="focus-gateway-status">{gatewayStatusAnnounce}</span>
           )}
         </>
       )}
 
-      <ShellHeader shell={shell} />
+      {relayCrewPane ? (
+        // The header's connection capsule is this page's live region for the
+        // gateway state; with no header, this one speaks it instead.
+        <span role="status" className="sr-only" data-testid="relay-pane-gateway-status">{gatewayStatusAnnounce}</span>
+      ) : <ShellHeader shell={shell} />}
 
       {agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
 
@@ -917,14 +929,19 @@ export default function App() {
           : { gridArea: 'content' }}
       >
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
-        {relayCrewWindow && <RelayReconnectingView active={relayRetrying} />}
+        {/* Mounted for the page's life in a relay Crew window, so its live
+            region exists before the drop; the host view joins it on a drop. */}
+        {(relayCrewWindow || offlineCoverKind === 'host') && <RelayReconnectingView cover={offlineCoverKind} />}
         {/* `outline-hidden`: main is a programmatic focus target (the skip
             link, and focus mode's hand-off when the chrome hides), not a
             control, so it opts out of the global :focus-visible ring the way
             the tabIndex={-1} page headings do. Inert while the reconnecting
             view covers it, so focus and keystrokes cannot reach a composer
             the user cannot see. */}
-        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(relayRetrying)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+          {/* Inert does not reach what main portals out (the guide pill, a
+              link preview, a page's Modal): take those off screen with it. */}
+          <OffScreenOverlayScope offScreen={contentCovered}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands
@@ -971,6 +988,7 @@ export default function App() {
           </GuideProvider>
           </MobileRosterBarContext.Provider>
           </MobileNavRailContext.Provider>
+          </OffScreenOverlayScope>
         </main>
         {/* App-wide docked terminal panel — renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders
@@ -978,7 +996,7 @@ export default function App() {
         {terminalEnabled && !terminalPoppedOut && (
           // Inert under the reconnecting view like <main>. A maximized panel
           // (z-[51]) paints above that view's z-40, so it is left alone.
-          <div className="contents" {...hiddenChromeProps(relayRetrying && !terminalFullscreen)}>
+          <div className="contents" {...hiddenChromeProps(contentCovered && !terminalFullscreen)}>
             <BottomTerminalPanel />
           </div>
         )}

@@ -546,7 +546,7 @@ class TestTheActionHeaderIsRedacted:
         keyed by ``window_key`` (pid + window id), which is unchanged.
         """
         return AppRef(
-            name=f"Notes key={FAKE_CREDENTIAL_FIXTURE}",
+            name=f"Notes aws_secret_access_key={FAKE_CREDENTIAL_FIXTURE}",
             pid=FAKE_FILES_APP.pid,
             bundle_id=FAKE_FILES_APP.bundle_id,
             window_id=FAKE_FILES_APP.window_id,

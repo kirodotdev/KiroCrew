@@ -36,6 +36,7 @@ from kiro_crew.history import (
     TranscriptWithheld,
     is_incognito_transcript,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _export_bytes(resp) -> bytes:
@@ -335,13 +336,14 @@ def test_the_slug_comes_from_the_redacted_title():
     that the slug is built from that copy and not from a raw one."""
     from kiro_crew.security import redact_credentials
 
-    raw = "debug ghp_0123456789abcdefghijklmnopqrstuvwxyz now"
+    token = github_classic(seed=149)
+    raw = f"debug {token} now"
     redacted, _ = redact_credentials(raw)
     assert redacted != raw, "the fixture must actually be redactable"
 
     name = se.export_filename(redacted)
-    assert "ghp-0123456789abcdefghijklmnopqrstuvwxyz" not in name
-    assert "0123456789abcdefghijklmnopqrstuvwxyz" not in name
+    assert token.replace("_", "-") not in name
+    assert token[4:] not in name
 
 
 def test_the_filename_carries_the_slug_stamp_and_suffix():
@@ -803,7 +805,7 @@ async def test_an_export_carries_layer_b_on_explicit_opt_in(monkeypatch):
         lambda sid: {"sid": sid, "envelope": {}, "events": "{}"} if sid else None,
     )
     # The sensitive payload is available only to the dashboard operator.
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     # Standing permission ON...
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
@@ -834,7 +836,7 @@ async def test_an_export_withholds_layer_b_for_a_non_operator_caller(monkeypatch
         lambda sid: {"sid": sid, "envelope": {}, "events": "{}"} if sid else None,
     )
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: False)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: False)
 
     slot = _slot(MSGS, app="test-app")
     state = _state(MSGS, slots={"slot-1": slot})
@@ -976,7 +978,7 @@ def test_the_free_text_provenance_fields_are_redacted():
     title."""
     from kiro_crew.security import redact_credentials
 
-    raw = "/home/me/ghp_0123456789abcdefghijklmnopqrstuvwxyz/checkout"
+    raw = f"/home/me/{github_classic(seed=150)}/checkout"
     assert redact_credentials(raw)[0] != raw, "the fixture must actually be redactable"
 
     source = build_source_record(project=raw, workspace=raw)
@@ -1126,7 +1128,7 @@ async def test_an_export_streams_layer_b_from_its_snapshot_and_removes_it(monkey
         "_read_layer_b",
         lambda sid: {"sid": sid, "envelope": {}, "events": st.LayerBEvents(snap)} if sid else None,
     )
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
     slot = _slot(MSGS)
@@ -1337,7 +1339,7 @@ async def test_a_staging_failure_is_an_audited_coded_500_and_releases_the_snapsh
         "_read_layer_b",
         lambda sid: {"sid": sid, "envelope": {}, "events": st.LayerBEvents(snap)} if sid else None,
     )
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
     def _full(_bundle):
@@ -1450,7 +1452,7 @@ async def test_the_markdown_export_never_reads_layer_b(monkeypatch):
 
     monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *_a, **_k: "a-real-sid")
     monkeypatch.setattr(st, "_read_layer_b", _spy)
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
     slot = _slot(MSGS)

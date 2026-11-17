@@ -5,6 +5,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { hastTableToCsv, hastTableToMarkdown } from '../../utils/tableClipboard'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { FOCUSABLE } from '../../hooks/useDialogFocusTrap'
 import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { loadChatConfig, saveChatConfig } from '../../pages/chat/ChatSettings'
@@ -80,6 +81,25 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
     attachTable(el)
   }, [attachTable])
   const columns = useMarkdownTableColumns(tableRef)
+  // A table wider than its column hides columns past the edge. A mouse or a
+  // finger scrolls it; a keyboard needs something to focus first. On a desktop
+  // the column grips are that stop (moving along them brings each column into
+  // view), and a link in a cell is one too. With neither -- a touch screen
+  // has no grips -- the scroller itself becomes the stop, with a name, so the
+  // arrow keys scroll it. Never both: a second stop would cost every reader a
+  // Tab press per wide table.
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const setScroller = useCallback((el: HTMLDivElement | null) => {
+    scrollerRef.current = el
+    attachScroller(el)
+  }, [attachScroller])
+  const clipped = edges.left || edges.right
+  const [keyboardStop, setKeyboardStop] = useState(false)
+  // Re-read whenever what sits inside the scroller can change: the streamed
+  // rows (`children`) and the grips, which arrive after layout.
+  useEffect(() => {
+    setKeyboardStop(clipped && scrollerRef.current?.querySelector(FOCUSABLE) == null)
+  }, [clipped, children, columns.grips])
   // Off by default: a transcript table sits in the reading column like the
   // prose around it, and widens into the pane only when the reader asks. The
   // choice is one chat setting every table follows. A press the storage
@@ -150,10 +170,14 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
           unit test, exactly as ThinkingBlock mirrors its fade with
           `data-clipped`. */}
       <div
-        ref={attachScroller}
+        ref={setScroller}
         data-testid="table-scroller"
         data-overflow={edges.left && edges.right ? 'both' : edges.left ? 'left' : edges.right ? 'right' : ''}
         className="relative overflow-x-auto"
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the fix (see `keyboardStop` above): a scroller that hides columns and holds nothing focusable cannot be reached by keyboard outside Chromium, and axe's scrollable-region-focusable asks for the explicit stop.
+        tabIndex={keyboardStop ? 0 : undefined}
+        role={keyboardStop ? 'region' : undefined}
+        aria-label={keyboardStop ? i18nT('components.markdownRenderer.table_region') : undefined}
       ><table {...sp(node)} ref={setTable} style={columns.tableStyle} className={columns.resized
         // A narrowed fixed-layout column clips its content instead of painting
         // it over the neighbour; a header label ellipsizes (it never wraps).

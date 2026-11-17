@@ -27,6 +27,7 @@ from kiro_crew.memory_provider.contract import (
     NewItem,
     ProviderUnavailable,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 pytestmark = pytest.mark.xdist_group("memory_provider")
 
@@ -575,7 +576,7 @@ def test_a_consolidation_sub_slice_is_formatted_as_it_stands(served, monkeypatch
     assert answer is refused and seen == [prestripped]
 
 
-PLANTED = "ghp_" + "Zx9" * 12
+PLANTED = github_classic(seed=12)
 
 
 def test_model_written_memory_reaches_a_provider_with_secrets_redacted(served) -> None:

@@ -1,7 +1,8 @@
 """Which agent an app-owned dashboard slot runs as: whether the app's binding applies, whether
 the turn's backend may run the app's own agent, retiring and recovering the app agent's
-session, and the except arm for an app agent that is not loaded
-(``_on_app_agent_not_loaded``)."""
+session, the except arm for an app agent that is not loaded
+(``_on_app_agent_not_loaded``), and the refusal of an app's session that would run as a
+Bot (``app_session_selects_bot``, ``_refuse_app_bot_turn``)."""
 
 from __future__ import annotations
 
@@ -10,6 +11,12 @@ import functools
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities
+from kiro_crew.dashboard.chat_utils import APP_AGENT_REFUSED_KIND
+from kiro_crew.dashboard.slot_ownership import (
+    BOT_IDENTITY_DENIED,
+    _record_isolation_denial,
+    selects_bot_identity,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -28,6 +35,60 @@ if TYPE_CHECKING:
         subprocess_executor,
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+
+#: The row a turn ends on when an app's session would run as a Bot.
+APP_BOT_TURN_REFUSAL = (
+    "This session belongs to an app, and an app's session cannot run as a Bot. "
+    "Start a new session on one of the app's own agents; a template that shares a "
+    'Bot\'s name is picked with agent_kind "template".'
+)
+
+
+def app_session_selects_bot(slot: "_ChatSlot", bindings: "ResolvedBindings | None") -> bool:
+    """Whether a turn on app-owned *slot* would run as a Bot.
+
+    The owner approves the paths an app may call (``permissions.api``), never a
+    Bot: owning a session gives an app no claim on a Bot's memory store or on
+    its chat, with the Permissions that chat takes. So an app's session never
+    runs on what is a Bot's own (``slot_ownership.selects_bot_identity``),
+    whether the Bot's name is only stamped on the slot (no execution record yet)
+    or an execution record already names the Bot or runs on its store. The same
+    rule ``apps.cron_sdk`` and ``apps.spawn_sdk`` hold: an app does not reach a
+    Bot by naming it. A session that is not an app's is never judged here.
+    """
+    return bool(getattr(slot, "_app", "")) and selects_bot_identity(bindings)
+
+
+def _refuse_app_bot_turn(slot: "_ChatSlot", bindings: "ResolvedBindings | None") -> bool:
+    """End the turn on app-owned *slot* when it would run as a Bot; True when refused.
+
+    The caller returns before it attaches a memory store or writes an execution
+    record, so a refused turn binds nothing of the Bot's to the app's session.
+    """
+    if not app_session_selects_bot(slot, bindings):
+        return False
+    # Says why, since the person may have made the pick themselves: the owner's
+    # own switch on an app's tab is accepted by the route and ends here.
+    logger.warning(
+        "refusing the turn on slot %s: the session belongs to app %r and its agent %r "
+        "selects a Bot's own memory store or chat (%s); an app's session never runs as "
+        "a Bot, whoever picked the agent",
+        slot.key,
+        slot._app,
+        slot.agent,
+        (
+            "the session's execution record names it"
+            if getattr(bindings, "execution_context", None) is not None
+            else "the name is stamped on the slot, with no execution record yet"
+        ),
+    )
+    _record_isolation_denial(
+        slot._app, "chat_runner.turn_admission", f"slot={slot.key}", BOT_IDENTITY_DENIED
+    )
+    # shortcut: English only; give it a gateway-notice token when an app can be
+    # granted a Bot and this row starts naming the missing grant.
+    slot.append("error", APP_BOT_TURN_REFUSAL, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})
+    return True
 
 
 def app_agent_binding_applies(slot: "_ChatSlot") -> bool:

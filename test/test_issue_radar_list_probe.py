@@ -24,14 +24,13 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
-import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
@@ -130,9 +129,17 @@ class TestProbeOpenList(unittest.TestCase):
 
 
 class TestListSnapshot(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+        self.root = self._tmp_path
 
     def test_rows_probe_and_age_come_from_one_read(self):
         probe = {"total_count": 7, "top_updated_at": "2026-07-26T10:00:00Z"}
@@ -507,9 +514,17 @@ class TestProbeCoalescing(unittest.TestCase):
 class _HandlerCase(unittest.TestCase):
     """Shared scaffolding for the route-level tests."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+        self.root = self._tmp_path
         _clear_probe_state()
         self.addCleanup(_clear_probe_state)
         # Every handler gates on the repo being connected; the data root is

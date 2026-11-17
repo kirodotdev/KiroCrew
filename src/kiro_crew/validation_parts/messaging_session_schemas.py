@@ -422,6 +422,10 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # ``work_item`` (wave 4): with ``crew`` only, the caller's own item the crew
         # session is born bound to. The gateway refuses it without ``crew``.
         FieldSpec("work_item", str, required=False, max_len=16),
+        # ``requires`` (rfc-conductor-remote-dispatch.md §2b): with ``crew`` or a
+        # placed ``work_item`` only, the tags and logins a crew must advertise. The
+        # gateway checks its shape (``remote_placement.parse_requires``).
+        FieldSpec("requires", dict, required=False),
         # The new session's first turn, delivered in the same call so the caller
         # never has to send to a key it has not read back yet. Bounded exactly as
         # ``session_send.message`` is; the route repeats that bar before creating.
@@ -674,6 +678,11 @@ SESSION_STATUS_SCHEMA = ToolSchema(
     fields=[],
 )
 
+CREW_LIST_SCHEMA = ToolSchema(
+    tool_name="crew_list",
+    fields=[],
+)
+
 SESSION_ADOPT_SCHEMA = ToolSchema(
     tool_name="session_adopt",
     fields=[
@@ -741,5 +750,13 @@ SESSION_QUEUE_SCHEMA = ToolSchema(
             max_len=QUEUE_ENTRY_ID_MAX_CHARS,
         ),
         FieldSpec("position", int, required=False, min_val=0, max_val=10_000),
+    ],
+)
+
+SESSION_RUN_QUEUED_SCHEMA = ToolSchema(
+    tool_name="session_run_queued",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("queue_id", str, required=True, max_len=QUEUE_ENTRY_ID_MAX_CHARS),
     ],
 )

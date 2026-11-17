@@ -66,6 +66,7 @@ from kiro_crew.agent import (  # noqa: F401
     _spec_path_is_safe,
     agents_spec_lock,
     clear_model_pin,
+    dashboard_author_ownership_digest,
     emission_eligible_mcp_servers,
     get_shipped_tools,
     install_agent,
@@ -227,7 +228,6 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _eager_copy_mate_config,
     _mark_first_greeting_owed,
     _refresh_session_defaults,
-    _teammate_create_refusal,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agents_create,
 )
@@ -340,13 +340,12 @@ from kiro_crew.dashboard.handlers.models_kas_bundle import (
     api_models_kas_bundle,
     api_models_kas_crew_relay,
 )
-from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
-    owner_view_for_request,
-)
+from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request  # noqa: F401
 from kiro_crew.dashboard.kas_local_commands import local_harness_menu
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
     kiro_latched_ready,
+    providers_for_live_account,
     reject_if_kiro_unverified,
 )
 from kiro_crew.dashboard.state import DashboardState
@@ -381,6 +380,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import refuses  # noqa: F401
 from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
@@ -685,12 +685,11 @@ async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> lis
         return models
     advertised: list[str] = []
     catalog_ids = [m.get("model_name", "") for m in models]
-    # Newest session first. `active_providers()` walks a dict of live sessions, so
-    # forward order is creation order — and a session that started BEFORE a plan
-    # change still holds the advertised list it captured at its own session/new.
-    # Reading the oldest one would narrow the catalog to pre-downgrade
-    # entitlements, i.e. keep offering exactly the models this narrowing exists to
-    # hide. The most recently started session carries the most recent snapshot.
+    # Newest session first, none spawned under another account (its list is that
+    # account's). `active_providers()` is creation-ordered, and a session started BEFORE a
+    # plan change holds the list from its own session/new: reading the oldest would keep
+    # offering exactly the models this narrowing exists to hide.
+    providers = await providers_for_live_account(request, providers)
     for provider in reversed(providers):
         if capabilities_of(provider).model_id_namespace != model_registry_namespace(
             ACP_BACKEND_KIRO
@@ -1651,17 +1650,17 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # with `app == ""` and would have sailed through, which is the same
     # caller-class hole that keeps reappearing when this question is hand-rolled
     # per class instead of delegated to the one predicate that already answers
-    # it. `is_owner_dashboard_request` is what `_require_owner` resolves to for
-    # the mutating agents routes, so the read and write sides now agree
-    # on who the owner is.
+    # it. Masking asks `is_host_owner_dashboard_request`, the machine-owner half of
+    # the `is_owner_dashboard_request` gate the mutating agents routes use, so a
+    # Shared Crew teammate who may write still reads masked.
     #
     # Fails CLOSED -- treated as NOT the owner, so masked -- when the app carries
     # no state to resolve an owner against. The predicate subscripts
     # `app["state"]`, and for a disclosure control "unknown caller" must mean
     # "mask", not "show".
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    redact = request.app.get("state") is None or not is_owner_dashboard_request(request)
+    redact = request.app.get("state") is None or not is_host_owner_dashboard_request(request)
     state: DashboardState | None = request.app.get("state")
 
     # A legacy built-in binding (``builtin``, no member id) is listed once its DM

@@ -63,6 +63,7 @@ from collections.abc import Iterable
 
 from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_GOOSE,
@@ -70,7 +71,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS
 
 #: Joins a backend to the tool name its frame stated. Outside the characters a KAS
 #: ``toolId`` may carry, so the two id spaces cannot meet.
@@ -218,6 +219,51 @@ def mimocode_spelling(name: str) -> str:
     return _mimocode_spelled(name, _MIMOCODE_UNSAFE_NAME_CHARS)
 
 
+#: kiro-cli tool name -> Google Antigravity's canonical built-in tools.
+#:
+#: The standalone ACP runtime states a native non-execution tool name as
+#: ``Run <name>?`` in the first ``tool_call`` title. The parser unwraps that
+#: form; the kind fallback in :func:`qualified_harness_tool_id` remains the
+#: conservative answer when a frame supplies no usable exact name.
+ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("run_command", "shell"),
+    "fs_read": (
+        "client_view_file",
+        "view_file",
+        "read_file",
+        "list_directory",
+        "list_dir",
+    ),
+    "fs_write": (
+        "client_create_file",
+        "client_edit_file",
+        "write_file",
+        "write_to_file",
+        "create_file",
+        "edit_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+    ),
+    "grep": ("grep_search",),
+    "glob": ("find_by_name", "find_file", "search_directory"),
+    "web_fetch": ("read_url_content",),
+    "web_search": ("search_web",),
+    # ``invoke_subagent`` is the name a signed-in 1.4.4 turn stated
+    # (``test/fixtures/acp_frames/antigravity/turn-live-refused.jsonl``). The gate
+    # refuses it (``antigravity_call_is_unverifiable``); the row lets a rule written
+    # for ``use_subagent`` name it too.
+    "use_subagent": ("start_subagent", "invoke_subagent"),
+}
+
+#: ACP kinds Antigravity uses when its first tool frame carries no exact name.
+ANTIGRAVITY_TOOL_ID_BY_KIND: dict[str, str] = {
+    "execute": "run_command",
+    "edit": "edit_file",
+    "read": "view_file",
+    "search": "search_directory",
+    "fetch": "read_url_content",
+}
+
 #: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
 #: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
 #: built-in that does the same job. It names that built-in on a Side Chat
@@ -252,6 +298,7 @@ GOOSE_READ_ONLY_BUILTINS: dict[tuple[str, str], str] = {
 
 #: The backends whose permission event carries a qualified harness tool id.
 HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
+    ACP_BACKEND_ANTIGRAVITY: ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_GOOSE: GOOSE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_OPENCODE: OPENCODE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_STRANDS: STRANDS_TOOL_IDS_BY_KIRO_TOOL,
@@ -284,6 +331,21 @@ HARNESS_UNASKED_TOOL_IDS: dict[str, frozenset[str]] = {
             "invalid",
             "actor",
             "skill_search",
+        }
+    ),
+    # Antigravity 1.4.4 runs its file reads with no permission request in the
+    # ``default`` mode Crew writes: every ``view_file`` of the signed-in captures
+    # (``test/fixtures/acp_frames/antigravity/turn-live-*.jsonl``) completed unasked
+    # under the title ``Running view_file``. The row is the read-only built-ins of
+    # ``ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL`` (``fs_read``, ``grep``, ``glob``) and
+    # nothing that writes, fetches or starts a sub-agent. The tripwire is fail-closed:
+    # any other call that completes unasked, a read whose name was never recorded
+    # included, stops the session after it ran.
+    ACP_BACKEND_ANTIGRAVITY: frozenset(
+        {
+            *ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL["fs_read"],
+            *ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL["grep"],
+            *ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL["glob"],
         }
     ),
 }
@@ -333,8 +395,7 @@ def mimocode_actor_asks_nothing(params: object) -> bool:
 HARNESS_TOOL_MATCH_VOCABULARY: frozenset[str] = frozenset(
     tool_id
     for backend, table in HARNESS_TOOL_TABLES.items()
-    if backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
-    or backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX)
+    if backend in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS
     for ids in table.values()
     for tool_id in ids
 )
@@ -373,6 +434,28 @@ def _opencode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str
     return list(dict.fromkeys(splits))
 
 
+def opencode_fused_mcp_tool(title: str, kind: str, server: str) -> str:
+    """The tool half of opencode's fused ``<server>_<tool>`` *title* for *server*, or "".
+
+    Read only off a ``tool_call`` frame's own ``title`` (``AcpEvent.wire_title``), which
+    opencode writes as the tool's id (``kirocrew-core_wait``) while the call has no title
+    of its own. *kind* must be ``other``, the kind opencode gives every tool it has no
+    row for (an MCP tool among them); its built-ins whose later title is model text
+    (``read``, ``task``, ``webfetch``) get another kind. Only the one exact *server* is
+    tried, in opencode's spelling, and only when neither half holds a ``_``: the
+    title's one ``_`` is then the join, so no other server's tool fuses to the same
+    title (``kirocrew-core_x`` + ``wait`` is ``kirocrew-core_x_wait``, and names
+    nothing here). A tool half outside ``[A-Za-z0-9-]`` names nothing.
+    """
+    if kind != "other" or len(title) > MAX_HARNESS_TOOL_NAME_LEN:
+        return ""
+    spelled = _OPENCODE_UNSAFE_NAME_CHARS.sub("_", server)
+    if not spelled or "_" in spelled or title.count("_") != 1:
+        return ""
+    head, _, tool = title.partition("_")
+    return tool if head == spelled and tool and not _OPENCODE_UNSAFE_NAME_CHARS.search(tool) else ""
+
+
 def mimocode_rewrites_name(server: str) -> bool:
     """Whether MiMo Code writes *server* differently in a fused tool title.
 
@@ -406,13 +489,31 @@ def _mimocode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str
     return list(dict.fromkeys(splits))
 
 
-def qualified_harness_tool_id(backend: str, tool_name: str, mcp_servers: Iterable[str] = ()) -> str:
+def qualified_harness_tool_id(
+    backend: str,
+    tool_name: str,
+    mcp_servers: Iterable[str] = (),
+    *,
+    tool_kind: str = "",
+    mcp_server: str = "",
+    mcp_tool: str = "",
+) -> str:
     """``backend#tool_name`` for a backend with a table, else ``""``.
 
     On opencode a name that is a placed server's fused MCP tool becomes its
-    ``@server/tool`` split (see the module docstring).
+    ``@server/tool`` split (see the module docstring). On Antigravity an MCP call is
+    ``@server/tool`` from its trusted ``_meta.mcp`` pair: *mcp_tool* is the tool half,
+    and the frame's title (*tool_name*, ``probe_echo_probe``) fuses the server into it.
     """
-    if backend not in HARNESS_TOOL_TABLES or not tool_name:
+    if backend not in HARNESS_TOOL_TABLES:
+        return ""
+    if backend == ACP_BACKEND_ANTIGRAVITY and mcp_server and (mcp_tool or tool_name):
+        return f"{backend}{HARNESS_TOOL_ID_SEPARATOR}@{mcp_server}/{mcp_tool or tool_name}"
+    if backend == ACP_BACKEND_ANTIGRAVITY and (not tool_name or tool_kind == "execute"):
+        # An execute frame's title is the command line, so a one-token command
+        # (``ls``) would otherwise name the tool and miss every shell matcher.
+        tool_name = ANTIGRAVITY_TOOL_ID_BY_KIND.get(tool_kind, "")
+    if not tool_name:
         return ""
     if backend in ENVELOPE_NAMED_TOOL_BACKENDS:
         # A card's name is not owner-proven there; the ids come only from the gate
@@ -427,6 +528,34 @@ def qualified_harness_tool_id(backend: str, tool_name: str, mcp_servers: Iterabl
         if splits:
             tool_name = _MCP_SPLIT_SEPARATOR.join(splits)
     return f"{backend}{HARNESS_TOOL_ID_SEPARATOR}{tool_name}"
+
+
+def start_event_tool_id(
+    backend: str,
+    stated_name: str,
+    *,
+    tool_kind: str = "",
+    mcp_server: str = "",
+    mcp_tool: str = "",
+) -> str:
+    """The qualified id a ``tool_call`` event carries for its PostToolUse spec hooks.
+
+    Only a harness that runs calls with no permission request names the call this
+    early: codex runs most calls that way, and Antigravity runs its file reads that
+    way, so no permission event ever names those. Every other backend is named by its
+    permission request alone, and gets ``""``.
+    """
+    if backend == ACP_BACKEND_CODEX:
+        return qualified_harness_tool_id(ACP_BACKEND_CODEX, stated_name)
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        return qualified_harness_tool_id(
+            ACP_BACKEND_ANTIGRAVITY,
+            stated_name,
+            tool_kind=tool_kind,
+            mcp_server=mcp_server,
+            mcp_tool=mcp_tool,
+        )
+    return ""
 
 
 def split_harness_tool_id(tool_id: str) -> tuple[str, str] | None:
@@ -465,10 +594,11 @@ def harness_tool_match_names(tool_id: str) -> tuple[str, ...] | None:
             server, _, tool = split[1:].partition("/")
             forms += [split, f"mcp__{server}__{tool}"]
             fused.append(f"{_fused_server_spelling(backend, server)}_{tool}")
-        if backend in ENVELOPE_NAMED_TOOL_BACKENDS:
-            # The envelope proved an MCP server's tool: only its MCP forms name it.
-            # The fused spelling is opencode's, and on this harness ``web_fetch``
-            # fused from ``@web/fetch`` is not the built-in a ``web_fetch`` hook means.
+        if backend in ENVELOPE_NAMED_TOOL_BACKENDS or backend == ACP_BACKEND_ANTIGRAVITY:
+            # The envelope (or Antigravity's trusted ``_meta.mcp`` pair) proved an MCP
+            # server's tool: only its MCP forms name it. The fused spelling is
+            # opencode's, and here ``web_fetch`` fused from ``@web/fetch`` (or
+            # ``view_file`` from ``@view/file``) is not the built-in its hook means.
             return tuple(dict.fromkeys(forms))
         table = HARNESS_TOOL_TABLES[backend]
         native_tools = [f for f in dict.fromkeys(fused) if any(f in ids for ids in table.values())]

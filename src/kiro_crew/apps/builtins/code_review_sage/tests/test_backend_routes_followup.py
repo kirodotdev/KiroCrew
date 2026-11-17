@@ -7,11 +7,10 @@ live or unseedable run, and a returning user sees re-entry once a session exists
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 from sage_lib import store
 
 from kiro_crew.apps.builtins.code_review_sage.tests.backend_routes_helpers import (
@@ -70,8 +69,13 @@ class TestFollowupRoutes(unittest.IsolatedAsyncioTestCase):
     here is about refusing that outcome rather than degrading into it.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -88,7 +92,6 @@ class TestFollowupRoutes(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _record(self, sid="sid-1", change="GH-o-r-42"):
         (self.sessions_dir / f"{sid}.json").write_text("{}", encoding="utf-8")
@@ -256,8 +259,13 @@ class TestFollowupRunLiveAndReentry(unittest.IsolatedAsyncioTestCase):
     replaced, with nothing saying so.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -280,7 +288,6 @@ class TestFollowupRunLiveAndReentry(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run(self, **over):
         run = {"run_id": "run1", "status": "done"}

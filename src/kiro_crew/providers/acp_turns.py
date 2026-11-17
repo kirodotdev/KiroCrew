@@ -385,7 +385,7 @@ def agent_turn_pending(self: AcpProvider) -> bool:
     """Whether a turn the agent started is waiting to be read by :func:`stream_unsolicited`."""
     client = self._client
     if isinstance(client, AcpClient):
-        return client._agent_turn_pending()
+        return client.has_pending_agent_turn()
     from kiro_crew.acp.session_provider import AcpSessionProvider
 
     return isinstance(client, AcpSessionProvider) and client.agent_turn_pending()

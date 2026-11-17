@@ -45,6 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.constants import (
     MARKER_CLOSERS,
     OPTIONS_RE_TRAILER,
@@ -57,7 +58,6 @@ from kiro_crew.messaging.tables import render_tables, render_tables_with_metadat
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -174,6 +174,7 @@ def chunk_text(text: str, max_chars: int) -> list[str]:
     return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def chunk_for_transport(
     text: str,
     capabilities: TransportCapabilities,
@@ -435,12 +436,22 @@ def _default_redactor(text: str) -> str:
     dependencies -- the same module ``messaging.driver`` imports directly for its
     own stream redaction -- so this adds no import-time cost and nothing that
     could touch an event loop.
+
+    Text the credential plan leaves as written is returned after that one plan:
+    the URL pass replaces only values the same plan reads inside a URL, so on such
+    text it is a no-op and the pair returns the text unchanged. Every display
+    reading of a clean message is such text, so a message costs one plan per
+    reading rather than two. Any other text goes through the pair.
     """
-    out, _ = redact_exfiltration_urls(text or "")
+    text = text or ""
+    if redact_credentials(text)[0] == text:
+        return text
+    out, _ = redact_exfiltration_urls(text)
     out, _ = redact_credentials(out)
     return out
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def display_safe(text: str) -> str:
     """Redact *text* against what the platform will SHOW, then defang mentions.
 
@@ -516,81 +527,45 @@ def credential_redaction_notice(count: int) -> str:
     )
 
 
-def redaction_notice(cred_count: int, url_count: int) -> str:
-    """The notice a channel sends after delivering text EITHER redactor rewrote.
+def redaction_notice(cred_count: int, url_count: int = 0) -> str:
+    """The notice a channel sends after delivering text the redactors rewrote.
 
-    Every channel delivery surface runs two body rewriters over the text it
-    ships -- ``security.redact_exfiltration_urls`` then
-    ``security.redact_credentials`` -- so the placeholder a reader sees can come
-    from either. ``cred_count`` is the number of ``CREDENTIAL_REDACTION_TAGS``
-    placeholders in the delivered text; ``url_count`` is the number of
-    ``EXFILTRATION_REDACTION_TAG_PREFIX`` placeholders (that tag interpolates the
-    redacted domain, so callers count it by prefix, never by equality). Like
-    :func:`credential_redaction_notice`, this carries NO secret bytes and no
-    redacted URL: only the counts are used, so the domain the tag names never
-    reaches the sentence.
+    Every channel delivery surface runs ``security.redact_exfiltration_urls`` then
+    ``security.redact_credentials`` over the text it ships. Both mask credential
+    VALUES only (inside a URL or not) and neither replaces a URL whole, so every
+    placeholder a reader sees is a credential tag. ``cred_count`` is the number of
+    ``CREDENTIAL_REDACTION_TAGS`` placeholders in the delivered text, and the
+    sentence is :func:`credential_redaction_notice`'s.
 
-    Worded BY KIND because the remedies differ: a credential needs the secret
-    re-entered where the command runs; a rewritten URL needs the original link
-    re-checked from a trusted source. Telling a reader whose URL was rewritten to
-    "supply the secret yourself" names a remedy that cannot help them, which is
-    the gap this closes. The credential-only sentence is delegated to
-    :func:`credential_redaction_notice` unchanged, so a surface that adopts this
-    builder ships byte-identical wording for the case it already covered.
+    ``url_count`` is the second count :func:`count_redaction_tags` returns, which
+    is always 0; it stays in the signature for the surfaces that pass both counts
+    through, and a non-zero one is a caller bug.
 
     Same delivery contract as the credential notice: plain text, no markup, no
     emoji, one string for every channel, sent as its own message BELOW the
-    answer. At least one count must be non-zero -- the caller gates on that, and
-    a zero/zero call is a caller bug rather than a silent empty message.
+    answer. The credential count must be non-zero -- the caller gates on that,
+    and a zero call is a caller bug rather than a silent empty message.
     """
-    if cred_count < 0 or url_count < 0 or not (cred_count or url_count):
-        raise ValueError("redaction_notice needs at least one placeholder to describe")
-    if not url_count:
-        return credential_redaction_notice(cred_count)
-    subjects: list[str] = []
-    if cred_count:
-        subjects.append("a credential" if cred_count == 1 else f"{cred_count} credentials")
-    subjects.append("a suspicious URL" if url_count == 1 else f"{url_count} suspicious URLs")
-    subject = " and ".join(subjects)
-    subject = subject[0].upper() + subject[1:]
-    verb = "was" if (cred_count + url_count) == 1 else "were"
-    if cred_count:
-        remedy = (
-            "supply the secret yourself on the machine where you run it, and "
-            "re-check any redacted URL against a trusted source."
-        )
-    else:
-        remedy = "re-check the original URL against a trusted source before using it."
-    return (
-        f"Security notice: {subject} in the message above {verb} replaced with a "
-        f"redaction placeholder. Any command or link shown will not work if you "
-        f"paste it as-is; {remedy}"
-    )
+    if cred_count < 1 or url_count:
+        raise ValueError("redaction_notice needs at least one credential placeholder to describe")
+    return credential_redaction_notice(cred_count)
 
 
 def count_redaction_tags(text: str) -> tuple[int, int]:
-    """Count both redaction placeholder kinds in delivered text.
+    """Count the redaction placeholders in delivered text.
 
-    Returns ``(cred_count, url_count)`` — the two arguments
-    :func:`redaction_notice` takes, in its order. Every delivery surface that
-    posts a notice needs the same two tallies over the text that actually
-    shipped, and each kind counts differently: a credential tag is a CLOSED set
-    of constant strings (``CREDENTIAL_REDACTION_TAGS``), matched exactly and
-    summed so an encoded-credential-only answer is not missed, while the URL
-    tag interpolates the redacted domain and so has no constant form — it is
-    counted by ``EXFILTRATION_REDACTION_TAG_PREFIX`` prefix, never by equality.
+    Returns ``(cred_count, url_count)`` -- the two arguments
+    :func:`redaction_notice` takes, in its order. A credential tag is a CLOSED
+    set of constant strings (``CREDENTIAL_REDACTION_TAGS``), matched exactly and
+    summed so an encoded-credential-only answer is not missed. ``url_count`` is
+    always 0: no redactor replaces a URL whole, and a credential inside a URL is
+    counted as a credential.
 
-    One shared counter exists so a surface cannot adopt half the tally: a
-    site that counts credentials but forgets the URL prefix (or vice versa)
-    posts a notice worded for the wrong remedy, which is the gap the two-kind
-    notice closes. Count from the DELIVERED text rather than a redactor's
-    warnings list: chunked surfaces redact on the way out, so re-redacting the
-    assembled answer reports nothing while the placeholders are plainly
-    visible in what shipped.
+    Count from the DELIVERED text rather than a redactor's warnings list:
+    chunked surfaces redact on the way out, so re-redacting the assembled answer
+    reports nothing while the placeholders are plainly visible in what shipped.
     """
-    cred_count = sum(text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    url_count = text.count(EXFILTRATION_REDACTION_TAG_PREFIX)
-    return cred_count, url_count
+    return sum(text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS), 0
 
 
 def repaired_after_a_sent_tail(

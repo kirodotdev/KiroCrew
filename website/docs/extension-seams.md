@@ -433,7 +433,8 @@ theme, including the first render for the initially-active theme, because the
 "previous theme" ref starts empty. Keep it idempotent and cheap. `shell/branding.ts`
 wraps the call in a `try`/`catch` so an edition-owned effect that throws cannot take
 down the shell, but it still logs. `favicon` is handled the same generic way: the
-core has no per-theme favicon and falls back to `/logo.png`.
+core has no per-theme favicon and falls back to a tile of `dashboard.instance_label`'s
+initial on the theme accent when that label is set, else to `/logo.png`.
 
 **Readout-capsule segments.** `registerCapsuleSegment([{ id, order?, component, hideOnMobile? }])`
 mounts a status segment INSIDE the header's readout capsule, sharing its border,

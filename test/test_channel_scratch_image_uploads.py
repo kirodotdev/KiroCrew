@@ -177,6 +177,8 @@ class _WhatsAppTransport:
     async def send_message(self, jid: str, content: str) -> str:
         return "ID1"
 
+    send_rendered = send_message
+
     async def send_image(self, jid: str, data: bytes, caption: str) -> str:
         self.images.append(data)
         return "IMG1"

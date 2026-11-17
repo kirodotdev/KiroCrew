@@ -5,15 +5,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from redaction_structured_cases import aws_secret
 
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.webex.client import WEBEX_MAX_TEXT
 from kiro_crew.webex.renderer import _STATUS_EDIT_BUDGET, WebexRenderer
 from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
-#: A synthetic 40-character AWS secret, which the credential plan redacts, and the
-#: same secret split by emphasis markers that Webex renders away.
-_TOKEN = aws_secret(seed=44)
+#: A synthetic Slack bot token, which the credential plan redacts, and the same token
+#: split by emphasis markers that Webex renders away. (No ``_`` in it, which the
+#: display form drops as markup; a bare 40-character run stays visible by design.)
+_TOKEN = SAMPLE_SLACK_BOT_TOKEN
 _SPLIT_TOKEN = _TOKEN[:4] + "**" + _TOKEN[4:8] + "**" + _TOKEN[8:]
 
 #: A last-status time every throttle window has passed. Not ``0.0``: the clock is

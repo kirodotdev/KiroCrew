@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -151,7 +152,11 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # denial drops nothing, and the steer is reported consumed when the turn ends
 # with ``end_turn``; a cancelled or failed turn queues it. claude runs one adapter per
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
-# advertised it.
+# advertised it. A LIVE capture against claude-agent-acp 0.94.0, driven through
+# ``AcpClient``: ``test/fixtures/acp_frames/claude/steering-live.jsonl``. A steer sent
+# while a Bash call ran was held until the call completed, then sent and answered
+# ``injected``; the model's next request carried the tool result and then the steered
+# text, and the turn ended ``end_turn``.
 #
 # pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.4.0, driven through
 # Crew's own ``AcpClient``: ``test/fixtures/acp_frames/pi/steering-live.jsonl``. pi-acp
@@ -811,6 +816,10 @@ ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS = frozenset({ACP_BACKEND_CLAUDE})
 #   and its ACP reference says a command it does not list is sent to the model as
 #   an ordinary prompt. ``clear`` is also outside its prompt-command allowlist, so a
 #   ``/clear`` that reached the client would be refused rather than sent.
+# - antigravity: its prompt-command allowlist
+#   (``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`` in ``agent_sdk.backends_routing``)
+#   admits only ``plan`` and ``usage``, so a ``/clear`` that reached the client
+#   would be refused rather than sent.
 #
 # goose is NOT a member: its prompt handler runs ``/clear`` itself
 # (``CompactionOperation.run_command`` returns an empty conversation), so it keeps
@@ -839,6 +848,7 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         # strands sends every prompt to its model as text in project mode, ``/clear``
         # included, so the dashboard answers it.
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -862,10 +872,10 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 #
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,
-# mimocode, pi, deepseek, goose and copilot are not members: each runs some commands
-# from its own prompt handler, so each has an ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
-# row and the dashboard answers its other commands. A harness added later stays out
-# until its command handling is checked.
+# mimocode, pi, deepseek, goose, copilot and antigravity are not members: each runs
+# some commands from its own prompt handler, so each has an
+# ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS`` row and the dashboard answers its other
+# commands. A harness added later stays out until its command handling is checked.
 ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_STRANDS})
 
 # Harness id -> the harness commands (``_SLASH_COMMANDS`` names) that the
@@ -899,6 +909,8 @@ ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_ST
 # - copilot: Crew lets a prompt start only with a command in
 #   ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`` and refuses the rest before the wire. Of
 #   Crew's harness commands ``/compact``, ``/context`` and ``/usage`` are in it.
+# - antigravity: the same allowlist admits only ``plan`` and ``usage``, and of Crew's
+#   harness commands only ``/usage`` is in it.
 #
 # kiro-cli has no row, because it runs every command over its own command channel.
 # claude has no row, because it owns its command set
@@ -914,6 +926,7 @@ ACP_BACKEND_PROMPT_HANDLER_COMMANDS: Mapping[str, frozenset[str]] = MappingProxy
         ACP_BACKEND_DEEPSEEK: frozenset({"/compact"}),
         ACP_BACKEND_GOOSE: frozenset({"/clear", "/compact"}),
         ACP_BACKEND_COPILOT: frozenset({"/compact", "/context", "/usage"}),
+        ACP_BACKEND_ANTIGRAVITY: frozenset({"/usage"}),
     }
 )
 
@@ -972,13 +985,15 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
-# turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
+# turn reporting none billed none. §6 establishes no count for pi; deepseek reports occupancy.
 # Live captures, one per member: kiro-cli 2.32.0 bills each turn as a ``_kiro.dev/metadata``
 # meteringUsage unit=credit entry (acp_frames/kiro/compaction-live.jsonl); KAS 0.66.70 as a
 # turn_completion promptTurnSummaries unit=credit entry (acp_frames/kas/turn-usage-live.jsonl);
-# claude, opencode and goose as token counts on the ``session/prompt`` result's ``usage``
+# claude, opencode, goose and codex as token counts on the ``session/prompt`` result's ``usage``
 # (acp_frames/claude/session.jsonl, acp_frames/opencode/session-live.jsonl,
-# acp_frames/goose/turn-live.jsonl).
+# acp_frames/goose/turn-live.jsonl, acp_frames/codex/session-live.jsonl). codex-acp 2.3.0
+# answers ``usage: null`` on a turn the provider refused (acp_frames/codex/turn-usage-null-live.jsonl,
+# an HTTP 503), which ``parse_prompt_token_usage`` reads as no counts.
 ACP_BACKENDS_REPORT_USAGE = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -986,6 +1001,7 @@ ACP_BACKENDS_REPORT_USAGE = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_CODEX,
     }
 )
 

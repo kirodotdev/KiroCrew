@@ -851,6 +851,18 @@ def main() -> None:
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
+        from kiro_crew.cli_chat_headless import EXIT_USAGE as _headless_usage
+        from kiro_crew.cli_chat_headless import main as _headless_main
+        from kiro_crew.cli_chat_headless import (
+            refuse_headless_flags_without_headless as _headless_stray,
+        )
+
+        if getattr(args, "headless", False):
+            sys.exit(_headless_main(args))
+        stray = _headless_stray(args)
+        if stray:
+            print(f"Error: {stray} needs --headless", file=sys.stderr)
+            sys.exit(_headless_usage)
         _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
         # The gateway's status lines are plain print() calls. Off a terminal
@@ -1301,6 +1313,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LOG_FATAL_ERRNOS,
         _LOG_QUEUE_LISTENER,
         _LONG_LIVED_COMMANDS,
+        _OWN_STREAM_ATTR,
         _chat_console_filter,
         _CliLogQueueHandler,
         _ConsoleQueueHandler,
@@ -1308,9 +1321,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _fd_is_regular_file,
         _fd_targets_file,
         _FdTrackingRotatingFileHandler,
+        _forget_at_shutdown,
         _move_console_echo_off_loop,
+        _own_stream,
         _prune_older_boot_logs,
         _redirect_fds_to,
+        _release_own_streams,
         _rotate_boot_logs,
         _stop_console_queue_listener,
         _stop_file_log_listener,

@@ -16,6 +16,7 @@ import pytest
 from body_stream_helpers import JsonBodyRequest
 
 from kiro_crew.artifact_store import dashboard_package as dp
+from kiro_crew.security.redaction_structured.checks import base62_crc32
 
 
 def _install_roster(monkeypatch: pytest.MonkeyPatch, slugs: dict[str, str]) -> None:
@@ -1376,6 +1377,17 @@ def _agent_request(*, crew: str) -> Any:
     return req
 
 
+def _field_name_token() -> str:
+    """A checksummed GitHub classic token whose characters all fit a field name.
+
+    A token is read only with its checksum, and a field name admits only lowercase
+    letters, digits and ``_``, so the body is one of the bodies whose checksum is
+    lowercase too. Assembled at runtime so no source line holds a whole token.
+    """
+    body = "ylnkmkfjsa23hb7k52t5" + "fqkute8xcn"
+    return "ghp_" + body + base62_crc32(body)
+
+
 class TestOwnershipDoesNotDependOnLayoutValidity:
     """A STORED PACKAGE THE VALIDATOR REJECTS STILL HAS AN OWNER.
 
@@ -1389,7 +1401,7 @@ class TestOwnershipDoesNotDependOnLayoutValidity:
     #: Its `bound_to` is perfectly readable.
     STALE_BUT_OWNED = (
         '{"kind": "dashboard", "bound_to": "crewmate:atlas", '
-        '"model": {"types": {"ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": '
+        '"model": {"types": {"' + _field_name_token() + '": '
         '{"type": "text", "label": "L", "description": "d", '
         '"source": {"fold": "work", "path": "goal"}}}}, '
         '"view": {"html": "<p>x</p>"}, "theme": {"tokens": {}}}'
@@ -1544,7 +1556,7 @@ class TestAnUndeclaredBindingNameIsRedactedInTheRefusal:
     def test_an_undeclared_credential_shaped_binding_is_not_echoed(self) -> None:
         from kiro_crew.artifact_store import dashboard_package as dp
 
-        secret = "ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        secret = _field_name_token()
         package = {
             "kind": "dashboard",
             "bound_to": "crewmate:atlas",

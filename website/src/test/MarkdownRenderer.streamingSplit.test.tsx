@@ -67,7 +67,14 @@ function finalHtml(content: string): string {
  *  whole block also keeps the `\n` text nodes between its root-level blocks,
  *  which a piece boundary drops; whitespace between block boxes lays out to
  *  nothing, so it is removed from both sides. */
-const normalize = (html: string) => html.replace(/:r[0-9a-z]+:/g, ':r:').replace(/>\s+</g, '><')
+const normalize = (html: string) =>
+  html
+    .replace(/:r[0-9a-z]+:/g, ':r:')
+    .replace(/>\s+</g, '><')
+    // A streaming reply draws each web link as its text until its blocked-link
+    // records arrive, so an anchor is compared by its text alone.
+    .replace(/<a\b[^>]*>/g, '<span>')
+    .replace(/<\/a>/g, '</span>')
 
 describe('streaming paragraph split renders the same tree as the whole block', () => {
   for (const [name, content] of Object.entries(CORPUS)) {
@@ -79,15 +86,34 @@ describe('streaming paragraph split renders the same tree as the whole block', (
     })
   }
 
-  it('keeps a reply with a redaction record whole, so its card ids match the reloaded render', async () => {
+  it('a reply with a credential record renders the same once its stream ends as it does fresh', async () => {
+    // The lock tag keeps its ordinal and its card slot stays under the paragraph
+    // holding it, whether the reply streamed in pieces or mounted finished.
+    const content = 'Intro.\n\nThe key: [REDACTED: credential]\n\nAfter: [REDACTED: credential]'
+    const record = (ordinal: number) => ({ ordinal, rule: 'aws_secret_access_key', label: '', source: null, view_command: null, profile_command: null })
+    const records = [record(0), record(1)]
+    const { container, rerender, unmount } = render(<MarkdownRenderer content={content} streaming redactions={records} slotKey="s1" />)
+    await settle()
+    rerender(<MarkdownRenderer content={content} redactions={records} slotKey="s1" />)
+    const ended = normalize(container.innerHTML)
+    expect(container.querySelectorAll('[data-testid="credential-tag"]')).toHaveLength(2)
+    unmount()
+    const fresh = render(<MarkdownRenderer content={content} redactions={records} slotKey="s1" />)
+    expect(ended).toBe(normalize(fresh.container.innerHTML))
+    fresh.unmount()
+  })
+
+  it('keeps a reply with a blocked-link record whole, so its card ids match the reloaded render', async () => {
     // A redaction card id names the rendered block holding its chip; an allowed
     // host's card reopens by that id after the reply reloads unsplit.
-    const content = 'Intro.\n\nThe page: [REDACTED: suspicious URL to reviews.corp.example]\n\nAfter.'
-    const records = [{ domain: 'reviews.corp.example', rule: 'exfil_query_length', path: '/reviews', query_chars: 290, url: 'https://reviews.corp.example/reviews?filter=abc', url_withheld: null }]
+    const url = 'https://reviews.corp.example/reviews?filter=abc'
+    const content = `Intro.\n\nThe page: ${url}\n\nAfter.`
+    const records = [{ url, domain: 'reviews.corp.example', rule: 'exfil_query_length', query_chars: 290, withheld: null }]
     const { container, rerender, unmount } = render(<MarkdownRenderer content={content} streaming blockedLinks={records} slotKey="s1" />)
     await settle()
     rerender(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)
     const ended = normalize(container.innerHTML)
+    expect(container.querySelectorAll('[data-testid="blocked-link-chip"]')).toHaveLength(1)
     unmount()
     const fresh = render(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)
     expect(ended).toBe(normalize(fresh.container.innerHTML))

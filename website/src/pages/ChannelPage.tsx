@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import Modal from '../components/Modal'
-import { Hourglass, Ear, Check, X, Wrench, Radio, VolumeX, User, MessageSquare, Users, Zap, RotateCcw, Loader2 } from 'lucide-react'
+import { Hourglass, Ear, Check, Circle, X, Wrench, Radio, VolumeX, User, MessageSquare, Users, Zap, RotateCcw, Loader2 } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import type { RootState } from '../store'
@@ -133,7 +133,7 @@ const agentColor = (idx: number) => AGENT_COLORS[idx % AGENT_COLORS.length]
  */
 const STATE_BADGE: Record<string, { variant: 'ok' | 'err' | 'warn'; label: ReactNode }> = {
   pending: { variant: 'warn', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.channelPage.state_pending')}</> } },
-  working: { variant: 'ok', get label() { return <>● {i18nT('pages.channelPage.state_working')}</> } },
+  working: { variant: 'ok', get label() { return <><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} /> {i18nT('pages.channelPage.state_working')}</> } },
   listening: { variant: 'ok', get label() { return <><Ear className="lucide-inline" /> {i18nT('pages.channelPage.state_listening')}</> } },
   done: { variant: 'ok', get label() { return <><Check className="lucide-inline" /> {i18nT('pages.channelPage.state_done')}</> } },
   failed: { variant: 'err', get label() { return <><X className="lucide-inline" /> {i18nT('pages.channelPage.state_failed')}</> } },
@@ -1182,7 +1182,7 @@ export default function ChannelPage() {
             <div className="flex items-center gap-1.5 shrink-0">
               <Btn onClick={() => { setShowAgents(v => !v); if (isMobile) setThreadId(null) }}>
                 <Users className="lucide-inline" /> {i18nT('pages.channelPage.agent_2', { count: channel.agents.length })}
-                {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok">●</Badge>}
+                {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok"><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} aria-label={i18nT('pages.channelPage.state_working')} /></Badge>}
               </Btn>
               {/* `aria-disabled` plus an early return, NOT `disabled`: the dialog's focus trap
                   restores focus to this button on unmount, and its FOCUSABLE selector excludes
@@ -1257,7 +1257,7 @@ export default function ChannelPage() {
               ))}
               {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                 <div key={a.id + '-typing'} className="flex items-center gap-2 px-3 py-1.5 text-[13px] text-muted animate-pulse">
-                  <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
+                  <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : <Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} />}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
                 </div>
               ))}
             </div>
@@ -1293,7 +1293,7 @@ export default function ChannelPage() {
                     ))}
                     {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                       <div key={a.id + '-typing-t'} className="flex items-center gap-2 px-2 py-1 text-[13px] text-muted animate-pulse">
-                        <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
+                        <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : <Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} />}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
                       </div>
                     ))}
                   </div>

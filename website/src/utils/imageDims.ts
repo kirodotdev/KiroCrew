@@ -31,15 +31,17 @@ export interface ImageDims {
   h: number
 }
 
-// The one endpoint whose query parameters this cache understands. Scoping the
-// allowlist to it matters: `path` and `v` are OUR parameter names, so on a
+// The endpoints whose query parameters this cache understands: the image
+// bytes, and the range-capable stream a local video plays from (same `path`
+// and `v`, built by the same renderer). Scoping the allowlist to them matters:
+// `path` and `v` are OUR parameter names, so on a
 // third-party URL they carry no meaning to us and could carry anything —
 // an external image proxy taking `?path=<signed blob>` would otherwise have its
 // credential preserved by the very allowlist meant to strip credentials. Off
-// this endpoint the whole query goes.
-const FIRST_PARTY_IMAGE_ENDPOINT = '/api/file-raw'
+// these endpoints the whole query goes.
+const FIRST_PARTY_MEDIA_ENDPOINTS = new Set(['/api/file-raw', '/api/file-stream'])
 // Query parameters allowed to survive into a persisted cache key, and only on
-// the endpoint above. Everything else is dropped, because this key is written to
+// the endpoints above. Everything else is dropped, because this key is written to
 // localStorage and outlives the session that produced it.
 //
 // The chat transcript keys entries by an image's resolved URL, and a URL is a
@@ -66,7 +68,7 @@ export function cacheKeyFor(ref: string): string {
   const qIdx = withoutHash.indexOf('?')
   if (qIdx < 0) return withoutHash
   const base = withoutHash.slice(0, qIdx)
-  if (base !== FIRST_PARTY_IMAGE_ENDPOINT) return base
+  if (!FIRST_PARTY_MEDIA_ENDPOINTS.has(base)) return base
   // Parse rather than regex: `?a=1&path=x` and `?path=x` must yield the same
   // key for the same image regardless of parameter order.
   const params = new URLSearchParams(withoutHash.slice(qIdx + 1))
@@ -84,8 +86,9 @@ export function cacheKeyFor(ref: string): string {
 // (`/t/<bearer>/img.png`), or in userinfo (`https://user:pass@host/…`), and
 // nothing in the string says which parts are secret. So the persisted set is
 // restricted by provenance instead: only a reference the APP ITSELF constructed
-// is eligible, which means a relative one — a bare slug (the artifacts gallery)
-// or the `/api/file-raw?path=…` URL this module's own caller builds.
+// is eligible, which means a relative one — a bare slug (the artifacts gallery),
+// the `/api/file-raw?path=…` and `/api/file-stream?path=…` URLs the transcript
+// renderer builds, or a file card's `/api/outbox/<name>`.
 //
 // Anything absolute came from message content, which is untrusted, so it stays
 // MEMORY-ONLY: an external image still reserves its box for the rest of the

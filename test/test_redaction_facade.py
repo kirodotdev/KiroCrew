@@ -68,8 +68,8 @@ _SPELLS_THE_FACADE = re.compile(
 
 #: Names the test trees are known to patch, by the spelling they use: the alternation, the
 #: pre-filter literals and gate, the JWT branch scan, the bare-secret gates, the
-#: commit-permalink pattern, the macOS directory id, the token-parameter destination guard, the
-#: path label key and the redactor itself. The scan must find all of them, so a scanner that
+#: commit-permalink pattern, the token-parameter destination guard, the path label key and
+#: the redactor itself. The scan must find all of them, so a scanner that
 #: stops matching goes red instead of passing over nothing.
 _KNOWN_SEAMS: dict[str, frozenset[str]] = {
     FACADE: frozenset(
@@ -78,7 +78,6 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
             "_CREDENTIAL_PATTERNS_NO_PEM_BLOCK",
             "_PATH_LABEL_KEY",
             "_ROUTED_COMMIT_RE",
-            "_host_darwin_user_dir_id",
             "_jwt_branch_matches_at",
             "_segment_run_end",
             "_token_param_destination_signal",
@@ -89,7 +88,6 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
     PACKAGE: frozenset(
         {
             "_CREDENTIAL_PREFILTER_LITERALS",
-            "_might_contain_credential",
             "_looks_like_secret_key",
             "_SECRET_MAX_SLASHES",
             "_shannon_entropy",

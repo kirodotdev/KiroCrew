@@ -223,6 +223,12 @@ class AcpProvider(LLMProvider):
             kwargs["agent"] = agent
         self.member_context = member_context
         self.memory_mode = memory_mode
+        # Allocation sets the session's own mode; ``None`` leaves it to the runtime,
+        # which disables KAS memory only while orchestrator memory is on. After a
+        # start it holds the mode the session actually stated.
+        self.kas_memory_mode: str | None = None
+        # A failed load creates a SID under the new request, not the saved policy.
+        self.kas_memory_new_mode: str | None = self.kas_memory_mode
         # The account era this start read and the reader it came from, written by
         # the allocator immediately before ``start()``. The chat-sharing placement
         # keys a shared process on the era and re-reads it after acquiring
@@ -1243,7 +1249,8 @@ class AcpProvider(LLMProvider):
         """Whether a fresh conversation can start on this session's live process now.
 
         True on the shared runtime of a backend whose session teardown evicts
-        (``ACP_BACKENDS_SESSION_EVICTION``), and not for a session placed on a remote
+        (``ACP_BACKENDS_SESSION_EVICTION``), unless a closed session leaves its MCP
+        servers running (``AcpSessionProvider.close_leaves_mcp_servers``), and not for a session placed on a remote
         or cloud workspace, whose session start records its placement
         (``record_cloud_session``) where :meth:`new_conversation` does not. A dead
         process is not read here: ``AcpSessionProvider.new_conversation`` refuses it
@@ -1256,6 +1263,7 @@ class AcpProvider(LLMProvider):
         return (
             isinstance(client, AcpSessionProvider)
             and client.backend in ACP_BACKENDS_SESSION_EVICTION
+            and not client.close_leaves_mcp_servers
             and remote_workspace_for(self._owning_session_key()) is None
         )
 

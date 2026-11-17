@@ -112,6 +112,18 @@ Current status:
   bounded retry prompts. The build-time patch is
   pinned to the installed app-builder-lib version and fails closed if its NSIS
   template changes, so an upgrade cannot silently remove that fallback.
+- **An update never meets a file the old uninstaller cannot move** — an update
+  runs the previous version's uninstaller, which moves every installed file into
+  `%TEMP%\nsXXXX.tmp\old-install`, a path about 11 characters longer than the
+  installed one. Before it runs, `KiroClearUnmovableFiles` in
+  `website/electron/build/installer.nsh` measures every installed file against
+  that limit. A too-deep bytecode cache (a `.pyc` in `__pycache__`) is deleted,
+  since Python compiles the module from its source. Any other too-deep file stops
+  the installer with exit code 2 before anything moves, naming the file: the
+  installed version keeps working, and uninstalling then installing again (which
+  keeps your sessions and settings) gets the update. The release build also drops
+  over-budget caches and fails on any other over-budget file
+  (`packaging/check_windows_path_budget.py --prune-caches`).
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and any “start with Windows” Run entry left by an earlier custom installer,
@@ -1016,7 +1028,9 @@ supervision is a separate piece of work, proposed in
   `taskkill /F /PID` only after confirming a Kiro Crew executable or
   `python -m kiro_crew` process. Localized listener-state text is ignored.
   SSH forwards and unrelated processes are never terminated, and a failed or
-  timed-out `netstat` probe is treated as unknown rather than as a free port.
+  timed-out `netstat` probe is treated as unknown rather than as a free port:
+  the launcher then tries to bind the port itself and starts the gateway only
+  when that bind succeeds.
 - **`port-owner: :5476 held by NON-KiroCrew pid=...` naming our own
   `python.exe`** - the launcher binds Windows gateway identity to the executable
   path it resolved. An install reached through a directory junction (a Toolbox

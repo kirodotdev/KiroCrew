@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from typing import Callable
 from unittest import mock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, make_mocked_request
 from redaction_structured_cases import github_classic
@@ -96,8 +97,13 @@ class _RoutesFixture(AioHTTPTestCase):
         routes.register_routes(app)
         return app
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     async def asyncSetUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.root = self.tmp / "decks"
         self.deck = self.root / "20260101-demo"
         (self.deck / "specs").mkdir(parents=True)
@@ -115,7 +121,6 @@ class _RoutesFixture(AioHTTPTestCase):
             os.environ.pop(paths.DECK_ROOT_ENV, None)
         else:
             os.environ[paths.DECK_ROOT_ENV] = self._prev_root
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def url(self, path: str) -> str:
         return f"{routes.API_PREFIX}{path}"

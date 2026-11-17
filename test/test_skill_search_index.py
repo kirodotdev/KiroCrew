@@ -860,3 +860,47 @@ class TestConcurrentSearchesKeepTheirOwnAnswer:
         report = loader.search_skills_report("zirconium")
         assert sorted(row["key"] for row in report.matches) == ["s0", "s1", "s2"]
         assert report.incomplete is False
+
+
+class TestUnchangedMetadataIsNotReread:
+    """``metadata_snapshot`` runs on every ``list_skills`` call, so every chat turn.
+
+    Reading the whole table each time costs one GIL-releasing ``sqlite3`` step per
+    indexed skill; an unchanged table must cost none.
+    """
+
+    def test_an_unchanged_listing_reads_no_metadata_rows(self, tmp_path, opened):
+        root = tmp_path / "skills"
+        for n in range(3):
+            _skill(root, f"s{n}", body="procedure")
+        loader = _loader(tmp_path, opened=opened)
+        # The first listing stores the metadata it parsed; the second reads it back.
+        assert len(loader.list_skills()) == 3
+        assert len(loader.list_skills()) == 3
+        db = loader._search_index._db()
+        statements: list[str] = []
+        db.set_trace_callback(statements.append)
+        try:
+            assert len(loader.list_skills()) == 3
+        finally:
+            db.set_trace_callback(None)
+        assert not [s for s in statements if "FROM skill_metadata" in s], statements
+
+    def test_every_writer_is_seen_and_results_stay_private(self, tmp_path, opened):
+        import sqlite3
+
+        index_path = tmp_path / "index.sqlite3"
+        index = opened(SkillSearchIndex(index_path))
+        assert index.store_metadata([("a", "fp1", {"name": "one"})])
+        first = index.metadata_snapshot()
+        assert first == {"a": ("fp1", {"name": "one"})}
+        first["a"][1]["name"] = "mutated by a caller"
+        assert index.metadata_snapshot()["a"][1] == {"name": "one"}
+        # This connection's own write.
+        assert index.store_metadata([("b", "fp2", {"name": "two"})])
+        assert set(index.metadata_snapshot()) == {"a", "b"}
+        # Another connection's write, as another process's would be.
+        with closing(sqlite3.connect(index_path)) as other:
+            with other:
+                other.execute("DELETE FROM skill_metadata WHERE path = 'a'")
+        assert set(index.metadata_snapshot()) == {"b"}

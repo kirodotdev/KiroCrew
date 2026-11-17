@@ -35,7 +35,7 @@ from kiro_crew.acp._dispatch_parts.tool_result_events import (
     _build_tool_result_event,
     parse_todo_snapshot,
 )
-from kiro_crew.acp.harness_tool_names import qualified_harness_tool_id
+from kiro_crew.acp.harness_tool_names import start_event_tool_id
 from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -48,7 +48,6 @@ from kiro_crew.acp.types import (
     UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
 )
-from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.metrics.tool_calls import note_tool_call_started
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS
 
@@ -307,13 +306,15 @@ def _build_tool_call_event(
     _stated_tool_name = stated_harness_tool_name(harness_backend, update)
     if tool_call_id and harness_tool_name_cache is not None:
         harness_tool_name_cache[_ck] = _stated_tool_name
-    # codex runs most calls without a permission request, so the event that
-    # starts the call names it too, for its PostToolUse spec hooks. The other
-    # backends are named by their permission request alone.
-    _event_tool_id = (
-        qualified_harness_tool_id(ACP_BACKEND_CODEX, _stated_tool_name)
-        if harness_backend == ACP_BACKEND_CODEX
-        else ""
+    # A harness that runs calls without a permission request (codex, Antigravity's
+    # reads) names them on the event that starts the call, for its PostToolUse spec
+    # hooks. The other backends are named by their permission request alone.
+    _event_tool_id = start_event_tool_id(
+        harness_backend,
+        _stated_tool_name,
+        tool_kind=kind if isinstance(kind, str) else "",
+        mcp_server=_mcp_server_name,
+        mcp_tool=_tool_name,
     )
     # A frame that PRESENTED an identity half the bound refused is recorded as
     # such (a bool, never the half), so the permission request that follows is

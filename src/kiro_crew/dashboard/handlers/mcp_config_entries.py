@@ -84,11 +84,11 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
         # owned keys so the scope copy holds only what the sources hold; the
         # next rebuild re-projects the live client into the spec regardless.
         from kiro_crew.connections.oauth_clients import (  # noqa: PLC0415
-            provider_for_server,
+            projected_provider_for_server,
             strip_preregistered_oauth_client,
         )
 
-        if provider_for_server(name, found) is not None:
+        if projected_provider_for_server(name, found) is not None:
             found = strip_preregistered_oauth_client(found)
         return found
     for path in (

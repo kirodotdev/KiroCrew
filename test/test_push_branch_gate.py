@@ -21,12 +21,10 @@ between the layers, the process-substitution boundary, the one quote model and t
 nested-payload extraction -- is pinned in ``test_push_branch_gate_parser.py``.
 """
 
-from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from denied_commands_security_helpers import _assert_scan_is_linear
-from redaction_structured_cases import structured_engine
 
 from kiro_crew import platform_compat, security
 from kiro_crew.security import (
@@ -35,14 +33,6 @@ from kiro_crew.security import (
     _schedule_push_allow_audit,
     is_denied,
 )
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
 
 # "git pus" + "h" keeps a literal blocked command out of the test source.
 PUSH = "git pus" + "h"

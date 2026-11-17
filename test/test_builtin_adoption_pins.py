@@ -280,6 +280,26 @@ _SHIPPED_PINS = [
         "minAppSdkLevel": 7,
         "legacyNav": {"route": "/project-scaffolder", "icon": "FolderPlus"},
     },
+    {
+        "name": "md-notebook",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-md-notebook",
+        "commit": "ad86662fc977fa3c459a4477021d9076d000d650",
+        "version": "1.0.2",
+        "treeSha256": "6cfe9309f1a6fb880d48f583358d9463dadf5151d66a2ed946df2af699cca0a6",
+        "archiveSha256": "43aa5172339927ceb03c1db7e853528c7ee054231d3d015f8a4d08785aad0bb7",
+        "minAppSdkLevel": 8,
+        "legacyNav": {"route": "/md-notebook", "icon": "NotebookPen"},
+    },
+    {
+        "name": "code-review-sage",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-code-review-sage",
+        "commit": "711261d196f5ea4fa8027bbaa0e4991b11f3d402",
+        "version": "0.9.5",
+        "treeSha256": "f7ca3019c2768e8a1860a19c3b42f56b2772724611816606701dea06323103bd",
+        "archiveSha256": "10946e4f8263ae64f3a866b76e9fc045feaf2cfdc53c207c77937ee6910dcf32",
+        "minAppSdkLevel": 10,
+        "legacyNav": {"route": "/code-review-sage", "icon": "ScanSearch"},
+    },
 ]
 
 
@@ -474,7 +494,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"app.json permissions.agentTurns": 2, "app.json permissions.workerAutoApprove": 2},
         ),
         ({"permissions": {"agentTurns": "true"}}, {}, {}),
-        ({"credentialMasks": ["data/token.json"]}, {}, {"app.json credentialMasks": 3}),
+        (
+            {"credentialMasks": ["data/token.json"]},
+            {},
+            {"app.json credentialMasks": 3, "app.json credentialMasks tool gate": 10},
+        ),
         ({"agentReadOnlyDirs": ["notes"]}, {}, {"app.json agentReadOnlyDirs": 7}),
         (
             {"permissions": {"api": ["/api/apps/demo", " =/api/apps"]}},
@@ -497,7 +521,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         (
             {"credentialMasks": ["state/", "token.json"]},
             {},
-            {"app.json credentialMasks": 3, "app.json credentialMasks directory": 8},
+            {
+                "app.json credentialMasks": 3,
+                "app.json credentialMasks directory": 8,
+                "app.json credentialMasks tool gate": 10,
+            },
         ),
         (
             {
@@ -515,6 +543,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"app.json permissions.webhookSource": 7},
         ),
         ({"permissions": {"webhookSource": "true"}}, {}, {}),
+        (
+            {"permissions": {"chatLaunch": {"keyPrefix": "demo-chat-", "agents": ["kirocrew"]}}},
+            {},
+            {"app.json permissions.chatLaunch": 10},
+        ),
         (
             {},
             {"backend/_host.py": "def f(ctx):\n    return ctx.webhook_source.refusal()\n"},

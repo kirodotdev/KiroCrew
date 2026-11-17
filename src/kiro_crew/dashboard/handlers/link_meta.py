@@ -52,7 +52,7 @@ from kiro_crew.link_unfurl import (
     pinned_connector,
     vet_unfurl_url,
 )
-from kiro_crew.security.exfil import redact_exfiltration_urls, scoped_exempt_hosts
+from kiro_crew.security.exfil import scan_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
 
 logger = logging.getLogger(__name__)
@@ -510,15 +510,11 @@ async def link_meta_get(request: web.Request) -> web.Response:
     if _has_userinfo(raw_url):
         return web.json_response({"code": "invalid_url"}, status=400)
 
-    # A preview is a fetch nobody clicked, so it may never carry what the
-    # redactors would remove. A reader who allowed a host sees its long-query
-    # links as plain links, but that allowance is for opening on a click; it
-    # does not cover a zero-click fetch, so the check clears any allowed-host
-    # scope. It runs before the cache key exists, so such a URL is neither
-    # fetched nor remembered.
-    with scoped_exempt_hosts(frozenset()):
-        changed = redact_exfiltration_urls(raw_url)[0] != raw_url
-    if changed or redact_credentials(raw_url)[0] != raw_url:
+    # A preview is a fetch nobody clicked, so it may never carry data out: a URL
+    # the exfiltration scan flags (a credential, a long or base64 query) or one
+    # the credential pass would change is refused. It runs before the cache key
+    # exists, so such a URL is neither fetched nor remembered.
+    if scan_exfiltration_urls(raw_url) or redact_credentials(raw_url)[0] != raw_url:
         return web.json_response({"code": "blocked_url"}, status=400)
 
     try:

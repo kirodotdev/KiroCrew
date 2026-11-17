@@ -169,6 +169,10 @@ new link with `docker exec kirocrew kirocrew token --ttl 2h`, as in
 
 There is no in-container auto-update: the image is immutable and the tag is
 the version selector (channel tags track their channel; version tags pin).
+**Settings → About** still checks the release feed: when it lists a newer
+version and GHCR confirms that version's image can be pulled, About names it
+("Version X is available as a container image") with a Release notes link.
+Nothing is applied from there; you still pull the new image as above.
 
 ## Networking and security model
 

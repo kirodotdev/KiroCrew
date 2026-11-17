@@ -49,6 +49,7 @@ import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
+import { grillKeysSentAfter } from './protocol/grillMarker'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { REASONING_ROLES, stripAppEnvelope } from '../pages/chat/groupDisplayItems'
@@ -87,6 +88,10 @@ export interface MessageRenderContext {
    *  redraws a row when any other row changes EXCEPT a streaming row's text
    *  growing (chat-core/transcript/transcriptVersion). */
   messages: ChatMessage[]
+  /** The session's queued entries, for a host whose `messages` leaves them
+   *  out (a split pane draws them in its queue stack). A reply's discussion
+   *  card reads them: a queued Start already answered it. */
+  queued?: readonly ChatMessage[]
   /** Whether the session is currently producing output. */
   running: boolean
   /** Stable React key the list computed for this row. */
@@ -551,9 +556,9 @@ export interface AssistantBubbleOptions {
   onRegenerate?: () => void
   /** The LOCAL slot these rows belong to. Set, the reply draws its lock tags
    *  from `meta.redactions` and their card offers the owner's reveal of the
-   *  removed value, and its Blocked link chips from `meta.blocked_links`, whose
-   *  card can allow the host for this slot. A host drawing another gateway's
-   *  rows leaves it unset. */
+   *  removed value, and its Blocked link card can allow the host for this
+   *  slot. A host drawing another gateway's rows leaves it unset; its links
+   *  still draw as Blocked link chips from `meta.link_blocks`, with no Allow. */
   redactionSlot?: string
   /** The reply menu's Read aloud, for a host that can read this reply aloud
    *  (a crewmate's chat). Absent: no Read aloud item. */
@@ -635,9 +640,10 @@ export function renderAssistantBubble(
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
-      // The Blocked link chip and its card (Allow for this host saves for this
-      // slot), on the same local-slot rule as the lock tags (#36862).
-      blockedLinks={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.blocked_links : undefined}
+      // The Blocked link chip and its card on every host: whether a link
+      // renders live is the server's decision about the text, whoever draws
+      // it. Only the card's Allow needs a local slot (`redactionSlot`).
+      blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
@@ -647,6 +653,8 @@ export function renderAssistantBubble(
       // inside this same bubble, so it keeps the timestamp and row actions.
       body={warmBriefBodyOf(m)}
       grillRowId={grillRowId(m)}
+      grillMid={threadMidOf(m)}
+      grillSent={grillKeysSentAfter(ctx.messages, ctx.index, ctx.queued)}
     />
   )
   // The column's child is the bubble itself unless this message has a thread

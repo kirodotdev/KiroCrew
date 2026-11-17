@@ -256,6 +256,7 @@ def test_every_constant_and_legacy_row_is_parsed() -> None:
 _TOKENIZED_SITES = (
     "chat_api/slot_lifecycle.py archive_failed_turn_cancelled",
     "chat_turn/acp_recovery.py image_history_restarting",
+    "chat_turn/acp_recovery.py model_server_error_fallback",
     "chat_turn/acp_recovery.py model_throttled_fallback",
     "chat_turn/acp_recovery.py reasoning_mismatch_rebuilding",
     "chat_turn/eager_spawn.py eager_spawn_stopped",
@@ -528,3 +529,42 @@ def test_other_signed_out_wording_keeps_its_english(monkeypatch: pytest.MonkeyPa
     bundle_text = f"{KasRoute(bundle=True, reason=REASON_CONFIGURED).describe()}. Not signed"
     meta = _terminal_error_meta(AcpAuthRequired(bundle_text, backend=ACP_BACKEND_KAS))
     assert meta == {"kind": "auth_required"}
+
+
+@pytest.mark.parametrize(
+    ("route", "named"),
+    [
+        (None, None),
+        (KasRoute(bundle=False), "relay"),
+        (KasRoute(bundle=True, reason=REASON_CONFIGURED), "bundle"),
+    ],
+)
+@pytest.mark.parametrize("request_id", ["", "4f2a-77"])
+def test_kas_signed_out_error_frame_row_carries_the_token(
+    monkeypatch: pytest.MonkeyPatch, route: KasRoute | None, named: str | None, request_id: str
+) -> None:
+    from kiro_crew.acp.client import AcpError, _raise_acp_error
+    from kiro_crew.agent_sdk.host_auth import kas_signed_out_route
+    from kiro_crew.dashboard.chat_turn.recovery import _terminal_error_meta
+
+    monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", route)
+    # kiro-cli's own refusal on a signed-out relay. The formatter's sign-in arm
+    # writes the signed-out sentence, then its model-switch note, then the
+    # request id when the frame carries one.
+    data = "Not logged in. Run `kiro-cli login` first."
+    if request_id:
+        data += f" request_id: {request_id}"
+    frame = {"code": -32000, "message": "Authentication required.", "data": data}
+    with pytest.raises(AcpError) as caught:
+        _raise_acp_error(frame, None, backend=ACP_BACKEND_KAS)
+    text = str(caught.value)
+    assert caught.value.auth_required is True
+    # The row's own text keeps the whole English answer; only its token is new.
+    assert "Switching models will not help" in text
+    assert (f"(request_id: {request_id})" in text) is bool(request_id)
+    expected: dict[str, object] = {"kind": "auth_required", "notice": "kas_signed_out"}
+    if named:
+        expected["notice_args"] = {"route": named}
+    assert _terminal_error_meta(caught.value) == expected
+    # The sentence must lead the text: one quoted inside other prose is not this row.
+    assert kas_signed_out_route(f"Earlier: {text}") is None

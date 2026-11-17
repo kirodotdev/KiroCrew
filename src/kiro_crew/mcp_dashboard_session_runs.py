@@ -358,6 +358,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     preview_off = mcp_refusal(args)
     if preview_off is not None:
         return preview_off
+    if args.get("requires") is not None and "crew" not in args and not args.get("work_item"):
+        return "Error: requires is taken only with crew or work_item."
     if args.get("work_item") and "crew" not in args:
         from kiro_crew.remote_dispatch import remote_dispatch_enabled
 
@@ -1493,3 +1495,41 @@ def _run_session_queue(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not {action} that session's queue: {refused.error}"
     return _render_session_queue(resp)
+
+
+def _run_session_run_queued(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/run-queued",
+            {"target": args["target"], "queue_id": args["queue_id"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not run that queued message: {refused.error}"
+    target = " ".join(str(resp.get("target") or args["target"]).split())
+    queue_id = " ".join(str(resp.get("queue_id") or args["queue_id"]).split())
+    outcome = resp.get("outcome")
+    if outcome == "started":
+        return f"\u25b6\ufe0f `{target}` started your queued message `{queue_id}` now. Nothing was stopped."
+    if outcome == "stopping":
+        return (
+            f"\U0001f6d1 Stopped the running turn on `{target}`; its work is discarded. "
+            f"Your queued message `{queue_id}` runs next, ahead of the rest of the queue, "
+            "which is kept. Its transcript shows the stop card."
+        )
+    if outcome == "idle":
+        return (
+            f"\u2139\ufe0f `{target}` had no active turn to stop. Your queued message "
+            f"`{queue_id}` is at the front and runs when the target's turn ends."
+        )
+    if outcome == "compacting":
+        # ``stop`` rides along only when the entry was promoted before the decline.
+        place = "is at the front of" if resp.get("stop") else "keeps its place in"
+        return (
+            f"\u2139\ufe0f `{target}` is compacting its context, so nothing was stopped. "
+            f"`{queue_id}` {place} the queue; try again once the compaction finishes."
+        )
+    return (
+        f"\u2139\ufe0f `{target}`: {resp.get('info') or 'stop already in progress'} — "
+        f"nothing changed, and `{queue_id}` keeps its place in the queue."
+    )

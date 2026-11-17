@@ -4,11 +4,10 @@ Split out of ``test_issue_radar_crew_runtime_sweep.py`` (file line cap). These r
 write the store directly; the sweep's own answer tests stay beside the sweep.
 """
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
+import pytest
 from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     OWNER,
     REPO,
@@ -30,10 +29,11 @@ from kiro_crew.apps.builtins.issue_radar.backend import store as store_mod
 
 
 class TestAnswerStore(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     def test_a_superseding_reason_is_clamped_to_the_fold_bound(self):
         from kiro_crew.apps.builtins.issue_radar.backend import crew_answer_store as answers
@@ -134,10 +134,13 @@ class TestEvictedSupersededAnswer(unittest.IsolatedAsyncioTestCase):
     """An evicted superseded answer must not let its old label removal hand the issue
     back while the crew's newer pass is still in the crew log."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
         self.now = [_T0_MS]
         from kiro_crew.crew_log import store as crew_log_store
 

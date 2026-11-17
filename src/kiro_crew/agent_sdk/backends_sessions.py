@@ -19,6 +19,7 @@ from types import MappingProxyType
 from typing import Any
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -260,6 +261,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -391,6 +393,7 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
         # module's ``session`` option) and restores it on ``session/load`` by id:
         # ``test/fixtures/acp_frames/strands/session-load-live.jsonl``.
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -518,4 +521,9 @@ ACP_BACKENDS_FORK_AT_MESSAGE = frozenset({ACP_BACKEND_CLAUDE})
 # the conversation and answered the next prompt
 # (``test/fixtures/acp_frames/strands/cancel-dispose-live.jsonl``, then
 # ``test/fixtures/acp_frames/strands/cancel-dispose-reload-live.jsonl``).
+#
+# antigravity is NOT a member: membership needs a capture of the disposal error and
+# of a ``session/load`` in a second process, and Antigravity ACP 1.4.4 has neither
+# (no cancelled turn was captured, ``test/fixtures/acp_frames/antigravity/``), so its
+# prompt errors stay ordinary turn failures.
 ACP_BACKENDS_RELOAD_DISPOSED_SESSION = frozenset({ACP_BACKEND_STRANDS})

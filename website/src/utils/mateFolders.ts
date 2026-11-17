@@ -5,13 +5,18 @@ import type { ChatFolder } from '../types'
  *  move, delete, new chat, new folder, drop, or moving a chat in or out).
  *  Mirrors `mate_folders.home_owner_of`. */
 export function isMateManaged(folder: ChatFolder | undefined, folders: readonly ChatFolder[]): boolean {
+  return !!mateHomeOf(folder, folders)
+}
+
+/** The mate's home that holds *folder* (the home itself included), or undefined. */
+export function mateHomeOf(folder: ChatFolder | undefined, folders: readonly ChatFolder[]): ChatFolder | undefined {
   const byId = new Map(folders.map(f => [f.id, f]))
   const seen = new Set<string>()
   let cursor: ChatFolder | undefined = folder
   while (cursor && !seen.has(cursor.id)) {
-    if (cursor.mate_home && !cursor.parent_id) return true
+    if (cursor.mate_home && !cursor.parent_id) return cursor
     seen.add(cursor.id)
     cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined
   }
-  return false
+  return undefined
 }

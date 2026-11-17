@@ -152,9 +152,10 @@ def is_slack_slot(slot: object) -> bool:
     return is_slack_session_key(getattr(slot, "key", ""))
 
 
-#: Stored ``title_origin`` values that mean a person typed the title (a rename),
-#: so it is their own words, not Slack mrkdwn.
-_TYPED_TITLE_ORIGINS = frozenset({"user", "member"})
+#: Stored ``title_origin`` values that mean the title was typed as plain text (a
+#: person's rename, a crewmate's name, or the session's own agent renaming it at a
+#: person's request with ``chat_rename``), so it is not Slack mrkdwn.
+_TYPED_TITLE_ORIGINS = frozenset({"user", "member", "agent"})
 
 
 def stored_title_is_mrkdwn(title: object, origin: object) -> bool:

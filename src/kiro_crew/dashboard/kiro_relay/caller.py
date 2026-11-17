@@ -129,11 +129,6 @@ def published_relay_caller(request: object) -> RelayCaller | None:
     return caller if isinstance(caller, RelayCaller) else None
 
 
-#: Set on a dashboard WebSocket a relayed teammate opened. The broadcast gate reads
-#: it to withhold app frames, since the remote limits keep a teammate off every app.
-RELAY_TEAMMATE_WS_FLAG = "_kiro_relay_teammate"
-
-
 def is_relay_teammate(request: object) -> bool:
     """Whether *request* is relayed and its caller is a teammate, not the owner."""
     caller = published_relay_caller(request)

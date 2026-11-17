@@ -529,8 +529,10 @@ so the file on disk still says `KiroCrew` while the artifact says otherwise.
 
 There is no `PATH` edit to assert. The `nsis` block in
 `website/electron/package.json` declares no PATH handling and
-`website/electron/build/installer.nsh` touches only shortcuts and the
-electron-updater cache, so a desktop install puts no `kirocrew` on `PATH`. The
+`website/electron/build/installer.nsh` touches only shortcuts, the
+electron-updater cache and installed files too deep for the previous
+uninstaller to move (`KiroClearUnmovableFiles`), so a desktop install puts no
+`kirocrew` on `PATH`. The
 bundled CLI is exercised at its packaged path
 (`resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd`) as its own new
 process instead, which is the path
@@ -548,6 +550,10 @@ installs it silently, and runs
 The script starts the just-installed bundled interpreter against an isolated data
 home and requires `/api/ready` within 50 seconds, so an artifact that installs
 but cannot boot fails at review time.
+It also plants an over-budget bytecode cache and an over-budget ordinary file in
+the installed tree and re-runs the installer over each: the cache must be deleted
+and the update go through, and the other file must stop the installer with exit
+code 2 before any file is moved.
 
 Its backend payload is a real python-build-standalone runtime carrying the wheel
 `build-wheel` produced (the job `needs` it, so the bundled bytes are the ones

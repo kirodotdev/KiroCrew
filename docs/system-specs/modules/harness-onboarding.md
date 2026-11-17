@@ -42,7 +42,7 @@ code should import the Agent SDK path so the registry keeps one owner:
 |---|---|
 | `ACP_BACKEND_<NAME>` | The id. Never a bare literal at a call site (H5). |
 | membership in `ACP_BACKENDS_KNOWN` | `AcpProvider.__init__` rejects anything outside it (H8), and every capability set is asserted a subset of it. |
-| `PROVIDER_LABEL_<NAME>` in `acp/types.py` | A closed mapping; an absent label means Kiro, so a harness without one persists as a Kiro session and has its transcript pruned for want of a Kiro session file (H11). |
+| `PROVIDER_LABEL_<NAME>` in `acp/provider_labels.py` (re-exported by `acp/types.py`) | A closed mapping; an absent label means Kiro, so a harness without one persists as a Kiro session and has its transcript pruned for want of a Kiro session file (H11). |
 | an entry in `POLICY_ID_BY_BACKEND` | A governance rule is written by a human as an identifier. The mapping is what makes the id nameable in a deny rule **before** anything registers it — so this is required even for a dormant harness. |
 | an entry in `_MODEL_REGISTRY_NAMESPACE_BY_BACKEND` (in `agent_sdk/backends_models.py`) | The model-id namespace, which is also the harness's bucket in the cross-session advertised-model cache. An id with no entry falls back to `acp` and joins the kiro family, so its advertised models can replace the list the picker offers for kiro-cli. |
 
@@ -615,7 +615,7 @@ the one to read for what the stages cost when nothing can be skipped:
 | 2 capability sets | Decided for every set, and each decision cites what the harness advertised rather than what it resembles: in the model channel and the advertised-model capture, out of the effort channel (its `session/new` advertises a `mode` select beside `model` and no `effort`), in `ACP_BACKENDS_COMPACT` and `ACP_BACKENDS_INLINE_COMPACTION`, out of steer and harness-managed compaction (its `sessionCapabilities` are close/fork/list/resume), and — the one decision this run got WRONG — out of the session MCP array, on the grounds that it advertises `http` and `sse` MCP transports and no stdio. That is the failure mode Stage 2's own instruction is meant to prevent, arriving through a door the instruction leaves open: the decision DID cite what the harness advertised rather than what it resembles, and it was still wrong, because ACP's `McpCapabilities` has exactly two boolean fields (`http`, `sse`) and no `stdio` field for any conforming agent to set. Citing an advertisement is not enough; the schema that would carry the claim has to be read too, or an absence that cannot exist is mistaken for a refusal. Corrected by measurement against `opencode acp` 1.18.30 — the element Crew already emits is accepted, the child is spawned, its tools are listed and the element's `env` reaches it — so the harness is IN the set, with a mirror at `providers/mirrors/opencode.py` and a ratchet at `test/test_opencode_session_mcp.py`. The cost of the error was one selectable harness serving every session with none of Crew's own tools, and nothing red. |
 | 3 spawn path | Done — one binary, `opencode acp`, resolved override → mise → PATH. No adapter package and no Node floor, so the ladder is the plain-binary one rather than the entry-script one. |
 | 4 handshake | Done — `PROTOCOL_VERSION_OPENCODE`, its own literal, integer `1`, captured off its own wire. |
-| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). |
+| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). `signed_out_signature` is `Incorrect API key provided`, the provider's own 401 text relayed in a `session/prompt` error. A host with no provider gives no error: opencode starts on its own hosted `opencode/` models, so a session whose current and advertised models are all `opencode/` and whose config names no model is refused before the first prompt (`AcpNoModelProvider`, `acp/no_model_provider.py`). |
 | 6 install probe | Done — no probe of its own. This harness is a member of `ACP_BACKEND_LAUNCH`, so `_PROBES` binds `_probe_self_served` to it and the component name and install command come from its record. One component, and here that is not a simplification: the thing that would be missing is the thing that serves ACP. `restart_required` is read from the spawn path's own cache (`self_served_cached_negative()`): the binary resolves now, but this process already cached its absence, so a session started right now still fails until the gateway restarts. |
 | 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
 | routing | Done, by a NEW mechanism — `VERIFIED_SEEDED_SETTINGS`. The setting travels as inline config in the child's environment, which resolves above the project's own config file, and the harness's own resolved configuration is read back before the first prompt; the session is refused when the required value is not in force. |
@@ -1124,3 +1124,57 @@ needs no pin (`test/test_strands_project_pin.py`).
 `--mcp-config` file (Copilot's staging directory and lifetime), and the CLI's own
 discovery of other tools' MCP and skill files is switched off in the child's
 environment (`STRANDS_CLI_MCP_DISCOVERY=off`, `STRANDS_CLI_SKILL_DISCOVERY=off`).
+
+## Worked example: Google Antigravity
+
+The run to read for a two-file distribution, a permission mode that can be switched
+off from the harness, and a signed-in turn that shows which calls ask and which do
+not. It is
+in `ACP_BACKENDS_KNOWN` and it is selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_ANTIGRAVITY`, `PROVIDER_LABEL_ANTIGRAVITY`, policy name mapped, and its own `antigravity` model namespace. |
+| 2 capability sets | Every set has an explicit decision. Member of `ACP_BACKENDS_SESSION_MCP_ARRAY`, `ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP`, `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, `ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`, `ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`, `ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`, `ACP_BACKENDS_UNASKED_NATIVE_TOOLS` and `ACP_BACKENDS_INDEPENDENT_SETUP`. Out of `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`: its file reads run without a permission request, so a `preToolUse` hook could not gate them. In `ACP_BACKENDS_LOCAL_CLEAR`: its prompt-command allowlist admits only `plan` and `usage`, so a `/clear` handed to the client is refused rather than sent, and the dashboard answers it instead. Out of session sharing and the shared ACP runtime, steer, compaction, Side Chat read-only execution, member capability loading and `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`. It publishes `_meta.mcp`, but stays out of `ACP_BACKENDS_META_IDENTITY` until an authenticated corpus covers every tool class the fail-closed refusal would judge. Not a member of the four launch-and-reload sets: `ACP_BACKENDS_MODEL_AT_LAUNCH` and `ACP_BACKENDS_EFFORT_AT_LAUNCH` (1.4.4 advertises `model` and `thinking_level` as config options on `session/new` and `session/load`, and the launch argv carries neither), `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` (its MCP servers arrive on the `session/new` array, none at launch) and `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` (no capture of a disposal error or of a load in a second process). |
+| 3 spawn path | Done — the registry's standalone `agy_acp_server.par` plus its sibling `localharness_external`. `ANTIGRAVITY_ACP_BIN` and `ANTIGRAVITY_HARNESS_PATH` are the explicit overrides; resolution treats the pair as one install, and the child always receives the exact helper path in `ANTIGRAVITY_HARNESS_PATH`. |
+| 4 handshake | Done — integer `1`, captured from Antigravity ACP 1.4.4. The client refuses any other reported release because several later checks depend on that release's wire shape. |
+| 5 auth declaration | Done — `own_credential_file`, the consumer and business token leaves under `~/.gemini/antigravity-acp/`, `GEMINI_HOME` re-anchored, and both leaves listed as adapter-owned and masked from agent files. `settings.json` is not a credential leaf: the 1.4.4 runtime holds only `auth.type` and `gcp.project`/`gcp.location` there, and API-key auth reads `GEMINI_API_KEY` from the launch environment. |
+| 6 install probe | Done — `agent_sdk/backend_install.py` names whichever archive member is absent; the run installs the `1.4.4` archive rather than accepting the interactive `agy` TUI as a substitute. |
+| 7 selectability | **Selectable**, on `Routing.SESSION_CONFIG`. Crew writes `mode=default` before the first prompt, refuses a session that does not advertise it, and stops a live session moved to `auto_edit` or `yolo`. |
+| 8 live spill | Done. A live handshake, `session/new`, `session/load`, config-option writes and stdio MCP startup were captured. A stdio server was asked `server/discover` and `tools/list`. One signed-in session supplies every required turn class: shell, read, edit, refused calls and a stdio MCP call (`turn-live-tools`, `turn-live-refused`, `turn-live-mcp`). No total zero-tool ban is claimed, because that session's file reads ran without a permission request. |
+| verified range | Antigravity ACP **1.4.4** exactly. The handshake, mode and config-option read-back fail closed on another release, so each new release is refused until a change re-verifies its handshake and bumps `ANTIGRAVITY_VERIFIED_VERSION`; that is an ongoing maintenance cost, the same as Copilot's pin. The registry lists only `1.4.5`, which the pin refuses, so the install hint and the refusal message name the exact `1.4.4` archives on `dl.google.com` instead of the registry page, and say that Kiro Crew verifies `1.4.4` only and refuses other versions until they are verified. The backend card shows that hint as its install command (`install_command` in `dashboard/handlers/acp_backend_status.py`). Enterprise authentication policy remains unmeasured and is not claimed as verified enforcement. |
+
+Three things this run produced that the checklist did not ask for.
+
+**The first is an install that is one unit but two executables.** The ACP Registry
+entry launches `agy_acp_server`, which resolves `localharness_external` as a sibling.
+A resolver that reports the main file alone produces a healthy-looking install and a
+dead spawn. Crew resolves both before launch, reports the absent half by name, and
+passes the helper path explicitly rather than trusting a stale parent environment.
+
+**The second is that permission mode must be treated as a switch, not a preference.**
+Antigravity offers `default`, `auto_edit` and `yolo`; the latter two suppress the
+permission requests Crew depends on. The session starts in `default`, the value is
+read back after create and load, a forbidden mid-session mode stops the harness,
+any call reported `completed` with no permission request stops it too, after that
+call ran, unless it is a read-only built-in (the spawn arms
+`AcpClient._tripwire_pi_gate`, the tripwire MiMo Code uses, with Antigravity's
+`HARNESS_UNASKED_TOOL_IDS` row; an unasked read is named from its `Running <name>`
+title), and the prompt-command allowlist admits only `plan` and `usage`, so `/logout` cannot
+arrive through channel or subagent text. `default` advertises the prompt flow, but
+a signed-in turn ran every file read without asking, so Crew does not claim that
+this harness can serve a `"tools": []` worker.
+
+**The third is where the evidence ends.** Authentication methods, prompt modalities,
+MCP startup and model/thinking options came from the live 1.4.4 runtime, and one
+signed-in session supplies the turn corpus. In it `execute`, `edit`, the MCP call
+and the two non-MCP `other` calls (`invoke_subagent`, `run_workflow`) asked, and
+every `read` ran unasked, so the sensitive-path check never sees an Antigravity
+read. A read outside the workspace was refused by the runtime's own
+allowed-workspace check before any tool call was sent. `run_workflow` runs the
+Python in its `Script` argument, which no command or path rule reads, and
+`invoke_subagent` starts sub-agents whose own tool calls no capture has shown
+asking (that session refused it). Crew refuses both as shell calls whose command
+cannot be verified (`antigravity_call_is_unverifiable`). Enterprise policies that may auto-proceed some terminal tools were visible in the
+runtime's source strings but were not driven against an enterprise account, so the
+contribution must not describe them as accepted.

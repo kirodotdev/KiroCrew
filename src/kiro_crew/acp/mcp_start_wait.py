@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.acp.mcp_mount_check import stub_server
+from kiro_crew.acp.mcp_report_bound import keep
 from kiro_crew.acp.mcp_session_report import STATUS_CAP, active_custom_agent, roster_names
 from kiro_crew.start_priority import StartPriority
 
@@ -49,14 +51,16 @@ def first_prompt_brief_wait(
     * The answer: waited for at most ``session_handle_mcp.MOUNTED_MCP_WAIT_SECS``,
       never required.
 
-      - The servers Kiro Crew sent ON THE SESSION (a Connection's bridge, a routed
-        stub), always. Kiro Crew mounted them for this conversation and they are
-        few.
+      - The servers Kiro Crew sent ON THE SESSION (a Connection's bridge), always
+        -- except a gateway-shared stub (``-m`` the stub module)
+        when a person is waiting: that is one of the agent's own servers moved
+        onto the session to be shared, so it goes to the first turn like them.
       - The agent's OWN servers (the user's, which stay in the agent's block),
         only when nobody is waiting on this start (a sub-agent child, an
         unattended run, a warm start, a re-sent server set). Such a run may have
         one turn only, so a server that is late for it is a server it never
-        gets.
+        gets. Never for the background helper ``kirocrew-lite``, which mounts
+        nothing (``session_parts.policy.BACKGROUND_AGENT``).
 
     * Not waited for by the START: the agent's own servers when a person is
       waiting on it (:func:`person_waits`). Kiro CLI does not wait for them
@@ -84,7 +88,19 @@ def first_prompt_brief_wait(
     servers = params.get("mcpServers")
     sent = list(servers) if isinstance(servers, list) else []
     if not person_waits(start_priority, focus_resume=focus_resume):
-        sent += _own_servers(params, agent)
+        # The background helper's template mounts nothing, so a server in its block
+        # is one another tool wrote into the spec, and a background turn on it is
+        # closed right after such a start (``llm_helpers_parts.background_turns``).
+        # Waiting for that server only delays the refusal.
+        # shortcut: matched by name; give lite a real tool and this must go.
+        from kiro_crew.session_parts.policy import BACKGROUND_AGENT  # circular import
+
+        if agent != BACKGROUND_AGENT:
+            sent += _own_servers(params, agent)
+    else:
+        # A person is waiting: a server the gateway shares is one of the agent's own
+        # moved onto the session, so it is left to the first turn as they are.
+        sent = [element for element in sent if not _is_shared_stub(element)]
     return tuple(name for name in roster_names(sent, STATUS_CAP) if name not in required)
 
 
@@ -101,8 +117,9 @@ def left_to_first_turn(
     Nothing for a start nobody waits on: it waited for them itself. The names
     are as many as the session's report keeps a status for (``STATUS_CAP``), so
     each is either named to the first turn or waited for by it. The count is how
-    many more the agent has: past that bound no turn can be told of them all, so
-    the first prompt holds as the start did.
+    many more of them there are, the agent's own and the shared ones alike: past
+    that bound no turn can be told of them all, so the first prompt holds as the
+    start did.
     """
     if not person_waits(start_priority, focus_resume=focus_resume):
         return (), 0
@@ -113,8 +130,20 @@ def left_to_first_turn(
         ),
     }
     own = _own_servers(params, agent)
-    names = tuple(name for name in roster_names(own, STATUS_CAP) if name not in waited)
-    return names, max(0, len(own) - STATUS_CAP)
+    servers = params.get("mcpServers")
+    shared = [
+        {"name": element.get("name")}
+        for element in (servers if isinstance(servers, list) else [])
+        if _is_shared_stub(element)
+    ]
+    deferred = [*own, *shared]
+    every = roster_names(deferred, len(deferred))
+    return keep((name for name in every if name not in waited), STATUS_CAP)
+
+
+def _is_shared_stub(element: Any) -> bool:
+    """Whether a session-level *element* starts the gateway's shared-server stub."""
+    return isinstance(element, dict) and bool(stub_server(element))
 
 
 def _own_servers(params: dict[str, Any], agent: str) -> list[dict[str, str]]:

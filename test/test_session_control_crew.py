@@ -47,10 +47,11 @@ from kiro_crew.dashboard.peer_redaction import redact_peer_text
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
 from kiro_crew.mcp_session_crew import CREW_TOOLS, with_crew_schema
 from kiro_crew.remote_dispatch import REMOTE_DISPATCH_DISABLED
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-#: A GitHub-style personal access credential, built at runtime so no scanner
-#: reads this file as holding one.
-PLANTED = "ghp_" + "Ab3x9" * 7 + "Z"
+#: A GitHub personal access token with a valid checksum, built at runtime so no
+#: scanner reads this file as holding one.
+PLANTED = github_classic(seed=51)
 
 INSTANCE = "inst-lab"
 
@@ -202,7 +203,9 @@ def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: False)
     # The session_harness preview filters `backend`; held on so only `crew` varies here.
     monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
-    assert mcp_dashboard._list_tools() == mcp_dashboard.TABLE.list()
+    # `crew_list` is the one row the switch hides outright.
+    base = [t for t in mcp_dashboard.TABLE.list() if t["name"] != "crew_list"]
+    assert mcp_dashboard._list_tools() == base
     for tool in mcp_dashboard._list_tools():
         assert "crew" not in tool["inputSchema"].get("properties", {})
 

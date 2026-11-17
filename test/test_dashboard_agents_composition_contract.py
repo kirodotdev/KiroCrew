@@ -46,6 +46,7 @@ import kiro_crew.dashboard.handlers as handlers_pkg
 import kiro_crew.dashboard.handlers.agents as agents
 from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import agent_admin
+from kiro_crew.security.redaction_structured.checks import base62_crc32
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # One worker per file, so the shared checks run beside the tests that load this module.
@@ -1921,7 +1922,10 @@ async def test_a_sync_refuses_a_credential_shaped_discovered_name(
 ) -> None:
     from kiro_crew.agent_discovery import AgentInfo
 
-    shaped = "ghp_" + "a" * 36
+    # A checksummed GitHub token whose characters are all lowercase letters and
+    # digits, so only its credential shape can refuse it. Assembled at runtime.
+    body = "ylnkmkfjsa23hb7k52t5" + "fqkute8xcn"
+    shaped = "ghp_" + body + base62_crc32(body)
     found = [
         AgentInfo(
             name=shaped, filename=f"{shaped}.json", description="", model="auto", source="package"

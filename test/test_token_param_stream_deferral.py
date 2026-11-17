@@ -1,11 +1,12 @@
-"""Pass 4 (``?token=`` values) is deferred per streamed delta to the whole-segment run.
+"""The ``token`` URL parameter exemption is deferred per streamed delta to the
+whole-segment run.
 
 ``stream_chunks._on_text_chunk`` redacts each ``agent_message_chunk`` on its own and appends the
 result to the segment the turn later stores. A delta cut inside a companion approval
-link shows pass 4 a ``token=`` with no prefix in front of it, so the value was
-redacted before ``_redact_segment`` -- the only pass that sees the whole link --
-could grant the exemption. These tests stream the same link through the REAL
-per-delta path at several chunk sizes and read what the slot stored.
+link shows the plan a ``token=`` with no prefix in front of it, so only
+``_redact_segment`` -- the only pass that sees the whole link -- can grant the
+exemption. These tests stream the same link through the REAL per-delta path at
+several chunk sizes and read what the slot stored.
 
 NEUTRAL PLACEHOLDER PREFIX ONLY: a companion's real approval host never appears
 in the public repo.
@@ -34,13 +35,10 @@ _CHUNK_SIZES = (len(_TEXT), 6, 40)
 _SECRET = "SECRETVALUE0123456789abcdefghijklmnopqrstuv"
 _OTHER_URL = f"https://other.example.net/cb?token={_SECRET}"
 
-# A value an earlier pass claims only PARTLY: a GitHub-token head followed by an
-# opaque tail. Only a value no earlier pass touched may be deferred to the
-# whole-segment run; this one must have its uncovered tail redacted per delta,
-# because the whole-segment run skips a value that begins with a fixed tag. The
-# carrier is NOT a URL: `redact_exfiltration_urls` runs first per delta and flags
-# any URL whose query holds a credential, which would hide what pass 4 did with
-# the tail.
+# A value another row claims only PARTLY: a GitHub-token head followed by an
+# opaque tail. The carrier is NOT a URL: `redact_exfiltration_urls` runs first per
+# delta and flags any URL whose query holds a credential. Outside a URL the table
+# reads no ``token`` parameter, so the tail stays visible: a known gap.
 _HEAD = github_classic(seed=62)
 _OPAQUE = "-opaquesecretvalue123"
 _MIXED_TEXT = f"Callback: approve-cb?token={_HEAD}{_OPAQUE} done."
@@ -183,65 +181,66 @@ async def test_non_exempt_token_split_across_deltas_is_still_redacted(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cuts", _MIXED_CUTS)
-async def test_partially_claimed_token_split_across_deltas_loses_its_tail(
+async def test_stays_visible_known_gap_a_token_tail_outside_a_url(
     tmp_path, monkeypatch, cuts: tuple[int, ...]
 ) -> None:
-    """A value pass 1 already partly claimed is not deferred; its tail is redacted too.
-
-    Deferring it would persist the tail: the per-delta run leaves
-    ``token=[REDACTED: credential]<tail>`` and the whole-segment run skips a value
-    that begins with the fixed tag.
-    """
+    """The GitHub head is masked in every delta; the opaque tail after it stays, as no
+    URL carries the ``token`` parameter."""
     _install(frozenset({_PREFIX}))
     stored, wire = await _stream_turn(tmp_path, monkeypatch, _MIXED_TEXT, cuts)
     assert _HEAD not in stored
-    assert _OPAQUE not in stored
-    assert stored == "Callback: approve-cb?token=[REDACTED: credential][REDACTED: credential] done."
+    assert stored == f"Callback: approve-cb?token=[REDACTED: credential]{_OPAQUE} done."
     assert _HEAD not in wire
-    assert _OPAQUE not in wire
 
 
 class TestDeferTokenParamKeyword:
-    """The keyword itself, on the delta a 40-char cut produces."""
-
-    _DELTA = _chunks(_TEXT, 40)[1]
+    """The keyword itself, on a URL whose ``token`` the table reads."""
 
     def test_default_is_byte_identical_without_a_prefix_set(self) -> None:
         _install(frozenset())
-        assert redact_credentials(self._DELTA, defer_token_param=True) == redact_credentials(
-            self._DELTA
+        assert redact_credentials(_OTHER_URL, defer_token_param=True) == redact_credentials(
+            _OTHER_URL
         )
-        assert "token=[REDACTED: credential]" in redact_credentials(self._DELTA)[0]
+        assert "token=[REDACTED: credential]" in redact_credentials(_OTHER_URL)[0]
 
-    def test_defers_only_pass_4_when_a_prefix_is_installed(self) -> None:
+    def test_defers_only_the_token_row_when_a_prefix_is_installed(self) -> None:
         _install(frozenset({_PREFIX}))
-        delta = f"{self._DELTA} key {_HEAD}"
-        out, warnings = redact_credentials(delta, defer_token_param=True)
-        assert out == f"{self._DELTA} key [REDACTED: credential]"
+        text = f"{_OTHER_URL} key {_HEAD}"
+        out, warnings = redact_credentials(text, defer_token_param=True)
+        assert out == f"{_OTHER_URL} key [REDACTED: credential]"
         assert warnings and all("token parameter" not in w for w in warnings)
-        # The plain call on the same delta still redacts the value.
-        assert "token=[REDACTED: credential]" in redact_credentials(delta)[0]
+        # The plain call on the same text still redacts the value.
+        assert "token=[REDACTED: credential]" in redact_credentials(text)[0]
 
     def test_other_callers_are_unchanged(self) -> None:
         _install(frozenset({_PREFIX}))
-        out, _ = redact_credentials(self._DELTA)
+        out, _ = redact_credentials(_OTHER_URL)
         assert "token=[REDACTED: credential]" in out
 
     def test_partially_claimed_value_is_redacted_not_deferred(self) -> None:
-        """Only a value no earlier pass touched is eligible for the exemption."""
+        """Only a value no other row touched is eligible for the exemption."""
         _install(frozenset({_PREFIX}))
-        text = f"x?token={_HEAD}{_OPAQUE}"
+        text = f"https://h.example.test/x?token={_HEAD}{_OPAQUE}"
         deferred = redact_credentials(text, defer_token_param=True)
         assert deferred == redact_credentials(text)
         assert _OPAQUE not in deferred[0]
-        assert deferred[0] == "x?token=[REDACTED: credential][REDACTED: credential]"
+        assert deferred[0] == "https://h.example.test/x?token=[REDACTED: credential]"
 
     def test_whole_value_after_a_partially_claimed_one_is_still_deferred(self) -> None:
-        """The first match is redacted, and the loop goes on to defer the second."""
+        """The first value is redacted, and the second, read by the token row alone, is
+        deferred."""
         _install(frozenset({_PREFIX}))
-        text = f"a?token={_HEAD}{_OPAQUE} b?token={_SECRET}"
+        text = f"https://h.example.test/a?token={_HEAD}{_OPAQUE} {_OTHER_URL}"
         out, warnings = redact_credentials(text, defer_token_param=True)
-        assert out == f"a?token=[REDACTED: credential][REDACTED: credential] b?token={_SECRET}"
+        assert out == f"https://h.example.test/a?token=[REDACTED: credential] {_OTHER_URL}"
         assert [w for w in warnings if "token parameter" in w] == [
             f"Redacted token parameter value ({len(_HEAD) + len(_OPAQUE)} chars)"
         ]
+
+    def test_stays_visible_known_gap_a_delta_without_its_url_scheme(self) -> None:
+        """A delta cut after the scheme carries ``?token=`` with no URL the table reads;
+        the whole-segment run reads the link."""
+        _install(frozenset())
+        delta = _chunks(_TEXT, 40)[1]
+        assert "://" not in delta and "?token=" in delta
+        assert redact_credentials(delta) == (delta, [])

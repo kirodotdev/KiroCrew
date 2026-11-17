@@ -5048,7 +5048,8 @@
       "switch_crew": "Switch crew",
       "switch_crew_unread": "Switch crew, {{n}} unread elsewhere",
       "unreachable": "unreachable",
-      "unreachable_via": "unreachable — {{via}} is down"
+      "unreachable_via": "unreachable — {{via}} is down",
+      "switch_crew_new_team_crew": "Switch crew, new Team Crew"
     },
     "relayCrews": {
       "list_label": "Team Crews you can open through the relay",
@@ -5071,7 +5072,10 @@
       "try_again": "Try again",
       "request_id": "Request ID: {{id}}",
       "group_team_crews": "Team Crews",
-      "opens_own_window": "Opens in its own window"
+      "opens_own_window": "Opens in its own window",
+      "new_crew": "New",
+      "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
+      "open_crew_failed": "Couldn't open {{name}}."
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -5606,6 +5610,7 @@
       "save_edit": "Save edit",
       "send_now": "Send now",
       "wont_survive_a_restart": "won't survive a restart",
+      "restored_held": "Restored after a restart. Won't send on its own.",
       "sub_agent_results_ready_one": "{{count}} sub-agent result ready — processing after the current turn",
       "sub_agent_results_ready_other": "{{count}} sub-agent results ready — processing after the current turn",
       "queued_count_one": "{{count}} queued",
@@ -6081,7 +6086,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc to cancel, click the mic to finish",
       "esc_to_cancel_click_mic_to_send": "Esc to cancel, Shift-click keeps a draft, click the mic to send",
       "esc_to_cancel_enter_to_send": "Esc to cancel, Enter to send",
-      "listening": "Listening"
+      "listening": "Listening",
+      "muted": "Muted"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Enable it under",
@@ -6099,7 +6105,8 @@
       "voice_input_cannot_run": "Voice input can't run"
     },
     "voiceStatusBar": {
-      "recording": "Recording"
+      "recording": "Recording",
+      "muted": "Muted"
     },
     "webAppArtifactCard": {
       "acct": "acct",
@@ -6616,6 +6623,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (paused) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (paused)"
+    },
+    "voiceMuteButton": {
+      "mute": "Mute microphone",
+      "unmute": "Unmute microphone",
+      "shortcut_hint": "Alt+Shift+Q mutes or unmutes",
+      "shortcut_hint_mac": "⌃⇧M mutes or unmutes",
+      "mute_short": "Mute",
+      "unmute_short": "Unmute"
     }
   },
   "hooks": {
@@ -7557,6 +7572,7 @@
         "model_access_fallback": "Your account cannot use model {{rejected}} — running on {{model}} instead.",
         "model_unavailable": "{{model}} isn't offered right now — this session is running on auto instead. Pick another model from the composer, or leave it: your model choice is kept and will be used automatically once it's offered again.",
         "compaction_continuing": "The context was compacted mid-turn and the response stopped there — continuing automatically.",
+        "model_server_error_fallback": "{{primary}} keeps returning server errors — running on {{fallback}} until {{primary}} recovers.",
         "model_throttled_fallback": "{{primary}} is throttled — running on {{fallback}} until {{primary}} recovers.",
         "refusal_fallback_same_model": "Automatic retry was skipped because the fallback model (`agent.refusal_fallback_model`) is the same as your current model — retrying the same model hits the same filter. Pick a different model for the fallback to retry automatically.",
         "session_reconnecting": "The agent lost this chat's session — reconnecting…",
@@ -7773,6 +7789,8 @@
       },
       "elicitationCard": {
         "answer_failed": "Your answer could not be sent. Try again.",
+        "answer_no": "No",
+        "answer_yes": "Yes",
         "choose": "Choose…",
         "date_time_format": "Format: 2026-01-31T09:30:00Z",
         "decline": "Decline",
@@ -8422,6 +8440,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "Orchestrator memory",
+        "orchestrator_memory_description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+        "orchestrator_memory_hint": "Uses memories saved in other Kiro clients alongside {{productName}}'s existing memory. Kiro memories are read-only here. {{productName}}'s learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+        "orchestrator_memory_preview": "Preview",
+        "orchestrator_memory_save_failed": "Could not save orchestrator memory. Try again.",
         "approval_agent_spec": "Asks before each tool, because {{productName}} tells it to.",
         "approval_seeded_settings": "Asks before each tool only if its own settings say so. {{productName}} writes that setting and cannot confirm it took effect.",
         "approval_session_config": "Asks before it runs a command or changes a file. {{productName}} turns that on and checks it. Plain reads do not ask.",
@@ -8743,7 +8766,7 @@
         "ctrl_a": "Ctrl+A",
         "delete": "Delete",
         "embedding_model_is_downloading_in_the_background": "Embedding model is downloading in the background",
-        "embeddings_initializing": "○ embeddings initializing",
+        "embeddings_initializing": "embeddings initializing",
         "entity_items_load_failed": "Couldn't load the items for this entity",
         "error_no_reason": "The request failed without a reason.",
         "esc": "Esc",
@@ -8824,7 +8847,7 @@
         "add_page": "Add Web Page",
         "add_source": "+ Add Source",
         "add_source_2": "Add Source",
-        "auto": "● auto",
+        "auto": "auto",
         "auto_watches_for_file_changes_every_5_min": "Auto-watches for file changes every 5 min",
         "browse_for_a_folder": "Browse for a folder",
         "cancel": "Cancel",
@@ -8849,7 +8872,7 @@
         "include_subdirectories_recursive": "Include subdirectories (recursive)",
         "ingest_status_done": "done",
         "ingest_status_uploading": "uploading",
-        "manual": "○ manual",
+        "manual": "manual",
         "name_optional": "Name (optional)",
         "namespace": "Namespace:",
         "namespace_2": "Namespace",
@@ -9203,6 +9226,16 @@
       "profile_permissions": "Permissions",
       "profile_settings": "Settings",
       "profile_effort_hint": "Higher levels think longer, answer slower, and cost more.",
+      "profile_autocompact": "Summarize old messages at",
+      "profile_autocompact_inherited_hint": "Follows the default in Settings → Chat, now {{pct}}",
+      "profile_autocompact_inherited_harness": "{{backend}} summarizes these chats on its own schedule. Pick a percent to summarize sooner.",
+      "profile_autocompact_hint": "When {{name}}'s chats fill this share of the model's context window, older messages are summarized. Lower costs less each time {{name}} runs; higher keeps more detail.",
+      "profile_autocompact_thread_override": "This chat has its own threshold, {{pct}}, which stays in force here.",
+      "profile_autocompact_read_failed": "Couldn't read the current default for this chat.",
+      "profile_autocompact_inherited_default": "Follows the default in Settings → Chat",
+      "profile_autocompact_retry": "Try again",
+      "profile_autocompact_clear_thread": "Clear this chat's own threshold",
+      "profile_autocompact_clear_failed": "Couldn't clear this chat's own threshold.",
       "profile_settings_waiting": "These unlock once the chat with this bot is open.",
       "profile_permission_changed": "The permission changed elsewhere. This is the current setting.",
       "profile_mode_normal_desc": "{{name}} looks things up on its own, like reading files, searching the web or running read-only commands, and asks for the rest, in every chat with it.",
@@ -9877,7 +9910,11 @@
         "date": "Date",
         "input_tokens": "Input tokens",
         "messages": "Messages",
-        "msgs": "msgs /",
+        "period_activity": "{{messages}} / {{tools}}",
+        "period_messages_one": "{{n}} msg",
+        "period_messages_other": "{{n}} msgs",
+        "period_tool_calls_one": "{{n}} tool",
+        "period_tool_calls_other": "{{n}} tools",
         "output_tokens": "Output tokens",
         "plan": "Plan",
         "refused_transcripts_warning": "{{productName}} couldn't load {{count}} of your chats, so these numbers are incomplete. This can happen when your Windows profile is stored on a network drive.",
@@ -9890,7 +9927,6 @@
         "today": "Today",
         "token_usage": "Token Usage",
         "tool_calls": "Tool Calls",
-        "tools": "tools",
         "total_api_time": "Total API time",
         "total_cost": "Total cost",
         "total_sessions_30d": "Total sessions (30d)",
@@ -10429,7 +10465,9 @@
       "unknown_session": "an unlisted session",
       "busy_emptying": "Emptying the Trash. Some actions are paused until it finishes.",
       "empty_failed_next_step": "Try Delete forever again. Details are in the gateway log.",
-      "kept_identity_changed": "One batch changed on disk after you selected it, so it was kept."
+      "kept_identity_changed": "One batch changed on disk after you selected it, so it was kept.",
+      "claude_code_kept_one": "Claude Code also keeps at least {{size}} for {{count}} Claude chat. Storage does not remove it.",
+      "claude_code_kept_other": "Claude Code also keeps at least {{size}} for {{count}} Claude chats. Storage does not remove it."
     },
     "sessionsTab": {
       "agent": "Agent",
@@ -10654,6 +10692,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row",
         "folder_count_includes_subfolders": "Include Subfolder Contents in Folder Counts",
         "folder_count_includes_subfolders_description": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds",
+        "hide_empty_folders": "Hide Empty Folders",
+        "hide_empty_folders_description": "In List view, folders with no open sessions stay hidden until a session is created or moved into them, and show while you drag a session",
         "full_titles_on_scroll": "Show Full Titles While Scrolling",
         "needs_me_hover_card": "Quick Reply Card on Hover",
         "needs_me_hover_card_hint": "Resting on a session that waits on you, or pressing → on it, opens a card to reply without leaving this chat.",
@@ -11108,7 +11148,6 @@
         "your_custom_denies": "Your custom denies",
         "redaction_section": "Redaction",
         "redaction_allowed_hosts_section": "Allowed link hosts",
-        "redaction_always_on": "Redaction in chat and messaging channels is always on; the switch above applies only to files the dashboard opens for you. A host listed here skips only the long-query and encoded-data (base64) checks for links in its workspace; every credential check still runs. Only this dashboard can add a host, from a blocked link's Allow for this host.",
         "redaction_load_failed": "Couldn't load the allowed hosts.",
         "redaction_revoke_failed": "Couldn't revoke that host. It is still allowed.",
         "redaction_no_allowed_hosts": "No hosts are allowed. Every link goes through every check.",
@@ -11431,6 +11470,7 @@
         "copy_turn_url": "Copy the chat API URL of {{name}}",
         "copy_word": "Copy",
         "credentials_bad": "Could not reach AWS with this profile. Check your credentials, then re-check.",
+        "credentials_env_vars": "Create an AWS profile: run {{sso}} or {{configure}} in a terminal on the computer that runs {{productName}}, enter the profile’s name in the AWS profile field, then re-check. Your credentials are in environment variables, and {{productName}} does not pass AWS secret keys or session tokens from there to the AWS CLI.",
         "credentials_helper_missing": "Give {{name}} its full path in the credential_process line of your AWS config file (usually {{file}}), then re-check. The AWS CLI could not find it on the gateway’s PATH. To get the full path, run {{command}} in a terminal on the computer that runs {{productName}}, from the account that runs it.",
         "credentials_ok": "Using profile {{profile}} → account {{account}}.",
         "credentials_ok_default": "Using your default AWS credentials → account {{account}}.",
@@ -11438,7 +11478,7 @@
         "default_tag": "Default",
         "delete": "Delete…",
         "delete_crew": "Delete {{name}}",
-        "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
+        "delete_warning": "Delete terminates the EC2 instance and also removes its disk, IAM role and security group, which ends its charges. The crew's chats, memory, files and settings are stored on that disk, so they are lost and cannot be recovered.",
         "deleting": "Deleting…",
         "doesnt_manage": "{{productName}} does not manage this crew",
         "edit_crew": "Edit {{name}}",
@@ -12079,7 +12119,6 @@
       "usage_error": "Could not check where this item is used: {{error}}",
       "usage_incomplete": "Could not check {{places}}, so any use there is not shown.",
       "delete_in_use": "This item is still in use. Whatever uses it will stop working.",
-      "reference_title": "Reference",
       "copy_reference": "Copy {{reference}}",
       "corrupt_item": "This item could not be read. Delete it and add it again.",
       "not_found": "No item by that name. Pick one on the left.",
@@ -12087,7 +12126,12 @@
       "open_website": "Open {{href}}",
       "keep_blank_hint": "Leave the password and notes blank to keep what is stored.",
       "copy_failed": "Couldn’t copy. Select the text and copy it yourself.",
-      "reference_hint": "Paste a reference into an MCP server’s environment to use this item there. #username picks one field."
+      "usage_kind_browser_signin": "Browser sign-in",
+      "usage_signs_in_at": "Signs you in at {{host}}",
+      "use_in_tool_title": "Use in a tool",
+      "use_in_tool_tip": "Paste this into a tool’s settings, such as an MCP server’s environment. The tool gets the value when it runs; the value itself never appears there.",
+      "advanced_title": "Advanced",
+      "api_call_label": "API call"
     }
   },
   "uiLocations": {
@@ -12332,6 +12376,7 @@
     "preview_desc": "People tab, invites and shared sessions",
     "preview_env_on": "On via environment",
     "preview_restart_notice": "Restart the gateway to apply",
+    "preview_restart_hint": "Takes effect after a restart",
     "preview_restart": "Restart gateway",
     "preview_restarting": "Restarting…",
     "preview_load_failed": "Could not read the Shared Crew setting.",

@@ -224,7 +224,8 @@ def test_the_patch_scan_reads_every_spelling_and_nothing_else(stem: str) -> None
 @functools.lru_cache(maxsize=1)
 def _corpus_gates() -> frozenset[str]:
     root = source_corpus.repo_root()
-    return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
+    with source_corpus.untraced():
+        return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
 
 
 @pytest.mark.xdist_group(name="tree_scan_facade_shared_checks")

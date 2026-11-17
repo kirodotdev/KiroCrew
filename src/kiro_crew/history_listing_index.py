@@ -352,6 +352,23 @@ class SessionListingIndex:
                 return None
             return entry.has_messages
 
+    def identities(self) -> dict[str, CacheIdentity] | None:
+        """File stem -> the cache identity of each listed transcript, as the index holds it.
+
+        As current as the rows of the last listing; costs no ``stat``. None when the
+        index is not built, is due a rebuild, or is over a bound.
+        """
+        if not self._built:
+            return None
+        with self._lock:
+            if not self._built or self._rebuild_due or not self._within_budget():
+                return None
+            return {
+                stem: entry.stamp
+                for stem, entry in self._entries.items()
+                if entry.status == "row" and entry.stamp is not None
+            }
+
     def warm(self, should_stop: Callable[[], bool] | None = None) -> bool:
         """Build the index ahead of the first listing; True when it is built.
 

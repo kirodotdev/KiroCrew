@@ -7,7 +7,9 @@ conversation history.
 The wire shape deliberately reports a session as ONE size. Sessions occupy two
 stores underneath (see :mod:`kiro_crew.session_storage`), but that is an
 implementation detail the reader cannot act on, so it is neither split out here
-nor derivable from these payloads.
+nor derivable from these payloads. ``claude_code`` is not such a split: it is how
+much Claude Code's own store keeps for this instance's mapped Claude chats, which
+Storage never moves, and no row or other total counts it.
 
 Reclaiming stages files in a trash rather than deleting them, which means the
 reclaim itself does not return space to the filesystem. ``trash`` carries the
@@ -25,6 +27,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.agent_sdk.claude_transcripts import PROVIDER_LABEL_CLAUDE
 from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import (
@@ -44,6 +47,7 @@ from kiro_crew.session_storage import (
     SessionIndex,
     SessionStorageError,
     SessionUnit,
+    StorageReport,
     empty_trash,
     list_trash,
     list_units,
@@ -87,7 +91,9 @@ def _sel():
     return _pkg.sel()
 
 
-def _build_index(state: DashboardState | None = None) -> SessionIndex:
+def _build_index(
+    state: DashboardState | None = None, session_map: SessionMap | None = None
+) -> SessionIndex:
     """Pair every mapped session's replay log with its transcript files.
 
     Stems come from :func:`kiro_crew.history.transcript_stems`, which returns both
@@ -102,7 +108,7 @@ def _build_index(state: DashboardState | None = None) -> SessionIndex:
     the state therefore cannot make anything reclaimable that would not be —
     it only costs the caller the ability to say which sessions are truly busy.
     """
-    mapping = SessionMap().mapped_sids_by_key()
+    mapping = (session_map or SessionMap()).mapped_sids_by_key()
     stem_to_sid = {stem: sid for key, sid in mapping.items() for stem in transcript_stems(key)}
     running = state.running_session_keys() if state is not None else frozenset()
     live_sids = frozenset(sid for key, sid in mapping.items() if key in running)
@@ -278,13 +284,27 @@ async def _json_body(request: web.Request) -> tuple[dict[str, Any] | None, web.R
     return body, error
 
 
+def _claude_code_payload(report: StorageReport) -> dict[str, int]:
+    """What Claude Code keeps for this instance's mapped Claude chats, at least.
+
+    Another program's store, which Storage never moves: no session row and no
+    other total in the payload includes it.
+    """
+    return {"bytes": report.claude_code_bytes, "sessions": report.claude_code_sessions}
+
+
 def _report_payload() -> dict[str, Any]:
-    index = _build_index()
+    session_map = SessionMap()
+    index = _build_index(session_map=session_map)
     # One trash pass serves both the totals inside measure() and the wire array
     # below: list_trash reads every batch manifest per call, and two calls could
     # bracket a concurrent stage/empty and ship totals that contradict the array.
     batches = list_trash()
-    report = measure(index, batches=batches)
+    report = measure(
+        index,
+        batches=batches,
+        claude_sessions=session_map.mapped_sid_cwds(PROVIDER_LABEL_CLAUDE),
+    )
     return {
         "total_bytes": report.total_bytes,
         "total_sessions": report.total_sessions,
@@ -295,6 +315,7 @@ def _report_payload() -> dict[str, Any]:
         # Non-empty when this instance must not reclaim at all; a client should
         # explain rather than offer an action that can only be refused.
         "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "claude_code": _claude_code_payload(report),
         "buckets": [
             {"label": b.label, "sessions": b.sessions, "bytes": b.bytes} for b in report.buckets
         ],
@@ -815,7 +836,8 @@ def _titles_by_stem(conversation_log: Any) -> dict[str, str]:
 
 
 def _inventory_payload(state: DashboardState) -> dict[str, Any]:
-    index = _build_index(state)
+    session_map = SessionMap()
+    index = _build_index(state, session_map)
     units = list_units(index)
     titles = _titles_by_stem(state.conversation_log)
     # The same pass answers both halves of the screen. Measuring separately would
@@ -824,7 +846,12 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
     # The trash gets the identical treatment: one list_trash() pass feeds both
     # the totals and the batches array, for the same one-instant reason.
     batches = list_trash()
-    report = measure(index, units=units, batches=batches)
+    report = measure(
+        index,
+        units=units,
+        batches=batches,
+        claude_sessions=session_map.mapped_sid_cwds(PROVIDER_LABEL_CLAUDE),
+    )
 
     # Replay-only units — subagent runs — are what a long-lived install accumulates
     # by the hundred thousand, and this screen folds every one of them into a single
@@ -886,6 +913,7 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
         "total_sessions": report.total_sessions,
         "reclaimable_bytes": report.reclaimable_bytes,
         "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "claude_code": _claude_code_payload(report),
         "sessions": sessions,
         # The truth about the group the rows above only partly represent, so a
         # client can say "the 200 largest of 168,832" instead of implying the list

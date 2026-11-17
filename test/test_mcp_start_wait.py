@@ -137,6 +137,40 @@ class TestTheRule:
         assert more == 44
 
 
+class TestTheBackgroundHelper:
+    """``kirocrew-lite`` mounts nothing, so a server in its block was written by another tool.
+
+    A background turn on it is closed after the start when it mounts anything
+    (``llm_helpers_parts.background_turns``), so the start must not first wait for it.
+    """
+
+    _LITE = "kirocrew-lite"
+    _INJECTED = {
+        **_PARAMS,
+        "_meta": {"kiro": {"customAgents": [{"id": _LITE, "mcpServers": {"creds-agent": {}}}]}},
+    }
+
+    def test_a_start_nobody_waits_on_does_not_wait_for_a_server_in_its_block(self):
+        brief = first_prompt_brief_wait(self._INJECTED, self._LITE, (_CORE,), BACKGROUND)
+
+        assert "creds-agent" not in brief
+
+    def test_it_still_waits_for_what_kiro_crew_sent_on_the_session(self):
+        assert first_prompt_brief_wait(self._INJECTED, self._LITE, (_CORE,), BACKGROUND) == (
+            "bridge",
+        )
+
+    def test_another_agent_still_waits_for_its_own_servers(self):
+        params = {
+            **_PARAMS,
+            "_meta": {
+                "kiro": {"customAgents": [{"id": _AGENT, "mcpServers": {"creds-agent": {}}}]}
+            },
+        }
+
+        assert "creds-agent" in first_prompt_brief_wait(params, _AGENT, (_CORE,), BACKGROUND)
+
+
 def _own(names: tuple[str, ...]) -> dict:
     """The start as sent by an agent whose own block holds the servers *names*."""
     agent = {"id": _AGENT, "mcpServers": dict.fromkeys(names, {})}
@@ -795,5 +829,85 @@ class TestOneAnswerForEveryState:
         try:
             await async_wait_until(lambda: _holding(handle))
             assert not hold.done()
+        finally:
+            hold.cancel()
+
+
+#: A user server the gateway shares: moved onto the session as a stub element.
+_SHARED_STUB = {
+    "name": "shared",
+    "command": "python3",
+    "args": ["-s", "-m", "kiro_crew.mcp_gateway.stub", "--server", "shared"],
+}
+_SHARED_PARAMS = {**_PARAMS, "mcpServers": [{"name": _CORE}, {"name": "bridge"}, _SHARED_STUB]}
+
+
+class TestASharedServer:
+    """A gateway-shared stub on the session is the agent's own server, moved to be shared."""
+
+    def test_a_person_waiting_does_not_wait_for_it(self):
+        assert first_prompt_brief_wait(_SHARED_PARAMS, _AGENT, (_CORE,), FOREGROUND) == ("bridge",)
+
+    def test_a_start_nobody_waits_on_still_waits_for_it(self):
+        assert "shared" in first_prompt_brief_wait(_SHARED_PARAMS, _AGENT, (_CORE,), BACKGROUND)
+
+    def test_a_person_waiting_leaves_it_to_the_first_turn(self):
+        left, more = left_to_first_turn(_SHARED_PARAMS, _AGENT, (_CORE,), FOREGROUND)
+
+        assert left == (*_USERS, "shared")
+        assert more == 0
+
+    def test_a_shared_managed_server_stays_required(self):
+        """Kiro Crew's own servers can be shared too; the required wait still holds them."""
+        core_stub = {**_SHARED_STUB, "name": _CORE}
+        params = {**_PARAMS, "mcpServers": [core_stub, {"name": "bridge"}]}
+
+        assert _CORE not in left_to_first_turn(params, _AGENT, (_CORE,), FOREGROUND)[0]
+
+    def test_shared_servers_past_what_the_report_tracks_are_counted(self):
+        """The bound covers the agent's own and the shared ones together."""
+        names = tuple(f"srv-{i:03d}" for i in range(STATUS_CAP + 1))
+        stubs = [{**_SHARED_STUB, "name": name} for name in names]
+        params = {**_PARAMS, "mcpServers": [{"name": _CORE}, *stubs]}
+
+        left, more = left_to_first_turn(params, _AGENT, (_CORE,), FOREGROUND)
+
+        assert len(left) == STATUS_CAP
+        assert more == len(_USERS) + 1
+
+    @pytest.mark.asyncio
+    async def test_a_start_a_person_waits_on_does_not_wait_for_it(self, runtime):
+        """It never reports; the brief cap is the long fallback, so a wait would hang."""
+        handle = _handle(_status(**_ALL_UP, shared="connecting"))
+
+        await finished(
+            runtime._wait_managed_mcp(
+                handle, _SHARED_PARAMS, _AGENT, FALLBACK_TIMEOUT_SECS, 0, FOREGROUND
+            ),
+            "foreground start",
+        )
+
+        assert handle._mcp_report.left_to_turn == (*_USERS, "shared")
+        assert handle._mcp_report.not_ready() == {"connecting": ("shared",)}
+
+    @pytest.mark.asyncio
+    async def test_an_untold_first_turn_still_holds_for_it(self, runtime, _floor_monkeypatch):
+        """``kirocrew chat`` and one-shots carry no block: they wait as the start did."""
+        _floor_monkeypatch.setattr(
+            session_handle_mcp, "MOUNTED_MCP_WAIT_SECS", FALLBACK_TIMEOUT_SECS
+        )
+        handle = _handle(_status(**_ALL_UP, shared="connecting"))
+        await finished(
+            runtime._wait_managed_mcp(
+                handle, _SHARED_PARAMS, _AGENT, FALLBACK_TIMEOUT_SECS, 0, FOREGROUND
+            ),
+            "foreground start",
+        )
+        hold = asyncio.ensure_future(hold_untold_first_turn(handle))
+        try:
+            await async_wait_until(lambda: _holding(handle))
+            assert not hold.done()
+            _deliver(handle, _status(**_ALL_UP, shared="connected"))
+            await _goes_out(hold, "untold first turn")
         finally:
             hold.cancel()

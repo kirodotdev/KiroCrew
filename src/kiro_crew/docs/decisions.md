@@ -229,7 +229,7 @@ A session that asks you is never annotated, because you are the one looking at t
 
 The decision model is asked about one call at a time, and at most twenty times in one turn. A turn that runs more tools than that keeps running normally; the calls past the twentieth simply carry no note, and the log says where the count stopped.
 
-What leaves the machine for one of these questions is the tool's name, its arguments and a short excerpt of the message that led to the call. Credentials and suspicious URLs in those arguments are replaced with a placeholder BEFORE the question is sent -- a key in an `aws` command is ordinary, and refusing to look at it would mean the note never appears on the calls most worth a second look. The same waiting time and the same cap apply as for skill selection, so a slow answer costs the note, not the call.
+What leaves the machine for one of these questions is the tool's name, its arguments and a short excerpt of the message that led to the call. Credentials in those arguments, inside URLs too, are replaced with a placeholder BEFORE the question is sent -- a key in an `aws` command is ordinary, and refusing to look at it would mean the note never appears on the calls most worth a second look. The same waiting time and the same cap apply as for skill selection, so a slow answer costs the note, not the call.
 
 The thumbs say whether the decision model read the risk right. They are the same owner-only verdict described above, filed against that one call.
 

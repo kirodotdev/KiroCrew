@@ -41,8 +41,16 @@ const { NOTICE, NOTICE_FOR_CODE, noticeText } = require("./relay-crew-notice");
 // refused this shell's secret, which rotates per gateway start) backs off.
 const RENEWAL_CODE = Object.freeze({ RELAY_VIEWER_OFF: "NOT_SET_UP", UNAVAILABLE: "UNREACHABLE" });
 
-function createRelayCrewOpener({ requestToken, openWindow, createRenewal, createTokenHolder, log }) {
-  // endpointId -> { win, holder, renewal } for each open window.
+// Main to the opening dashboard: `{ endpointId, type: "chord", index }` or
+// `{ endpointId, type: "closed" }`. preload.js's `onPaneEvent` listens.
+const PANE_EVENT = "relay-crew:pane-event";
+
+// `openPane` puts the Crew in the main window instead of a window of its own
+// (the pane in relay-crew-window.js); `open` uses it only when handed a
+// pane. Its handle has the window's shape, so everything below serves both.
+function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenewal, createTokenHolder, log }) {
+  // endpointId -> { win, holder, renewal, crew, dashboard } for each open
+  // window or pane; `dashboard` is set for a pane only.
   const windows = new Map();
   const opening = new Map();
   const say = (endpointId, outcome) => {
@@ -125,7 +133,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     entry.win.onVisibilityChange((hidden) => entry.renewal.setHidden(hidden));
   }
 
-  async function openNew(endpointId) {
+  async function openNew(endpointId, pane) {
     const holder = createTokenHolder();
     const crew = { crewUrl: "", relayDomain: "", name: "", signInMarker: null };
     const at = epoch;
@@ -142,9 +150,24 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     }
     let win;
     try {
-      win = openWindow({ endpointId, crewUrl: crew.crewUrl, relayDomain: crew.relayDomain, title: crew.name, getToken: holder.current });
+      const opts = { endpointId, crewUrl: crew.crewUrl, relayDomain: crew.relayDomain, title: crew.name, getToken: holder.current };
+      win = pane
+        ? openPane({ ...opts, parent: pane.parent, dashboard: pane.dashboard, bounds: pane.bounds })
+        : openWindow(opts);
       wire({ win, renewal });
       win.onClosed(() => { if (windows.get(endpointId)?.win === win) windows.delete(endpointId); });
+      // A pane's switch chord and its close go to the dashboard that opened it,
+      // and to nothing else: the pane's own page has no preload to hear them.
+      if (pane) {
+        const tell = (event) => {
+          try {
+            const wc = pane.dashboard.webContents;
+            if (!wc.isDestroyed()) wc.send(PANE_EVENT, { endpointId, ...event });
+          } catch { /* mid-teardown */ }
+        };
+        win.onChord((index) => tell({ type: "chord", index }));
+        win.onClosed(() => tell({ type: "closed" }));
+      }
       // Registered once per window, not in wire(): a restart re-wires the same window.
       win.onUnreachable(() => {
         const entry = windows.get(endpointId);
@@ -164,7 +187,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       say(endpointId, "UNAVAILABLE");
       return { ok: false, error: "UNAVAILABLE" };
     }
-    windows.set(endpointId, { win, holder, renewal, crew });
+    windows.set(endpointId, { win, holder, renewal, crew, dashboard: pane ? pane.dashboard : null });
     say(endpointId, "opened");
     return { ok: true };
   }
@@ -222,7 +245,9 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
 
   return {
     closeAll,
-    async open(endpointId) {
+    // `pane` is `{ parent, dashboard, bounds }`, resolved by main, or absent
+    // for a window of its own. A Crew already open stays where it is.
+    async open(endpointId, pane) {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       const existing = windows.get(endpointId);
       if (existing && !existing.win.isClosed()) {
@@ -231,7 +256,14 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
         say(endpointId, "focused");
         return { ok: true };
       }
-      return once(endpointId, () => openNew(endpointId));
+      return once(endpointId, () => openNew(endpointId, pane || null));
+    },
+    // An open pane's handle and the dashboard view it was opened from, or null
+    // for a window, a closed pane or no Crew.
+    paneFor(endpointId) {
+      const entry = windows.get(endpointId);
+      if (!entry || !entry.dashboard || entry.win.isClosed()) return null;
+      return { handle: entry.win, dashboard: entry.dashboard };
     },
   };
 }

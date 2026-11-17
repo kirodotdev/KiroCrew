@@ -101,6 +101,9 @@ export interface MemberRosterRow {
   /** How many worker sessions this Bot may have open at once: 1-32, or 0 (the
    *  default) for no limit. Only the owner sets it; the session verbs refuse past it. */
   max_workers?: number
+  /** The crewmate's "Auto-compact at", in percent; 0 inherits the global
+   *  `session.autocompact_pct`. A thread's own override still wins. */
+  autocompact_pct?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
@@ -591,9 +594,8 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
         text: string
         /** Last-modified timestamp, or null when no notes file exists yet. */
         updated_ts: number | null
-        /** The text above was redacted on the way out (a secret-like string or an
-         *  exfiltration URL replaced by its placeholder); the panel says so above
-         *  the notes. */
+        /** The text above was redacted on the way out (a secret-like string
+         *  replaced by its placeholder); the panel says so above the notes. */
         redacted: boolean
         /** The file ran past the briefing cap, so the text above ends in the
          *  truncation marker instead of the tail; the panel says so above the

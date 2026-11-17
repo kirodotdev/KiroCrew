@@ -779,13 +779,12 @@ class TestNoteEndpoint:
             )
             assert resp.status == 200
 
-        # Visible line: the raw secret is gone and both sinks fired. The exfil
-        # marker embeds the domain by design, so assert the secret and URL path
-        # are scrubbed rather than that the domain substring is absent.
+        # Visible line: the raw secret is gone wherever it sat, and the link keeps
+        # everything but the credential value in it.
         visible = slot.messages[0]["content"]
         assert SAMPLE_SLACK_BOT_TOKEN not in visible
         assert "[REDACTED: credential]" in visible
-        assert "[REDACTED: suspicious URL to evil.example.com]" in visible
+        assert "http://evil.example.com/x?d=[REDACTED: credential]" in visible
         # Context half: the credential-shaped note seated none; the other note's
         # context half is the caller's bytes unchanged.
         assert [e["content"] for e in slot._pending_context] == [plain_note]

@@ -23,6 +23,7 @@ from apps_routes_coverage_helpers import (
     _make_app,
     _setup_env,
 )
+from redaction_structured_cases import github_classic
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import disable_app, enable_app
@@ -113,13 +114,14 @@ class TestRegistryInstall:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
+        token = github_classic(seed=61)
 
         async def _failed(name: str, **kwargs: Any) -> dict[str, Any]:
             return {
                 "ok": False,
                 "name": name,
-                "log": "cloning with token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
-                "error": "auth failed for token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
+                "log": f"cloning with token={token}",
+                "error": f"auth failed for token={token}",
             }
 
         monkeypatch.setattr(routes_mod, "install_from_registry", _failed)
@@ -127,8 +129,8 @@ class TestRegistryInstall:
             resp = await client.post("/api/apps/registry/install", json={"name": "some-app"})
             assert resp.status == 400
             body = await resp.json()
-        assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in body["log"]
-        assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in body["error"]
+        assert token not in body["log"]
+        assert token not in body["error"]
 
     @pytest.mark.asyncio
     async def test_fresh_install_returns_201_and_starts_nothing(

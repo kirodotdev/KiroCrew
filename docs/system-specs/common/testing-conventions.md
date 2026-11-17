@@ -23,7 +23,7 @@ outside those roots is never collected, so it stays green by omission.
 
 ## Determinism contract (read this first)
 
-Every backend test MUST keep these twelve rules. Each line names the shape to use and
+Every backend test MUST keep these thirteen rules. Each line names the shape to use and
 links the class that explains it; the rest of this document is the evidence behind
 them. The shared shapes live in `kiro_crew.testing` (`clock`, `wait`, `ids`), which
 ships in the wheel, so the in-package app suites use them too; the rootdir
@@ -102,6 +102,26 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   work instead. Reshaping a kept budget's reading (the minimum of N readings, the
   tracer paused around it) is not a fix: it still asserts seconds, and the K8 ratchet
   counts `thread_time` and `process_time` deltas like any other clock.
+  K8 (`test/flake_pattern_k8.py`) counts every upper bound on a span read off the
+  real clock, an event loop's `time()` included: a literal or non-literal limit
+  (`elapsed < budget`, `time.monotonic() - started < _CEILING`,
+  `elapsed < x * 1.6`), the reversed form (`BUDGET > spent`,
+  `self.assertGreater(5.0, elapsed)`, and `stamp > time.monotonic() - 5`, which bounds
+  an age), and unittest's `assertLess` / `assertLessEqual` with the span first. It
+  follows a stamp through aliases (`before = started` after
+  `started = time.monotonic()`), and a span only a helper returns
+  (`elapsed = run_timed()`) goes by its name. A clock alias or import
+  (`clock = time`, `from time import monotonic as now`) reaches only its own function
+  and the functions inside it, or the whole file at module level. A loop is `loop`,
+  `self._loop`, pytest-asyncio's `event_loop`, a getter's result or a name bound from
+  one, not any name ending in `_loop`. It exempts a span off a clock the test drives
+  (`clock.monotonic() - t0` where `clock` is a fixture, `vclock.time() - 5`), time
+  remaining (`deadline - time.monotonic() <= cap`), ordering two stamps
+  (`rt.at > t0`, or `stamp > cutoff` after `cutoff = time.monotonic() - 5.0`, a
+  cutoff taken before the work), a lower bound, a floor or ratio between two spans
+  (`elapsed >= min_duration`, `elapsed < first_elapsed / 4`), a module constant, and a
+  delta-named attribute such as `plan.duration_ms` against a non-literal limit. A
+  deliberate lost-run assertion on a measured span carries `# flake-ok: <reason>`.
   [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
 - **D8. Every await, join or `communicate` the test itself must unblock is bounded and
   fails by name** (`asyncio.wait_for`; `join(timeout)` followed by an `is_alive()`
@@ -132,6 +152,19 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   seam) red on the parent commit and green on the fix. A timing result from an
   overloaded host is not evidence; measure under CI-equivalent load.
   [Proving a determinism fix](#proving-a-determinism-fix).
+- **D13. No dependence on what the host has on `PATH`.** When the code under test
+  resolves a command with `shutil.which` (an MCP server's `command`, `gh`, `git`,
+  `node`), the test chooses the answer. A command name that is only fixture DATA counts
+  too: `"command": "http"` in a spec is a lookup on the runner's `PATH`, and a Windows
+  runner's `PATH` holds very different programs from a Linux one. Pin the product's own
+  resolver (`trusted_system_bin`; `_pin_rg_on_path` in `test/test_file_grep.py` pins the
+  grep endpoint's), or set the search path with `monkeypatch.setenv("PATH",
+  str(tmp_path))` and plant the tool there; a test that needs a real interpreter names
+  `sys.executable`. The suite has no autouse `PATH` floor (real `git`, `bash` and `node`
+  tests need the host's), so no shared fixture covers this. Run a host-tool test once
+  with the tool off `PATH`. #35547 fixed a rewriter spec whose verdict turned on an
+  `http` program being on `PATH`.
+  [What the host lends the suite](#what-the-host-lends-the-suite-and-must-not).
 
 ### Production deadlines are not test boundaries
 
@@ -146,6 +179,15 @@ import as a duration-named argument.
 - **A fixture-pinned seam for a production constant.** ``_floor_monkeypatch.setattr``
   in an autouse fixture keeps the constant out of every test body.
 - **An injected clock** for a module that owns a ``time`` import.
+- **Lift the deadline the assertion rides on, even when the test never names it.**
+  A best-effort write or a bounded cold wait that drops or serves a partial answer
+  when it expires decides the outcome on a slow runner, while the test is green
+  everywhere else: ``platform_log_append._APPEND_TIMEOUT_SECONDS`` under the
+  ``model.route`` strip, ``skills._COLD_CATALOG_WAIT_SECS`` under a cold
+  ``get_context``. Set it to ``FALLBACK_TIMEOUT_SECS`` in the test or a shared fixture
+  (``test_decisions_strip_rides_message.generous_decision_log_append``). K19 sees only
+  a wrong override, never a missing one, so trace the asserted value back through
+  every budget on its path.
 
 **WRONG** (non-zero literal or local constant — K19 flags both):
 
@@ -594,6 +636,40 @@ Actions runs that step on Linux but the test does not. A shell script outside
 `.github/` uses the portable form. `test/test_gnu_only_shell_usage.py` enforces both
 and holds the reviewed exceptions.
 
+### Shell stand-ins that trap a group signal
+
+A shell stand-in that must run a TERM/INT trap when the test signals its
+process GROUP keeps its long step out of that group. macOS `/bin/sh` is bash
+3.2: when the step it `wait`s on dies of the same group SIGTERM, bash can
+return from `wait` with the step's 143 and exit without ever running the trap.
+That failed about 1 run in 150 on a loaded Mac and looked like "the rollback
+never happened". Run the step in a group of its own, the way cli.sh's
+`_run_step` does on macOS, let the trap stop it, and record its pid so teardown
+can reap that group too:
+
+```sh
+# WRONG: the group SIGTERM also kills the waited step; bash 3.2 may skip the trap
+trap restore TERM
+sleep 30 & step=$!
+wait "$step"
+
+# RIGHT: only the shell gets the group signal; the trap stops the step
+trap restore TERM
+set -m 2>/dev/null || true
+sleep 30 & step=$!
+set +m 2>/dev/null || true
+echo "$step" > "$D/steppid"   # teardown reaps this group too
+wait "$step"
+```
+
+The trap is also given the suite's safety net as its grace, never a product
+deadline such as `UPDATE_INSTALLER_TERM_GRACE_SECS` (4 s): a loaded runner can
+stall the rollback for longer ([Production deadlines are not test
+boundaries](#production-deadlines-are-not-test-boundaries)). A product helper
+whose grace default is bound at `def` time cannot be raised by a fixture; read
+the module constant at call time so its binding is the one seam.
+`test/test_update_installer_graceful_stop.py` is the example.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
@@ -795,6 +871,51 @@ Rules that decide whether one is worth having:
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
   globals through `monkeypatch`, never raw assignment.
 
+### Refusal tests: assert the refusal, name the rule only at its own bound
+
+A command, path or payload is often refused by more than one check: a gate-wide
+cap, then a floor, then a rule. Which one answers first is an ordering detail that
+another change may move. On 2026-11-16 #37820 added a test that sent a 128-level
+`$( )` nest and asserted the ssh floor's rule refused it, and #37875 added a
+32-level substitution cap to the gate. Each was green on its base; merged, the cap
+refused the nest first and the rule-name assertion went red on every PR (fixed in
+#37964). The command was still refused. Only the name was wrong.
+
+- **A test whose point is "this is refused" asserts the refusal and nothing more**:
+  the verdict is a refusal, and the call returned one rather than raising. It does
+  not name the rule. A new, earlier check then keeps it green, and a change that
+  lets the input through still turns it red.
+- **Name the rule only in a test of that rule's own boundary**, and put the input
+  inside every OTHER limit it passes on the way. Assert that precondition in the test
+  (`depth <= _MAX_SUBSTITUTION_DEPTH`), so a later, tighter cap fails as a broken
+  precondition with its own message instead of as a wrong rule name.
+- **Probe both sides of the bound** (refused at it, allowed one below it), so the
+  test pins the bound and not just "something refused".
+
+```python
+# WRONG: the point is "a deep nest is refused", but the test names the floor's rule.
+# A gate cap added later refuses it first, and the test goes red although nothing
+# got through.
+def test_the_gate_refuses_a_nest_past_the_bound_without_an_exception():
+    assert _denied_by(_nested_double_quoted(128, "true; echo ssh")) == "sandbox-escape-ssh-self"
+
+# RIGHT: "refused, and no exception" for the deep nest. The rule is named only at
+# the rule's own bound, with the input proved to be inside the gate's cap.
+def test_a_deep_nest_is_refused_without_an_exception():
+    assert security.is_denied(_nested_double_quoted(128, "true; echo ssh")) is not None
+
+def test_the_ssh_floor_refuses_at_its_reading_bound():
+    depth = ssh._MAX_SSH_READING_DEPTH
+    assert depth <= deny_gate._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
+    assert _denied_by(_nested_double_quoted(depth, "true; echo ssh")) == "sandbox-escape-ssh-self"
+    assert _denied_by(_nested_double_quoted(depth - 1, "true; echo ssh")) is None
+```
+
+`is_denied` returns a verdict or `None`, so the plain call is the "no exception"
+check: pytest fails the test on anything it raises. Do not wrap it in a
+`try`/`except` that turns an exception into a pass. Review flags this through
+`tests-are-deterministic` item 16 in `AUTOSDE.yaml`.
+
 ### Merge-safe ratchets and counts
 
 Each pull request's CI runs on its own base, and the repository merges without
@@ -866,6 +987,50 @@ over budget.
   doc's count checked against a registry); review catches those (AutoSDE
   `a-ratchet-may-only-tighten`). A deliberate pin, such as a frozen snapshot no later
   change edits, carries `# flake-ok: <reason>`.
+
+### Forwarding calls: a keyword added on one side, a re-call added on the other
+
+The same no-merge-queue gap breaks product code, not only counts. A function that
+re-calls itself or a sibling with its own parameters spelled out by hand has to be
+edited twice when the callee grows a keyword. On 2026-11-16 one change added such a
+re-call of `load_session` (#37955) and another added `kas_memory_mode` to
+`load_session` (#36872). Each was green on its base, git merged them cleanly, and the
+merged re-call dropped the new keyword (fixed in #38108). `create_session` had the
+same drop for `member_context` (#38105).
+
+```python
+# WRONG: every keyword spelled by hand; a keyword added to load_session later is
+# silently dropped on this path unless someone also edits this call.
+async def load_session(self, session_file, resume_sid, *, cwd=None, channel_id="",
+                       kas_memory_mode=None, focus_resume=False, harness_state=None):
+    with self.keep_record_on_teardown(resume_sid):
+        return await load_session(self, session_file, resume_sid, cwd=cwd,
+                                  channel_id=channel_id, focus_resume=focus_resume,
+                                  harness_state=harness_state)
+
+# RIGHT: pass every keyword both sides accept (kas_memory_mode=kas_memory_mode),
+# and pin it with a test that compares the call with the callee's signature
+# (test_the_kas_keep_record_reentry_forwards_every_keyword).
+```
+
+- **Pass every parameter the caller and the callee share.** When the call leaves one
+  out on purpose, say why in a comment at the call.
+- **Pin a re-entry against the signature.** A test that builds the keyword set from
+  `inspect.signature(callee)` and asserts the call forwards each one fails on the
+  change that adds a keyword, whichever change lands second.
+- **Enforced by `test/test_forwarding_calls_forward_every_keyword.py`.** It scans
+  every non-test Python file (`test/forwarding_call_scan.py`). A call counts as
+  forwarding when it passes at least three of the caller's parameters as `x=x` and
+  binds at least half of the callee's parameters; it fails when the callee accepts a
+  parameter the caller also accepts and the call does not pass it. A callee that only
+  takes `**kwargs` and hands them on is followed to the function it calls. A
+  deliberate drop is one row in `_ALLOWED_DROPS`, keyed `(file, caller, callee,
+  parameter)` with its reason, so two changes that each add one edit different lines.
+  A row that matches nothing fails, so the table cannot rot. A known bug whose fix is
+  open goes in `_OPEN_BUGS`, which is not stale-checked, so the fix and the table can
+  land in either order. It resolves callees by name and skips a name whose definitions
+  disagree, so a call through a differently named alias is not seen. It costs 6 to
+  8 s, because it parses single defs, not whole files (see the module docstring).
 
 ### Channel wire fakes: borrow the library's read side, do not model it
 
@@ -1685,10 +1850,12 @@ measures, never above.
   after that dir was deleted. `test/test_host_service_guard.py` ratchets the
   guarded set against the service tools `src/` actually names, so a new
   host-mutating call site cannot land outside the floor.
-- **Register the destruction of anything you create, in the same scope.** Prefer
-  pytest's `tmp_path`. If you must call `tempfile.mkdtemp()`, pair it with
-  `self.addCleanup(shutil.rmtree, path, ignore_errors=True)` **on the next line** —
-  not with an `rmtree` in `tearDown`, which is the shape that leaks:
+- **Register the destruction of anything you create, in the same scope.** Take a
+  directory from pytest's `tmp_path` or `tmp_path_factory.mktemp()`; pytest owns it,
+  removes it, and the temp-residue guard below does not scan it. In a `unittest`
+  class, an autouse fixture method hands `tmp_path` to `setUp`. A `tempfile.mkdtemp()`
+  or a held `tempfile.TemporaryDirectory()` lands in the shared temp dir instead, and
+  `kirocrew.test-shared-tmp-dir` refuses a new one (see the residue guard below):
 
   ```python
   # WRONG — unittest does NOT run tearDown when setUp raises, so this leaks on
@@ -1699,12 +1866,28 @@ measures, never above.
   def tearDown(self):
       shutil.rmtree(self.tmp, ignore_errors=True)
 
-  # RIGHT — registered immediately, runs even if the rest of setUp blows up
+  # RIGHT — pytest made the directory before setUp ran and removes it either way
+  @pytest.fixture(autouse=True)
+  def _per_test_dirs(self, tmp_path):
+      self.tmp = tmp_path / "root"
+      self.tmp.mkdir()
   def setUp(self):
-      self.tmp = Path(tempfile.mkdtemp())
-      self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
       self.client = build_client()
+
+  # WRONG — held on self, the directory lives until someone calls cleanup();
+  # a setUp failure, or a thread still writing after it, leaves it behind
+  def setUp(self):
+      self._td = tempfile.TemporaryDirectory()
+      self.root = Path(self._td.name)
+
+  # RIGHT — the same tmp_path fixture method; no handle to clean up
+  @pytest.fixture(autouse=True)
+  def _per_test_dirs(self, tmp_path):
+      self.root = tmp_path
   ```
+
+  `with tempfile.TemporaryDirectory() as d:` around synchronous code is still fine:
+  the block removes it, and the rule does not refuse it.
 
   The rootdir conftest contains the *class* as well: `tempfile`'s base is redirected
   per run to `<platform temp>/kc-pytest-<user>-<pid>`, which the run removes at the end,
@@ -1714,11 +1897,9 @@ measures, never above.
   On **macOS** `<platform temp>` is forced to `/tmp` (`_SHORT_TMP_BASE`), which is what
   Linux and CI already resolve to. launchd's per-user temp dir is
   `/var/folders/<2>/<30 random>/T`: long enough that an AF_UNIX socket under a pytest temp
-  dir exceeds Darwin's 104-byte `sun_path` and cannot bind at all, and random enough that
-  the path clears the credential redactor's entropy floor — `/` is inside its
-  `[A-Za-z0-9+/]{40,}` run, so a temp path is one contiguous match and comes back
-  `[REDACTED: credential]`. Both are properties of the host prefix rather than of the code
-  under test, and both used to fail ~13 tests locally while CI stayed green.
+  dir exceeds Darwin's 104-byte `sun_path` and cannot bind at all. That is a property of the
+  host prefix rather than of the code under test, so such a test fails locally while CI
+  stays green.
 
   A run only ever deletes the root it created itself — there is deliberately no sweep of
   other runs' roots, because every signal for "that directory is abandoned" is unsound from
@@ -1750,8 +1931,21 @@ measures, never above.
   root that cleanup just removed. In a `unittest` class, take that root from
   `tmp_path` through an autouse fixture method (`test_issue_radar_deps.py`'s
   `_per_test_dirs`), because pytest owns that directory and this guard does not scan it.
-  `kirocrew.test-radar-store-root-self-removed` in `semgrep/test-determinism.yaml`
-  refuses a new `TemporaryDirectory()` or `mkdtemp()` in the Issue Radar tests.
+
+  `kirocrew.test-shared-tmp-dir` in `semgrep/test-determinism.yaml` refuses a NEW line
+  in any test file (`test/**`, the builtin apps' `tests/` and `*_tests/`, `conftest.py`)
+  that makes a directory there pytest does not own: `tempfile.mkdtemp(...)` in any
+  spelling (`tempfile.mkdtemp`, an imported `mkdtemp`, a chain such as
+  `np.tempfile.mkdtemp`), unless `dir=` is `tmp_path`, and a `tempfile.TemporaryDirectory(...)`
+  that is held instead of used as a `with` header (assigned, stored on `self`, returned,
+  passed on, `.name` read, or entered by hand). An `ExitStack.enter_context(...)` of one
+  is allowed. Every such shape leaks the same ways: a `setUp` failure skips `tearDown`,
+  a thread or child process outlives the cleanup, or a reader `mkdir`s the root again.
+  The SAST job runs it diff-scoped, so the sites already in the tree are not
+  findings until a change adds one; a site that needs the shared temp dir on purpose (a
+  short AF_UNIX socket path under `short_tmp_base()`) says why with
+  `# nosemgrep: kirocrew.test-shared-tmp-dir`. The `mkstemp`, `NamedTemporaryFile(delete=False)`
+  and `gettempdir()` shapes are not refused: every current site of them cleans up.
 
   Why it is worth a guard rather than a convention: `/tmp` is commonly a tmpfs with a
   fixed **inode** budget (1,048,576 on the hosts this was measured on), and it returns
@@ -1910,6 +2104,8 @@ measures, never above.
   on its own base, and both landing reds `main` on every platform: #36640 planted the
   example key and asserted it gone after #29423 had made the redactor keep it, and
   #37423 fixed the four test files by switching them to `github_classic()` (why: #37421).
+  `test/test_redaction_literal_ratchet.py` refuses a new `<AWS key ID literal> not in`
+  or `assertNotIn` site; its `_BASELINE` lists the older ones and only shrinks.
   Asserting an identifier SURVIVES is the case where an `AKIA…` literal belongs.
 
 - Tests SHOULD be fast (< 1s each)
@@ -2485,7 +2681,13 @@ added a fourth; each was a real defect:
   about four runs of ten by pointing the temp root at its 8.3 short name, the shape of
   the runner's `C:\Users\RUNNER~1`. Production fix: `session_ledger.resolved_within`
   resolves the base once, builds the child from it, and strips the prefix from both
-  sides; the three ledger guards go through it. Ninety repeated runs pass.
+  sides; the three ledger guards go through it. Ninety repeated runs pass. The same
+  class came back as an EQUALITY guard: `test_dashboard_save_tool_older_rule`'s two
+  concurrent first saves got a 503 because `atomic_write._refuse_linked_parent`
+  compared a prefixed resolve of the parent with a plain one of the same directory
+  (#37114, fixed in #37211). The rule is the platform-compat row "Compare paths for
+  identity": every identity comparison of a resolved path folds both sides through
+  `strip_extended_length_prefix`.
 
 ### What the fourth five-run pass found (Linux, 106k tests per run)
 
@@ -4442,6 +4644,13 @@ The whole suite with the configured defaults is a human's run, not a gate:
 python -m pytest
 ```
 
+The same suite as many small processes, in about a quarter of the memory (see "Running on
+a machine with little RAM"):
+
+```bash
+python3 scripts/run_sharded_suite.py -- -m "not ipv6_required and not real_venv"
+```
+
 `setup.cfg`'s `[tool:pytest] addopts` supplies `--verbose`,
 `--ignore=build/private`, `-p no:platformdirs` (refuses platformdirs' auto-loaded
 `pytest11` plugin), `-n auto`, `--dist loadgroup`, `--max-worker-restart=2`,
@@ -4561,11 +4770,23 @@ freed copies are reused while collection is still allocating; a hook at collecti
 finish would leave the peak where it was. `test/test_worker_memory_retention.py`
 pins it, including that every item but the running one holds no request.
 
-The hook bounds what each autouse fixture costs; it does not make one free. Every
-autouse name still adds a slot to each function's `names_closure` (shared only
-between a function's own parametrizations, because pytest-asyncio inserts into
-it) and a setup and teardown to every test. Merge a new guard into an existing
-autouse fixture of the same scope before adding a name.
+The hook bounds what each autouse fixture costs; it does not make one free. It also
+shares identical `names_closure` lists (each item's `fixturenames`) between tests that
+are not asyncio tests: pytest-asyncio inserts `event_loop` into an `asyncio` test's
+list at setup, so those keep their own. Every autouse name still adds a setup and a
+teardown to every test. Merge a new guard into an existing autouse fixture of the same
+scope before adding a name.
+
+**The per-item cost is budgeted.** The rootdir conftest records the process RSS after
+configure and the VmHWM at collection finish, and
+`test_worker_memory_retention.py::TestCollectionCostPerItem` fails when collection
+spends more than 600 MiB plus 16 KiB per collected item (measured ~11 KiB per item on
+the full Linux suite; ~19 KiB before the fixture bookkeeping was shared). It is a
+per-item budget, so adding tests never trips it; it runs wherever a process collects at
+least 5,000 items, which includes every CI file shard.
+
+The shapes that cost the most, each with a wrong and a right example and its measured
+saving, are in [Writing a test that is cheap on memory](#writing-a-test-that-is-cheap-on-memory).
 
 Every layer that remains is live: the item tree, the closures and the rewritten
 modules are retained for the whole session by design.
@@ -4629,12 +4850,109 @@ parallelism the aggregate is what changes, and summing the peaks of every proces
 says so: eight xdist workers each collecting all 1,540 files come to 5,945 MiB, while
 eight single-worker processes given 193 files each — the same 56,946 items collected
 once between them, and the same eight-way execution — come to 1,896 MiB, a 68% cut on
-the machine as a whole. Two things make that a real runner rather than a one-liner,
-and both fail silently if skipped: naming files on the command line bypasses
-`collect_ignore`, so the runner must apply `test/windows-collect-ignore.txt` itself
-the way `scripts/ci-surface-tests.py` does, and files sharing an `xdist_group`
-(`subprocess_spawn`, `mcp_gateway`, `serial`) must land in the same process or they
-lose the serialization the mark exists to provide.
+the machine as a whole.
+
+`scripts/run_sharded_suite.py` is that runner for the whole suite. It starts `--shards`
+single-process pytest runs, at most `--jobs` at a time, each loading
+`scripts.ci_file_shards` so it imports only its own files. Two things make it a runner
+rather than a one-liner. Sharding at the collect report, not by naming files, keeps
+pytest's own `collect_ignore` rules. And every file that names the same literal
+`xdist_group` (`subprocess_spawn`, `mcp_gateway`, `serial`) is pinned to one part, so those
+tests still run one at a time. A group name built at runtime (the `tree_scan_*` names in
+`test_facade_shared_checks.py` and `test_bindings_shared_checks.py`) is not seen; those
+groups only share a memoised scan, so a split costs memory, not correctness. Measured on one r7i.8xlarge (32 cores, 247 GiB), same tree, the
+baseline `-m "not ipv6_required and not real_venv" --timeout=120 -p no:cacheprovider`
+selection:
+
+| command | peak used | wall time | failures |
+|---|---|---|---|
+| `pytest -n 32` | 120.1 GiB | 50 min | 1 (red on main) |
+| `scripts/run_sharded_suite.py` (32 parts, 32 at a time) | 33.6 GiB | 18 min | the same 1 |
+| `scripts/run_sharded_suite.py --jobs 8 --shards 32`, on 8 cores, before group pinning | 11.6 GiB | 36 min | the same 1, and 2 timing tests that passed when their parts ran again |
+
+In the first two rows the same 284,758 tests ran with the same outcomes. Each part writes
+`junit-<i>.xml` and `shard-<i>.log` under `--out`, and the exit status is 0 only when
+every part passed.
+
+### Writing a test that is cheap on memory
+
+Every xdist worker imports every test module it collects and keeps it for the whole
+run, so a byte a test module holds is paid once per worker. A test that pins its own
+state after it ends is paid until something replaces it. Each rule below was measured
+on one r7i.8xlarge with the same command before and after the fix, and the fix passed
+the repository's boot smoke (`test/integration/test_boot_smoke.py`).
+
+**1. Build a large payload inside the test, never at import.** A module-level or
+`parametrize` value is built when the module is imported and kept alive by the module
+or by the mark, in every worker.
+
+```python
+# Wrong: 30 MiB in every worker for the whole run
+_HOSTILE = {"entry_too_large": [(_entry("big.bin"), bytes(range(256)) * (26 * 4096))]}
+
+# Right: built by the test that reads it
+_HOSTILE = {"entry_too_large": [(_entry("big.bin"), lambda: bytes(range(256)) * (26 * 4096))]}
+```
+
+Measured: five such modules held 80 MiB per worker (`--collect-only` of those modules,
+286,804 -> 206,284 KiB). A corpus several tests share goes in a `scope="module"`
+fixture, which pytest frees at the module's teardown.
+
+**2. Do not keep a whole-tree read in a module-level memo.** pytest keeps every test
+module for the session, so an `lru_cache` of every test file's text in a test module
+lives for the rest of the worker.
+
+```python
+# Wrong: the test tree's text, held by the module for the whole run
+@functools.lru_cache(maxsize=1)
+def _family_test_texts():
+    return tuple((p, p.read_text()) for p in _test_tree_files())
+
+# Right: the same memo, in a module whose tests carry a tree_scan xdist group
+pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")
+```
+
+`test/conftest.py` clears every module-level `lru_cache` of a `tree_scan_*` group's
+modules when the worker leaves the group. Measured: 361 -> 51 MiB retained after
+`test_facade_mirror_guards.py` (`-n0`, tracemalloc after `gc.collect()`). Outside a
+`tree_scan` group, stream the read or clear the memo from a module-scoped fixture.
+
+**3. Never leave a closure over a test's state in a module global.** A setter such as
+`set_share_tree_reader(lambda key: ...)` keeps the state, and every `MagicMock` call it
+recorded, until something overwrites the global.
+
+```python
+# Wrong: the 2,000-slot state and its mocks live until the next test builds a state
+set_share_tree_reader(lambda key: _share_tree_root(self, key))
+
+# Right (test side): put back what the test inherited
+monkeypatch.setattr(sharing, "_tree_root_reader", sharing._tree_root_reader)
+```
+
+A global that production wires once at boot belongs in the floor's
+`_BOOT_WIRED_GLOBALS`, which restores it after every test. Measured: 319 -> 18 MiB
+retained after `test_slots_pass_work.py`, and 195 -> 0 MiB added by
+`test_slots_diff_budget.py`.
+
+**4. Do not add an autouse fixture for what an existing one can do.** Each autouse
+name is resolved for every collected item (~280k) and set up and torn down for every
+test.
+
+```python
+# Wrong: a new name every item pays for
+@pytest.fixture(autouse=True)
+def _reset_my_cache():
+    yield
+    my_module._cache.clear()
+
+# Right: add the reset to an existing autouse fixture of the same scope
+```
+
+Measured: before the rootdir conftest shared the per-item fixture bookkeeping, the
+~130 fixtures each item resolves cost 2,971 MiB of a 5,295 MiB worker's collection
+(5,295 -> 2,957 MiB once shared). Sharing the `names_closure` lists as well took a full
+collection from 3,248 to 3,126 MiB. `TestCollectionCostPerItem` budgets what is left
+per item.
 
 ### Where the temp root points, and what else is running
 
@@ -5908,6 +6226,84 @@ hide the race, and a red can be the host's. Size a ceiling and judge a fix from 
 CI-equivalent load (the suite's own bounded `-n`, no co-tenant saturating the cores), and
 reproduce a race with the forced condition rather than with host load. Record the
 commands and both outputs in the pull request.
+
+### A Playwright spec that passed only on a retry: read what the page received
+
+The E2E gate fails a run when any spec passes only on a retry (`MAX_FLAKY_SPECS` is 0).
+In the 48 hours to 2026-11-16, four specs did that in 26 PR jobs. In every case the
+value Playwright received was one the PAGE produced after the spec's action. None of them
+was a spec that read too early. In three of the four, a longer timeout or one more wait in
+the spec would have hidden a real defect. So before you touch the spec, read the
+`Received` line and name who wrote it.
+
+- **Received is the page you just left.** `settings.spec.ts` clicked About and kept seeing
+  `/settings/display/view`. `embed-popout.spec.ts` saw `/embed/chat/...` and then
+  `/embed/settings?sub=view` again. In both, an effect wrote a replace navigation from a
+  render that still carried the old location. `BrowserRouter` applies a history change
+  inside `startTransition`. An urgent update (here the sub-nav's ResizeObserver width) can
+  commit first with the previous `useLocation()`, and the effect's `replace` then
+  overwrites the entry the click or redirect made. This is a product race. Fix the write,
+  not the spec ([PR #37885](https://github.com/kirodotdev/KiroCrew/pull/37885)):
+
+  ```tsx
+  // WRONG: re-runs when the width lands, and builds its target from a location that can
+  // lag the history by one pending transition
+  useEffect(() => {
+    if (width !== null && twoPane && !selectedKey) select(items[0].key)
+  }, [width, twoPane, selectedKey])
+
+  // RIGHT: skip while a newer entry is pending. The check changes identity with
+  // location.key, so the effect runs again once the router renders that entry.
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
+  useEffect(() => {
+    if (width !== null && twoPane && !selectedKey && renderedLocationIsCurrent()) select(items[0].key)
+  }, [width, twoPane, selectedKey, renderedLocationIsCurrent])
+  ```
+
+  Measured: 3 red runs (settings) and 2 (embed) in 48 hours before the fix; after it, 30
+  of 30 each at `--retries=0` on Linux, idle and with 6 of 8 cores busy.
+
+- **Received is the state from before an API write the spec made.** `session-tags-e2e.spec.ts`
+  test 8 posted a drop over `request` as soon as the column rendered, and the slot never
+  reached the Done column. The page's own `GET /api/chat/slots` was serialized before the
+  drop and applied after the drop's push, so the old row came back and nothing pushed
+  again. Wait for the page's read to finish before the write
+  ([PR #37286](https://github.com/kirodotdev/KiroCrew/pull/37286)):
+
+  ```ts
+  // WRONG: the column renders before the page's slot read has returned
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${col.id}"]`)
+  await request.post(`/api/chat/slots/${slotKey}/drop`, { data: { column_id: col.id } })
+
+  // RIGHT: arm the wait BEFORE goto, so a fast reply is not missed
+  const slotListRead = page.waitForResponse(r =>
+    r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${col.id}"]`)
+  await (await slotListRead).finished()
+  await request.post(`/api/chat/slots/${slotKey}/drop`, { data: { column_id: col.id } })
+  ```
+
+  Measured: 19 red runs in 48 hours, all before the fix; after it, 30 of 30 at
+  `--retries=0`, idle and under the same load. A user can hit the same reorder. If that ever matters, the fix is a
+  version check on the read in the product, not a wait.
+
+- **Received is a real miss.** `chat-form-switch-anchor.spec.ts` found the reader's row
+  33 to 54 px lower after a 1400 -> 382 px resize. Two virtualizer defects caused it. The
+  anchor was dropped on the scroll event its own write raised
+  ([PR #37931](https://github.com/kirodotdev/KiroCrew/pull/37931)). And under load a
+  window recompute ran before the fire that paid a reflow, and unmounted the reader's row
+  ([PR #37965](https://github.com/kirodotdev/KiroCrew/pull/37965)). Widening
+  `PX_TOLERANCE`, the quiet window or a timeout would have shipped both. Measured with 6
+  of 8 cores busy: 10 of 30 red after the first fix, 30 of 30 green after the second.
+
+To check a fix, run the spec through the harness gateway (`test/test_playwright_e2e.py`) with
+`--repeat-each=30 --retries=0` and expect 30 of 30. A spec that stays green idle can still
+be red under load: the form-switch miss was 0 of 30 idle and 10 of 30 with most cores busy.
+So reproduce the red first, with load if needed, and judge the fix against that red; a
+green run under load proves nothing alone. Raising retries, `test.skip`, a
+`waitForTimeout` and a looser assertion are not fixes.
 
 ### The gateway harness runs on all three platforms
 

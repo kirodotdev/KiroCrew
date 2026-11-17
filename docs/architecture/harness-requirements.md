@@ -194,6 +194,6 @@ The list started from the harness parity invariants and the capability card. It 
 |---|---|---|---|---|
 | R-ERR-1 | The harness's own error frame is logged even when Crew shows curated wording. | #28513, #30038 | Unattributed terminal error (codex) | per-fix tests |
 | R-ERR-2 | Overflow and transient errors are classified (retry vs context overflow). | #28549, #30087, #30901 | goose active-run refusal is busy (#28414) | **no cross-harness table** |
-| R-ERR-3 | A worker's failed call to a work tool by name is flagged to its conductor. | #22611 | Each harness's own "tool not available" text; OpenCode ends the call `completed`; codex-acp sends no frame for it | `test_work_ledger_undelivered.py` from live KAS, pi and OpenCode frames (`agent_sdk/unresolved_tool_answers.py`); no check for the other harnesses |
+| R-ERR-3 | A worker's failed call to a work tool by name is flagged to its conductor. | #22611 | Each harness's own "tool not available" text; OpenCode ends the call `completed`; codex-acp sends no frame for it | `test_work_ledger_undelivered.py` from live KAS, pi, OpenCode and Claude frames (`agent_sdk/unresolved_tool_answers.py`); no check for the other harnesses |
 | R-ERR-4 | "Built-in tools not ready" is said plainly. | #35765 | | per-fix test |
 | R-ERR-5 | Liveness keeps a trusted tool identity for Crew's `wait` and samples only the tool's own server for opaque-MCP movement. | #30669, #29972 | copilot owned by open #34092, #34117 | **no check yet** |

@@ -22,6 +22,7 @@ from kiro_crew import undelivered_call_watch as ucw
 from kiro_crew import work_ledger
 from kiro_crew.acp._dispatch_parts.session_update_parser import parse_session_update
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -35,7 +36,7 @@ WORKER = "chat-worker-kas"
 UNAVAILABLE = 'Tool "work_report" is not available.'
 KAS_ANSWER = unresolved_tool_answer("kas")
 
-#: Live pi and OpenCode frames for a model that called the bare name
+#: Live pi, OpenCode and Claude frames for a model that called the bare name
 #: ``work_report``; each entry's ``_meta.note`` says how it was recorded.
 LIVE_FRAMES = json.loads(
     (Path(__file__).parent / "fixtures" / "unresolved_work_tool_frames.json").read_text(
@@ -459,6 +460,7 @@ class TestTheWatch:
             (ACP_BACKEND_KAS, "kas"),
             (ACP_BACKEND_PI, "pi"),
             (ACP_BACKEND_OPENCODE, "opencode"),
+            (ACP_BACKEND_CLAUDE, "claude_code"),
             (ACP_BACKEND_KIRO, None),
             (ACP_BACKEND_CODEX, None),
         ],
@@ -499,7 +501,8 @@ def _live(harness: str) -> tuple[dict, dict]:
 
 
 class TestTheOtherHarnesses:
-    """pi and OpenCode, from the frames each sent live for a bare ``work_report``.
+    """pi, OpenCode and Claude, from the frames each sent live for a bare
+    ``work_report``.
 
     Each watch is built off a real provider of that backend, so deleting a harness's
     row from :mod:`kiro_crew.agent_sdk.unresolved_tool_answers` turns its test red.
@@ -507,7 +510,11 @@ class TestTheOtherHarnesses:
 
     @pytest.mark.parametrize(
         ("harness", "backend"),
-        [("pi", ACP_BACKEND_PI), ("opencode", ACP_BACKEND_OPENCODE)],
+        [
+            ("pi", ACP_BACKEND_PI),
+            ("opencode", ACP_BACKEND_OPENCODE),
+            ("claude_code", ACP_BACKEND_CLAUDE),
+        ],
     )
     def test_the_live_frames_are_recorded(self, harness, backend):
         item_id = _bound_item()
@@ -520,10 +527,11 @@ class TestTheOtherHarnesses:
         noted = asyncio.run(watch.on_result(result))
         assert noted is not None and noted["item_id"] == item_id
 
-    @pytest.mark.parametrize("harness", ["pi", "opencode"])
+    @pytest.mark.parametrize("harness", ["pi", "opencode", "claude_code"])
     def test_another_harness_answer_does_not_match(self, harness):
-        """Each pattern is its own harness's: KAS's answer never reads pi's or
-        OpenCode's text, so the per-harness row is what makes these count."""
+        """Each pattern is its own harness's: KAS's answer never reads pi's,
+        OpenCode's or Claude's text, so the per-harness row is what makes these
+        count."""
         call, result = _live(harness)
         output = result["content"][0]["content"]["text"]
         assert (
@@ -564,6 +572,37 @@ class TestTheOtherHarnesses:
                 "completed",
                 "The arguments provided to the tool are invalid: summary: Required",
             ),
+            # Claude: a delivered call's own answers, the same answer for another
+            # tool or a completed call, the sentence inside other output, and a
+            # fence that is opened but never closed.
+            ("claude_code", "completed", "Recorded. status=progress item=it_abcd1234"),
+            ("claude_code", "failed", "done_without_evidence: put the evidence in artifacts"),
+            (
+                "claude_code",
+                "failed",
+                "<tool_use_error>InputValidationError: work_report failed due to the "
+                "following issue:\nThe required parameter `summary` is missing</tool_use_error>",
+            ),
+            (
+                "claude_code",
+                "completed",
+                "<tool_use_error>Error: No such tool available: work_report</tool_use_error>",
+            ),
+            (
+                "claude_code",
+                "failed",
+                "<tool_use_error>Error: No such tool available: read_file</tool_use_error>",
+            ),
+            (
+                "claude_code",
+                "failed",
+                "log\n<tool_use_error>Error: No such tool available: work_report</tool_use_error>",
+            ),
+            (
+                "claude_code",
+                "failed",
+                "```\n<tool_use_error>Error: No such tool available: work_report</tool_use_error>",
+            ),
         ],
     )
     def test_everything_else(self, harness, status, output):
@@ -587,6 +626,26 @@ class TestTheOtherHarnesses:
         assert (
             ucw.undelivered_work_tool(
                 answer=unresolved_tool_answer("opencode"),
+                wire_title=call["title"],
+                kind=call["kind"],
+                status=result["status"],
+                output=output,
+            )
+            == "work_report"
+        )
+
+    @pytest.mark.parametrize("output_key", ["content", "rawOutput"])
+    def test_claudes_fenced_and_bare_answers_read_the_same(self, output_key):
+        """Claude's content text fences the answer; its ``rawOutput`` is bare."""
+        call, result = _live("claude_code")
+        output = (
+            result["content"][0]["content"]["text"]
+            if output_key == "content"
+            else result["rawOutput"]
+        )
+        assert (
+            ucw.undelivered_work_tool(
+                answer=unresolved_tool_answer("claude_code"),
                 wire_title=call["title"],
                 kind=call["kind"],
                 status=result["status"],

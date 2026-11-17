@@ -849,7 +849,8 @@ async def _consolidate(
             # Only under enforce: in shadow the keys the model writes must stay
             # what they are today, or the shadow log would not measure today.
             key_naming = (
-                "Name keys by topic, never by PR, issue or round number. "
+                "Name keys by topic, never by the number of a code change, ticket, "
+                "issue or round. "
                 if routing_mode == MODE_ENFORCE
                 else ""
             )

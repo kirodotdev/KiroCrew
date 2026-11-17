@@ -245,14 +245,16 @@ jobs:
           # Debounce for the "a check completed later" re-fires. A head's lanes
           # finish one after another, and without this each completion earns
           # its own full recompute (50 of 107 heads re-fired 2 to 4 times in
-          # one hour, measured in #34120). While another check-run on the head
-          # is still queued or in progress, the next completion re-opens the
-          # same condition, so
-          # the re-fire waits for it: the LAST completion still re-fires, which
-          # keeps the verdict correct on the final state. A check-run that
-          # stays running for STALE_MINUTES past the newest completion (a hung
-          # lane) no longer holds it. Not applied to the green arm: a stale
-          # green permits a merge, so that rescue stays immediate.
+          # one hour, measured in #34120). While another check-run of a
+          # monitored lane is still queued or in progress on the head, the next
+          # completion re-opens the same condition, so the re-fire waits for
+          # it: the LAST completion still re-fires, which keeps the verdict
+          # correct on the final state. A check-run of a workflow readiness does
+          # not monitor (`macOS Tests (on demand)`) is not counted; see the
+          # scan's MONITORED_WORKFLOWS. A check-run that stays running for
+          # STALE_MINUTES past the newest completion (a hung lane) no longer
+          # holds it. Not applied to the green arm: a stale green permits a
+          # merge, so that rescue stays immediate.
           # lanes_still_running <newest completion epoch>
           lanes_still_running() {
             [ "$running" -gt 0 ] && [ "$1" -gt $(( now_epoch - stale_seconds )) ]
@@ -649,7 +651,7 @@ jobs:
                       --repo "$REPO" --pr "$number" --head "$sha" || true
                     continue
                   fi
-                  # A re-check hold with every check-run on the head completed.
+                  # A re-check hold with every check-run the scan counts completed.
                   # The hold step writes this pending because a lane's run is
                   # still in progress, and counts on that lane's completion
                   # arriving as check evidence above. It does not always
@@ -657,15 +659,15 @@ jobs:
                   # event, when the lane's check-runs have already finished but
                   # its workflow run has not, so every completion on the head
                   # predates the hold's floor and nothing later ever lands. The
-                  # pending then stays until a push. With no check-run left
-                  # running, a recompute reads a settled head. A partial rollup
+                  # pending then stays until a push. With no check-run the scan
+                  # counts left running, a recompute reads a settled head. A partial rollup
                   # read cannot prove that, so it does not qualify. Self-terminating
                   # like the read-failure retry below: the recompute replaces
                   # the hold's description, and one that writes a hold again is
                   # retried at most once per STALE_MINUTES.
                   if [ "$running" -eq 0 ] && [ "$checks_complete" = "true" ] \
                     && readiness_is_recheck_hold "$rs_desc"; then
-                    reason="pending for ${age}s (> ${stale_seconds}s) re-checking a lane, with every check-run on the head completed"
+                    reason="pending for ${age}s (> ${stale_seconds}s) re-checking a lane, with every monitored check-run on the head completed"
                   # The other PENDING that still deserves an aggregator nudge
                   # here is the read-failure class, and it is aged against
                   # STALE_MINUTES, not the lag -- see the note above.

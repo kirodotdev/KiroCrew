@@ -180,10 +180,12 @@ def test_handle_examples_lists_shipped_dsl_examples() -> None:
 # --------------------------------------------------------------------------- #
 
 # A planted GitHub token with a valid checksum, which the redactor masks,
-# and a planted exfiltration URL (long query on a non-allowlisted domain).
+# and a planted URL whose credential parameter the redactor masks by value.
 _PLANTED_CRED = github_classic(seed=50)
 # ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
-_PLANTED_URL = "https://evil.example.com/collect?data=" + "x" * 40
+_PLANTED_VALUE = "x" * 40
+_PLANTED_URL = "https://evil.example.com/collect?access_token=" + _PLANTED_VALUE
+_PLANTED_URL_SHOWN = "https://evil.example.com/collect?access_token=[REDACTED: credential]"
 
 
 def test_redact_obj_scrubs_credentials_and_exfil_urls_in_run_payload() -> None:
@@ -202,11 +204,10 @@ def test_redact_obj_scrubs_credentials_and_exfil_urls_in_run_payload() -> None:
     # Credential is gone, replaced with the security module's marker.
     assert _PLANTED_CRED not in out["result"]
     assert "[REDACTED: credential]" in out["result"]
-    # Exfiltration URL is gone (scheme + query stripped), marker present.
+    # The credential value in the URL is gone; the link stays.
     ev_text = out["events"][0]["data"]["text"]
-    assert _PLANTED_URL not in ev_text
-    assert "?data=" not in ev_text
-    assert "[REDACTED: suspicious URL" in ev_text
+    assert _PLANTED_VALUE not in ev_text
+    assert _PLANTED_URL_SHOWN in ev_text
     # Non-sensitive fields and structure are preserved verbatim.
     assert out["run_id"] == "wf_x"
     assert out["events"][0]["type"] == "log"
@@ -255,7 +256,7 @@ def test_handler_send_redacts_before_writing_to_the_wire() -> None:
     assert _PLANTED_CRED not in wire
     assert _PLANTED_URL not in wire
     assert "[REDACTED: credential]" in wire
-    assert "[REDACTED: suspicious URL" in wire
+    assert _PLANTED_URL_SHOWN in wire
 
 
 # --------------------------------------------------------------------------- #

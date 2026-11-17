@@ -1,6 +1,7 @@
 import { EyeOff, Monitor, MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import { desktopCapabilityLine, knownDesktopCapabilities, type DesktopCapability } from '../components/appstore/desktopCapabilities'
+import { chatLaunchLine, chatLaunchScopeLine, knownChatLaunch } from '../components/appstore/chatLaunch'
 
 export { knownDesktopCapabilities }
 
@@ -34,6 +35,24 @@ export function ChatSlotsBox() {
       </div>
       <div className="mt-1.5 text-[11px] text-muted">
         {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>chatSlots</code>
+      </div>
+    </div>
+  )
+}
+
+/** `permissions.chatLaunch`: the person's chats the app's page may open; nothing when undeclared. */
+export function ChatLaunchBox({ declared }: { declared: unknown }) {
+  const launch = knownChatLaunch(declared)
+  if (!launch) return null
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="chat-launch">
+      <div className="flex items-start gap-2 text-text">
+        <MessagesSquare size={13} className="mt-[2px] shrink-0 text-muted" />
+        <span>{chatLaunchLine(launch, 'detail')}</span>
+      </div>
+      <div className="mt-1 text-muted">{chatLaunchScopeLine(launch)}</div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>chatLaunch</code>
       </div>
     </div>
   )

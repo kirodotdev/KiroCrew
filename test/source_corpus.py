@@ -51,9 +51,11 @@ docstring.
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import os
 import subprocess
+import sys
 import tempfile
 import unicodedata
 from collections import deque
@@ -237,6 +239,24 @@ def parsed_candidates(
                 continue
             raise
         yield path, text, tree
+
+
+@contextlib.contextmanager
+def untraced() -> Iterator[None]:
+    """Run the block with this thread's trace function removed, then put it back.
+
+    The full-suite Linux shards run under coverage, and its tracer runs on every
+    Python call a tree scan makes, gate code included, though only the package is
+    measured. A scan of the whole test or source tree then costs far more CPU
+    there than untraced. A gate wraps only its corpus read in this: the read is
+    test-side code that coverage does not report, so nothing it measures is lost.
+    """
+    tracer = sys.gettrace()
+    sys.settrace(None)
+    try:
+        yield
+    finally:
+        sys.settrace(tracer)
 
 
 def repo_root() -> Path:

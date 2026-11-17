@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         clear_list_agents_cache,
         clear_model_pin,
         control_plane_declarations,
+        dashboard_author_ownership_digest,
         discovery_executor,
         enumerate_skill_catalog,
         is_markdown_spec,
@@ -304,16 +305,16 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                 async with _get_config_lock():
                     # Re-read under the lock: the copy above was read before
                     # the lock and a concurrent PATCH may have superseded it.
-                    # The branch writes this data back, so bind the same
-                    # agents directory and apply the stricter no-symlink /
-                    # no-escape fence before the hardened read.  Keep the
-                    # filesystem work off the event loop while the shared
-                    # config lock is held.
-                    agents_dir = kiro_agents_dir_path()
-
+                    # The branch writes this data back, so fence the file
+                    # against the folder the scan found it in -- the
+                    # user-level or the crewmate folder; the scan lists each
+                    # root flat, so that is ``f.parent`` -- and apply the
+                    # stricter no-symlink / no-escape fence before the
+                    # hardened read.  Keep the filesystem work off the event
+                    # loop while the shared config lock is held.
                     def _reread_under_lock(
                         spec_file: Path = f,
-                        root: Path = agents_dir,
+                        root: Path = f.parent,
                     ) -> dict[str, Any] | None:
                         if not _spec_path_is_safe(spec_file, root):
                             return None
@@ -498,8 +499,8 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             ):
                                 agent_state.begin_managed_write(
                                     f.stem,
-                                    agent_state.spec_digest(fresh),
-                                    current=agent_state.spec_digest(pre_write),
+                                    dashboard_author_ownership_digest(fresh),
+                                    current=dashboard_author_ownership_digest(pre_write),
                                 )
                                 _atomic_json_write(f, fresh)
                                 agent_state.finalize_managed_write(f.stem)

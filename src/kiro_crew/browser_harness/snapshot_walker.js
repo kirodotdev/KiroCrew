@@ -111,8 +111,48 @@
     if (style.display === "none" || style.visibility === "hidden") return false;
     var rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return false;
+    // `display: none` up the tree. checkVisibility() reads the flat tree; the
+    // offsetParent test does not cross a shadow root, so content slotted into a
+    // web component's fixed dialog (Alaska's fs-auro-dialog) read as hidden.
+    if (typeof el.checkVisibility === "function") return el.checkVisibility();
     if (el.offsetParent === null && style.position !== "fixed") return false;
     return true;
+  }
+
+  // Tags whose text is never part of a name: not drawn, or a form field whose
+  // text is the field's content (a hidden prefilled <textarea> slotted into a
+  // button must not name it). aria-hidden text is left out of a name too.
+  var NAMELESS_TAGS = {
+    script: 1, style: 1, template: 1, input: 1, textarea: 1, select: 1, option: 1
+  };
+
+  // Text as drawn, through <slot>s: a web component's inner <button> holds a
+  // <slot>, and its label is the host's light-DOM text (Alaska's auro-button),
+  // which the button's own textContent never contains. Every element is checked
+  // here, slots and slotted ones too, so hidden, field and secret-field text adds
+  // nothing. A display:contents wrapper (a slot by default) draws no box of its
+  // own, so only its style decides, not checkVisibility(). Pieces join with no
+  // separator, as textContent joins them: "$1<span>.99</span>" reads "$1.99".
+  function drawnText(node, depth) {
+    if (node.nodeType === 3) return node.nodeValue;
+    if (node.nodeType !== 1 || depth > 16) return "";
+    var tag = node.tagName.toLowerCase();
+    if (NAMELESS_TAGS[tag] || secretish(node)) return "";
+    if (node.getAttribute("aria-hidden") === "true") return "";
+    var style = window.getComputedStyle(node);
+    if (!style || style.display === "none" || style.visibility === "hidden") return "";
+    if (tag === "slot" && typeof node.assignedNodes === "function") {
+      return joinText(node.assignedNodes({ flatten: true }), depth);
+    }
+    if (style.display !== "contents" && typeof node.checkVisibility === "function" &&
+        !node.checkVisibility()) return "";
+    return joinText(node.childNodes || [], depth);
+  }
+
+  function joinText(nodes, depth) {
+    var s = "";
+    for (var i = 0; i < nodes.length; i++) s += drawnText(nodes[i], depth + 1);
+    return s;
   }
 
   // Why a quick ask would refuse this password input now ("disabled", "hidden",
@@ -353,7 +393,9 @@
       if (v && v.trim()) return v.trim();
     }
     if (secret) return "";
-    return (el.textContent || "").replace(/\s+/g, " ").trim();
+    var own = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (own || !el.querySelector || !el.querySelector("slot")) return own;
+    return joinText(el.childNodes || [], 0).replace(/\s+/g, " ").trim();
   }
 
   function accName(el) {

@@ -731,6 +731,8 @@ async function confirmedFree(port, { confirmFree, waitMs, sleep, onWait, isAbort
  * With `failClosedOnProbeError`, an unavailable owner probe returns
  * `probeFailed:true, freed:false` instead of throwing or claiming the port is
  * free. Windows uses this because netstat failures must block a blind respawn.
+ * With `confirmFree` as well, a failed probe is settled by the same bind wait
+ * as an empty list: a port that binds is free, one still refused is not.
  * An empty owner list is not proof the port is free: netstat can omit or drop a
  * held port's row. With `confirmFree`, every empty list that would end in
  * `freed:true` (the first probe, or the re-probe after a kill) is checked with
@@ -774,16 +776,27 @@ async function forceStopPort(
   const bindWait = {
     confirmFree, waitMs: confirmFreeWaitMs, sleep, onWait: onConfirmFreeWait, isAborted, log,
   };
+  // A probe that cannot run (netstat timing out on a busy Windows host) names
+  // no owner, the same unproven answer as an empty list. With `confirmFree`,
+  // a real bind decides, as it does for an empty list; only a bind still
+  // refused at the end of the wait keeps `probeFailed`.
+  const probeError = async (e, what, { killed: k, serviceHolder: s }) => {
+    if (!failClosedOnProbeError) throw e;
+    log(`force-stop: ${what} failed on :${port} (${e && e.message})`);
+    if (confirmFree && (await confirmedFree(port, bindWait))) {
+      log(`force-stop: :${port} binds although the LISTEN probe failed; treating it as free`);
+      return { killed: k, freed: true, survivors: [], foreignHolder: false, serviceHolder: s };
+    }
+    return {
+      killed: k, freed: false, survivors: [], foreignHolder: false,
+      serviceHolder: s, probeFailed: true,
+    };
+  };
   let owners;
   try {
     owners = await getListenPids(port);
   } catch (e) {
-    if (!failClosedOnProbeError) throw e;
-    log(`force-stop: LISTEN probe failed on :${port} (${e && e.message})`);
-    return {
-      killed: 0, freed: false, survivors: [], foreignHolder: false,
-      serviceHolder: false, probeFailed: true,
-    };
+    return probeError(e, "LISTEN probe", { killed: 0, serviceHolder: false });
   }
   if (!owners.length) {
     if (confirmFree && !(await confirmedFree(port, bindWait))) {
@@ -839,12 +852,7 @@ async function forceStopPort(
     try {
       remaining = new Set(await getListenPids(port));
     } catch (e) {
-      if (!failClosedOnProbeError) throw e;
-      log(`force-stop: verify LISTEN probe failed on :${port} (${e && e.message})`);
-      return {
-        killed, freed: false, survivors: [], foreignHolder: false,
-        serviceHolder, probeFailed: true,
-      };
+      return probeError(e, "verify LISTEN probe", { killed, serviceHolder });
     }
     survivors = survivors.filter((pid) => remaining.has(pid));
   }
@@ -856,12 +864,7 @@ async function forceStopPort(
     try {
       remaining = new Set(await getListenPids(port));
     } catch (e) {
-      if (!failClosedOnProbeError) throw e;
-      log(`force-stop: verify LISTEN probe failed on :${port} (${e && e.message})`);
-      return {
-        killed, freed: false, survivors: [], foreignHolder: false,
-        serviceHolder, probeFailed: true,
-      };
+      return probeError(e, "verify LISTEN probe", { killed, serviceHolder });
     }
   }
 
@@ -1082,6 +1085,7 @@ async function isServiceManaged(pid, getPpid, isLaunchdJob = null) {
 }
 
 module.exports = {
+  confirmedFree,
   postShutdown,
   stopGatewayGracefully,
   forceStopPort,

@@ -20,8 +20,10 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew import redaction_seams
 from kiro_crew.chat_attachments import ImageBudget
 from kiro_crew.dashboard.chat_utils import (
+    RETIRED_RECORD_KEYS,
     UNKNOWN_ROW_FIELDS_KEY,
     _redact_meta_for_role,
     drop_records_without_placeholders,
@@ -34,6 +36,10 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
+
+#: The placeholder an older build put in place of a suspicious URL, beside the
+#: records (``RETIRED_RECORD_KEYS``) that kept the URL.
+_RETIRED_PLACEHOLDER = "[REDACTED: suspicious URL"
 
 
 #: Every top-level key this build writes on a persisted transcript row: the keys
@@ -202,6 +208,7 @@ def _approx_window_payload_bytes(window: list[dict]) -> int:
     return total
 
 
+@redaction_seams.in_seam(redaction_seams.TRANSCRIPT)
 def _build_message_entry_uncached(
     m: dict, *, attachments: tuple[Path, str] | None = None
 ) -> dict | None:
@@ -330,6 +337,13 @@ def _build_message_entry_uncached(
         # keep them; `_redact_meta_for_role` re-validates whatever survives.
         drop_records_without_placeholders(meta_in, content)
         entry["meta"] = _redact_meta_for_role(role, meta_in)
+        # The records an older build kept beside its suspicious-URL placeholder go
+        # back as the line carried them while the text still holds that placeholder,
+        # so a transcript round-trips unchanged; no emit path sends them.
+        if _RETIRED_PLACEHOLDER in content:
+            for key in RETIRED_RECORD_KEYS:
+                if key in meta_src:
+                    entry["meta"][key] = meta_src[key]
     # Fields a newer build wrote on this row, kept by restore
     # (``remember_unknown_row_fields``): written back exactly as read, fill-only, so a
     # key this build writes is never overwritten -- the rule ``crons.json`` and the

@@ -7,7 +7,6 @@ have finished.
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +14,7 @@ import pytest
 
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import SubagentInfo, SubagentManager
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 def _text(text: str) -> SimpleNamespace:
@@ -93,16 +92,20 @@ def _spy_taskq_marks(mgr: SubagentManager, monkeypatch: pytest.MonkeyPatch) -> l
     return marks
 
 
-#: How long a test waits for a run it started before failing by name: far past
-#: any healthy run here, and well under the suite's per-test timeout.
-_RUN_CEILING = 60.0
+async def _await_run(mgr: SubagentManager, info: SubagentInfo) -> None:
+    """Wait for the run task *info* started, under the lost-run bound only.
+
+    ``await_until`` never cancels the run on expiry, unlike ``wait_for``: a
+    write a stalled runner made slow fails by name here instead of as a
+    ``TimeoutError`` raised out of the run's own state-writer drain."""
+    await await_until(mgr._tasks[info.id], what=f"run {info.id} finishing")
 
 
 async def _spawn_and_wait(mgr: SubagentManager, task: str = "do work") -> SubagentInfo:
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn(task)
         assert info is not None
-        await asyncio.wait_for(mgr._tasks[info.id], _RUN_CEILING)
+        await _await_run(mgr, info)
     await _wait_writers_landed(mgr, info)
     return info
 

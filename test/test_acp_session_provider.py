@@ -1189,6 +1189,7 @@ class TestNewConversation:
             member_context=None,
             harness_options=None,
             memory_mode="persistent",
+            kas_memory_mode="",
             session_key="",
             member_session_key="",
             channel_id="",
@@ -1423,20 +1424,24 @@ class TestNewConversation:
         assert provider._handle is old
 
     @pytest.mark.asyncio
-    async def test_allows_codex_now_that_its_teardown_evicts(self):
-        """codex joined the eviction set when its teardown became ``session/close``;
-        pooled warm reuse is the path that gain was for."""
+    async def test_refuses_codex_before_creating_anything(self):
+        """codex's ``session/close`` leaves the closed session's ``config.toml`` MCP
+        servers running, so a reuse on the live process would add a fleet each time.
+        The refusal is ``NotImplementedError``, the signal the pool and the chat's
+        fresh conversation already turn into a kill and respawn."""
         from kiro_crew.acp.types import ACP_BACKEND_CODEX
 
         old = _make_handle(session_id="old-session-1")
-        runtime, new_handle = self._runtime_with_new_session()
+        runtime, _ = self._runtime_with_new_session()
         runtime.acp_backend = ACP_BACKEND_CODEX
         provider = AcpSessionProvider(old, runtime)
 
-        await provider.new_conversation()
+        with pytest.raises(NotImplementedError, match="MCP servers"):
+            await provider.new_conversation()
 
-        assert provider._handle is new_handle
-        old.destroy.assert_awaited_once()
+        runtime.create_session.assert_not_awaited()
+        old.destroy.assert_not_awaited()
+        assert provider._handle is old
 
     @pytest.mark.asyncio
     async def test_allows_kas_which_evicts_on_teardown(self):

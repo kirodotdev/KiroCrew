@@ -27,6 +27,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import wait_until
 
 #: One valid call per kirocrew-dashboard tool, for the refusal-audit sweep below.
@@ -72,6 +73,8 @@ _DASHBOARD_TOOL_CALLS = {
     "session_summary": {"target": "chat-2"},
     "work_dispatch": {"title": "t", "acceptance": {}, "agent": "a", "seed": "s"},
     "session_queue": {"target": "chat-2"},
+    "crew_list": {},
+    "session_run_queued": {"target": "chat-2", "queue_id": "q1"},
 }
 
 
@@ -205,10 +208,10 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
     `target`, so both are asserted.
     """
 
-    # Assembled rather than written literally: a real-looking token in source
-    # trips secret scanners for no benefit. `redact_credentials` matches the
-    # `ghp_` + 36 shape.
-    noisy_target = "ghp_" + ("a" * 36)
+    # Built rather than written literally: a real-looking token in source trips
+    # secret scanners for no benefit. `redact_credentials` matches a `ghp_` token
+    # with a valid checksum.
+    noisy_target = github_classic(seed=106)
 
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

@@ -40,6 +40,7 @@ from kiro_crew.git_divergence import (
     DivergenceUnreadable,
     count_divergence_sync,
 )
+from kiro_crew.git_tmp_packs import UPDATE_FETCH_TIMEOUT_S, reap_stale_tmp_packs
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
 from kiro_crew.platform import release_apply
 from kiro_crew.platform.update_capability import (
@@ -367,15 +368,20 @@ def _update(force: bool = False) -> None:
             env=_fetch_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=60,
+            timeout=UPDATE_FETCH_TIMEOUT_S,
             **UTF8_TEXT,
         )
     except subprocess.TimeoutExpired as exc:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git fetch timed out after %ss during update", exc.timeout
         )
-        print(f"  ❌ git fetch timed out after {exc.timeout}s")
+        print(f"  ❌ git fetch timed out after {exc.timeout:g}s and kept nothing it downloaded.")
+        print("  Run `kirocrew update` again to retry the fetch.")
         sys.exit(1)
+    finally:
+        # A killed fetch leaves its partial pack. The update check's reaper takes
+        # every one older than its threshold, so this run's goes on a later run.
+        reap_stale_tmp_packs(proj)
     if result.returncode != 0:
         print(f"  ❌ git fetch failed:\n{result.stderr.strip()}")
         sys.exit(1)

@@ -12,12 +12,16 @@ data home.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from kiro_crew.apps.builtins.ops_mission_control.tests.store_and_gate_helpers import _HomeIsolated
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token with a valid checksum, a credential the artifact must not keep.
+_TOKEN = github_classic(seed=112)
 
 
 class TestClaim(_HomeIsolated):
@@ -441,14 +445,14 @@ class TestClosingAnIncidentLeavesAnArtifact(_HomeIsolated):
         store.transition(
             inc.incident_id,
             models.STATUS_RESOLVED,
-            diagnosis="the reproducer used glpat-IOSFODNN7EXAMPLE",
+            diagnosis=f"the reproducer used {_TOKEN}",
             resolution="rotated it; curl used Bearer sk-abcdefghijklmnopqrst",
         )
 
         body = store.read_log(inc.incident_id)
         self.assertTrue(body, "no artifact to check")
         self.assertNotIn(dd_key, body)
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", body)
+        self.assertNotIn(_TOKEN, body)
         self.assertNotIn("sk-abcdefghijklmnopqrst", body)
         # Still a usable postmortem: only the secrets are gone, not the narrative.
         self.assertIn("probe failed", body)
@@ -983,10 +987,15 @@ class TestClaimProvenance(unittest.TestCase):
     them.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -997,7 +1006,6 @@ class TestClaimProvenance(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _signal(self, native_id="alarm/dlq"):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models

@@ -304,6 +304,18 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         ...(project_from_slot ? { project_from_slot } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
+    /** Create, or reopen, the person's chat a built-in app's page launches inside
+     *  its manifest's `permissions.chatLaunch` (the gateway refuses anything else).
+     *  The same create as `createChatSlot` with `app_launch` naming the app. */
+    createAppChatSlot: (app: string, name: string, agent: string, memory_mode: string, title?: string, folder_id?: string) =>
+      post('/api/chat/slots', {
+        name,
+        agent,
+        memory_mode,
+        ...(title ? { title } : {}),
+        ...(folder_id ? { folder_id } : {}),
+        app_launch: app,
+      }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>,
     /** Inject silent background context into a slot — consumed on the next user
      * message. Used by the artifact companion chat to name the bound artifact so
      * the user's first message needs no slug boilerplate. */

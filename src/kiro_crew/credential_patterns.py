@@ -32,32 +32,11 @@ bootstrap path. Exporting plain strings, plus the few pure string builders behin
 :data:`TOKEN_PARAMETER`, keeps this module's import cost near zero and makes it
 impossible for a future edit here to drag a dependency into that path.
 ``test_credential_patterns.py`` pins the import-free shape.
-
-The two AWS spellings deliberately DIVERGE
-------------------------------------------
-The redaction floor matches two prefixes the scrubber does not. Over-matching is
-the fail-closed direction for redaction: a false positive costs one masked log
-line, while a miss writes a live key to disk. The scrubber's narrower spelling is
-load-bearing in the other direction -- it gates request-blocking decisions and a
-cheap literal pre-filter whose anchors must stay a superset of every branch (see
-``_CREDENTIAL_PATTERNS`` in ``security.py``), so widening it is a security
-behaviour change and not a refactor.
-
-That asymmetry is preserved and made explicit here: ``AWS_KEY_ID_REDACTION`` is
-BUILT from the same prefix and body fragments as ``AWS_KEY_ID`` plus named extra
-prefixes. The superset relation now holds by construction, so no test has to
-compare two hand-written strings to discover whether it still does.
 """
 
-#: AWS access key-ID prefixes both consumers match: long-term (``AKIA``) and
-#: temporary/STS (``ASIA``) ids.
+#: AWS access key-ID prefixes the request-blocking scrubber matches: long-term
+#: (``AKIA``) and temporary/STS (``ASIA``) ids.
 AWS_KEY_ID_PREFIXES = "AKIA|ASIA"
-
-#: Prefixes matched by the REDACTION floor only -- ``ABIA`` (bearer tokens) and
-#: ``ACCA`` (context-specific credentials). Kept out of ``AWS_KEY_ID`` because
-#: adding them to the scrubber widens what a security surface blocks and needs
-#: matching pre-filter anchors; see the module docstring.
-AWS_KEY_ID_REDACTION_ONLY_PREFIXES = "ABIA|ACCA"
 
 #: The id body: exactly 16 uppercase alphanumerics after the 4-letter prefix.
 #: Precise enough for near-zero false positives, and the id is the searchable
@@ -66,17 +45,6 @@ AWS_KEY_ID_BODY = "[A-Z0-9]{16}"
 
 #: AWS access key ID as the credential scrubber matches it.
 AWS_KEY_ID = f"(?:{AWS_KEY_ID_PREFIXES}){AWS_KEY_ID_BODY}"
-
-#: AWS access key ID as the log-redaction floor matches it: a strict superset of
-#: :data:`AWS_KEY_ID`, by construction.
-#:
-#: No word-boundary assertions here or in :data:`AWS_KEY_ID`: a key rendered
-#: adjacent to word characters (``aws_AKIA...``, ``key=AKIA...x``) has no ``\b``
-#: between ``_`` and ``A`` and would slip past a bounded pattern. Over-matching
-#: inside a longer token is the fail-closed direction for a redaction floor.
-AWS_KEY_ID_REDACTION = (
-    f"(?:{AWS_KEY_ID_PREFIXES}|{AWS_KEY_ID_REDACTION_ONLY_PREFIXES}){AWS_KEY_ID_BODY}"
-)
 
 #: Multi-segment JWT: an ``eyJ`` header plus 2-4 further dot-separated base64url
 #: segments, covering 3-segment JWS AND 4-5-segment JWE (``dir``/ECDH-ES).
@@ -138,10 +106,11 @@ VENDOR_TOKEN_PATTERNS = (
 
 
 # ── Token URL parameter ──
-# The scrubber's pass 4 and the log-redaction floor compile the same
-# :data:`TOKEN_PARAMETER`, so both read a token parameter the same way; what each
-# then skips or exempts is its own. The fragments below are its parts; the
-# scrubber also builds its streaming partial from them.
+# The scrubber's stream hold (``StreamRedactor``) and the log-redaction floor compile
+# the same :data:`TOKEN_PARAMETER`; what each then does with a match is its own. The
+# fragments below are its parts; the scrubber also builds its streaming partial from
+# them. The batch scrubber reads a URL's ``token`` parameter with its rule table
+# (row ``url.token_param.token``).
 #
 # Group 1 is the VALUE, and only the value is replaced: `token=` stays visible
 # so a redacted URL still reads as a token URL. The precedent is
@@ -318,9 +287,8 @@ TOKEN_PARAMETER = (
 # * ``identifier``  -- names or describes and cannot authenticate (key IDs,
 #                      account IDs, ARNs, request IDs, digests).
 #
-# The tier is METADATA today: no redactor reads it, so what gets redacted is
-# unchanged. An ``identifier`` rule is still redacted until its behaviour is
-# changed deliberately, in its own reviewed change.
+# The tier is metadata: no redactor reads it. Every rule below is a rule a
+# redactor masks with; an ``identifier`` has no rule, because none is masked.
 
 TIER_SECRET = "secret"
 TIER_BEARER_LINK = "bearer_link"
@@ -334,7 +302,6 @@ TIERS = (TIER_SECRET, TIER_BEARER_LINK, TIER_IDENTIFIER)
 #: so a new rule cannot ship without a tier.
 RULE_TIERS = {
     # Core redactor, pass 1 (fixed patterns) and its labelled AWS forms.
-    "aws_access_key_id": TIER_IDENTIFIER,
     "aws_secret_access_key": TIER_SECRET,
     "aws_session_token": TIER_SECRET,
     "private_key": TIER_SECRET,
@@ -357,7 +324,6 @@ RULE_TIERS = {
     "credential_pattern": TIER_SECRET,
     # Passes 2-4.
     "encoded_credential": TIER_SECRET,
-    "bare_aws_secret": TIER_SECRET,
     "token_parameter": TIER_BEARER_LINK,
     # The structured credential detectors could not run, so the whole text was replaced.
     "redaction_unavailable": TIER_SECRET,

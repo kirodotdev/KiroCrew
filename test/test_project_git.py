@@ -13,14 +13,13 @@ import os
 import shutil
 import subprocess
 import threading
-from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from git_maintenance_helpers import git_maintenance_off_entries
-from redaction_structured_cases import structured_engine
+from redaction_structured_cases import jwt
 
 import kiro_crew.dashboard.handlers.files as files_mod
 from conftest import requires_symlinks
@@ -37,16 +36,8 @@ from kiro_crew.dashboard.handlers.files import (
     _resolve_project_git,
     _slot_project_snapshot,
 )
-from kiro_crew.security import _looks_like_secret_key, redact
-from kiro_crew.security.redaction import _SECRET_MAX_SLASHES
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
+from kiro_crew.security import redact
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -65,16 +56,6 @@ def as_darwin(monkeypatch):
 def as_not_darwin(monkeypatch):
     """The complement: no exemption exists off Darwin."""
     monkeypatch.setattr(platform_compat, "IS_MACOS", False)
-
-
-@pytest.fixture
-def _structured_detectors_off():
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(False)
-    yield
-    compat.publish_use_rule_table(before)
 
 
 class _Slot:
@@ -553,7 +534,7 @@ class TestBranchRedaction:
         assert files_mod._redact_project_path(path) == redact(path)
 
     def test_macos_temp_root_still_redacts_a_secret_in_the_suffix(self, as_darwin):
-        key = SAMPLE_AWS_SECRET
+        key = github_classic(seed=23)
         path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/" f"project/{key}"
         redacted = files_mod._redact_project_path(path)
         assert key not in redacted
@@ -648,16 +629,12 @@ class TestBranchRedaction:
 
 
 class TestMacosPrefixBoundary:
-    """What the macOS exemption may and may not cost the bare-secret detector.
+    """What the macOS exemption may and may not withhold from the canonical redactor.
 
     The path-aware helper's exemption withholds the OS-owned
-    ``[a-z0-9]{2}/[a-z0-9_]{30}`` id from its scan -- that is what stops it
-    lending its entropy to a window and reviving the false positive. The helper
-    does NOT withhold the trailing ``T``: an AWS secret key may contain ``/``, so
-    ``T/`` plus 38 user-controlled characters is a well-formed 40-byte key to it.
-    With the structured detectors on, ``redact()`` protects the whole temp
-    directory, ``T`` included, so no window there can borrow those bytes. These
-    pin both behaviours, and that the id itself is never scanned.
+    ``[a-z0-9]{2}/[a-z0-9_]{30}`` id from its scan and hands the trailing ``/T``
+    and everything after it to ``redact()`` untouched. These pin that the id
+    itself is never scanned and that a credential after it is still masked.
 
     Every case here describes the Darwin arm, so the class flips
     ``platform_compat.IS_MACOS`` rather than asserting a branch that only runs on
@@ -691,71 +668,11 @@ class TestMacosPrefixBoundary:
     # composed entirely of fixed or user-controlled bytes and both must be seen.
     SLASH_BOUNDARY_KEY = "/T/EqV8ib8HDy88YtDtXbiufMdI8X2Y4rUmer/BH"
 
-    @pytest.mark.usefixtures("_structured_detectors_off")
-    def test_a_credential_spanning_the_prefix_boundary_is_redacted(self):
-        """The blocking finding, pinned. Covers the plan with the structured
-        detectors off: with them on, the temp directory (``T`` included) is an
-        Identifier and no window can borrow its bytes.
-
-        Splitting the scan at ``match.end()`` produced a class where the
-        canonical redactor removed a value and the path-aware helper did not --
-        the helper weakened the output policy rather than narrowing a false
-        positive. Both halves are asserted, so a regression cannot pass by
-        making the canonical side stop firing either.
-        """
-        for key, lead in (
-            (self.BOUNDARY_KEY, "T/"),
-            (self.SLASH_BOUNDARY_KEY, "/T/"),
-        ):
-            assert _looks_like_secret_key(
-                key
-            ), "fixture must be a credential by the canonical classifier"
-            tail = key[len(lead) :]
-            assert len(key) == 40 and len(tail) == 40 - len(lead)
-            for prefix in (self.CLEAN, self.SELF_FLAGGED):
-                path = f"{prefix}/{tail}"
-                assert redact(path) != path, "canonical redactor must remove it"
-                out = files_mod._redact_project_path(path)
-                assert tail not in out, f"boundary credential survived: {out}"
-                assert "[REDACTED:" in out
-
     def test_the_two_fixture_prefixes_behave_as_documented(self):
         assert redact(self.CLEAN) == self.CLEAN
         # The macOS temp directory is an Identifier with the structured detectors on.
         assert redact(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert files_mod._redact_project_path(self.SELF_FLAGGED) == self.SELF_FLAGGED
-
-    def test_neither_boundary_name_is_a_secret_standing_alone(self):
-        """Neither value is a secret by itself: both are under 40 characters.
-
-        They differ only in what their own leading separator buys them. The
-        39-character name reaches a 40-character window with the `/` that the
-        suffix scan already sees; the 38-character one can only get there by
-        borrowing the OS-owned `T` as well, which is the window the exemption
-        gives up.
-        """
-        for name in (self.NAME_38, self.NAME_39):
-            assert len(name) < 40
-            assert redact(name) == name
-        assert redact(f"/{self.NAME_38}") == f"/{self.NAME_38}"
-        assert redact(f"/{self.NAME_39}") != f"/{self.NAME_39}"
-
-    def test_a_38_char_name_after_the_temp_directory_stays_visible(self):
-        """A 38-char name right after ``/T/`` is a path component, and the
-        canonical redactor keeps it.
-
-        The structured detectors protect the temp directory, ``T`` included, so
-        no 40-character window can borrow its ``T/``. The name reaches 40
-        characters only joined to that ``T``; on its own it is under the length
-        of an AWS secret, so the whole path stays visible, the directory id
-        included. The path-aware helper still judges the ``T/`` window itself
-        and removes the name.
-        """
-        path = f"{self.CLEAN}/{self.NAME_38}"
-        assert redact(path) == path
-        out = files_mod._redact_project_path(path)
-        assert self.NAME_38 not in out
-        assert out.startswith(self.CLEAN[: -len("/T")])
 
     def test_ordinary_project_names_survive_under_both_prefixes(self):
         """The false positive this helper removes, including the boundary itself.
@@ -797,24 +714,10 @@ class TestMacosPrefixBoundary:
             == f"{self.SELF_FLAGGED}/project"
         )
 
-    def test_a_39_char_name_is_still_scanned_with_its_separator(self):
-        """One character longer and the suffix scan reaches 40 unaided.
-
-        This is what bounds the loss: the suffix always begins at the `/` that
-        follows the OS-owned `T`, so a user-controlled run only has to reach 39
-        characters to be scanned as a 40-character window.
-        """
-        for prefix in (self.CLEAN, self.SELF_FLAGGED):
-            out = files_mod._redact_project_path(f"{prefix}/{self.NAME_39}")
-            assert self.NAME_39 not in out
-            assert "[REDACTED:" in out
-
     @pytest.mark.parametrize(
         "value",
-        [
-            SAMPLE_AWS_SECRET,
-            "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-        ],
+        [github_classic(seed=24), jwt()],
+        ids=["github-token", "jwt"],
     )
     @pytest.mark.parametrize("layout", ["{v}", "project/{v}", "{v}/sub", "a/b/{v}/c"])
     def test_a_real_credential_never_survives_the_split(self, value, layout):
@@ -851,44 +754,6 @@ class TestMacosPrefixBoundary:
             ):
                 path = prefix + tail
                 assert files_mod._redact_project_path(path) == head + redact(boundary + tail)
-
-    # A real 40-char key that carries MORE separators than the detector's
-    # ceiling. Drawn by sampling the classifier itself rather than hand-written,
-    # so the shape is the detector's own notion of a key.
-    SLASH_DENSE_KEY = "cr/3YYUFFyoVEK2O/pmcPr4rjgfo//FDAHqlB572"
-
-    def test_a_slash_dense_key_is_treated_as_on_any_other_path(self):
-        """The one residual of the "helper weaker than canonical" class.
-
-        A 40-char key with more than ``_SECRET_MAX_SLASHES`` separators is masked
-        standing alone -- a 40-char run is the token somebody wrote, so the
-        ceiling is deliberately not applied to it. Inside this helper the scanned
-        text is ``/T`` + suffix, which is longer than one whole key, and that
-        length is exactly what switches the ceiling on, so every window is
-        declined.
-
-        Canonical on the full path does mask it, but not by recognising the key:
-        the OS id supplies a slash-free stretch that lets an id-straddling window
-        clear the ceiling -- it masks it via the false positive this exemption
-        exists to remove. The property worth pinning is therefore PARITY, not
-        preservation: whatever the product does with this key on an ordinary deep
-        path, this helper does on the temp root. Asserted as an equivalence so
-        the test fails if either side moves, rather than blessing an outcome.
-        """
-        key = self.SLASH_DENSE_KEY
-        assert _looks_like_secret_key(key), "fixture must be a key by the classifier"
-        assert key.count("/") > _SECRET_MAX_SLASHES, "fixture must exceed the ceiling"
-        # Standalone, the ceiling does not apply and the key is masked.
-        assert redact(key) != key
-        # On an ordinary deep path the ceiling declines it -- no exemption in play.
-        ordinary = f"/srv/{key}"
-        ordinary_untouched = redact(ordinary) == ordinary
-        assert ordinary_untouched, "control: the product already loses this shape"
-        # Parity: the exemption concedes nothing the product does not concede.
-        for prefix in (self.CLEAN, self.SELF_FLAGGED):
-            path = f"{prefix}/{key}"
-            helper_untouched = files_mod._redact_project_path(path) == path
-            assert helper_untouched == ordinary_untouched
 
 
 class TestSlotSnapshotOffLoop:

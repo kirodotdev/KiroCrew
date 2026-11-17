@@ -26,6 +26,8 @@ const mockApi = vi.hoisted(() => ({
   chatMode: vi.fn(),
   chatSlotModel: vi.fn(),
   chatSlotReasoningEffort: vi.fn(),
+  chatSlotAutocompact: vi.fn(),
+  setChatSlotAutocompact: vi.fn(),
   agentResolvedModel: vi.fn(),
   harnessModels: vi.fn(),
   memberDashboard: vi.fn(),
@@ -91,7 +93,7 @@ const rowValue = (key: string) => within(group()).getByTestId(`crew-profile-sett
 const page = (key: string) => within(hosts[1]).getByTestId(`crew-profile-setting-page-${key}`)
 const open = (key: string) => { fireEvent.click(row(key)); return page(key) }
 /** Open the setting's page and pick one option by its label. */
-const pick = (key: string, option: string) => fireEvent.click(within(open(key)).getByRole('radio', { name: option }))
+const pick = (key: string, option: string | RegExp) => fireEvent.click(within(open(key)).getByRole('radio', { name: option }))
 const checked = (key: string) => within(page(key)).getByRole('radio', { checked: true })
 
 beforeEach(() => {
@@ -102,6 +104,7 @@ beforeEach(() => {
   mockApi.chatMode.mockResolvedValue({ ok: true })
   mockApi.chatSlotModel.mockResolvedValue({ ok: true })
   mockApi.chatSlotReasoningEffort.mockResolvedValue({ ok: true })
+  mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
   mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
   mockApi.kirocrewConfig.mockResolvedValue({ dashboard: {} })
   mockApi.harnessModels.mockResolvedValue([{ model_name: 'auto' }, { model_name: 'sonnet-cc' }])
@@ -206,6 +209,103 @@ describe('CrewProfileSettings row and group', () => {
     modelsState.isDegraded = true
     setup(member())
     expect(within(group()).getByTestId('crew-profile-settings-models-error')).not.toBeEmptyDOMElement()
+  })
+})
+
+describe('CrewProfileSettings auto-compact', () => {
+  it('reads Inherited when the record holds 0, and says which threshold that is', async () => {
+    setup(member({ autocompact_pct: 0 }))
+    expect(rowValue('autocompact_pct')).toHaveTextContent('Inherited')
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Follows the default in Settings → Chat, now 70%'))
+  })
+
+  it('writes the picked percent as a number to the record and leaves the thread alone', async () => {
+    setup(member())
+    pick('autocompact_pct', '30%')
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { autocompact_pct: 30 }))
+    expect(rowValue('autocompact_pct')).toHaveTextContent('30%')
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].autocompact_pct).toBe(30)
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+  })
+
+  it('sends Inherited as 0', async () => {
+    setup(member({ autocompact_pct: 40 }))
+    expect(rowValue('autocompact_pct')).toHaveTextContent('40%')
+    // The option's name carries its hint, so match its label at the start.
+    pick('autocompact_pct', /^Inherited/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { autocompact_pct: 0 }))
+  })
+
+  it('names the harness, not the global, when the thread runs on one that compacts on its own', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, agent_pct: 40, global_pct: 70, harness_managed: 'kas', min: 5, max: 90 })
+    setup(member({ autocompact_pct: 40 }))
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Kiro Agent summarizes these chats on its own schedule'))
+    expect(p).not.toHaveTextContent('Follows the default')
+  })
+
+  it('re-reads the global when the picker opens, so a changed chat setting shows', async () => {
+    setup(member())
+    await waitFor(() => expect(mockApi.chatSlotAutocompact).toHaveBeenCalledTimes(1))
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 90, min: 5, max: 90 })
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Follows the default in Settings → Chat, now 90%'))
+  })
+
+  it('says so on the picker when the threshold cannot be read', async () => {
+    mockApi.chatSlotAutocompact.mockRejectedValue(new Error('gateway down'))
+    setup(member())
+    open('autocompact_pct')
+    const notice = await within(hosts[1]).findByTestId('crew-profile-settings-autocompact-error')
+    // Plain words, not the transport's own message, and a way to try again.
+    expect(notice).toHaveTextContent("Couldn't read the current default for this chat.")
+    expect(notice).not.toHaveTextContent('gateway down')
+    // Inherited still says where its value comes from, without a number.
+    expect(hosts[1]).toHaveTextContent('Follows the default in Settings → Chat')
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
+    const calls = mockApi.chatSlotAutocompact.mock.calls.length
+    fireEvent.click(within(notice).getByTestId('crew-profile-settings-autocompact-retry'))
+    await waitFor(() => expect(mockApi.chatSlotAutocompact.mock.calls.length).toBeGreaterThan(calls))
+    await waitFor(() => expect(hosts[1]).toHaveTextContent('Follows the default in Settings → Chat, now 70%'))
+  })
+
+  it('says when the thread has its own threshold, which this record does not move', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: 55, global_pct: 70, min: 5, max: 90 })
+    setup(member())
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('This chat has its own threshold, 55%'))
+  })
+
+  it('clears the thread\'s own threshold from the page, since no pick here moves it', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: 55, global_pct: 70, min: 5, max: 90 })
+    mockApi.setChatSlotAutocompact.mockResolvedValue({ ok: true, pct: null, global_pct: 70 })
+    setup(member())
+    const p = open('autocompact_pct')
+    const clear = await within(p).findByTestId('crew-profile-settings-autocompact-clear-thread')
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
+    fireEvent.click(clear)
+    await waitFor(() => expect(mockApi.setChatSlotAutocompact).toHaveBeenCalledWith('member-oncall', null))
+    // The record is left alone: only the thread's override goes.
+    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
+    await waitFor(() => expect(within(p).queryByTestId('crew-profile-settings-autocompact-clear-thread')).toBeNull())
+    expect(p).not.toHaveTextContent('This chat has its own threshold')
+  })
+
+  it('says so when the thread\'s own threshold cannot be cleared', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: 55, global_pct: 70, min: 5, max: 90 })
+    mockApi.setChatSlotAutocompact.mockRejectedValue(new Error('down'))
+    setup(member())
+    const p = open('autocompact_pct')
+    fireEvent.click(await within(p).findByTestId('crew-profile-settings-autocompact-clear-thread'))
+    expect(await within(p).findByTestId('crew-profile-settings-autocompact-clear-error')).toHaveTextContent("Couldn't clear this chat's own threshold.")
+  })
+
+  it('offers no clear when the thread has no threshold of its own', async () => {
+    setup(member())
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Follows the default in Settings → Chat, now 70%'))
+    expect(within(p).queryByTestId('crew-profile-settings-autocompact-clear-thread')).toBeNull()
   })
 })
 

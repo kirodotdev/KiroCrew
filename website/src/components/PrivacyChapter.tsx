@@ -19,6 +19,7 @@ import { i18nT } from '../i18n/t'
 const COLLECTED_KEYS = [
   'components.privacyChapter.collectedTimings',
   'components.privacyChapter.collectedFeatures',
+  'components.privacyChapter.collectedApps',
   'components.privacyChapter.collectedVersions',
   'components.privacyChapter.collectedInstallId',
 ] as const

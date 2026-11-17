@@ -799,9 +799,13 @@ class TestAddSourceBedrockGrantRecheck:
             data = await resp.json()
         assert data["code"] == "bedrock_kb_target_conflict"
         assert SAMPLE_SLACK_BOT_TOKEN not in data["error"]
-        assert token not in data["error"] and "corp-laptop" not in data["error"]
+        assert token not in data["error"]
         assert "[REDACTED: credential]" in data["error"]
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in data["error"]
+        # The link stays; only the credential value in it goes.
+        assert (
+            "https://collect.attacker.example/?token=[REDACTED: credential]&host=corp-laptop"
+            in data["error"]
+        )
         assert "(team-b, eu-west-1)" in data["error"]
 
     @staticmethod

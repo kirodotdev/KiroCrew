@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
-from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.display_safety import outside_redaction_tags, redact_for_display
 from kiro_crew.messaging.outbound_files import protected_ref_spans
 from kiro_crew.messaging.renderer import chunk_text, split_options_trailer
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -125,14 +125,17 @@ def _neutralize_md(raw: str) -> str:
     list bullet alike. A typed backslash is escaped first so it cannot cancel
     one of ours.
 
-    The text is redacted BEFORE the escapes go in: an inserted ``\`` splits a
+    The text is redacted before the strip and again BEFORE the escapes go in: an inserted ``\`` splits a
     token such as ``abc~SECRET`` so the send-time redaction pass misses it,
     while Discord renders the ``\`` away and shows the reader the
     whole credential.
     NOT idempotent: apply it once, to the raw text.
     """
     t = " ".join((raw or "").split())[:120]
-    t = re.sub(r"[*_`\[\]()]", "", t)
+    # Redacted before the strip too: dropping ``_`` takes a token's own separator
+    # (``ghp_``) with it, and the stripped text does not read as that token.
+    t, _ = redact_for_display(t, _redact_steer)
+    t = outside_redaction_tags(t, lambda text: re.sub(r"[*_`\[\]()]", "", text))
     t, _ = redact_for_display(t, _redact_steer)
     t = re.sub(r"([\\|~])", r"\\\1", t)
     return re.sub(r"^([-#])", r"\\\1", t)

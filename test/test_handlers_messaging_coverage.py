@@ -946,6 +946,40 @@ class TestApiSpawnRetry:
         mgr.get.return_value = None
         assert _run(mod.api_spawn_retry, self._req(mgr)).status == 404
 
+    def test_404_when_the_run_has_no_record_and_no_folder(self, monkeypatch) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(mod, "read_state", lambda aid: None)
+        resp = _run(mod.api_spawn_retry, self._req(mgr))
+        assert resp.status == 404
+        assert _payload(resp) == {"error": "not found"}
+
+    def test_a_run_only_on_disk_is_refused_retry_unavailable(self, monkeypatch) -> None:
+        """A folder holds the redacted task only, so it is never replayed."""
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(mod, "read_state", lambda aid: {"id": aid, "task": "t"})
+        resp = _run(mod.api_spawn_retry, self._req(mgr))
+        assert resp.status == 409
+        body = _payload(resp)
+        assert body["code"] == "retry_unavailable"
+        assert "spawn_continue" in body["error"]
+        mgr.spawn.assert_not_called()
+        mgr.claim_retry.assert_not_called()
+
+    def test_a_run_registered_during_the_queue_lookup_is_retried(self) -> None:
+        """The registry is read again after the queue lookup awaits."""
+        mgr = _mgr()
+        old = _info(done=True, outcome="failed", _raw_task="t")
+        mgr.get.return_value = old
+        req = self._req(mgr)
+        mgr.get.side_effect = [None, old]
+        mgr.claim_retry.return_value = ""
+        mgr.spawn.return_value = _info(id="new")
+        resp = _run(mod.api_spawn_retry, req)
+        assert resp.status == 200
+        assert _payload(resp)["retried_from"] == "a1"
+
     def test_409_while_running(self) -> None:
         mgr = _mgr()
         mgr.get.return_value = _info(done=False)
@@ -1184,8 +1218,11 @@ class TestApiSpawnDeleteUntrackedRun:
     def test_an_app_token_is_told_to_dismiss_the_card_from_the_dashboard(self) -> None:
         """A run with no manager entry is a card only the dashboard dismisses."""
         req = _Req(_state(), match_info={"agent_id": "run-1"}, extra={"app": "caller-app"})
+        # The app's own finished run: a run of anyone else's answers 404 first.
+        record = {"parent_session": "", "execution_context": {"app": "caller-app"}}
 
-        resp = _run(mod.api_spawn_delete, req)
+        with patch.object(mod, "read_state", return_value=record):
+            resp = _run(mod.api_spawn_delete, req)
 
         assert resp.status == 403
         body = _payload(resp)

@@ -7,7 +7,7 @@
 // cap, a second marker in the same reply -- draws no card: the line stays in the
 // prose as written, so the user still sees what the agent sent.
 
-import { GRILL_OPEN as OPEN } from './grillWireValues'
+import { GRILL_KEY_PREFIX, GRILL_OPEN as OPEN } from './grillWireValues'
 
 /** One participant and the side it argues. */
 export interface GrillParticipant {
@@ -119,4 +119,60 @@ export function stripPartialGrillMarker(content: string): string {
   const nl = content.lastIndexOf('\n')
   const tail = content.slice(nl + 1)
   return tail.trimStart().startsWith(OPEN) ? content.slice(0, nl + 1) : content
+}
+
+/**
+ * The key naming one card: its reply row's server `mid` plus the reply version.
+ * Only a reply with one version gets one (`AssistantMessage`): a regenerated
+ * row's versions share its `mid`, and a Regenerate settles which version is
+ * which only at its turn's end. No `mid` (a row the server has not
+ * named yet, or an old one it never will): no key, and the card sends without
+ * one. Never a client stamp or `ts`: those change on refresh, so a lock keyed on
+ * them would not hold.
+ */
+export function grillKey(mid: string | undefined, version: number): string | undefined {
+  return mid ? `${mid}:${version}` : undefined
+}
+
+/** The line a Start / No thanks carries so a reload can tell this card was answered. */
+export function grillKeyLine(key: string): string {
+  return GRILL_KEY_PREFIX + key
+}
+
+/** The keys a sent message names: each line that is exactly `key: <value>`. */
+export function grillKeysIn(text: string): string[] {
+  return text.split(/\r?\n/).flatMap(l => (l.startsWith(GRILL_KEY_PREFIX) && l.length > GRILL_KEY_PREFIX.length ? [l.slice(GRILL_KEY_PREFIX.length)] : []))
+}
+
+interface KeyedRow { role?: string; content?: unknown; meta?: Record<string, unknown> }
+
+/** A row the server holds: a stored user message (it carries a `mid`), or an
+ *  entry still waiting in the session's queue (it carries the `queueId` the
+ *  server named it by). An optimistic bubble the server refused has neither. */
+function serverHeld(r: KeyedRow): boolean {
+  const id = r.role === 'user' ? r.meta?.mid : r.role === 'queued' ? r.meta?.queueId : undefined
+  return typeof id === 'string' && !!id && typeof r.content === 'string'
+}
+
+/**
+ * The keys of this row's cards that a later message the server holds already
+ * sent, newline-joined (a string, so a memoized row only redraws when it
+ * changes). A refused optimistic bubble does not count, so it cannot lock a
+ * card again after the card reopened. `queued`: the session's queued entries,
+ * for a host that keeps them out of `rows`. Undefined for a row with no `mid`
+ * or no card marker.
+ */
+export function grillKeysSentAfter(rows: readonly KeyedRow[], index: number, queued: readonly KeyedRow[] = []): string | undefined {
+  const row = rows[index] as (KeyedRow & { variants?: { content?: unknown }[] }) | undefined
+  const mid = row?.meta?.mid
+  if (typeof mid !== 'string' || !mid) return undefined
+  const texts = [row?.content, ...(row?.variants ?? []).map(v => v?.content)]
+  if (!texts.some(c => typeof c === 'string' && c.includes(OPEN))) return undefined
+  const mine = `${mid}:`
+  const found: string[] = []
+  for (const r of [...rows.slice(index + 1), ...queued]) {
+    if (!serverHeld(r)) continue
+    for (const k of grillKeysIn(r.content as string)) if (k.startsWith(mine) && !found.includes(k)) found.push(k)
+  }
+  return found.length ? found.join('\n') : undefined
 }

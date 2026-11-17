@@ -455,7 +455,8 @@ class TestTelegramTokenRedaction:
     def test_bot_token_is_redacted(self) -> None:
         from kiro_crew.security import redact_credentials
 
-        token = "8412345678:" "AAExampleSecretTokenValue_1234567890abcd"
+        # The published form: an 8 to 10 digit bot id, ``:``, 35 characters.
+        token = "8412345678:" "AAExampleSecretTokenValue_123456789"
         cleaned, warnings = redact_credentials(f"my token is {token} ok")
         assert token not in cleaned
         assert "[REDACTED: credential]" in cleaned

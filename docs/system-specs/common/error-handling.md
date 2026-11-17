@@ -69,6 +69,9 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 
 AcpRuntimeError (base, acp/session_handle_runtime_contract.py)
 ├── AcpRuntimeDead            — the underlying process has died
+├── AcpScopeAdmissionTimeout  — the user systemd manager did not admit the
+│                                agent's scope within its bound; transient=False,
+│                                because each retry adds one more transient unit
 ├── AcpRequestTimeout         — a request's response missed its budget
 │   ├── AcpSessionStartTimeout — `session/new` timed out while a collector owns
 │   │                            the possible late result (acp/runtime_session_create.py)
@@ -403,6 +406,17 @@ never touch AWS, so naming Bedrock sent their users chasing throttling that does
 not exist. The verb stays "throttling" in both forms so
 `llm_helpers._TRANSIENT_MARKERS` ("throttl") still classifies the formatted
 message as transient; the retry verdict is unchanged, only the subject noun moves.
+Kiro's **per-user request-rate limit** (HTTP 429 reason `USER_REQUEST_RATE_EXCEEDED`,
+or the engine's "sending requests faster than your rate limit allows") is worded
+ahead of that branch by `acp/user_rate_limit_errors.py`: the limit is per user, not
+per model, so `USER_RATE_LIMIT_TEXT` says a model switch will not help and to wait,
+instead of the throttle row's switch-model advice. Only the wording is its own; the
+retry verdict and the throttle tag still come from the frame's throttle tokens, and
+the text keeps "throttling" for the same `_TRANSIENT_MARKERS` reason.
+`_raise_acp_error` also stamps `AcpError.user_rate_limit` on such a throttle, and
+`AcpError.server_error` on a transient provider 5xx (`acp_error_is_server_error` reads
+it, with the same text fallback as `acp_error_is_throttle`); the dashboard model
+fallback reads both (`modules/model-fallback.md`).
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the

@@ -90,7 +90,7 @@ import { Trans } from 'react-i18next'
 import { AddInstanceForm } from './InstancesPanel'
 import { RemoteCrewRestartBanner } from './RemoteCrewPanelRestartBanner'
 import { CrewVersionsReadError } from './CrewVersionStatus'
-import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
+import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, envCredentialsSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   instanceFormFromView,
 } from './InstanceFormFields'
@@ -1013,24 +1013,29 @@ export function RemoteCrewPanel() {
   }
 
   // ── Disabled feature gate (mirrors InstancesPanel) ──
+  // Shared Crews open over the relay, not an SSH/SSM tunnel, so their card does
+  // not wait on this switch; it keeps its own hidden rule.
   if (disabled) {
     return (
-      <Card>
-        <div className="flex items-center gap-2 text-text font-medium mb-1" data-setting-label={i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}>
-          <Server className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.multi_instance_management_is_off')}
-        </div>
-        <p className="text-[13px] text-muted mb-3">{i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}</p>
-        {restartPending && (
-          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
-            <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-            <span><Trans i18nKey="pages.settings.instancesPanel.disabled_restart_to_tear_down_tunnels" components={{ cmd: <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code> }} /></span>
+      <div className="space-y-4">
+        <Card>
+          <div className="flex items-center gap-2 text-text font-medium mb-1" data-setting-label={i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}>
+            <Server className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.multi_instance_management_is_off')}
           </div>
-        )}
-        <Btn primary onClick={() => enableMutation.mutate()} disabled={enableMutation.isPending}>
-          <Power className="lucide-inline" /> {enableMutation.isPending ? i18nT('pages.settings.instancesPanel.enabling') : i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}
-        </Btn>
-        <ErrorNotice message={actionErr} askAgent className="mt-2" />
-      </Card>
+          <p className="text-[13px] text-muted mb-3">{i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}</p>
+          {restartPending && (
+            <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
+              <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
+              <span><Trans i18nKey="pages.settings.instancesPanel.disabled_restart_to_tear_down_tunnels" components={{ cmd: <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code> }} /></span>
+            </div>
+          )}
+          <Btn primary onClick={() => enableMutation.mutate()} disabled={enableMutation.isPending}>
+            <Power className="lucide-inline" /> {enableMutation.isPending ? i18nT('pages.settings.instancesPanel.enabling') : i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}
+          </Btn>
+          <ErrorNotice message={actionErr} askAgent className="mt-2" />
+        </Card>
+        <SharedCrewsCards />
+      </div>
     )
   }
 
@@ -1449,12 +1454,14 @@ export function RemoteCrewPanel() {
                       // leads; the CLI's own error sits under it (failureDetail)
                       // for anything the sentence misses.
                       ? credentialHelperMissingSentence(preflight.credential_helper_missing)
+                    : preflight.env_credentials
+                      ? envCredentialsSentence()
                       : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
                   failureDetail={preflight.reachable && preflight.account
                     ? undefined
                     : cliRefusal
                       ? cliRefusal.failureDetail
-                      : (preflight.credential_helper_missing && preflight.detail) || undefined}
+                      : ((preflight.credential_helper_missing || preflight.env_credentials) && preflight.detail) || undefined}
                   failureReport={cliRefusal ? awsCliRefusalReport(preflight, cliRefusal) : undefined}
                   steps={cliRefusal?.steps}
                   onRecheck={runCheck}

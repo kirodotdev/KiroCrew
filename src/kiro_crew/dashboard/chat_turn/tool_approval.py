@@ -10,6 +10,7 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE
 from kiro_crew.agent_sdk.spec_hooks import post_tool_identity, spec_keys_notice
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.deny_override import (
@@ -1135,6 +1136,12 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # A card turn (words a page chose) never inherits this native-crew auto-approve
     # either, so it is excluded here as it is from every other auto-approve rung.
     _claude_backend = is_claude_backend_name(capabilities_of(client).backend)
+    # An opencode ``task`` card is drawn from the parent's own tool row
+    # (``client_native_children._opencode_task_events``): its requests name no
+    # child either, so an open card must not approve the parent's calls.
+    _unattributed_children = (
+        _claude_backend or capabilities_of(client).backend == ACP_BACKEND_OPENCODE
+    )
     _own_worker_call = not _claude_backend and _crew_root_own_worker_call(state, slot, event)
     _own_child_call = (
         not _claude_backend
@@ -1147,7 +1154,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             _own_worker_call
             or _own_child_call
             or (
-                not _claude_backend
+                not _unattributed_children
                 and _native_crew_should_auto_approve(_native_tracker, state, slot)
             )
         )

@@ -1,0 +1,15 @@
++302
+The ssh-to-self floor reads which glob words bash runs as a program
+(argv_rules._executed_program_indices, with _program_index split out of
+_program_args) so a glob verb such as s?h keeps its self-host check. An array
+literal, a backtick or $( ) assignment, and a case arm's pattern list, keep
+their filename reading; only a case word in command position opens a case.
+The verb gate cuts words at ; & | parentheses and backticks with a plain
+character walk (_gate_words), no regex, so a long run of [ stays linear.
+It also cuts at the sentinels that stand for a quoted separator, so a
+"$(s?h ...)" inside double quotes still reaches the floor. The gate lives
+in its own owner module, argv_floor_ssh_gate, with _cannot_name_ssh_verb, which
+keeps argv_floor_ssh under the line cap.
+That walk reads a wrapper's option words in the case they were written in
+(sudo -H takes no value, sudo -h does; sudo -e runs no program), from frames
+built off the command as submitted, which deny_gate passes to the floor.

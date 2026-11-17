@@ -130,6 +130,35 @@ carried comes back to the user in the "send cancelled" notice. An older host may
 session before its list has it and stay on the previous chat; an app that must also
 run there can keep a short wait of its own before opening a just-created session.
 
+`useChatLauncher().createChat(options)` creates, or reopens, a chat for the person
+and resolves to its slot key, without your page declaring `/api/chat/slots` (App Kit
+seam level 10; test that `createChat` exists rather than reading the level). It opens
+only the chat your manifest's `permissions.chatLaunch` declares
+([manifest-reference](manifest-reference.md)), and the gateway refuses anything else
+with a `403` whose body carries `app_chat_launch_refused`:
+
+- `slotKey`: your `keyPrefix` followed by 1 to 128 of `[A-Za-z0-9._-]`. The same key
+  reopens the same chat. A key holding a slot another app owns, or a chat another app's
+  page opened, is refused. A prefix is one installed app's: while another installed
+  app, enabled or not, declares a prefix that overlaps yours (one starts with the
+  other), every `createChat` of both apps is refused, so neither reaches the other's
+  chats. Start yours with your app's name to keep it your own.
+- `agent`: one of your declared `agents`.
+- `title`: the sidebar title. Sent again on a reopen, it renames the chat, so send it
+  only when you create one.
+- `folderId`: the id of a folder named your declared `folder`, to file the chat in.
+- `memoryMode`: one of your declared `memoryModes`; `'persistent'` when omitted.
+
+The chat is the person's: it records no owning app and runs under their own approval
+rules, exactly like one they opened. `createChat` does not navigate; pass the key to
+`openChat({ slotKey })`:
+
+```ts
+const { createChat, openChat } = useChatLauncher()
+const slotKey = await createChat({ slotKey: 'notes-followup-42', agent: 'notes-reviewer', title: 'Follow-up #42' })
+openChat({ slotKey })
+```
+
 Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
 resolves through:
 
@@ -966,6 +995,7 @@ a frontend consumer to extract:
 | `[OPTIONS: a \| b]` | follow-up choices, several may be picked |
 | `[OPTION: a \| b]` | follow-up choices, one only |
 | `[STEERING steer-<id>: …]` | the agent acknowledging a mid-turn steer |
+| `[GRILL: {json}]` | a conductor's proposed worker discussion, drawn by the dashboard as an editable card (one line of its own; invalid JSON, a field over its cap or a second marker leaves the line as prose) |
 
 Two failure modes matter, and both are the consumer's responsibility. Render the text unparsed and
 the user reads machine syntax. Strip the marker without offering the choices and the user's options
@@ -978,6 +1008,7 @@ website/src/app-sdk/protocol/
   optionMarker.ts   the marker pattern (in-tree only) + stripPartialOptionMarker
   options.ts        parseOptions, deriveFollowUpOptions
   steering.ts       extractSteeringAcks
+  grillMarker.ts    the `[GRILL:]` card parser (in-tree only, not exported from the package)
 ```
 
 ### Using it from an app
@@ -1006,8 +1037,8 @@ function AgentTurn({ message }: { message: ChatMessage }) {
 
 To decide whether choices still apply to the *conversation* rather than to one message, use
 `deriveFollowUpOptions(messages, isStreaming)`. It walks back to the most recent real assistant turn
-and returns none while streaming, after a user reply, or after a queued send — so stale buttons do
-not linger:
+and returns none while streaming, after a user reply, after a queued send, or when that turn
+carries a valid `[GRILL:]` card (the card holds the choice) — so stale buttons do not linger:
 
 ```tsx
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
@@ -1299,8 +1330,25 @@ client when it fires.
 job's `created_by` as `app:<name>` from the token. An app token may update,
 delete, enable, run, cancel or acknowledge only jobs that carry its own stamp.
 Any other id, foreign or missing, answers 403 `owner_only`. A job without an
-app stamp is owner-only. An acknowledgement's `ts` must name a cron
+app stamp is owner-only. A create whose `agent` or `member_id` names one of the
+owner's Bots that has memory of its own or a chat of its own answers the same
+403 and stores nothing; the `cron_add` tool answers an agent in your app's
+sessions with an error for the same create. Name an agent of your own instead.
+`POST /api/spawn` holds the same rule: `crew` or `target_member` naming such a
+Bot answers 404 `unknown_member`, and a `parent_session` that is such a Bot's
+answers 409 `member_identity_unavailable`. An acknowledgement's `ts` must name a cron
 notification of that same job.
+
+**Runs for app tokens.** `POST /api/spawn` from an app token starts one of your
+app's own agents, as `sdk.spawn` does. Pass `agent` (`spawn(task, agent)`): a
+request without one answers 400 `spawn_rejected`, and a name that is not one of
+your app's agents is refused with a 400 that carries the reason. A
+`parent_session` must be one of your app's own sessions; any other answers 409
+`member_identity_unavailable`. The run is recorded under your app, and that
+record is what the other routes read: `GET /api/spawn` lists, and
+`GET`/`DELETE /api/spawn/{agent_id}` with `retry`, `continue`, `steer` and
+`release` reach, only the runs your app started. Any other run id answers 404
+`task_scope_denied`, the same answer a run id that does not exist gets.
 
 #### Watching something without paying for a model call (`kiro_crew.irq`)
 
@@ -1421,6 +1469,12 @@ publish(result.text)          # only the scrubbed text may leave
 
 `outbound(text) -> ScrubResult` carries `text`, `credentials_removed`,
 `urls_removed` and `redacted`.
+
+A credential is masked at its value, inside a URL too. A link the dashboard would
+draw as a Blocked link chip (its query carries data out, and its host is not one the
+owner allowed) is replaced whole with `[REDACTED: suspicious URL to <host>]` and
+counted in `urls_removed`, because your page has no chip to hold it back. Every
+other link leaves as written.
 
 You get **counts, not descriptions**, and there is deliberately no way to learn
 which value was removed. That is not an omission to be filled in later: the
@@ -1993,10 +2047,15 @@ level 7 adds the manifest's `agentReadOnlyDirs` (see
 [`ctx.webhook_source`](#webhook-source-ctxwebhook_source), level 8 adds
 directory entries in `credentialMasks` (`"state/"`), the dashboard's
 [host sessions](#host-sessions) (`useHostSessions`), and the manifest's
-`backend.webOrigin` with the dashboard's `appWebOrigin(name)`, and level 9 adds
+`backend.webOrigin` with the dashboard's `appWebOrigin(name)`, level 9 adds
 `permissions.bots`, which an app's backend uses with its app token
-([Bots](#bots-permissionsbots-from-your-backend)); each level
-includes every level below it. Several seams share level 7, and three share level 8, so an app that needs one
+([Bots](#bots-permissionsbots-from-your-backend)), and level 10 refuses an
+installed app's `credentialMasks` to the agent's file tools too and adds the manifest's
+`permissions.chatLaunch` (see
+[manifest-reference.md](manifest-reference.md#permissions)) with
+[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui); each level
+includes every level below it. Several seams share level 7, three share level 8, and
+level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
@@ -2136,6 +2195,7 @@ POST /api/member-records/{slug}
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.
 - A new slot can only be opened on a fresh name or on a transcript your app already owns. `POST /api/chat/slots` with a `name`, `POST /api/chat` that would create its slot, and `POST /api/chat/slots/{slot}/resume` answer 404 for a transcript that belongs to someone else.
+- Your app's sessions run agents of your own, never one of the owner's Bots. `POST /api/chat/slots`, `POST /api/chat` on a session of yours and `POST /api/chat/slots/{slot}/agent` answer the same 404 when `agent` names a Bot that has memory of its own or a chat of its own, and `POST /v1/chat/completions` answers 404 `not_found` for one as `model`. The reserved `default` name still works. A template that shares a Bot's name is picked with `agent_kind: "template"` when you create the session. A turn on a session of yours that names a Bot anyway ends on an error row and starts no agent.
 - Apart from the missing-grant 403, every refusal returns the same body as a missing target, `{"error": "not found", "code": "slot_not_found"}`. The reason is recorded in the security-event log, and so is every access the ownership rule allows.
 - `GET /api/sessions/{key}` can answer 503 `session_busy` when the transcript is being written at that moment. Retry it.
 - Not narrowed yet: `/api/sessions/{id}/agents*`, `POST /api/sessions/restart`, and `/api/sessions/usage`, `/health` and `/memory`. Narrowing them to the app's own sessions is planned, so do not build on reaching other sessions there.
@@ -2346,7 +2406,7 @@ Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
 
 `POST /api/chat/slots/{slot}/note` drops a short declarative line into a chat that is both visible in the transcript immediately and known to the agent on the user's next message — without firing an LLM turn. Context injection alone is silent; a transcript append alone is invisible to the model, because a live provider forwards only the new user message. The note endpoint does both writes against one slot.
 
-Body: `{ content, source?, maxAge?, ephemeral? }`. A note always does both writes -- there is no visible-only or context-only mode. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, exfiltration URLs) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
+Body: `{ content, source?, maxAge?, ephemeral? }`. A note always does both writes -- there is no visible-only or context-only mode. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, inside URLs too) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
 
 Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, **or** the content is credential-shaped. The request is **not** rejected in any of these cases, because the caps and the credential check protect the context queue rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. Merge-card contexts being read by a running turn count toward both the per-source cap and the 50-entry ceiling until that turn ends. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
 

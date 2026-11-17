@@ -42,8 +42,11 @@ def safe_stderr_tail(
     ``""`` when there is nothing to publish. Both spellings are checked whole and
     the bound is applied only to a tail that passed, so a secret straddling the
     cut is judged before the cut can leave an unrecognisable fragment of it.
-    *redact* is the judge, ``security.redact`` when omitted.
+    *redact* is the credential judge, ``security.redact`` when omitted, and a URL the
+    exfiltration scan flags withholds the tail as well (``security.refuses``).
     """
+    from kiro_crew.security import refuses
+
     if redact is None:
         from kiro_crew.security import redact as default_redact
 
@@ -63,6 +66,6 @@ def safe_stderr_tail(
     # Both spellings are judged WHOLE, before any cut: a cut can start the window
     # mid-secret, leaving a fragment with neither its prefix nor its full run,
     # which no pattern recognises.
-    if redact(joined) != joined or redact(rejoined) != rejoined:
+    if refuses(joined, redact) or refuses(rejoined, redact):
         return STDERR_WITHHELD
     return joined[-max_chars:]

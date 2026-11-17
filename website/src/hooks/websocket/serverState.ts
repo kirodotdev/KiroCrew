@@ -9,7 +9,7 @@ import type { AppDispatch } from '../../store'
 import { patchSlotSourceLinks } from '../../store/dashboardSlice'
 import { purgeDocumentBodiesForRedactionChange } from '../usePanelTabs'
 import { isArtifactEditing } from '../../utils/artifactEditGuard'
-import { api } from '../../api/client'
+import { api, type CredentialRedactionState } from '../../api/client'
 // From the leaf module, not `api/client`: the many tests that mock the client
 // do not export ApiError, and an `instanceof` against a missing mock export
 // throws inside the reconnect heal's own catch.
@@ -59,11 +59,10 @@ export async function healRedactionSwitchAfterReconnect(qc: QueryClient): Promis
   }
   if (!after) return
   const moved = before !== undefined && after.enabled !== before.enabled
-  // Unknown position and ON: purge only if the switch has EVER been flipped
-  // (`changed_at` set). In the shipped default -- ON, never flipped, Settings
-  // never opened -- no raw body can exist, and a transient drop must not close
-  // every diff tab and empty every clean file body for nothing.
-  const unknownAndNowOn = before === undefined && after.enabled && !!after.changed_at
+  // Unknown position and ON: purge. The shipped default is OFF, so a file opened raw may be
+  // on screen even though the setting was never flipped; the gateway only reports ON here
+  // when the owner or a policy made it so.
+  const unknownAndNowOn = before === undefined && after.enabled
   if (moved || unknownAndNowOn) purgeDocumentBodiesForRedactionChange(qc)
 }
 
@@ -372,6 +371,15 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // itself on this same reconnect (and must NOT be cleared here — it
   // holds the pane, and the draft typed into it).
   forgetUnobservedMemberThreads(queryClient)
+  // A read that failed while the socket was down (the gateway or the relay's
+  // host was gone) and never held a value shows its panel's error: refetch it,
+  // on every client, so the panels come back with the connection. Only those:
+  // a query that kept its last value may sit under an unsaved draft, which a
+  // refetch would overwrite (the same rule as the auth recovery in
+  // api/client.ts).
+  for (const client of new Set([queryClient, ...recoverableQueryClients()])) {
+    void client.invalidateQueries({ predicate: q => q.state.status === 'error' && q.state.data === undefined })
+  }
 }
 
 /** The owner flipped the credential-redaction switch, possibly in ANOTHER
@@ -380,27 +388,24 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
  *  side-panel tabs) and re-read the switch, so no dashboard document keeps
  *  showing raw credentials after redaction is back on. Owner sockets only
  *  receive this frame. */
-export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { enabled?: unknown; changed_at?: unknown } | undefined): void {
+export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { enabled?: unknown; changed_at?: unknown; locked_by_policy?: unknown } | undefined): void {
   // Seed the switch entry from the frame's own payload FIRST, so a
   // document that never mounted the Settings card still knows the
   // position it now runs under (the reconnect heal compares against
-  // it); the invalidate then re-reads the authoritative record.
+  // it); the invalidate then re-reads the authoritative record. A frame
+  // that does not say whether a policy locks the switch keeps the lock
+  // this document already read, so an open Settings card never shows a
+  // locked switch as movable while the re-read is in flight.
   if (d && typeof d.enabled === 'boolean') {
-    queryClient.setQueryData(['credential-redaction'], { enabled: d.enabled, changed_at: typeof d.changed_at === 'string' ? d.changed_at : '' })
+    const enabled = d.enabled
+    queryClient.setQueryData<CredentialRedactionState>(['credential-redaction'], prev => ({
+      enabled,
+      changed_at: typeof d.changed_at === 'string' ? d.changed_at : '',
+      locked_by_policy: typeof d.locked_by_policy === 'boolean' ? d.locked_by_policy : prev?.locked_by_policy === true,
+    }))
   }
   queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
   purgeDocumentBodiesForRedactionChange(queryClient)
-}
-
-/** A credential-redaction setting that reaches no file body moved (the
- *  prompt-and-logs switch), possibly in ANOTHER browser tab or by a policy
- *  refresh: this document re-reads the settings so no open Settings card keeps
- *  showing the old position. Nothing is purged. Owner sockets only receive it. */
-export function handleCredentialRedactionSettingsChanged(queryClient: QueryClient, d: FrameData | undefined): void {
-  if (d && typeof (d as { enabled?: unknown }).enabled === 'boolean') {
-    queryClient.setQueryData(['credential-redaction'], d)
-  }
-  queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
 }
 
 /** Live artifact refresh: the backend broadcasts from the artifact mutation

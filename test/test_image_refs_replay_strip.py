@@ -656,7 +656,9 @@ class TestBarePathPassKeepsProse:
         # One lead read per line that held a candidate the lead reached, not one
         # per candidate: 6 001 candidates on the first line share a single read.
         assert lead.fullmatch_calls == 2
-        assert cpu < 2.0, f"scrub spent {cpu:.1f}s of CPU"
+        assert (
+            cpu < 2.0
+        ), f"scrub spent {cpu:.1f}s of CPU"  # flake-ok: existing complexity guard's thread-CPU budget at its original constant (D7); the fullmatch count above is the work proof
 
     def test_no_file_is_consulted(self):
         # Lexical by contract: a probe here would run on the event loop, and the

@@ -55,7 +55,13 @@ from typing import BinaryIO, Callable, NamedTuple, TypeVar  # noqa: F401
 from aiohttp import web
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
-from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
+from kiro_crew import (  # noqa: F401
+    executors,
+    pinned_fs,
+    platform_compat,
+    redaction_seams,
+    sandbox_plan,
+)
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
@@ -417,6 +423,7 @@ from kiro_crew.security import (  # noqa: F401
     redact_exfiltration_urls,
     redact_path_segments,
     redaction_switch,
+    refuses,
     sandbox_credential_targets,
 )
 from kiro_crew.session_environment import session_runs_remotely  # noqa: F401

@@ -45,6 +45,9 @@ import NewMessagesDivider from './NewMessagesDivider'
 
 export interface ChatMessageListProps {
   messages: ChatMessage[]
+  /** The session's queued entries when `messages` leaves them out; handed to
+   *  the renderers as `ctx.queued`. */
+  queued?: readonly ChatMessage[]
   running: boolean
   contentWidth?: string
   /** Resolve a pending approval. MUST return the request's promise: rejection
@@ -210,6 +213,7 @@ const ListRow = memo(function ListRow({ item, index, renderItem }: {
 
 const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageListProps>(function ChatMessageList({
   messages,
+  queued,
   running,
   contentWidth = '900px',
   onApprove,
@@ -379,6 +383,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const ctx: MessageRenderContext = {
       index: i,
       messages: versioned.messages,
+      queued,
       running,
       key,
       onFileOpen,
@@ -397,7 +402,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return withDivider(entry.render(m, ctx))
-  }, [versioned, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
+  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)

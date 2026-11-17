@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from kiro_crew.notifications import vapid_keys, web_push
 from kiro_crew.notifications.push_store import PushSubscriptionError, PushSubscriptionStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -341,6 +342,33 @@ def test_fanout_skips_silenced_and_passive(monkeypatch, tmp_path):
         }
     )
     assert scheduled == []  # silenced: history only, no push
+
+
+def test_fanout_skips_an_owner_only_note(monkeypatch, tmp_path):
+    """A push subscription records no reader and a Shared Crew teammate may subscribe,
+    so a note only the machine owner may read (``OWNER_ONLY_CHANNELS``) is never pushed."""
+    state = _make_state(monkeypatch, tmp_path)
+    state.broadcast_ws = MagicMock()
+    scheduled: list[dict] = []
+    monkeypatch.setattr(state, "_fan_out_web_push", lambda note: scheduled.append(note))
+
+    state._deliver_note(
+        {
+            "ts": "t9",
+            "kind": "agent",
+            "source": "system",
+            "channel": "system.relay",
+            "priority": "default",
+            "title": "You've been added to Build box",
+            "body": "b",
+        }
+    )
+    assert scheduled == []
+    # The Crew's own note on the same delivery path is still pushed.
+    state._deliver_note(
+        {"ts": "t10", "kind": "agent", "channel": "system.agent", "title": "x", "body": "y"}
+    )
+    assert [note["ts"] for note in scheduled] == ["t10"]
 
 
 def test_fanout_fires_for_normal_note(monkeypatch, tmp_path):
@@ -719,7 +747,7 @@ def test_flattening_never_reassembles_a_credential_into_the_push_body(splitter):
     from kiro_crew.dashboard.state_parts.dashboard_services import _web_push_payload
     from kiro_crew.dashboard.state_parts.notification_log import _redact_note_value
 
-    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    token = github_classic(seed=142)  # a ghp_ without a valid checksum is no token
     split = token[:10] + splitter + token[10:] + splitter
     raw = f"build done {split} ok"
     assert token not in _redact_note_value(raw)  # the delivery-time pass misses it

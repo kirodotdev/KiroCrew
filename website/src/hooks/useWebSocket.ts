@@ -58,7 +58,6 @@ import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
-  handleCredentialRedactionSettingsChanged,
   handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
@@ -158,7 +157,7 @@ export function useWebSocket() {
   // The reconnect catch-up window, closed by the new socket's connect snapshot.
   const reconnectSnapshotRef = useRef<ReconnectSnapshotWait | null>(null)
   if (reconnectSnapshotRef.current === null) {
-    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef)
+    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef, queryClient)
   }
   const reconnectSnapshot = reconnectSnapshotRef.current
   const voice = useVoicePlayback(dispatch)
@@ -326,9 +325,6 @@ export function useWebSocket() {
             break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
-            break
-          case 'credential_redaction_settings_changed':
-            handleCredentialRedactionSettingsChanged(queryClient, data)
             break
           case 'config_pending_changed':
             // Owner-only frame: a settings file edited outside the dashboard went
@@ -948,7 +944,7 @@ export function useWebSocket() {
             break
           }
           case 'chat.side_result':
-            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string }))
+            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown }))
             break
           case 'chat.side_closed': {
             // The slot's side conversation was closed (Refresh context in another

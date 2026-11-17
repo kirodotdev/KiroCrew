@@ -21,10 +21,9 @@ import type { SpendAdvice } from './telemetryPanelModel'
 // shared component cannot express without changing those five pages: this is
 // the first numeric-heavy table, so most columns must right-align (SortableHeader
 // hard-codes `text-left`, and its className is appended rather than merged, so
-// a competing `text-right` would resolve by stylesheet order), and it carries
-// the ▾/▴ caret plus accent-coloured active column from the Session & Task
-// Memory card. Giving SortableHeader a caret is worth doing for all six tables,
-// but as its own change.
+// a competing `text-right` would resolve by stylesheet order), and it marks the
+// active column in the accent colour, as the Session & Task Memory card does.
+// The ▾/▴ caret is the same one `SortableHeader` draws.
 //
 // The comparison is also local, because the hook's direction model negates by
 // swapping arguments — which cannot express "nulls last in BOTH directions".

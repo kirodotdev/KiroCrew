@@ -13,10 +13,10 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from redaction_structured_cases import aws_secret
 
 from kiro_crew.apps.builtins.issue_radar.backend import pipeline_fold as fold
 from kiro_crew.apps.builtins.issue_radar.backend import pipeline_routes as routes
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Fixtures: everything resolves inside tmp_path.
 
@@ -571,7 +571,7 @@ def test_printable_redacts_credentials_but_keeps_readable_titles() -> None:
     """Issue titles are attacker-controlled and rendered in the dashboard, so redact.
 
     Chinese or Cyrillic titles must stay readable (no `ascii()` escaping)."""
-    secret = "ghp_" + "A" * 36
+    secret = github_classic(seed=28)
     out = fold._printable(f"crash when token {secret} is set", 200)
     assert secret not in out, "a credential-shaped token reached dashboard-bound text"
 
@@ -786,8 +786,8 @@ def test_the_census_key_is_REDACTED(tmp_path: Path) -> None:
     Agent-driven jobs write the trail, so a repository value is attacker-reachable
     text, like an issue title.
     """
-    key = aws_secret(seed=53)
-    secret = f"acme/x-aws_secret_access_key={key}"
+    key = github_classic(seed=53)
+    secret = f"acme/x-{key}"
     _write_log(
         tmp_path,
         [

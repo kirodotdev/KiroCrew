@@ -59,7 +59,6 @@ describe('Feature previews section, refused toggles', () => {
     [/artifact deploy/i, 'Artifact Deploy'],
     [/webhooks/i, 'Webhooks'],
     [/chat on a crew/i, 'Chat on a crew'],
-    [/composable layout/i, 'Composable layout'],
     [/folder conductor/i, 'Folder conductor'],
     [/session environments/i, 'Session Environments'],
   ])('names the %s switch when the owner-only write is refused', async (name, label) => {

@@ -706,11 +706,17 @@ def test_terminate_pgid_graceful_exit_returns_fast(monkeypatch: pytest.MonkeyPat
     reaper.start()
     sent = _record_killpg(monkeypatch)
     try:
-        assert terminate_pgid(proc.pid, grace=5.0) is True
+        returned = terminate_pgid(proc.pid, grace=5.0)
         # SIGTERM, liveness probes, and the last probe found the group gone: the
         # early return ended the wait, never the grace deadline's SIGKILL.
         assert sent[0] == (signal.SIGTERM, "ok"), sent
-        assert sent[-1] == (0, "ProcessLookupError"), sent
+        if sys.platform == "darwin" and sent[-1] == (0, "PermissionError"):
+            # macOS answers EPERM for a group whose leader is an unreaped zombie;
+            # the poll reads that as a group it may not signal and reports it unswept.
+            assert returned is False, sent
+        else:
+            assert returned is True, sent
+            assert sent[-1] == (0, "ProcessLookupError"), sent
         assert all(sig == 0 for sig, _ in sent[1:]), f"escalated past the grace poll: {sent}"
         reaper.join(timeout=2)
         assert proc.returncode == -signal.SIGTERM

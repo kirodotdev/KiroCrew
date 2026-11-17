@@ -102,6 +102,12 @@ subject, or a stand-down after repeated cycles that never got a model session
 (`session_start_failures`) — is replaced by the new one; a loop you paused or
 stopped yourself is preserved.
 
+When a gated loop's watched pull request merges or closes, the session gets one
+last turn that opens with the result (`[monitor finished] PR owner/repo#N merged
+at <ts>, head <sha>. This is the last wake; …`), and the loop stops after it.
+`monitor_update` on a loop that ended this way is refused; arm a new watch with
+`monitor_start`.
+
 Each stop is logged once at WARNING in `gateway.log` as an
 `AutoNudge: … stopped — reason=…` line naming the reason, the cycles run and the
 time it ran.

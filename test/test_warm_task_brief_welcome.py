@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.crew_log import projection_objects as objects
 from kiro_crew.dashboard import warm_task_brief
@@ -254,7 +255,8 @@ def test_a_key_is_redacted_whole_before_the_cap_cuts_it():
     body = "MIIEowIBAAKCAQEA" + "q" * 64
     text = "q? " + begin.replace("B", "&#66;", 1) + "\n" + body + "\n" + end
     kept = warm_task_brief._clean(text, 80)
-    assert "MIIEowIBAAKC" not in kept and "EGIN RSA" not in kept
+    # The body is masked before the cap; the BEGIN line may stay.
+    assert "MIIEowIBAAKC" not in kept and "REDACTED" in kept
 
 
 @pytest.mark.parametrize("language", sorted(welcome.WORDS))
@@ -520,7 +522,7 @@ def test_a_running_item_keeps_its_own_name_not_its_ask():
     assert "- Item 1 (has a question" in text and "Merge PR 7?" not in text
 
 
-_PAT = "ghp_" + "a1B2" * 9  # built here, so no file in the tree holds a key shape
+_PAT = github_classic(seed=92)  # built here, so no file in the tree holds a key shape
 
 # (ledger text, what the chat shows). Every row shows exactly the ledger text
 # except where _clean means to change it: whitespace collapsed, ``**`` dropped,

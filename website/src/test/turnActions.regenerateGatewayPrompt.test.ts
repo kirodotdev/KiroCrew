@@ -1,8 +1,11 @@
 /**
  * Regenerate on the answer to a gateway prompt (a workflow follow-up, a heartbeat
- * prompt) replaces only that answer. The prompt is an `inject` row, and the press
- * stops at it as it stops at a user row, so the rows above it are never marked for
- * replacement. Mirrors the scan in chat_regenerate.py.
+ * prompt, the sub-agent synthesis kick-off) replaces only that answer. The prompt
+ * is an `inject` row, and the press stops at it as it stops at a user row, so the
+ * rows above it are never marked for replacement. On the answer to an automated
+ * message (a cron notification, an app message, an automation notice) the press
+ * still asks the server, which refuses, and marks no row. Mirrors the scan in
+ * chat_regenerate.py.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
@@ -31,7 +34,7 @@ function press(messages: ChatMessage[]) {
 beforeEach(() => { vi.clearAllMocks() })
 
 describe('Regenerate on the answer to a gateway prompt', () => {
-  it.each(['workflow', 'heartbeat'])('replaces only the answer below a %s prompt', (injectKind) => {
+  it.each(['workflow', 'heartbeat', 'synthesis'])('replaces only the answer below a %s prompt', (injectKind) => {
     const pressed = press([
       row('user', 'm-request'),
       row('assistant', 'm-result', { kind: 'workflow_result' }),
@@ -39,6 +42,17 @@ describe('Regenerate on the answer to a gateway prompt', () => {
       row('assistant', 'm-answer'),
     ])
     expect([...pressed.replacingMids]).toEqual(['m-answer'])
+    expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
+  })
+
+  it.each(['cron', 'mcp_app', 'automation_notice'])('asks the server but marks no row below the %s row', (injectKind) => {
+    const pressed = press([
+      row('user', 'm-request'),
+      row('assistant', 'm-earlier'),
+      row('inject', 'm-auto', { injectKind }),
+      row('assistant', 'm-answer'),
+    ])
+    expect(pressed.replacingMids.size).toBe(0)
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 

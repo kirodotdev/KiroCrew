@@ -216,6 +216,7 @@ class WaveDigestCoordinator(ManagerComponent):
             return
         self._manager._seen_batches.discard(batch_id)
         self._manager._batch_submitted.pop(batch_id, None)
+        self._manager._batch_owner.pop(batch_id, None)
         self._manager._batch_progress_ts.pop(batch_id, None)
         self._manager._reports_in_flight.pop(batch_id, None)
 

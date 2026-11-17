@@ -17,7 +17,8 @@ name                                               kind     attributes
 ``kirocrew.chat_runtime_share.rss_sampled``        counter  ``tenants``, ``rss``
 ``kirocrew.chat_runtime_share.reclaimed``          counter  ``reason`` (rss)
 ``kirocrew.chat_runtime_share.process_died``       counter  ``expected``, ``tenants``
-``kirocrew.chat_runtime_share.turn_started``       counter  ``tenants``, ``delay``, ``harness``
+``kirocrew.chat_runtime_share.turn_started``       counter  ``tenants``, ``delay``, ``shared``,
+                                                            ``harness``
 ``kirocrew.chat_runtime_share.turn_ended``         counter  ``tenants``, ``outcome``, ``harness``
 ``kirocrew.chat_runtime_share.kas_queued``         counter  ``tenants``
 ``kirocrew.kas.engine_install``                    counter  ``outcome``, ``caller``
@@ -30,11 +31,14 @@ way every other switch reports adoption.
 **Every attribute value is closed.** Each set is a tuple below, and every input
 outside it maps to :data:`OTHER`. No session key, pid, path, model id, prompt or
 config value reaches an attribute. ``tenants`` is the chat lease count on the
-process, bucketed to ``0`` / ``1`` / ``2`` / ``3`` / ``4+``: ``0`` is a turn whose
+process, bucketed to ``0`` / ``1`` / ``2`` / ``3`` / ``4-7`` / ``8-10`` / ``11+``:
+``0`` is a turn whose
 session holds no chat lease on its process (a subagent on its host chat's process, or
 a background runtime), ``1`` is a chat
 alone on its process (unshared, or a shared process with one tenant left), and
-``2`` and up is a shared process.
+``2`` and up is a shared process. ``shared`` on ``turn_started`` is ``true`` when
+the turn's process was placed by sharing and ``false`` otherwise, preview off
+included, so one harness's shared and unshared turns read from one series.
 
 **A distribution is a bucket-labelled counter, not a histogram,** because
 ``product_metrics.PRODUCT_METRICS`` admits counters and gauges only: a histogram's
@@ -125,7 +129,13 @@ REFUSAL_REASONS: tuple[str, ...] = (
     "auto_permission_mode",
 )
 
-TENANT_BUCKETS: tuple[str, ...] = ("0", "1", "2", "3", "4+")
+#: ``8-10`` holds the default per-process cap
+#: (``agent.chat_runtime_sharing_max_sessions``, 10), so a full process reads apart
+#: from a half-full one; ``11+`` is only reachable with a raised cap.
+TENANT_BUCKETS: tuple[str, ...] = ("0", "1", "2", "3", "4-7", "8-10", "11+")
+
+#: ``(upper edge INCLUSIVE, name)`` for every tenant bucket above ``3``.
+_TENANT_RANGES: tuple[tuple[int, str], ...] = ((7, "4-7"), (10, "8-10"))
 
 #: The kind of session tree a placed chat's process serves: a Bot's tree (every
 #: session a Bot opened, under its member identity) or any other chat tree.
@@ -186,7 +196,12 @@ def tenants_bucket(count: Any) -> str:
     n = _number(count)
     if n is None or n < 0:
         return OTHER
-    return "4+" if n >= 4 else str(int(n))
+    if n < 4:
+        return str(int(n))
+    for edge, name in _TENANT_RANGES:
+        if n <= edge:
+            return name
+    return "11+"
 
 
 def delay_bucket(seconds: Any) -> str:
@@ -253,6 +268,20 @@ def chat_leases_on(runtime: Any, session_key: Any = "") -> int:
         return 0
 
 
+def on_shared_process(runtime: Any) -> bool:
+    """Whether *runtime* is a live process chat runtime sharing placed. Never raises.
+
+    ``True`` for a founder or a joiner, whatever its tenant count right now, so a
+    shared process down to one chat still reads shared; ``False`` for a process
+    only its own session's registration lease names.
+    """
+    try:
+        return RUNTIME_OWNERSHIP.placed_by_sharing(runtime)
+    except Exception:  # noqa: BLE001 -- a read for telemetry never breaks a turn
+        logger.debug("shared process read failed", exc_info=True)
+        return False
+
+
 def record_toggled(on: bool) -> None:
     """The preview moved to *on* (any writer: Settings, CLI, a hand edit)."""
     emit_counter(TOGGLED, {"state": "on" if on else "off"})
@@ -313,13 +342,19 @@ def record_process_died(*, expected: Any, tenants: Any) -> None:
     )
 
 
-def record_turn_started(*, tenants: Any, delay_secs: Any, backend: Any) -> None:
-    """A turn's first event arrived *delay_secs* after its prompt was written."""
+def record_turn_started(*, tenants: Any, delay_secs: Any, backend: Any, shared: Any) -> None:
+    """A turn's first event arrived *delay_secs* after its prompt was written.
+
+    *shared* is whether the turn's process was placed by sharing
+    (:func:`on_shared_process`); an unshared turn, preview off included, reads
+    ``false``, so the two arms of the same harness compare on one series.
+    """
     emit_counter(
         TURN_STARTED,
         {
             "tenants": tenants_bucket(tenants),
             "delay": delay_bucket(delay_secs),
+            "shared": "true" if shared is True else "false",
             ATTR_HARNESS: harness_for_backend(backend),
         },
     )

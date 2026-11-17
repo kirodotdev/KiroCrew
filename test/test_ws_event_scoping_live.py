@@ -403,15 +403,19 @@ class TestLiveScopeNarrowing:
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "ws.py"
         ).read_text(encoding="utf-8")
         assert (
-            'for _owner_only in ("branch", "commit", "update_policy_file")' in src
+            "strip_owner_only_status(data)" in src
         ), "the periodic dashboard frame must withhold checkout identity and the policy path"
+        # One list, shared with the SSE stream's app readers.
+        from kiro_crew.dashboard import ws_event_scope as mod
+
+        assert mod.OWNER_ONLY_STATUS_FIELDS == ("branch", "commit", "update_policy_file")
         assert 'if not ws.get("_is_dashboard_user", False):' in src
         # The live auto-approve grant joins the frame only for a dashboard user.
         assert (
             'dashboard_user=ws.get("_is_dashboard_user", False)' in src
         ), "the periodic dashboard frame must carry the grant to the dashboard user alone"
-        # And the owner surfaces must NOT be narrowed: /api/status and SSE run on
-        # dashboard-user tokens and still need the full snapshot.
+        # And the owner surfaces must NOT be narrowed: /api/status and the SSE
+        # stream's dashboard-user readers still need the full snapshot.
         state_src = _state_source()
         assert (
             "branch, commit = self._build_info" in state_src

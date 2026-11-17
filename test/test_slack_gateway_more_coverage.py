@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -68,9 +69,13 @@ from kiro_crew.monitoring.models import (
     MonitorState,
 )
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until, finished
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
+
+#: A GitHub token with a valid checksum, retained as a monitor target.
+_NOTICE_TOKEN = github_classic(seed=167)
 
 
 def _make_orchestrator(**kwargs: Any) -> Any:
@@ -261,18 +266,24 @@ class TestWarnIfKiroCliOutdated:
         would mean the dashboard never comes up at all.
         """
         orch = _make_orchestrator()
+        release = threading.Event()
 
         def _hang(**kwargs: Any) -> str:
-            time.sleep(5)  # outlives the budget pinned below
+            # Held until the asserts are done, so it outlives the budget pinned below.
+            # The loop's teardown joins this worker thread, so it must not outlive the test.
+            release.wait(30)
             return "/opt/pinned/bin/kiro-cli"
 
-        with caplog.at_level("WARNING"):
-            with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
-                with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
-                    with patch("asyncio.create_subprocess_exec") as spawn:
-                        await orch._warn_if_kiro_cli_outdated()
-        spawn.assert_not_called()
-        assert "exceeded" in caplog.text
+        try:
+            with caplog.at_level("WARNING"):
+                with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
+                    with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
+                        with patch("asyncio.create_subprocess_exec") as spawn:
+                            await orch._warn_if_kiro_cli_outdated()
+            spawn.assert_not_called()
+            assert "exceeded" in caplog.text
+        finally:
+            release.set()
 
     @pytest.mark.asyncio
     async def test_unspawnable_binary_is_silent(self, capsys):
@@ -1308,9 +1319,9 @@ class TestNotifyNudgeExpired:
     @pytest.mark.parametrize(
         "target",
         [
-            "https://github.com/acme/ghp_" + "a" * 36 + "/pull/7",
-            "https://example.com/?data=%67%68%70%5F" + "a" * 36,
-            "ghp_" + "a" * 36,
+            "https://github.com/acme/" + _NOTICE_TOKEN + "/pull/7",
+            "https://example.com/?data=%67%68%70%5F" + _NOTICE_TOKEN[4:],
+            _NOTICE_TOKEN,
         ],
     )
     def test_structured_notice_redacts_unsafe_retained_target(self, target):

@@ -102,6 +102,16 @@ class TestWhoSends:
     def test_a_new_install_exports_once_the_notice_was_shown(self, home, monkeypatch):
         assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
+    def test_a_v3_ack_still_exports_after_the_notice_moves_on(self, home, monkeypatch):
+        """The line naming it shipped in notice 3; a later notice does not pause export."""
+        assert kiro_export.NOTICE_VERSION == 3 < beacon.PRIVACY_NOTICE_VERSION
+        _write_config(home, {}, ack=3, kiro_ack=3)
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
+
+    def test_an_ack_of_the_current_notice_exports(self, home, monkeypatch):
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION)
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
+
     def test_a_notice_ack_that_did_not_name_it_does_not_count(self, home, monkeypatch):
         """Acknowledged under a non-default home, where the chapter never named it."""
         _write_config(home, {}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
@@ -278,7 +288,9 @@ class TestNotice:
         assert notice.maybe_print_notice(stream=out, headless=True) is True
         assert out.getvalue().strip() == notice.NOTICE_TEXT_KIRO
         assert notice.stamped_version() == beacon.PRIVACY_NOTICE_VERSION
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == kiro_export.NOTICE_VERSION
+        assert (
+            notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == beacon.PRIVACY_NOTICE_VERSION
+        )
         assert kiro_export.notice_shown() is True
         assert notice.maybe_print_notice(stream=io.StringIO(), headless=True) is False
 
@@ -319,7 +331,7 @@ class TestNotice:
 
         _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
         assert core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"] == 0
-        _write_config(home, {})
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION)
         assert (
             core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"]
             == beacon.PRIVACY_NOTICE_VERSION
@@ -449,7 +461,7 @@ class TestOffOffer:
         elif case == "heartbeat_off":
             self._old_default(home, beacon_enabled=False)
         elif case == "acked":
-            _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
+            _write_config(home, {"enabled": False}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
         elif case == "unset":
             _write_config(home, {}, ack=2, kiro_ack=0)
             monkeypatch.setattr(pm, "_consent_enabled", lambda tel: False)
@@ -480,7 +492,7 @@ class TestOffOffer:
         assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
     def test_keep_off_is_not_asked_again_and_sends_nothing(self, home, monkeypatch):
-        _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
+        _write_config(home, {"enabled": False}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
         assert kiro_export.off_offer_due() is False
         assert _built(monkeypatch, home) == (False, [])
 
@@ -513,6 +525,7 @@ class TestProvider:
         kiro = dests[1]
         assert kiro.endpoint == kiro_export.ENDPOINT
         assert kiro.allow == PRODUCT_METRICS
+        # No install id in this fresh home yet, so no machineId (TestIdentity).
         assert dict(kiro.point_attributes) == {"ClientType": "kiro-crew"}
         assert "service.instance.id" not in kiro.resource_allow
         assert "os.type" not in kiro.resource_allow
@@ -619,6 +632,33 @@ class TestIdentity:
     def test_only_the_machine_id_is_sent(self, home, install_id):
         assert kiro_export.identity_headers() == {"x-kiro-machineid": install_id}
 
+    def test_the_points_carry_the_header_hash(self, home, install_id):
+        """The endpoint does not copy the header onto stored points; a point with
+        no identity is dropped downstream, so the same hash rides on each point."""
+        (dest,) = kiro_export.destinations()
+        assert dict(dest.point_attributes) == {"ClientType": "kiro-crew", "machineId": install_id}
+        assert (
+            dest.point_attributes["machineId"] == kiro_export.identity_headers()["x-kiro-machineid"]
+        )
+
+    def test_it_is_still_builtin_when_the_install_id_appears_later(self, home, monkeypatch):
+        """A descriptor from before the id was minted and one from after are one
+        destination; an operator entry of the same name still is not."""
+        monkeypatch.setattr(beacon, "install_id", lambda create=True: "")
+        (before,) = kiro_export.destinations()
+        assert "machineId" not in before.point_attributes
+        monkeypatch.setattr(beacon, "install_id", lambda create=True: "a" * 32)
+        (after,) = kiro_export.destinations()
+        assert "machineId" in after.point_attributes
+        assert before != after
+        assert kiro_export.is_builtin(before) and kiro_export.is_builtin(after)
+        monkeypatch.setattr(beacon, "install_id", lambda create=True: "")
+        assert kiro_export.is_builtin(after)
+        cfg = TelemetryConfig(otlp_endpoints=[{"name": "kiro-telemetry", "endpoint": OPS}])
+        operator = pm.otlp_egress_listing(cfg)[0].destination
+        assert not kiro_export.is_builtin(operator)
+        assert not kiro_export.is_builtin(None)
+
     def test_a_stored_sign_in_is_never_sent(self, home, monkeypatch, install_id):
         from kiro_crew.auth.store import KasToken, TokenStore
 
@@ -701,6 +741,7 @@ def test_the_real_provider_sends_product_metrics_to_the_endpoint(home, monkeypat
     # Set for an operator's own collector; must never reach this one.
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-env-auth=env-secret")
     _write_config(home, {"enabled": True, "export_interval_seconds": 3600})
+    assert beacon.install_id(create=False) == ""
     try:
         ig.reset_for_testing()
         ig.mark_install_reporter()
@@ -720,7 +761,8 @@ def test_the_real_provider_sends_product_metrics_to_the_endpoint(home, monkeypat
     expected_id = hashlib.sha256(
         ("kirocrew-metrics-machine-id-v1:" + beacon.install_id(create=False)).encode("utf-8")
     ).hexdigest()
-    names, labels, resource_keys = set(), set(), set()
+    names, labels, resource_keys, point_ids = set(), set(), set(), set()
+    points = 0
     for path, headers, body in server.received:
         assert path == "/v1/metrics"
         assert headers.get("x-kiro-machineid") == expected_id
@@ -735,13 +777,15 @@ def test_the_real_provider_sends_product_metrics_to_the_endpoint(home, monkeypat
                     names.add(metric.name)
                     data = metric.WhichOneof("data")
                     for point in getattr(metric, data).data_points:
-                        labels.update(
-                            attr.value.string_value
-                            for attr in point.attributes
-                            if attr.key == "ClientType"
-                        )
+                        points += 1
+                        attrs = {attr.key: attr.value.string_value for attr in point.attributes}
+                        labels.add(attrs.get("ClientType"))
+                        point_ids.add(attrs.get("machineId"))
     assert names and names <= PRODUCT_METRICS
     assert labels == {"kiro-crew"}
+    # This home had no install id before the build: the build mints it before it
+    # resolves the destination, so every point carries the header's hash.
+    assert points and point_ids == {expected_id}
     assert resource_keys <= kiro_export.RESOURCE_ALLOW
     assert "service.instance.id" not in resource_keys
 

@@ -267,9 +267,10 @@ class _WorkflowSessionWorker:
         """Cheap clean slate before REUSE — fresh conversation on the warm process.
 
         Uses ``provider.new_conversation()``, which skips the expensive
-        spawn+initialize on a backend served through the shared runtime (kiro, KAS,
-        Codex) and on claude's own ``AcpClient``. Any other backend on its own
-        ``AcpClient`` has no such reset and raises ``NotImplementedError``. On that, or
+        spawn+initialize on a backend served through the shared runtime (kiro, KAS)
+        and on claude's own ``AcpClient``. Codex, whose closed session leaves its MCP
+        servers running, and any other backend on its own ``AcpClient`` have no such
+        reset and raise ``NotImplementedError``. On that, or
         any other failure, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path).

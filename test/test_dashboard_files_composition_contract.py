@@ -532,7 +532,7 @@ _IMPORTED_BY_NAME = {
     "_get_config_lock": "kiro_crew.dashboard.handlers.agents",
     "browse_denied_async": "kiro_crew.browser_harness.governance",
     "denied_sides": "kiro_crew.decisions.capability",
-    "is_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
+    "is_host_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
     "owner_view_for_request": "kiro_crew.dashboard.handlers.source_providers",
     "publish_session_card_chips_now": "kiro_crew.dashboard.handlers.source_providers",
     "is_tracked_channel": "kiro_crew.slack.handler",
@@ -1517,6 +1517,9 @@ def test_the_resolved_gate_dicts_name_the_owners() -> None:
     assert "kiro_crew/dashboard/handlers/files.py" not in containment
 
 
+#: In the link-screen gate's own group, so the gate's cached whole-tree scan is reused
+#: rather than run a second time on another worker.
+@pytest.mark.xdist_group(name="tree_scan_test_link_screen_hold_pin")
 def test_the_tree_route_holds_no_link_screen_in_either_file() -> None:
     """The bounded tree walk tells a link from the ``lstat`` its listing already
     holds, so the route's ``_run`` calls no link screen at its owner or in the
@@ -1529,8 +1532,6 @@ def test_the_tree_route_holds_no_link_screen_in_either_file() -> None:
     found = gate.discovered_sites()
     assert site not in found and old not in found
     assert site not in gate.DECLARED_SITES and old not in gate.DECLARED_SITES
-    gate.test_every_site_is_declared()
-    gate.test_declared_sites_still_exist()
 
 
 def test_the_bare_hop_guard_reads_the_file_family(

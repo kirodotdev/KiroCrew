@@ -291,40 +291,11 @@ one of them, and a test reads the handlers' own syntax trees to assert every one
 and every write calls the owner gate.
 
 The page is scrubbed before it is served, in both halves of the body (the raw `html` and the
-composed `rendered_html`), by `_template_text_safe`. Markup, attributes and prose get every
-redaction pass. The text of a `<script>` or `<style>` element gets every pass but the
-bare-secret guess for two shapes, so a page's code arrives as its author wrote it (a long alphabet to index
-into, a base64 data URI) while a key id, PEM block, JWT or prefixed token written into that
-code is still masked.
-
-`dashboard_frame.map_page_text` takes the full pass over the whole page as its baseline, and the
-one change it allows is to put the code pass's result for a script or style element's text where
-the baseline had the full pass's. So the page differs from the baseline only inside that text,
-and only by an ordered alphabet and a data URI payload, the two shapes the code pass spares. The baseline is cut at that text and the pieces are
-scrubbed one by one; a rule that reaches across a cut (a PEM block, a labelled value) makes them
-differ from the baseline, and then the baseline is the answer. The browser reads the page that
-comes out, so the result is scanned again, and unless the kept text is still exactly its script
-and style text the baseline is the answer as well. A page the full pass leaves alone, or with no
-such text, is the baseline.
-
-`dashboard_frame.code_spans` finds that text, and what it finds is a licence to apply a
-weaker rule, so it reads the page the way the HTML tokenizer does where that decides what is
-code: a `<script` inside a comment, a quoted attribute value or a `<textarea>` opens nothing,
-a `>` inside a quoted value does not end its tag, a bare value runs to white space or `>`, a
-script that holds `<!--` ends where the tokenizer's escape states end it (a `</script>` that
-closes a nested `<script>` does not), and names fold ASCII case and split on ASCII white space
-only. Where the tree builder decides
-instead, the scan reads a simple `<svg>` or `<select>` (text and ordinary tags up to its end
-tag) whole and goes on; any other `<svg>` or `<select>`, and every `<math>` and `<template>`
-(a column group inside one ignores a `<style>`), ends the scan.
-A frame may run with scripting on or off, and `<noscript>` holds text in one and markup in the
-other, so the scan ends at it too. It also ends at anything it cannot read (an element or tag
-that never ends, `<script/>` in HTML, `<plaintext>`) and after `_MAX_SCAN_STEPS` constructs.
-Everything after that point keeps every pass, as does every element past the first
-`MAX_CODE_PIECES`, so a page the scan doubts gets more masking, never less. A key in any other shape, labelled or not, is masked as it is anywhere. A key-shaped window inside
-a data URI payload of 64 characters or more is served as written, and a shuffled table is rewritten
-as before. A base64 data URI in an attribute (an `img` `src`) is markup, so it still gets every
-pass.
+composed `rendered_html`), by `_template_text_safe`: `redact_via_context` over the whole page,
+markup, attributes, prose and the text of every `<script>` and `<style>` element alike. The rule
+table masks only values that are credentials by themselves, so a page's code arrives as its author
+wrote it (a long alphabet to index into, a base64 data URI) while a PEM block, a signed JWT or a
+vendor token written into that code is masked.
 
 ## The staged preview is beside the record, never in it
 
@@ -559,7 +530,7 @@ the page and the read below both refuse a slug alone (`missing_member`).
 To fill the frame, the tab reads
 `GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
 page through the same renderer, the same masking pass and the same owner gate as the
-live one (a relay teammate admitted to the live page is refused the staged one), with `preview: true` in the body and `instance_version` left at the current
+live one, with `preview: true` in the body and `instance_version` left at the current
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 

@@ -76,6 +76,17 @@ describe('SharedCrewsCards', () => {
     expect(open).toHaveBeenCalledWith('ep-1')
   })
 
+  it('records an opened Crew as seen and clears its New mark from the shared list', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ unseen: true })] })
+    const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    const { queryClient } = renderWithProviders(<SharedCrewsCards />)
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Open Platform team' }))
+    await waitFor(() => expect(seen).toHaveBeenCalledWith(['ep-1']))
+    await waitFor(() => expect(
+      queryClient.getQueryData<{ crews: RelayCrewEntry[] }>(RELAY_VIEWER_CREWS_KEY)?.crews[0].unseen).toBe(false))
+  })
+
   it('shows a failed Open under its row', async () => {
     withBridge(vi.fn(async () => ({ ok: false, error: 'CREW_ACCESS_NOT_GRANTED' })))
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
@@ -89,6 +100,7 @@ describe('SharedCrewsCards', () => {
     const open = withBridge(vi.fn(async (_id: string) => ({ ok: true }))
       .mockResolvedValueOnce({ ok: false, error: 'CREW_ACCESS_NOT_GRANTED' }))
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
     renderWithProviders(<SharedCrewsCards />)
     const u = userEvent.setup()
     await u.click(await screen.findByRole('button', { name: 'Open Platform team' }))

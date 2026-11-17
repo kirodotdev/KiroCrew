@@ -13,12 +13,11 @@ The graphs below come from the real GitLab fetcher with only the ``/links`` read
 faked, and are round-tripped through the deps-cache store the sweep reads.
 """
 
-import shutil
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client
@@ -71,9 +70,17 @@ class OpenBlockerCountAbsentNodeTest(unittest.TestCase):
 class FingerprintAbsentNodeTest(unittest.TestCase):
     """``fingerprint_item`` picks the absent-node reading by the item's provider."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+        self.root = self._tmp_path
 
     def _fp(self, key, number, deps):
         client = mock.Mock()

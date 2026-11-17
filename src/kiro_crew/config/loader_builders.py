@@ -924,6 +924,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # true; see the normalization above the `_validate_config_data`
         # call. `_safe_bool` here is the final guard for a real bool.
         session_control=section.read("session_control", _safe_bool),
+        orchestrator_memory=section.read("orchestrator_memory", _safe_bool),
         # Default false: a missing key and a malformed one both leave it off.
         session_manager_chain=section.read("session_manager_chain", _safe_bool),
         peer_steer_loss_recovery=section.read("peer_steer_loss_recovery", _safe_bool),
@@ -946,7 +947,6 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # bool.
         crew_panel=section.read("crew_panel", _safe_bool),
         subagent_cost_gb=section.read("subagent_cost_gb", _safe_float),
-        subagent_cpu_cost_cores=section.read("subagent_cpu_cost_cores", _safe_float),
         subagent_auto_max=section.read(
             "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
@@ -1484,6 +1484,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         theme_mode=section.get("theme_mode"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),
+        instance_label=_sanitize_bot_name(section.get("instance_label")),
         language=str(section.get("language")),
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX

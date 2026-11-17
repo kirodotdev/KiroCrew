@@ -1102,12 +1102,18 @@ class _SshTunnel:
         not enough, because a killed member can linger as a zombie under a
         subreaper; the pipe test alone is not enough, because a stopped drain
         leaves unread data that keeps ``at_eof()`` False. Without a recorded
-        group there is nothing further to signal, so the child counts as settled.
+        group there is nothing further to signal, so the child counts as settled,
+        except for SSM on Windows, which never records a group: there the pipe
+        test alone decides, so a plugin still holding them reaches the warning in
+        :meth:`_reap_recorded_group`.
         """
         if proc.returncode is None:
             return False
         pgid = self._ssm_pgid
-        if pgid is None or not platform_compat.pgroup_exists(pgid):
+        if pgid is None:
+            if not (platform_compat.IS_WINDOWS and self._transport == "ssm"):
+                return True
+        elif not platform_compat.pgroup_exists(pgid):
             return True
         streams = (getattr(proc, "stdout", None), getattr(proc, "stderr", None))
         return all(stream is None or stream.at_eof() for stream in streams)
@@ -1127,13 +1133,23 @@ class _SshTunnel:
         """Signal the SSM group recorded at spawn until the child settles (POSIX).
 
         Reached only for a child that has not settled, which needs a recorded
-        group with a live member. SIGTERM first unless this teardown already
+        group with a live member, or on Windows an SSM pipe still open; the
+        latter is only logged. SIGTERM first unless this teardown already
         sent one, then SIGKILL, each followed by a bounded wait to settle. The id
         was read while the leader was un-reaped and a group id is not reused
         while any member lives, so it still names this tunnel's group.
         """
         pgid = self._ssm_pgid
         if pgid is None:
+            # Windows records no group, so nothing is signalled here; the open
+            # pipes still name a live descendant of this tunnel's wrapper.
+            if platform_compat.IS_WINDOWS and self._transport == "ssm":
+                logger.warning(
+                    "SSM forwarder for %s still holds its pipes after stop; "
+                    "port 127.0.0.1:%d may still be held",
+                    self._id,
+                    self._local_port,
+                )
             return
         signals = [platform_compat.SIGKILL]
         if not term_sent:

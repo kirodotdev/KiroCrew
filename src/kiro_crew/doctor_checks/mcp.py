@@ -474,7 +474,7 @@ _SHARE_REFUSAL_LABELS = {
 _NEW_LAUNCH_LABEL = "new launch not approved yet"
 
 #: The head of every tag the gateway's display redaction writes in place of a value
-#: (``CREDENTIAL_REDACTION_TAGS`` and ``EXFILTRATION_REDACTION_TAG_PREFIX``). Two
+#: (``CREDENTIAL_REDACTION_TAGS``). Two
 #: different values read as the same tag, so a display carrying one cannot show
 #: that its launch did not change.
 _REDACTION_TAG_HEAD = "[REDACTED"

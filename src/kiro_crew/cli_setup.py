@@ -20,6 +20,7 @@ from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent_sdk import kas_bundle
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
+from kiro_crew.cli_setup_progress import SetupProgress, abort_message, rerun_command
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     _WORKSPACE_DIR_NAME,
@@ -343,6 +344,7 @@ def _setup(
     whatsapp: bool = False,
 ) -> None:
     """Install agent config and optionally configure credentials."""
+    progress = SetupProgress()
     try:
         _setup_impl(
             agent_only=agent_only,
@@ -350,14 +352,17 @@ def _setup(
             clean=clean,
             slack=slack,
             whatsapp=whatsapp,
+            _progress=progress,
         )
     except _SetupAborted as exc:
-        # A closed/piped stdin mid-wizard. One clean line instead of a stack
+        # A closed/piped stdin mid-wizard. A clean message instead of a stack
         # trace at whichever prompt hit it first — every guarded prompt raises,
-        # so the exit point is deterministic. Bare `input()` calls still exist
-        # in some steps and traceback the old way; converting them all is a
-        # sweep for its own change.
-        print(f"\n⏭  Setup aborted: {exc}. Re-run interactively to finish.")
+        # so the exit point is deterministic — naming the steps it did not
+        # finish and the command that finishes them. Bare `input()` calls still
+        # exist in some steps and traceback the old way; converting them all is
+        # a sweep for its own change.
+        command = rerun_command(agent_only=agent_only, clean=clean, slack=slack, whatsapp=whatsapp)
+        print(abort_message(str(exc), progress, command))
 
 
 def _setup_impl(
@@ -366,6 +371,7 @@ def _setup_impl(
     clean: bool = False,
     slack: bool = False,
     whatsapp: bool = False,
+    _progress: SetupProgress | None = None,
 ) -> None:
     from kiro_crew.agent import install_agent  # circular import: agent imports cli
     from kiro_crew.cli import _project_dir_file  # circular import: cli -> cli_setup -> cli
@@ -379,6 +385,22 @@ def _setup_impl(
 
     print("Kiro Crew Setup 👻\n")
 
+    # The steps below, in the order they run, so an abort can name the ones it
+    # did not reach. The names are what the user reads in that message.
+    progress = _progress if _progress is not None else SetupProgress()
+    steps = [] if agent_only else ["workspace folder"]
+    steps += ["agent config", "sandbox check"]
+    if not agent_only:
+        if slack:
+            steps += ["Slack tokens", "slash command"]
+        if whatsapp:
+            steps.append("WhatsApp")
+        steps += ["timezone", "dashboard URL"]
+        if platform.system() == "Darwin":
+            steps.append("desktop app")
+        steps.append("AWS launch offer")
+    progress.plan(steps)
+
     # Report on optional prerequisites.
     _ensure_prerequisites()
 
@@ -391,9 +413,11 @@ def _setup_impl(
 
     # 1. Choose workspace directory (skip for agent-only — not relevant)
     if not agent_only:
+        progress.begin("workspace folder")
         _setup_workspace_dir()
 
     # 2. Install the agent config
+    progress.begin("agent config")
     print("Installing agent config...")
     wrote_out: list[bool] = []
     agent_path = install_agent(clean=clean, _wrote_out=wrote_out)
@@ -437,6 +461,7 @@ def _setup_impl(
     # 2d. Offer the unconfined-exec opt-in on a host with no sandbox backend.
     #     Runs BEFORE the agent-only early return: the servers this unblocks are
     #     the ones install_agent() just wrote, so `--agent-only` needs it too.
+    progress.begin("sandbox check")
     _setup_sandbox_consent()
 
     if agent_only:
@@ -460,11 +485,14 @@ def _setup_impl(
     #    dashboard or its setup guide.
     if slack or whatsapp:
         if slack:
+            progress.begin("Slack tokens")
             _setup_slack_tokens()
 
             # 3b. Slash command name (Slack-only concept)
+            progress.begin("slash command")
             _setup_slash_command()
         if whatsapp:
+            progress.begin("WhatsApp")
             _setup_whatsapp()
     else:
         print("── Messaging Channels ──\n")
@@ -476,29 +504,33 @@ def _setup_impl(
         print("  guided setup.\n")
 
     # 4. Timezone
+    progress.begin("timezone")
     _setup_timezone()
 
     # 5. Dashboard URL (remote access)
+    progress.begin("dashboard URL")
     _maybe_setup_dashboard_url()
 
     _maybe_setup_custom_domain()
 
     # 6. Desktop app (macOS only)
     if platform.system() == "Darwin":
+        progress.begin("desktop app")
         print("── Desktop App ──\n")
         if _find_electron_dir() is None:
             _print_no_desktop_sources()
             print()
         else:
             answer = (
-                input("  Install Kiro Crew desktop app to ~/Applications? [Y/n]: ").strip().lower()
-            )
+                _input_or_skip("  Install Kiro Crew desktop app to ~/Applications? [Y/n]: ") or ""
+            ).lower()
             if answer in ("", "y", "yes"):
                 _setup_electron()
             else:
                 print("  ⏭  Skipped. Install later: kirocrew setup --electron-only\n")
 
     # 7. Cloud (run KiroCrew on the user's own AWS EC2) — optional, delegated.
+    progress.begin("AWS launch offer")
     _maybe_setup_cloud()
 
     # No `&&`: Windows PowerShell 5.1 cannot parse it. The words keep its condition.
@@ -508,17 +540,18 @@ def _setup_impl(
 def _builtin_cloud_lane_offered() -> bool:
     """Whether the composed platform offers the built-in ``aws_ec2`` lane.
 
-    Reads the list through ``dashboard/handlers_cloud.py::_provisioners`` itself,
-    the same read and degraded-seam fallback the Set-up tab is drawn from, so the
-    wizard and the tab cannot disagree about whether this deployment offers EC2.
+    Reads the list through ``platform.provisioner_listing``, the same read and
+    degraded-seam fallback the Set-up tab is drawn from, so the wizard and the
+    tab cannot disagree about whether this deployment offers EC2. Not through
+    ``dashboard/handlers_cloud.py``: importing that graph cold kept the terminal
+    silent for seconds before this prompt, and an Enter typed into the silence
+    answered the prompt before it was ever seen.
     ``PlatformCompositionError`` still propagates, per ``safe_context_call``.
     """
-    # Deferred: the dashboard handler module pulls in the cloud/dashboard graph,
-    # which only this last, optional wizard step needs.
-    from kiro_crew.dashboard.handlers_cloud import _provisioners
     from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
+    from kiro_crew.platform.provisioner_listing import offered_provisioners
 
-    return any(r.id == BUILTIN_PROVISIONER_ID for r in _provisioners())
+    return any(r.id == BUILTIN_PROVISIONER_ID for r in offered_provisioners())
 
 
 def _maybe_setup_cloud() -> None:
@@ -1124,10 +1157,13 @@ _CUSTOM_DOMAIN = "kirocrew.localhost"
 
 
 def _configured_port() -> int:
-    """Return the dashboard port using the same resolution as other CLI commands."""
-    from kiro_crew.cli_server import (
-        resolve_client_port,  # local import keeps cli_server (heavy import graph) out of cli_setup's import time
-    )
+    """Return the dashboard port using the same resolution as other CLI commands.
+
+    Read from ``port_resolution``, the chain's own light module, not from
+    ``cli_server``: importing that graph cold stalled the wizard's output for
+    seconds between the timezone answer and the next prompt.
+    """
+    from kiro_crew.port_resolution import resolve_client_port
 
     return resolve_client_port(None)
 
@@ -1685,7 +1721,10 @@ def _maybe_setup_dashboard_url() -> None:
         print("  Leave blank for localhost-only.\n")
 
     hint = f" [{current}]" if current else ""
-    answer = input(f"  Dashboard URL (e.g. http://{hostname}:{_configured_port()}){hint}: ").strip()
+    answer = (
+        _input_or_skip(f"  Dashboard URL (e.g. http://{hostname}:{_configured_port()}){hint}: ")
+        or ""
+    )
 
     if answer == "" and current:
         print(f"  ✅ Keeping: {current}\n")

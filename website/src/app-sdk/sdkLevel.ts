@@ -6,4 +6,4 @@
  * adds `permissions.bots`: an app's backend reaches the Bots the owner ticks for it
  * with its app token.
  */
-export const APP_SDK_LEVEL = 9
+export const APP_SDK_LEVEL = 10

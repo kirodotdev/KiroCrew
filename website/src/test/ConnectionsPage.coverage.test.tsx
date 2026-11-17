@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import type { McpServer } from '../types'
+import { PREVIEW_FLAG_SETTING_IDS } from '../components/commandPalette/settingsSearchCore'
 
 const mcpServers = vi.fn()
 const mcpProbe = vi.fn()
@@ -317,6 +318,82 @@ describe('the provider gallery', () => {
     // Open, the form is the next step: Configure goes, the name toggle closes.
     expect(within(github).queryByRole('button', { name: 'Set up GitHub' })).toBeNull()
     expect(within(github).getByTestId('oauth-app-github')).toBeVisible()
+  })
+
+  // Slack's client never leaves the vault, so only Crew's own sign-in can
+  // present it. While that sign-in is not serving chats the status feed says so
+  // (`needsCrewSignIn`) and the card routes to the setting that turns it on.
+  it('renders Slack without Connect while Crew is not doing the sign-in, routing to the setting', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'slack', status: 'not_connected', grantPresent: false, needsCrewSignIn: true }],
+    })
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'needs-configuration'))
+    expect(within(slack).getByText('Needs configuration')).toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
+
+    // The link opens the switch that turns the sign-in on, so its name says
+    // what the user does there, in words a first-time user knows.
+    const open = within(slack).getByRole('link', { name: 'Turn on Kiro Crew sign-in' })
+    expect(open.textContent?.trim()).toBe('Turn on Kiro Crew sign-in')
+    const href = open.getAttribute('href') ?? ''
+    expect(href.startsWith('/settings/developer/feature-previews')).toBe(true)
+    // The id the Settings registry gives the preview's switch.
+    expect(href).toContain('highlight=developer.mcp-sign-in-by-kiro-crew')
+    expect(PREVIEW_FLAG_SETTING_IDS.has('developer.mcp-sign-in-by-kiro-crew')).toBe(true)
+    // The flag is set when the preview is off OR chats run on a harness Crew does
+    // not bridge, so the tip names both needs and never claims the preview is off.
+    fireEvent.focus(within(slack).getByRole('button', { name: 'Slack prerequisites' }))
+    const tip = await screen.findByRole('tooltip')
+    expect(tip.textContent).toContain(
+      'Slack signs in through Kiro Crew. To connect it: (1) turn on Kiro Crew sign-in with the button, (2) in Settings, set chats to run on Kiro Agent.',
+    )
+    expect(tip.textContent).not.toMatch(/\bis off\b/)
+    expect(tip.textContent).not.toContain('that preview')
+    // No setting jargon a first-time user cannot place.
+    expect(tip.textContent).not.toContain('MCP sign-in')
+    expect(tip.textContent).not.toContain('Agent Harness')
+    // Step 2 links to the tab where chats pick their agent, in every language the same tag.
+    const harness = within(tip).getByRole('link', { name: 'Settings' })
+    expect(harness.getAttribute('href')).toBe('/settings/agent')
+    expect(document.body.textContent).not.toContain('settingsLink')
+  })
+
+  // Crew's sign-in is on, but the configured `slack` entry keeps its own path (its
+  // own credential header, or another url), so the mint refuses it. The card
+  // offers no Connect and no steps to turn on a sign-in that is already on.
+  it('renders Slack without Connect or the turn-on steps when Crew does not own its entry', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'slack', status: 'not_connected', grantPresent: false, crewSignInNotOwned: true }],
+    })
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'needs-configuration'))
+    expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('link', { name: 'Turn on Kiro Crew sign-in' })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: 'Slack prerequisites' })).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('Turn on Kiro Crew sign-in')
+    expect(document.body.textContent).not.toContain('Agent Harness')
+    // Nothing is left to configure, so the badge is neutral and says where the
+    // entry is managed instead of asking for configuration.
+    expect(within(slack).getByText('Managed in MCP Servers')).toBeInTheDocument()
+    expect(within(slack).queryByText('Needs configuration')).not.toBeInTheDocument()
+    // One line says there is nothing to do, and links to the entry on MCP Servers.
+    expect(within(slack).getByTestId('crew-sign-in-not-owned').textContent).toBe(
+      'Your own Slack entry in MCP Servers signs in by itself, so there is nothing to do here.',
+    )
+    const entry = within(slack).getByRole('link', { name: 'MCP Servers' })
+    expect(entry.getAttribute('href')).toBe('/capabilities?tab=mcp-servers')
+    expect(document.body.textContent).not.toContain('mcpLink')
+    // The OAuth app form would ask for configuration the entry never uses.
+    expect(within(slack).queryByTestId('oauth-app-slack')).not.toBeInTheDocument()
   })
 
   it('keeps the one-time-setup explanation behind the warning tip beside Configure, not in a band', async () => {
@@ -1608,6 +1685,55 @@ describe('a provider that needs attention', () => {
       url: NOTION_URL, scopes: ['read'], clientId: 'client-1',
     }))
     expect(mcpApply).not.toHaveBeenCalled()
+  })
+
+  // A held Slack grant hides the not-connected wording, but the mint still
+  // refuses Slack while Crew's sign-in cannot serve it (`crewMintRefused`). A
+  // recovery card must not offer a button that changes config and then gets 409.
+  const SLACK_URL = CONNECTION_PROVIDERS.find(p => p.slug === 'slack')!.mcp_url
+  const slackGranted = (crewMintRefused: 'sign_in_off' | 'not_owned') => ({
+    schema_version: 1,
+    connections: [{ slug: 'slack', status: 'connected', grantPresent: true, crewMintRefused }],
+  })
+
+  it.each([
+    { crewMintRefused: 'sign_in_off' as const, help: 'Turn on Kiro Crew sign-in' },
+    { crewMintRefused: 'not_owned' as const, help: 'MCP Servers' },
+  ])('offers no Reconnect on a Slack card whose mint is refused: $crewMintRefused', async ({ crewMintRefused, help }) => {
+    mcpServers.mockResolvedValue([server({ name: 'slack', url: SLACK_URL, status: 'error', enabled: false })])
+    connectionsStatus.mockResolvedValue(slackGranted(crewMintRefused))
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'needs-attention'))
+    expect(within(slack).queryByRole('button', { name: /Reconnect|Connect/ })).not.toBeInTheDocument()
+    expect(within(slack).getByRole('link', { name: help })).toBeInTheDocument()
+    expect(mcpApply).not.toHaveBeenCalled()
+    expect(connectionsMint).not.toHaveBeenCalled()
+  })
+
+  it('offers no Connect for a held Slack grant with no entry while its mint is refused', async () => {
+    connectionsStatus.mockResolvedValue(slackGranted('sign_in_off'))
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'not-connected'))
+    expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(within(slack).getByRole('link', { name: 'Turn on Kiro Crew sign-in' })).toBeInTheDocument()
+    expect(mcpCustomAdd).not.toHaveBeenCalled()
+    expect(connectionsMint).not.toHaveBeenCalled()
+  })
+
+  it('keeps Connected and Disconnect on a held Slack grant whose mint is refused', async () => {
+    mcpServers.mockResolvedValue([server({ name: 'slack', url: SLACK_URL, status: 'ok' })])
+    connectionsStatus.mockResolvedValue(slackGranted('sign_in_off'))
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'connected'))
+    expect(within(slack).getByText('Connected')).toBeInTheDocument()
+    expect(within(slack).getByRole('button', { name: /Disconnect/ })).toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: /Reconnect/ })).not.toBeInTheDocument()
   })
 })
 

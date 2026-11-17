@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew import autonudge_stop_log as stoplog
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# Obviously fake GitHub classic PAT shape, split so no scanner sees a literal.
-_FAKE_PAT = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+# A fake GitHub classic PAT with a valid checksum, built at run time so no scanner
+# sees a literal: the rule table masks a ``ghp_`` value only when its checksum holds.
+_FAKE_PAT = github_classic(seed=29)
 
 
 @pytest.mark.parametrize("limit", [stoplog.FIELD_MAX_CHARS, stoplog.DETAIL_MAX_CHARS])

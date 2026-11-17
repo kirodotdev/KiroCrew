@@ -36,6 +36,15 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "slack/handler.py; one shared redact( pass, plus channel-wide pings defanged.",
     ),
     (
+        "Slack code-channel work board",
+        "slack/code_channels/board/model.py",
+        "Each worker's title, report summary and current call (the tool call in flight "
+        "or a pending approval's command, host paths removed) on the pinned board "
+        "message, posted with chat.postMessage / chat.update rather than "
+        "slack/handler.py: redact_via_context on the whole text before the cut and "
+        "again after, with every Slack ping stripped.",
+    ),
+    (
         "Slack cron / notification posts",
         "slack/gateway_runtime/subagent_injection.py",
         "Job names, cron results, and error strings before they reach a channel.",
@@ -62,7 +71,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Task reports",
         "task_reporter.py",
         "Run names, titles, and bodies in generated task reports — "
-        "exfiltration-URL scanning only, not the credential scanner.",
+        "the URL pass only (credentials inside URLs), not the credential scanner.",
     ),
     (
         "Vector memory snippets",
@@ -79,7 +88,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "monitoring/controller.py",
         "Provider-controlled canonical facts and operator-authored wake instructions "
         "before they are injected into an agent session. The complete bounded envelope "
-        "passes the exfiltration-URL and credential scanners before dispatch.",
+        "passes the credential scanners, inside URLs too, before dispatch.",
     ),
     (
         "Onboarding import",
@@ -101,7 +110,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "messaging/driver.py that every other reply on this pipeline inherits. "
         "The hook's text is arbitrary (it is user code, and it may quote the "
         "inbound message or a command's output back), so it goes through the "
-        "shared credential + exfiltration-URL chain here, at the one point the "
+        "shared credential chain (inside URLs too) here, at the one point the "
         "reply leaves for a channel. This module also carries a NON-egress site, "
         "the session-directive consumer's confirmation log line, which scrubs the "
         "same LLM-derived text before it reaches the gateway log; it is named here "
@@ -119,8 +128,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Slack member-memory refusal",
         "slack/transport_dispatch.py",
-        "Member-memory errors bypass the streamed response. Credentials, "
-        "exfiltration URLs and local paths are removed before the bounded "
+        "Member-memory errors bypass the streamed response. Credentials (inside "
+        "URLs too) and local paths are removed before the bounded "
         "refusal is sent to the channel.",
     ),
     (
@@ -149,7 +158,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "carries the full choice, which can be longer than the label that was "
         "shown. This module calls only `_redact_transformed`, the renderer's "
         "display-form pass for the answer body, which itself runs both the "
-        "credential and the exfiltration-URL scan.",
+        "credential scan and the URL pass.",
     ),
     (
         "Teams rendered message text",
@@ -159,8 +168,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "`[OPTIONS:]` chip label, the tool-progress bubble, and an approval card's "
         "tool title and purpose. Teams markdown-renders all of them, so markup the "
         "platform removes can rejoin a credential the TurnDriver's byte-level stream "
-        "scan saw as broken -- `AKIA**...**` is two fragments to the scanner and one "
-        "key on screen. Card text matters as much as message text here, because a "
+        "scan saw as broken -- `ghp_**...**` is two fragments to the scanner and one "
+        "token on screen. Card text matters as much as message text here, because a "
         "card's TextBlock is rendered the same way.",
     ),
     (
@@ -171,7 +180,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "basename of the model-written path. Extraction has already cut the path "
         "out of the answer body, so for an empty caption this name is the only "
         "surviving sink -- and the sanitizer preserves `[A-Za-z0-9._-]`, every "
-        "character an `AKIA...` key id or a `ghp_...` token needs. Both the source "
+        "character a `ghp_...` token or a signed JWT needs. Both the source "
         "and the finished name are scanned, because the length cap can slice a "
         "token down to a prefix the scanner no longer matches.",
     ),
@@ -199,7 +208,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "The bounded failure reason a permanent AcpError surfaces in the chat "
         "reply instead of the generic retry text. The message is backend error "
         "text rather than stream output, so it bypasses the shared TurnDriver "
-        "redaction and is scanned (credentials, exfiltration URLs, local "
+        "redaction and is scanned (credentials, inside URLs too, and local "
         "paths) at this egress before the renderer posts it.",
     ),
     (
@@ -208,9 +217,9 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Every text this channel posts, scanned against the form Telegram RENDERS "
         "rather than the bytes sent. The TurnDriver's stream scan runs before this "
         "renderer introduces any markup, so it cannot see a credential the markup "
-        "then reassembles: `AKIA**...**` matches nothing at the byte level, and "
-        "`_md_to_telegram_html` turns it into `AKIA<b>...</b>`, which the client "
-        "displays as an intact key. A link and a zero-width character between the "
+        "then reassembles: `ghp_**...**` matches nothing at the byte level, and "
+        "`_md_to_telegram_html` turns it into `ghp_<b>...</b>`, which the client "
+        "displays as an intact token. A link and a zero-width character between the "
         "halves do the same. Both live-frame and seal run "
         "`display_safety.redact_for_display` ahead of any tag being introduced, "
         "covering the HTML, Rich-Message and plaintext branches at once; the "
@@ -244,7 +253,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "schedule and message, a subagent's task, a task-runner spec path and a "
         "start failure. Each is free-form text a user typed or the agent proposed, "
         "and every reply is posted to a channel AND persisted to the conversation "
-        "log, so the credential + exfiltration-URL pair runs before the string "
+        "log, so the credential pair (inside URLs too) runs before the string "
         "leaves the module rather than at each channel's own boundary.",
     ),
     (
@@ -275,8 +284,15 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Dashboard live log stream",
         "dashboard/handlers/updates_streams.py",
         "The live log stream and its ring replay reach every dashboard-user socket and "
-        "`log`-scoped apps, not only the owner; with the owner's prompt-and-logs switch "
+        "`log`-scoped apps, not only the owner; with the owner's credential redaction "
         "off, each line is redacted here before it is buffered or sent.",
+    ),
+    (
+        "Non-owner dashboard readers",
+        "dashboard/redaction_audience.py",
+        "With the owner's credential redaction off, a websocket frame, chat SSE event or "
+        "HTTP read that reaches anyone but the owner (a Shared Crew teammate, an allowlist "
+        "link, a `!dashboard` user, an app token) is redacted in full here.",
     ),
     (
         "Agent channels",
@@ -380,7 +396,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "webex/renderer.py",
         "The Webex DELIVERY boundary. Webex renders markdown, so it reassembles a "
         "credential the driver's literal-byte scan of the provider stream could "
-        "not match contiguously (`AKIA**IOSF**ODNN7EXAMPLE`, a link target broken "
+        "not match contiguously (`ghp_**1a2b**3c4d...`, a link target broken "
         "by emphasis) -- and this channel adds two egress paths of its own that "
         "carry the same text: the numbered `[OPTIONS:]` fallback posted when an "
         "Adaptive Card send fails, and the local-path references restored when an "
@@ -399,7 +415,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "markdown itself -- `to_plaintext` in `delivery_text` -- because the "
         "surface renders no markup, so the driver's literal-byte scan of the "
         "provider stream runs BEFORE the transformation that can reassemble a "
-        "credential it could not match (`**AKIA**IOSFODNN7EXAMPLE`, a link "
+        "credential it could not match (`**ghp_**1a2b3c4d...`, a link "
         "target broken by emphasis). `delivery_text` therefore re-scans the "
         "flattened form through redact_for_display (messaging/display_safety.py) "
         "with the same redactor pair TurnDriver streams through, which is the "
@@ -415,7 +431,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "rather than the rolling `StreamRedactor` it uses for the answer -- so a "
         "credential split across two chunks passes both halves and is reconstituted "
         "by the renderer when it joins them for the frame. The assembled string "
-        "therefore goes through the shared credential + exfiltration-URL chain at "
+        "therefore goes through the shared credential chain (inside URLs too) at "
         "the send boundary, which is the only form that ships and also covers a "
         "credential that was never split. The ANSWER text needs no pass here: it "
         "reaches this renderer already through the driver's rolling redactor.",
@@ -428,11 +444,11 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "`render_options_as_text` -> `apply_options_cap`, which display-redacts the "
         "numbered OPTIONS choices but returns the body itself unscrubbed, so the "
         "only pass the body had was the driver's channel-neutral LITERAL stream "
-        "scan. A credential split by emphasis (`AKIA**REST`) or a link therefore "
+        "scan. A credential split by emphasis (`ghp_**REST`) or a link therefore "
         "survives that scan and is reassembled when Feishu renders the markdown. "
         "The body is screened at the send boundary through `Renderer.redact_for_"
-        "target` -- the `redact_for_display` pass over the credential + "
-        "exfiltration-URL chain, on the display form that actually ships: `on_done` "
+        "target` -- the `redact_for_display` pass over the credential "
+        "chain (inside URLs too), on the display form that actually ships: `on_done` "
         "runs it over the body after taking out the image references it uploads, so "
         "the refusal lines and the failed-upload note are covered too; history "
         "is persisted separately by `messaging.dispatch` from the driver's own "
@@ -455,7 +471,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "The numbered tool-approval prompt for a channel with no interactive "
         "widget (max_buttons=0). Both fields it interpolates are AGENT-AUTHORED: "
         "the model chooses the tool name and writes the purpose, so either can "
-        "carry a credential or an exfiltration URL, and the prompt puts them "
+        "carry a credential, inside a URL or not, and the prompt puts them "
         "straight into a chat message. The screen runs in build_approval_prompt "
         "rather than at each channel's sink because that is why the helper is "
         "shared: a channel adopting the ladder inherits the guarantee instead of "
@@ -467,9 +483,9 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "whatsapp/renderer.py",
         "The WhatsApp RENDERING boundary. This is the only markup-CONSUMING "
         "channel whose own converter rewrites the delimiters: `to_whatsapp_text` "
-        "turns `AKIA**I**OSFODNN7EXAMPLE` into `AKIA*I*OSFODNN7EXAMPLE`, which "
+        "turns `ghp_**1**a2b3c4d...` into `ghp_*1*a2b3c4d...`, which "
         "matches no credential pattern as written while the reader's client "
-        "strips the markers and shows an intact key. It strips ANSI and then runs "
+        "strips the markers and shows an intact token. It strips ANSI and then runs "
         "redact_for_display (messaging/display_safety.py) over the "
         "redact_exfiltration_urls + redact_credentials pair, and the pass that "
         "carries the guarantee is the one AFTER the conversion: the module also "
@@ -493,7 +509,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "summary therefore goes through the shared DISPLAY-form redactor at the "
         "point of interpolation: `Renderer.redact_for_target`, which is only the "
         "`redact_for_display` pass -- it re-scans the markdown-rendered form with "
-        "the credential + exfiltration-URL chain, and deliberately does not repeat "
+        "the credential chain (inside URLs too), and deliberately does not repeat "
         "the driver's rolling stream scan, which a one-shot summary has no split "
         "chunks to need. The ANSWER text needs no pass here at all: it reaches this "
         "renderer already redacted by the driver.",
@@ -561,12 +577,12 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "document previews and re-reads that use the same route — and the "
         "original and diff bodies returned by the matching file diff "
         "(api_file_diff), which the panel compares that buffer against. Both "
-        "scanners run for every caller EXCEPT the dashboard owner with the "
-        "credential-redaction switch turned off (Settings → Security → "
-        "Credential redaction in file views): then these two responses run the exfil-URL "
-        "pass alone, in the owner's own dashboard only, with one verdict per "
-        "request so neither side is raw while the other is masked. The switch "
-        "defaults to on, "
+        "scanners run for every caller EXCEPT the dashboard owner with credential "
+        "redaction turned off (Settings → Security → Redaction): then these two "
+        "responses mask no credential, inside URLs or not, in the owner's own "
+        "dashboard only, with one verdict per request so neither side is raw while "
+        "the other is masked. The setting is off by default, a host whose policy "
+        "governs any scope keeps it on unless the top policy tier allows off, it "
         "is stored on the keystone floor the agent cannot write, and every flip "
         "is audited.",
     ),
@@ -628,7 +644,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Slide-deck render screen and conversion diagnostic",
         "dashboard/handlers/office_slides.py",
         "The .pptx/.ppt slide renderer screens the deck's rendered text through "
-        "the credential redactor then the exfiltration-URL redactor BEFORE it "
+        "the credential redactor (inside URLs too) BEFORE it "
         "rasterizes any page (`_screen_rendered_text`): a slide PNG is a picture "
         "of that text and cannot be redacted after the fact, so a deck whose "
         "visible text either scanner would change is not rendered at all -- the "
@@ -746,7 +762,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "notification bus. A separate egress from the Slack board even though the "
         "source text is the same third-party provider payload: this one lands in the "
         "OS notification centre and in the persisted notification JSONL. Runs the "
-        "credential and exfiltration-URL scanners plus the app's own provider-token "
+        "credential scanners (inside URLs too) plus the app's own provider-token "
         "pass, matching the postmortem writer — core redaction alone leaves a "
         "provider api_key inside a URL intact.",
     ),
@@ -766,8 +782,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Report a Problem, plus the pre-filled GitHub issue URL it returns. The most "
         "external boundary in this list: the artifact exists to be attached to a "
         "PUBLIC issue, and its members are raw gateway/kiro-cli logs and crash "
-        "reports. Every text member and the user-typed note run the credential and "
-        "exfiltration-URL scanners plus a sensitive-header pass before anything is "
+        "reports. Every text member and the user-typed note run the credential "
+        "scanners (inside URLs too) plus a sensitive-header pass before anything is "
         "written into the archive.",
     ),
     (
@@ -788,7 +804,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Tag names supplied by both the POST /api/chat/tags HTTP handler and the "
         "background auto-tag task are LLM-authored or project-derived and persist "
         "to tags.json, the dashboard sidebar, and Slack notifications. Both paths "
-        "redact credentials and exfiltration URLs before creation/persistence.",
+        "redact credentials, inside URLs too, before creation/persistence.",
     ),
     (
         "Background auto-tag (project-derived names)",
@@ -803,7 +819,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/handlers/feedback.py",
         "The free-text `feedback` field submitted via POST /api/feedback/submit is "
         "forwarded to Aperture, a third-party AWS service, so it is a genuine "
-        "external egress boundary — a user typing a credential or exfiltration URL "
+        "external egress boundary — a user typing a credential, inside a URL or not, "
         "while describing their experience would otherwise leave the host "
         "unredacted. `_customer_responses` runs it through redact_exfiltration_urls "
         "then redact_credentials before it is included in the outbound payload. "
@@ -822,7 +838,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "it in the dashboard. The titles and labels are NOT our text: they come from "
         "the forge, where any user can open an issue and write anything in the "
         "title, so this is a dashboard-bound sink for attacker-controlled text. "
-        "`_printable` runs the shared credential + exfiltration-URL chain FIRST, "
+        "`_printable` runs the shared credential chain (inside URLs too) FIRST, "
         "then neutralizes control and bidirectional-override characters, and "
         "truncates LAST -- redaction has to precede truncation, because cutting "
         "first can split a credential so only its tail is left to match and the head "
@@ -838,8 +854,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credentials. Every outbound error string (the `aws_call_failed` "
         "bodies, the bill card's `fetchError`, backup's `remoteError`, and the "
         "library `not_pushable` message) funnels through one `_safe_error` "
-        "chokepoint that applies the deploy handlers' credential + "
-        "exfiltration-URL chain before the text reaches the dashboard.",
+        "chokepoint that applies the deploy handlers' credential "
+        "chain (inside URLs too) before the text reaches the dashboard.",
     ),
     (
         "Job runtime error responses",
@@ -849,7 +865,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the refusal this surface raises itself quotes caller-supplied material -- "
         "a job kind name, a dedupe key, or a path carried out of the SDK's own "
         "exception -- so the `job_start_failed` body funnels through one `_safe` "
-        "chokepoint that applies the credential + exfiltration-URL chain before the "
+        "chokepoint that applies the credential chain (inside URLs too) before the "
         "text reaches the dashboard.",
     ),
     (
@@ -859,11 +875,11 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "broadcasts or persists: proxied replies (JSON documents and SSE events), "
         "capability labels and session-list fields. The peer is a SEPARATE "
         "machine with its own agents, environment and secrets, so its text can "
-        "quote a credential or an exfiltration URL that no local redaction pass "
+        "quote a credential, inside a URL or not, that no local redaction pass "
         "has ever seen. The peer redacts its own copy with this same chain, but a "
         "hub that trusted that would inherit whatever an older or misconfigured "
-        "peer failed to scrub -- so every such string runs the credential + "
-        "exfiltration-URL chain here, through the one sink.",
+        "peer failed to scrub -- so every such string runs the credential "
+        "chain (inside URLs too) here, through the one sink.",
     ),
     (
         "Host-side UI preference backup",
@@ -871,9 +887,9 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Every value read back from `~/.kiro/crew/ui-prefs.json` before it is "
         "served by `GET /api/ui-prefs` and written into the renderer's "
         "localStorage. The values are opaque strings the server never parses, "
-        "and the file sits in the agent-writable data home, so a credential or "
-        "exfiltration URL smuggled inside an innocent key would otherwise reach "
-        "the dashboard verbatim. A value the credential + exfiltration-URL chain "
+        "and the file sits in the agent-writable data home, so a credential "
+        "smuggled inside an innocent key, in a URL or not, would otherwise reach "
+        "the dashboard verbatim. A value the credential chain (inside URLs too) "
         "would alter is DROPPED rather than served redacted: a redacted "
         "preference is not one the client can use, and the sync loop would "
         "write the sentinel back over the file.",
@@ -885,7 +901,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "WakaTime send-heartbeats is enabled. The label is the agent/user-selected "
         "project directory basename, so a directory whose name is itself "
         "credential- or URL-shaped would otherwise be POSTed verbatim to WakaTime. "
-        "The basename passes through the shared credential + exfiltration-URL chain "
+        "The basename passes through the shared credential chain (inside URLs too) "
         "in `_entity_for_project` before it can leave for the external API.",
     ),
     (
@@ -914,8 +930,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent-authored free-text (an activity record's `project`, message "
         "previews) that would otherwise cross to the dashboard verbatim, the "
         "same class the sibling `/activity` HTTP read redacts. "
-        "`_redact_projection_value` runs the shared exfiltration-URL then "
-        "credential chain over the view before broadcast, plus the "
+        "`_redact_projection_value` runs the shared "
+        "credential chain (inside URLs too) over the view before broadcast, plus the "
         "URL-secret-parameter layer the sibling roster egress runs, so a short "
         "credential carried as a URL query parameter cannot slip the two "
         "heuristics; it is applied at the "
@@ -949,7 +965,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Every string a Bot writes into its own dashboard's agentic fields, on "
         "its way to the rendered page. The scrub runs on the way IN, so what the "
         "registry stores is already redacted and no later reader has to remember to "
-        "scrub it. Both shared redactors run, exfiltration URLs first, and the walk "
+        "scrub it. Both shared redactors run, the URL pass first, and the walk "
         "is recursive over arrays and objects rather than a named list of fields, "
         "because a template declares its own agentic fields and a value's strings sit "
         "inside containers as often as they stand alone. An object's KEY is scrubbed "

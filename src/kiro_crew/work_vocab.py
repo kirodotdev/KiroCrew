@@ -126,6 +126,29 @@ WORK_MAX_DEPTH_DEFAULT: int = 2
 WORK_MAX_DEPTH_MIN: int = 2
 WORK_MAX_DEPTH_MAX: int = 10
 WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
+
+#: One crew tag (``work_ledger.remote_dispatch_tags``) or one remote-dispatch
+#: ``requires`` name: a short lower-case word with at least one letter and no
+#: dot, so a tag cannot carry a path, a URL, a dotted host name or a bare
+#: account number. Here because the config package needs it and may not import
+#: the remote-dispatch modules. Use ``fullmatch``: ``$`` would pass a newline.
+DISPATCH_TAG_RE = re.compile(r"(?=[a-z0-9_-]*[a-z])[a-z0-9][a-z0-9_-]{0,31}")
+
+#: Most tags a crew advertises, and most names one ``requires`` list holds.
+MAX_DISPATCH_TAGS: int = 16
+
+
+def coerce_dispatch_tags(raw: object) -> tuple[str, ...]:
+    """*raw* as a deduplicated tuple of valid tags, in order; anything else dropped."""
+    if not isinstance(raw, list):
+        return ()
+    out: list[str] = []
+    for tag in raw:
+        if isinstance(tag, str) and DISPATCH_TAG_RE.fullmatch(tag) and tag not in out:
+            out.append(tag)
+    return tuple(out[:MAX_DISPATCH_TAGS])
+
+
 #: Fields a conductor action may set on an item. What the write route logs from
 #: the committed item is what the fold applies to the rebuilt one; the two read
 #: this one table so they cannot drift apart. A worker's fields are fixed.
@@ -171,6 +194,10 @@ WORK_MAX_ARTIFACT_VALUE_CHARS: int = 512
 #: A retire reason and a stamp, as stored on a retired binding.
 WORK_MAX_RETIRE_REASON_CHARS: int = 64
 WORK_MAX_STAMP_CHARS: int = 64
+#: The retire reasons a conductor may give on ``work_ledger_record action=retire``
+#: (rfc-conductor-remote-dispatch §5b): the worker is stuck on a login, or the crew
+#: lacks what the item needs. ``crew_unreachable`` is the hub's own, never a caller's.
+WORK_CONDUCTOR_RETIRE_REASONS: tuple[str, ...] = ("login_blocked", "wrong_crew")
 
 #: Each retired binding's text fields and their caps.
 _RETIRED_BINDING_TEXT: dict[str, int] = {

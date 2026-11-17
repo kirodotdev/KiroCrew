@@ -12,6 +12,7 @@ import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
+import { blockedLinkFor, type BlockedLink } from './blockedLinkRecords'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../hooks/useNearViewport'
 import { sliceCodePoints } from '../utils/codePoints'
@@ -104,9 +105,17 @@ interface WidgetFrameProps {
    * fallback-created artifact to its session and to refresh the in-session
    * Artifacts tab after a star/unstar. Absent for embedded/detached renders. */
   slotKey?: string
+  /** The reply's blocked-link records: the frame never opens a link that
+   * matches one, the way the reply's own text draws it as its chip. */
+  blockedLinks?: readonly BlockedLink[]
+  /** The reply is still streaming, so its records are not known yet: the frame
+   * opens no web link until they are. */
+  linksPending?: boolean
 }
 
-export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, slotKey }: WidgetFrameProps) {
+const NO_BLOCKED: readonly BlockedLink[] = []
+
+export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, slotKey, blockedLinks = NO_BLOCKED, linksPending = false }: WidgetFrameProps) {
   // Re-read theme CSS vars whenever the resolved theme, active color theme,
   // or themeVersion counter changes. themeVersion is the trigger for
   // in-place custom-theme edits via the theme editor: the slug stays the
@@ -198,7 +207,11 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   )
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
-  const linkChip = useFrameLinkBridge(policy.linkBridge ? [iframeRef] : NO_FRAMES)
+  const refuseLink = useCallback(
+    (url: string) => linksPending || blockedLinkFor(url, blockedLinks) !== null,
+    [linksPending, blockedLinks],
+  )
+  const linkChip = useFrameLinkBridge(policy.linkBridge ? [iframeRef] : NO_FRAMES, undefined, undefined, undefined, refuseLink)
   // Fade the iframe in once its document loads, so the reveal is a soft fade
   // instead of an abrupt blink-then-appear. Reset to false whenever a new blob
   // is built (first reveal, theme change, content rebuild) so each fresh render

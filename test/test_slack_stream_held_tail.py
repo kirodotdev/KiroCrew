@@ -362,7 +362,7 @@ def test_a_given_back_word_is_not_repeated_when_the_next_message_is_refused():
     ("before", "after", "hidden"),
     [
         (f"Here it is key={_K[:3]}", f"{_K[3:]} and more", _K[4:]),
-        ("bot 12345", "67890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw then more", "AAHdqTcvCH1v"),
+        ("bot 12345", "67890:" + "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ then more", "AAHdqTcvCH1v"),
         ("see x", f"{_K} then more", _K[4:]),
         (f"The key is {_K[:4]}", f"{_K[4:]} and more", _K[4:]),
         ("Header: Authorization: Bearer ", f"{_OPAQUE} then more", _OPAQUE),
@@ -431,7 +431,7 @@ def test_a_value_split_by_a_wait_and_a_tool_line_stays_filtered():
     ("before", "after", "hidden"),
     [
         (f"Here it is key={_K[:3]}", f"{_K[3:]} and more", _K[4:]),
-        ("bot 12345", "67890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw then more", "AAHdqTcvCH1v"),
+        ("bot 12345", "67890:" + "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ then more", "AAHdqTcvCH1v"),
         ("see x", f"{_K} then more", _K[4:]),
     ],
     ids=["after-a-name", "inside-digits", "no-break-inside-a-value"],

@@ -5,39 +5,35 @@ per-channel notification settings.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
-        APPS_OFF_FOR_TEAMMATES,
         CronStoreBusy,
         CronStoreUnreadable,
         DashboardState,
-        audit_teammate_withheld,
         body_not_object_error,
         clear_cron_item_recorded,
         cron_note_transition,
-        is_app_channel,
-        is_relay_teammate,
         logger,
-        notification_source_app,
         recorded_cron_item,
-        refuse_relayed,
         unread_count,
     )
 
 
 async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
-    if is_relay_teammate(request):
-        # A relayed teammate has no app surface, so an app's push notifications are
-        # withheld, as the live WebSocket and SSE feeds withhold them. Unread is
-        # counted over the notes this view returns.
-        notes = [note for note in state._notification_log if not _is_app_note(note)]
+    hidden = _withheld_from(request)
+    if hidden is not None:
+        # Owner-only notes are withheld from anyone but the machine owner, as the
+        # live WebSocket and SSE feeds withhold them. Unread is counted over the
+        # notes this view returns.
+        notes = [note for note in state._notification_log if not hidden(note)]
         if len(notes) != len(state._notification_log):
-            audit_teammate_withheld("notification")
+            _audit_withheld("notification")
         return web.json_response({"notifications": notes, "unread": unread_count(notes)})
     return web.json_response(
         {
@@ -60,50 +56,74 @@ async def api_notification_delete(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
-    refused = _refuse_hidden_note(request, state, ts, "notifications.delete")
+    refused = _refuse_owner_only_note(request, state, ts, "notifications.delete")
     if refused is not None:
         return refused
     ok = await state.delete_notification(ts)
     return web.json_response({"ok": ok})
 
 
-def _is_app_note(note: dict) -> bool:
-    """Whether *note* is an app's push notification, which a relayed teammate never sees."""
-    return bool(notification_source_app(str(note.get("source", ""))))
+def _withheld_from(request: web.Request) -> Callable[[dict], bool] | None:
+    """Which notes this caller is withheld, or ``None`` for the machine owner.
+
+    Everyone else, a Shared Crew teammate who passes the owner gate included, is
+    withheld owner-only notes, which name the machine owner's own accounts.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+    from kiro_crew.dashboard.ws_event_scope import owner_only_note
+
+    if is_host_owner_dashboard_request(request):
+        return None
+    return owner_only_note
 
 
-def _refuse_hidden_note(
+def _audit_withheld(event_type: str) -> None:
+    from kiro_crew.dashboard.ws_event_scope import audit_owner_only_withheld
+
+    audit_owner_only_withheld(event_type)
+
+
+def _persist_failed() -> web.Response:
+    """The answer when a filtered clear or ack-all could not be written."""
+    return web.json_response(
+        {"error": "Couldn't save the notification change.", "code": "persist_failed"},
+        status=500,
+    )
+
+
+def _refuse_owner_only_note(
     request: web.Request, state: DashboardState, ts: str, operation: str
 ) -> web.Response | None:
-    """A relayed teammate's refusal for one notification withheld from them, else ``None``.
+    """The refusal for one notification withheld from this caller, else ``None``.
 
-    The list never shows a teammate an app's notification, so one they name by its
-    timestamp is refused rather than changed on the owner's behalf.
+    The list never shows the caller a note withheld from them, so one they name by
+    its timestamp is refused rather than changed on the owner's behalf.
     """
-    if not is_relay_teammate(request):
+    hidden = _withheld_from(request)
+    if hidden is None:
         return None
-    if any(note.get("ts") == ts and _is_app_note(note) for note in state._notification_log):
-        return refuse_relayed(request, APPS_OFF_FOR_TEAMMATES, operation=operation)
-    return None
+    if not any(note.get("ts") == ts and hidden(note) for note in state._notification_log):
+        return None
+    _audit_withheld(operation)
+    return web.json_response(
+        {"error": "Only the owner can change this notification.", "code": "owner_only"},
+        status=403,
+    )
 
 
 async def api_notifications_clear(request: web.Request) -> web.Response:
     """POST /api/notifications/clear — clear all notifications."""
     state: DashboardState = request.app["state"]
-    if is_relay_teammate(request):
-        hidden = [note for note in state._notification_log if _is_app_note(note)]
-        if hidden:
-            # Clear what the teammate sees and keep what they are withheld: no
-            # whole-feed clear, and no clear broadcast that would empty the owner's.
-            # Each cleared note is withdrawn by name instead, so every open view
-            # drops exactly those.
-            cleared = [note.get("ts") for note in state._notification_log if not _is_app_note(note)]
-            state._notification_log = hidden
-            await state._rewrite_notifications_async()
-            for ts in cleared:
-                state.broadcast_ws("notification_dismiss", {"ts": ts})
-            audit_teammate_withheld("notifications_clear")
-            return web.json_response({"ok": True})
+    withheld = _withheld_from(request)
+    if withheld is not None and any(withheld(note) for note in state._notification_log):
+        # Clear what the caller sees and keep what they are withheld: no whole-feed
+        # clear, and no clear broadcast that would empty the owner's. Each cleared
+        # note is withdrawn by name once the file holds the result.
+        persisted, _cleared = await state.clear_visible_notifications(withheld)
+        if not persisted:
+            return _persist_failed()
+        _audit_withheld("notifications_clear")
+        return web.json_response({"ok": True})
     await state.clear_notifications()
     return web.json_response({"ok": True})
 
@@ -121,7 +141,7 @@ async def api_notification_ack(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
-    refused = _refuse_hidden_note(request, state, ts, "notifications.ack")
+    refused = _refuse_owner_only_note(request, state, ts, "notifications.ack")
     if refused is not None:
         return refused
     ok = await state.ack_notification(ts)
@@ -141,7 +161,7 @@ async def api_notification_unack(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
-    refused = _refuse_hidden_note(request, state, ts, "notifications.unack")
+    refused = _refuse_owner_only_note(request, state, ts, "notifications.unack")
     if refused is not None:
         return refused
     # Take back the exact entry this note's cron ack added, and nothing for a
@@ -173,22 +193,15 @@ async def api_notification_unack(request: web.Request) -> web.Response:
 async def api_notifications_ack_all(request: web.Request) -> web.Response:
     """POST /api/notifications/ack-all — mark all notifications as read."""
     state: DashboardState = request.app["state"]
-    if is_relay_teammate(request):
-        # Acknowledge what the teammate sees: an app notification withheld from them
-        # keeps its read state, so the ack goes out per entry rather than as "*".
-        acknowledged = []
-        withheld = False
-        for note in state._notification_log:
-            if _is_app_note(note):
-                withheld = True
-            elif not note.get("acked"):
-                note["acked"] = True
-                acknowledged.append(note.get("ts"))
-        await state._rewrite_notifications_async()
-        for ts in acknowledged:
-            state.broadcast_ws("notification_ack", {"ts": ts})
+    hidden = _withheld_from(request)
+    if hidden is not None:
+        # Acknowledge what the caller sees: a note withheld from them keeps its read
+        # state, so the ack goes out per entry rather than as "*", once written.
+        withheld = any(hidden(note) for note in state._notification_log)
+        if not await state.acknowledge_visible_notifications(hidden):
+            return _persist_failed()
         if withheld:
-            audit_teammate_withheld("notification_ack")
+            _audit_withheld("notification_ack")
         return web.json_response({"ok": True})
     for n in state._notification_log:
         n["acked"] = True
@@ -216,14 +229,8 @@ async def api_notification_channels(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     registered = state.notification_bus.channels()
     stored = state.notification_channel_settings.all_settings()
-    # A relayed teammate has no app surface, so an app's channels are left out.
-    teammate = is_relay_teammate(request)
-    withheld = False
     channels = []
     for channel in sorted(set(registered) | set(stored)):
-        if teammate and is_app_channel(channel):
-            withheld = True
-            continue
         source = channel.split(".", 1)[0]
         channels.append(
             {
@@ -235,8 +242,6 @@ async def api_notification_channels(request: web.Request) -> web.Response:
                 "settings": stored.get(channel, {}),
             }
         )
-    if withheld:
-        audit_teammate_withheld("notification_channel_settings")
     # The transports a bridge route can actually deliver to (those with a
     # registered sink), so Settings offers no destination that would be skipped.
     bridge = getattr(state, "notification_bridge", None)
@@ -272,12 +277,6 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
     channel = channel.strip()
     if len(channel) > 256:
         return web.json_response({"error": "channel name too long"}, status=400)
-    if is_relay_teammate(request) and is_app_channel(channel):
-        # The same refusal, and SEL row, the remote limits give a teammate on an app
-        # route: the channel is named in the body, so the ingress cannot decide it.
-        return refuse_relayed(
-            request, APPS_OFF_FOR_TEAMMATES, operation="notifications.channel_settings"
-        )
     muted = body.get("muted")
     if muted is not None and not isinstance(muted, bool):
         return web.json_response({"error": "muted must be a boolean"}, status=400)

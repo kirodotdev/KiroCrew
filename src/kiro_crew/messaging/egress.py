@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.constants import strip_control_comments
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.renderer import chunk_for_transport, render_options_as_text
@@ -53,6 +54,7 @@ from kiro_crew.messaging.transport import delivery_confirmed
 from kiro_crew.platform.context import redact_via_context
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 async def channel_egress_parts(
     text: str, capabilities: Any, *, number_options: bool = False
 ) -> list[str]:
@@ -70,6 +72,7 @@ async def channel_egress_parts(
     )
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 async def send_channel_parts(
     transport: Any,
     conversation_id: str,

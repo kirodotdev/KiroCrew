@@ -109,9 +109,16 @@ def _audit_owner_read(request: web.Request, operation: str) -> None:
     """Record an owner gate grant, as the briefing and rules reads do.
 
     A denied-only trail cannot answer who read the owner's view of the crew, so a
-    granted read leaves an ``allowed`` record too. Best effort: an audit must never
-    change the outcome.
+    granted read leaves an ``allowed`` record too. A relay teammate passes the owner
+    gate as the owner does, and their row is filed under their own relay label
+    (:func:`_audit_teammate_read`). Best effort: an audit must never change the
+    outcome.
     """
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if _relay_teammate(request):
+        _audit_teammate_read(request, operation)
+        return
     try:
         _sel().log_api_access(
             caller=request.remote or "",
@@ -165,10 +172,9 @@ def _audit_teammate_denied(request: web.Request, operation: str, resources: str)
 def _teammate_reaches_bot(*, slug: str | None = None, name: str | None = None) -> bool:
     """Whether a relay teammate may reach the Bot *slug* (or crew *name*) names.
 
-    The teammate's roster (``members_roster._teammate_roster``) lists only Bots a
-    person created here, so these routes admit exactly those: every addressable name
-    deriving the slug must be one, and at least one must exist. Blocking (it loads
-    the config); call it off the event loop.
+    A Bot a person created here: every addressable name deriving the slug must be
+    one, and at least one must exist. Blocking (it loads the config); call it off
+    the event loop.
     """
     cfg = KiroCrewConfig.load()
     if name is not None:
@@ -197,10 +203,11 @@ async def _teammate_admitted(
     may use a person-created Bot as they may use a session. A route that admits them
     calls this before its owner gate and skips the gate when it answers ``True``.
     ``False`` for everyone else, the owner included, with no config read, so the
-    owner's path through the route is unchanged. A teammate on a Bot outside their
-    roster also gets ``False`` and meets the owner gate's refusal. A route that
-    names no Bot yet (create) passes neither *slug* nor *name*, and only the
-    caller is checked.
+    owner's path through the route is unchanged. A teammate on any other Bot also
+    gets ``False`` and goes through the owner gate, which admits every Shared Crew
+    teammate (``shared_crew.teammate_access``); ``True`` only files the grant under
+    the teammate's own audit row. A route that names no Bot yet passes neither
+    *slug* nor *name*, and only the caller is checked.
     """
     from kiro_crew.shared_crew.routes_identity import _relay_teammate
 

@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.constants import HOOK_DENY_REASON_MAX_CHARS
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_STOP,
@@ -170,7 +171,7 @@ def _hook_context(results: list[ScriptHookResult]) -> list[str]:
             injected.append(f"BLOCKED:{r.hook_name}:{r.failure_detail}")
         elif r.exit_code == 2:
             injected.append(
-                f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
+                f"BLOCKED:{r.hook_name}:{r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else 'hook denied'}"
             )
         elif r.exit_code != 0 and r.stderr:
             logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])

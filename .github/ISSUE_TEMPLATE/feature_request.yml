@@ -29,6 +29,29 @@ body:
       required: true
 
   - type: textarea
+    id: five-whys
+    attributes:
+      label: Why does this matter? (5 Whys)
+      description: >-
+        Reason from first principles: set the solution you have in mind aside
+        and dig down to the basic need underneath it. Ask "why?" up to five
+        times. Build each question from the answer just before it, not from a
+        generic prompt. Stop once the answer names who hits this, what they are
+        trying to get done, and what it costs them today. Five is the most, not
+        the goal. If an AI agent is filing this for someone, ask them these
+        questions rather than restating their request.
+      placeholder: |
+        I want: a button to export my chat history.
+        Why do you want to export chat history?
+          -> So I can share a session with a teammate.
+        Why do you need to share a session with a teammate?
+          -> They need to see how I got the agent to fix a bug.
+        Why do they need to see how you got there?
+          -> ...
+    validations:
+      required: true
+
+  - type: textarea
     id: proposal
     attributes:
       label: Proposed behaviour

@@ -46,6 +46,16 @@ _READS = frozenset({"conversations.info"})
 #: ``agents.conversations.setView`` refuses ``content`` over this many bytes
 #: (``content_too_large``); checked here so the request never leaves.
 MAX_VIEW_CONTENT_BYTES = 1_000_000
+#: The error a write carrying the board's workers gets when its send gate refuses.
+SCOPE_REFUSED = "board_scope_refused"
+
+
+def _gate_admits(gate: Callable[[], bool]) -> bool:
+    """A send gate's answer; one that raises refuses (fails closed)."""
+    try:
+        return bool(gate())
+    except Exception:
+        return False
 
 
 def _response_data(resp: Any) -> dict[str, Any]:
@@ -99,7 +109,12 @@ class CodeChannelsClient:
         return cls(api_call, team_for=team_for)
 
     async def _call(
-        self, method: str, body: dict[str, Any], *, query: bool = False
+        self,
+        method: str,
+        body: dict[str, Any],
+        *,
+        query: bool = False,
+        gate: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         channel = body.get("channel_id") if not query else None
         if isinstance(channel, str) and channel:
@@ -111,6 +126,11 @@ class CodeChannelsClient:
 
             if channel_refusal(channel, operation="slack.write", caller="code_channels_client"):
                 raise CodeChannelApiError(method, "channel_not_allowed_by_policy")
+        # The send gate of a write carrying the board's workers, asked last, with
+        # no await before the send: a scope that changed during any await above
+        # (a subclass's outbound check) is seen. A gate that raises refuses.
+        if gate is not None and not _gate_admits(gate):
+            raise CodeChannelApiError(method, SCOPE_REFUSED)
         try:
             if query:
                 # Read methods such as conversations.info take form/query
@@ -162,11 +182,19 @@ class CodeChannelsClient:
         await self._call("agents.conversations.setProperties", body)
 
     async def set_diff_view(
-        self, channel_id: str, content: str, *, base_branch: str = "", head_branch: str = ""
+        self,
+        channel_id: str,
+        content: str,
+        *,
+        base_branch: str = "",
+        head_branch: str = "",
+        gate: Callable[[], bool] | None,
     ) -> str:
         """``agents.conversations.setView`` ``type=diff`` (a per-channel singleton).
 
-        Returns the ``view_id`` Slack answers with ("" when it sent none).
+        Returns the ``view_id`` Slack answers with ("" when it sent none). *gate*
+        is required: the send gate of a diff that carries the board's workers'
+        commits (asked right before the send), ``None`` only for a diff without.
         """
         _check_id(channel_id, "channel_id")
         if len(content.encode("utf-8")) > MAX_VIEW_CONTENT_BYTES:
@@ -176,7 +204,7 @@ class CodeChannelsClient:
             body["base_branch"] = base_branch
         if head_branch:
             body["head_branch"] = head_branch
-        data = await self._call("agents.conversations.setView", body)
+        data = await self._call("agents.conversations.setView", body, gate=gate)
         return str(data.get("view_id") or "")
 
     async def remove_view(self, channel_id: str, view_id: str) -> None:

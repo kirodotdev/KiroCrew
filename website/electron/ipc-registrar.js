@@ -26,7 +26,8 @@ const { safeFilename } = require("./download-handler");
 const { saveThemeSplash } = require("./theme-splash");
 const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
 const { requestRelayCrewToken } = require("./relay-crew-client");
-const { openRelayCrewWindow, createTokenHolder } = require("./relay-crew-window");
+const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder } = require("./relay-crew-window");
+const { normalizeBounds, deriveScale, scaleRect } = require("./browser-view");
 const { createRelayCrewRenewal } = require("./relay-crew-renewal");
 
 /**
@@ -290,6 +291,7 @@ function createIpcRegistrar({
           backendUrl, endpointId, signInMarker, getSecret: readInternalSecret, fetchFn,
         }),
         openWindow: (opts) => openRelayCrewWindow(opts, windowDeps),
+        openPane: (opts) => openRelayCrewPane(opts, windowDeps),
         createRenewal: createRelayCrewRenewal,
         createTokenHolder,
         log,
@@ -1421,6 +1423,72 @@ function createIpcRegistrar({
         return;
       }
       if (relayOpener) relayOpener.closeAll("SIGNED_OUT");
+    });
+
+    // A relay Crew as a pane in the main window, below the dashboard's own top
+    // bar, instead of in a window of its own. Nothing in the dashboard calls
+    // these yet. The renderer sends the endpoint ID and the pane's rect in CSS
+    // px with its own viewport size (as `browser:set-bounds` does); main picks
+    // the window and the dashboard view itself. The pane's page gets no preload,
+    // so it can send none of these. Never rejects.
+    const paneRect = (parent, rect, viewport) => {
+      const content = parent.getContentBounds();
+      return normalizeBounds(scaleRect(rect, deriveScale(viewport, content)), content);
+    };
+    ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:open-pane");
+        assertMainWindowDashboard(event, "relay-crew:open-pane");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      const parent = windows.getMainWindow();
+      const bounds = paneRect(parent, rect, viewport);
+      // Before any mint, like a bad ID.
+      if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
+      return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds });
+    });
+
+    // The calls that steer an open pane take it only from the dashboard view
+    // that opened it. Synchronous, since bounds arrive on every resize. Answers
+    // the pane's handle, or null and nothing changes.
+    const paneForSender = (event, channel, endpointId) => {
+      if (!isEndpointId(endpointId) || !relayOpener) return null;
+      try {
+        assertMainWindowDashboard(event, channel);
+      } catch {
+        return null;
+      }
+      const pane = relayOpener.paneFor(endpointId);
+      if (!pane) return null;
+      if (pane.dashboard.webContents !== event.sender) {
+        logGateRejection(event.sender, `${channel} rejected: sender did not open this pane`);
+        return null;
+      }
+      return pane.handle;
+    };
+    ipcMain.handle("relay-crew:pane-bounds", (event, endpointId, rect, viewport) => {
+      const pane = paneForSender(event, "relay-crew:pane-bounds", endpointId);
+      if (pane) pane.setBounds(paneRect(windows.getMainWindow(), rect, viewport));
+    });
+    // A local menu or dialog over the pane: the native view would paint above
+    // it, so the pane hides while it is up (browser-view.js header note 2).
+    ipcMain.handle("relay-crew:pane-overlay", (event, endpointId, active) => {
+      if (typeof active !== "boolean") return;
+      const pane = paneForSender(event, "relay-crew:pane-overlay", endpointId);
+      if (pane) pane.setOverlay(active);
+    });
+    // Another tab is in front of a warm pane: it stays loaded but hidden, and
+    // shows only once both this and the overlay are off.
+    ipcMain.handle("relay-crew:pane-inactive", (event, endpointId, inactive) => {
+      if (typeof inactive !== "boolean") return;
+      const pane = paneForSender(event, "relay-crew:pane-inactive", endpointId);
+      if (pane) pane.setInactive(inactive);
+    });
+    ipcMain.handle("relay-crew:pane-close", (event, endpointId) => {
+      const pane = paneForSender(event, "relay-crew:pane-close", endpointId);
+      if (pane) pane.close();
     });
 
     ipcMain.handle("zoom:get", (event) =>

@@ -13,17 +13,21 @@ was still ``dispatched`` — which is why that edge has to be legal.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
+
+import pytest
 
 
 class _HomeIsolated(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         self._clear_caches()
@@ -36,7 +40,6 @@ class _HomeIsolated(unittest.TestCase):
         else:
             os.environ["KIROCREW_HOME"] = self._prev
         self._clear_caches()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _clear_caches():

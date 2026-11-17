@@ -16,9 +16,9 @@ kirocrew snapshot ~/my-snapshots --keep 3             # custom dir, prune to 3
 kirocrew snapshot --components memory                 # just memory, ~20 MB
 kirocrew snapshot --list                              # list existing snapshots
 kirocrew snapshot --strict                            # exit 3 if the bundle is incomplete
-kirocrew restore snapshot.tar.gz                      # auto-detects replace vs merge
-kirocrew restore snapshot.tar.gz --components memory,crons
-kirocrew restore snapshot.tar.gz --dry-run            # preview, write nothing
+kirocrew restore snapshot.tar.gz --mode merge         # keep what is here, add the rest
+kirocrew restore snapshot.tar.gz --mode replace --components memory,crons
+kirocrew restore snapshot.tar.gz --mode merge --dry-run   # preview, write nothing
 kirocrew restore --list-components                    # show component names
 ```
 
@@ -225,14 +225,15 @@ live state is this module's job, and it needs the gateway stopped (below).
 
 ### Replace vs merge
 
-| Mode | Chosen when | Behavior |
-|------|-------------|----------|
-| `replace` | No existing `memory.db` | Overwrite the target with the snapshot, backing up any existing state first |
-| `merge` | An existing `memory.db` is found | Import new data without overwriting what is already there |
+| Mode | Behavior |
+|------|----------|
+| `replace` | Overwrite the target with the snapshot, backing up any existing state first |
+| `merge` | Import new data without overwriting what is already there |
 
-The mode is auto-detected from whether `~/.kiro/crew/memory.db` exists, so a
-restore onto a fresh machine replaces and a restore onto a machine you are
-already using merges. Override with `--mode replace` or `--mode merge`.
+There is no default mode. Name one with `--mode replace` or `--mode merge`.
+Without `--mode`, a restore on a terminal asks which to use and accepts only
+`merge` or `replace`; any other answer stops it with nothing changed. Off a
+terminal it refuses before it reads the archive.
 
 In `replace` mode the state being overwritten is saved first. Named stores go
 into `memory_stores/.member-backups/pre-restore-<timestamp>/` inside the data home,
@@ -313,6 +314,14 @@ home goes to the top level. At most 500 folders are kept, and the import warns
 with how many folders it did not add. Installed apps and their data are not
 carried yet.
 
+The dashboard export leaves out folders that tools rebuild inside your
+workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as
+`.pytest_cache`), and the import skips them in an older archive. A backup that
+unpacks to more than 2 GiB is accepted when no single file is over 2 GiB, the
+total stays under 64 GiB and at most 100 times the archive's own size, and the
+disk has room for it twice plus 1 GiB. When one is refused, the message names
+its biggest folders.
+
 #### Known limitation: the knowledge database is not row-merged
 
 `workspace/knowledge/knowledge.db` follows the file rule above rather than the
@@ -390,7 +399,7 @@ as they are and prints a line saying so, while the rest of `memory` is replaced.
 
 | Flag | Description |
 |------|-------------|
-| `--mode replace\|merge` | Force the mode instead of auto-detecting |
+| `--mode replace\|merge` | The restore mode. Without it a terminal is asked and a non-terminal is refused |
 | `--components X,Y` | Restore only these components |
 | `--dry-run` | List what would be restored and write nothing |
 | `--list-components` | Show the component names and what each covers |

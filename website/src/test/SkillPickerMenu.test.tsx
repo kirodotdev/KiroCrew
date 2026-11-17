@@ -197,6 +197,25 @@ describe('SkillPickerMenu', () => {
     expect(matches).toHaveLength(1)
   })
 
+  it('inserts a qualified package copy by its bare name, since the $ token stops at ":"', async () => {
+    const key = 'package/0123456789abcdef:shared-skill'
+    mockApi.skills.mockResolvedValue([{ key, name: 'shared-skill', description: 'copy', source: 'package' }])
+    const onSelect = vi.fn()
+    render(<Harness query="shared" open onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$shared-skill'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'shared-skill', key })
+  })
+
+  it('keeps a colon in a name that is not a 16-hex package qualifier', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'package/a:b', name: 'a:b', description: 'colon', source: 'package' },
+      { key: 'package/0123456789ABCDEF:up', name: 'up', description: 'upper', source: 'package' },
+    ])
+    render(<Harness query="" open />)
+    expect(await screen.findByText('$a:b')).toBeInTheDocument()
+    expect(screen.getByText('$0123456789ABCDEF:up')).toBeInTheDocument()
+  })
+
   // Regression for #5041 (sibling of #5029): a $token that matches no skill
   // used to swallow Enter — the message could not be sent while the empty
   // picker was open.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, renderHook, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, renderHook, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { ALL_UNAVAILABLE } from '../../api/sharedCrewUi'
@@ -188,6 +188,24 @@ describe('CreatorFilterBar', () => {
     const root = await screen.findByTestId('creator-filter', {}, { timeout: CHAIN_TIMEOUT_MS })
     await waitFor(() => expect(root.textContent).toContain('Unattributed'))
     expect(root.textContent).not.toContain('Unknown')
+  })
+
+  it('spans the sidebar and keeps a long name on one line, readable on hover', async () => {
+    const long = 'someone.with.a.long.name@example.test'
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [
+      { principal: human('p_long', long), sources: ['observed'], is_viewer: false },
+    ] })
+    mount(<CreatorFilterBar value="all" onChange={() => {}} />)
+    const trigger = await screen.findByRole('combobox', {}, { timeout: CHAIN_TIMEOUT_MS })
+    // The trigger's wrapper is the bar's flex item; the open list is the trigger's width.
+    const wrap = trigger.parentElement as HTMLElement
+    expect(wrap.style.flexGrow).toBe('1')
+    expect(['0', '0px']).toContain(wrap.style.minWidth)
+    // The selected name shows in full on hovering the trigger.
+    expect(trigger).toHaveAttribute('title', 'All sessions')
+    fireEvent.click(trigger)
+    const row = await screen.findByRole('option', { name: long })
+    expect(within(row).getByTitle(long)).toHaveClass('truncate')
   })
 
   it('a failed People read shows the error notice beside the choices', async () => {

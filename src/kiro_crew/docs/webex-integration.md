@@ -155,7 +155,7 @@ is **denied** after five minutes.
   references a local file keeps printing the path in a space instead of shipping
   the bytes.
 - **Shared turn pipeline** — Webex turns run on the same TurnDriver as Slack:
-  credential/exfiltration redaction, the tool-approval ladder, and security
+  credential redaction, the tool-approval ladder, and security
   event logging all apply.
 - **Approvals fail closed** — a prompt nobody
   answers is denied, and a policy that denies this channel blocks an approve

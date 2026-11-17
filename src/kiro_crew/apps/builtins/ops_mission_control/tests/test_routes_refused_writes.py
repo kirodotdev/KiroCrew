@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import routes
@@ -32,10 +33,15 @@ class TestACredentialBearingRemoteIsRefused(unittest.IsolatedAsyncioTestCase):
     why.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -46,7 +52,6 @@ class TestACredentialBearingRemoteIsRefused(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_a_token_remote_is_rejected_and_never_stored(self):
         from aiohttp.test_utils import TestClient, TestServer

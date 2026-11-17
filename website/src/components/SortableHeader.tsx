@@ -1,4 +1,5 @@
 import { useId, type CSSProperties } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import type { SortState } from '../hooks/useSortableTable'
 import type { ColumnResizerBinding } from '../hooks/useTableColumnWidths'
 import ColumnResizer from './ColumnResizer'
@@ -21,6 +22,19 @@ import { TableHead } from './ui/table'
  * trades one locale's defect for another's.
  */
 const TH_CLS = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium break-keep'
+
+/**
+ * The arrow on the sorted column: up for ascending, down for descending.
+ *
+ * Without it the order was readable only through `aria-sort`, so a sighted
+ * reader could not tell which column the rows followed or which way. Hidden
+ * from assistive tech, which already has `aria-sort` on the header cell. Same
+ * glyphs and size as `LibraryTable` and the Telemetry table.
+ */
+function SortArrow({ dir }: { dir: SortState['dir'] }) {
+  const Icon = dir === 'asc' ? ChevronUp : ChevronDown
+  return <Icon size={12} className="shrink-0" aria-hidden="true" />
+}
 
 /**
  * Sortable header for a table built out of `ui/table` (shadcn) primitives.
@@ -66,9 +80,12 @@ export function SortableTableHead({ label, sortKey, sort, onToggle, className = 
         id={labelId}
         type="button"
         onClick={() => onToggle(sortKey)}
-        className="block max-w-full cursor-pointer truncate border-none bg-transparent p-0 text-sm font-medium text-text-strong hover:text-accent"
+        className="flex max-w-full cursor-pointer items-center gap-1 border-none bg-transparent p-0 text-sm font-medium text-text-strong hover:text-accent"
       >
-        {label}
+        {/* The label gives way before the arrow does: in a narrow column the
+            name ellipsizes and the direction stays readable. */}
+        <span className="truncate">{label}</span>
+        {active && <SortArrow dir={sort.dir} />}
       </button>
       {resizer && <ColumnResizer column={label} {...resizer} />}
     </TableHead>
@@ -106,9 +123,10 @@ export default function SortableHeader({ label, sortKey, sort, onToggle, classNa
       <button
         type="button"
         onClick={() => onToggle(sortKey)}
-        className="cursor-pointer bg-transparent border-none p-0 font-medium text-[12px] uppercase tracking-[.04em] text-muted hover:text-text"
+        className="inline-flex items-center gap-1 cursor-pointer bg-transparent border-none p-0 font-medium text-[12px] uppercase tracking-[.04em] text-muted hover:text-text"
       >
         {label}
+        {active && <SortArrow dir={sort.dir} />}
       </button>
     </th>
   )

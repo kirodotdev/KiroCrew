@@ -182,6 +182,32 @@
         "route": "/project-scaffolder",
         "icon": "FolderPlus"
       }
+    },
+    {
+      "name": "md-notebook",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-md-notebook",
+      "commit": "ad86662fc977fa3c459a4477021d9076d000d650",
+      "version": "1.0.2",
+      "treeSha256": "6cfe9309f1a6fb880d48f583358d9463dadf5151d66a2ed946df2af699cca0a6",
+      "archiveSha256": "43aa5172339927ceb03c1db7e853528c7ee054231d3d015f8a4d08785aad0bb7",
+      "minAppSdkLevel": 8,
+      "legacyNav": {
+        "route": "/md-notebook",
+        "icon": "NotebookPen"
+      }
+    },
+    {
+      "name": "code-review-sage",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-code-review-sage",
+      "commit": "711261d196f5ea4fa8027bbaa0e4991b11f3d402",
+      "version": "0.9.5",
+      "treeSha256": "f7ca3019c2768e8a1860a19c3b42f56b2772724611816606701dea06323103bd",
+      "archiveSha256": "10946e4f8263ae64f3a866b76e9fc045feaf2cfdc53c207c77937ee6910dcf32",
+      "minAppSdkLevel": 10,
+      "legacyNav": {
+        "route": "/code-review-sage",
+        "icon": "ScanSearch"
+      }
     }
   ]
 }

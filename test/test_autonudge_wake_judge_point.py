@@ -17,17 +17,19 @@ from unittest.mock import patch
 import pytest
 from autonudge_wake_judge_helpers import _restore_judge_process_globals  # noqa: F401 - fixture
 from autonudge_wake_judge_helpers import answers
+from redaction_structured_cases import jwt
 
 from kiro_crew import autonudge_judge as judge
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.decisions.points import nudge_wake as point
 from kiro_crew.irq import Outcome
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _refused_row(first_seen: bool | None) -> dict[str, object]:
     """One evidence row whose text the per-item scrub refuses.
 
-    A JWT-shaped literal, which is a thing a third-party commenter pastes into a pull
+    A signed JWT, which is a thing a third-party commenter pastes into a pull
     request without meaning anything by it -- the point being that the trigger is
     ordinary, not exotic.
     """
@@ -35,7 +37,7 @@ def _refused_row(first_seen: bool | None) -> dict[str, object]:
         "source": "pr:owner/repo#1 by someone",
         "kind": "pr_comment",
         "age_s": 1.0,
-        "text": "eyJhbGciOiJIUzI1NiJ9." + "A" * 60 + "." + "B" * 43,
+        "text": jwt(),
     }
     if first_seen is not None:
         row["first_seen_this_tick"] = first_seen
@@ -1022,7 +1024,7 @@ class TestStateBounds:
                 "pr:o/r#1 by a-reviewer",
                 point.KIND_PR_COMMENT,
                 10.0,
-                "use ghp_" + "A" * 36 + " to reproduce",
+                f"use {github_classic(seed=32)} to reproduce",
             )
             is None
         )

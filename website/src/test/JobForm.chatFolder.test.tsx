@@ -389,3 +389,57 @@ describe('the folder order behind the picker', () => {
     await waitFor(() => expect(screen.queryByTestId('job-folder-order-unavailable')).toBeNull())
   })
 })
+
+describe("a Bot's home in the picker", () => {
+  const WITH_HOMES: ChatFolder[] = [
+    ...FOLDERS,
+    { id: 'radar-home', name: 'Radar', order: 2, mate_home: true, owner_app: 'member:radar' },
+    { id: 'radar-sub', name: 'Leads', order: 0, parent_id: 'radar-home' },
+    { id: 'scout-home', name: 'Scout', order: 3, mate_home: true, owner_app: 'member:scout' },
+  ]
+  const AGENTS = [
+    { name: 'radar', kiro_agent: 'kirocrew', workspace: 'radar', memory_store: 'radar', description: '', source: 'kirocrew', selection_kind: 'member' },
+    { name: 'scout', kiro_agent: 'kirocrew', workspace: 'scout', memory_store: 'scout', description: '', source: 'kirocrew', selection_kind: 'member' },
+    { name: 'kiro-lite', kiro_agent: 'kiro-lite', workspace: '', memory_store: '', description: '', source: 'kirocrew', selection_kind: 'template' },
+  ]
+
+  beforeEach(() => {
+    vi.mocked(api.chatFolders).mockResolvedValue(WITH_HOMES)
+  })
+
+  const openPicker = async () => {
+    await userEvent.click(await screen.findByLabelText('Chat folder'))
+    await screen.findByText('Home')
+  }
+
+  it("offers the job's own Bot home and its sub-folders, never another Bot's", async () => {
+    const job = makeJob({ member_id: 'radar-id', memory_store: 'radar' })
+    renderWithProviders(<JobForm layout="vertical" job={job} agents={[]} onSaved={() => {}} />)
+    await openPicker()
+    expect(screen.getByText('Radar')).toBeInTheDocument()
+    expect(screen.getByText('Radar › Leads')).toBeInTheDocument()
+    expect(screen.queryByText('Scout')).toBeNull()
+  })
+
+  it('keeps every Bot home out for a job that runs as no Bot', async () => {
+    renderWithProviders(<JobForm layout="vertical" job={makeJob({ memory_store: 'radar' })} agents={[]} onSaved={() => {}} />)
+    await openPicker()
+    expect(screen.queryByText('Radar')).toBeNull()
+    expect(screen.queryByText('Scout')).toBeNull()
+  })
+
+  it("offers the picked Bot's home on create", async () => {
+    renderWithProviders(<JobForm layout="vertical" agents={AGENTS as never} onSaved={() => {}} />)
+    await userEvent.click(await screen.findByRole('radio', { name: 'Bot' }))
+    await openPicker()
+    expect(screen.getByText('Radar')).toBeInTheDocument()
+    expect(screen.queryByText('Scout')).toBeNull()
+  })
+
+  it("offers the Bot's home when the form is pinned to that Bot", async () => {
+    renderWithProviders(<JobForm layout="vertical" agents={[]} memberId="scout" memberStore="scout" lockedAgent="scout" onSaved={() => {}} />)
+    await openPicker()
+    expect(await screen.findByText('Scout')).toBeInTheDocument()
+    expect(screen.queryByText('Radar')).toBeNull()
+  })
+})

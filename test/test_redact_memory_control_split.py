@@ -17,7 +17,6 @@ import pytest
 from redaction_structured_cases import github_classic
 
 from kiro_crew import memory_edit
-from kiro_crew.dashboard.handlers import _shared
 from kiro_crew.dashboard.handlers._shared import _UNSCANNABLE_JSON, _redact_memory_field
 from kiro_crew.terminal_safe import normalize_for_scanning
 
@@ -212,12 +211,9 @@ def test_a_sequence_payload_survives_as_text(separator: bytes) -> None:
     redacted = _redact_memory_field(f"never commit {_split_credential(separator)}")
     printable = [ch for ch in separator.decode("latin-1") if ch not in INVISIBLE_CHARACTERS]
 
-    if all(ch.isalnum() for ch in printable):
-        # A payload of letters and digits joins the token's own run once the control
-        # bytes go, and that run is redacted as one credential.
-        assert "[REDACTED" in redacted
-        assert CREDENTIAL[4:] not in redacted
-        return
+    # A payload of letters and digits joins the token's own run once the control bytes
+    # go, which makes the run too long for the published format: it stays split too.
+    assert CREDENTIAL not in redacted
     for character in printable:
         assert character in redacted
 
@@ -780,43 +776,6 @@ def test_find_and_replace_stays_available_when_a_proposal_is_hidden() -> None:
     assert "keep this tidy" in after["value_json"]
 
 
-@pytest.fixture
-def _structured_detectors_off():
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(False)
-    yield
-    compat.publish_use_rule_table(before)
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_a_document_the_scrub_itself_breaks_is_withheld() -> None:
-    """The parser must judge the STORED bytes, because the scrub can break the document.
-
-    A credential-assignment pattern spans a name, its colon and its value, so splicing one
-    out of a JSON document leaves text that does not parse. Judging JSON-ness on that text
-    calls a real document prose and hands it back unscanned, and the escaped control-split
-    credential beside it never reaches the descent.
-
-    Covers the plan with the structured detectors off: the splice that breaks the
-    document comes from main's pass-1 AWS label branch.
-    """
-    escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    stored = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
-
-    assert json.loads(stored)["d"]
-    spliced = _shared._scrub_text(stored)
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(spliced)
-
-    out = _redact_memory_field({"value_json": stored})["value_json"]
-
-    assert json.loads(out) == _UNSCANNABLE_JSON
-    assert escaped not in out
-    assert CREDENTIAL not in normalize_for_scanning(out)
-
-
 def test_text_that_was_never_a_document_still_passes_through_after_scrubbing() -> None:
     """Withholding is for a document the scrub broke, not for prose it rewrote."""
     prose = f"aws_secret_access_key = {CREDENTIAL}"
@@ -871,31 +830,3 @@ def test_keeping_the_current_value_passes_the_proposal_bar_too() -> None:
 
     assert after is not None
     assert after["value_json"] == row["value_json"]
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_a_nested_document_the_leaf_scrub_breaks_is_withheld_too() -> None:
-    """The stored-bytes test belongs at every level, not only the outermost field.
-
-    A revision snapshot is a document carried inside a document. The outer text can survive
-    the scrub untouched while the inner one, once decoded and scanned, is spliced apart by a
-    credential-assignment match. Judging the inner level on its scrubbed form hands the leaf
-    back with its own payload unwalked.
-
-    Covers the plan with the structured detectors off: the splice that breaks the
-    document comes from main's pass-1 AWS label branch.
-    """
-    escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    inner = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
-    stored = json.dumps({"snapshot": inner})
-
-    assert _shared._scrub_text(stored) == stored
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(_shared._scrub_text(inner))
-
-    out = _redact_memory_field({"value_json": stored})["value_json"]
-
-    leaf = json.loads(out)["snapshot"]
-    assert json.loads(leaf) == _UNSCANNABLE_JSON
-    assert escaped not in out
-    assert CREDENTIAL not in normalize_for_scanning(out)

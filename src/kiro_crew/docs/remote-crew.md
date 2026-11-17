@@ -257,17 +257,25 @@ installed web app shows nothing new.
 
 ### Turning it on
 
-Three settings, all on the gateway the desktop app runs:
+Two settings, both on the gateway the desktop app runs:
 
 ```bash
 kirocrew config set tunnel.relay_viewer_enabled true
-kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
 kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
 ```
 
-The desktop app opens a Crew, and sends its access token, only at exactly
-`https://<endpoint ID>.<relay domain>`. Without the relay domain the list still
-shows Crews, but opening one says Team Crews over the relay aren't set up.
+The viewer uses the built-in Kiro control plane for your sign-in's region. Set
+`tunnel.relay_viewer_cps_url` only to use another control plane. A test setup that
+uses `tunnel.relay_viewer_credential` must also set it:
+
+```bash
+kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
+```
+
+With `tunnel.relay_viewer_relay_domain` empty, the desktop app opens a listed
+Crew, and sends its access token, only at exactly the address the control plane
+lists for it, `https://<endpoint ID>.<domain>` with no port. With it set, only
+at exactly `https://<endpoint ID>.<relay domain>`.
 
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads
 these settings on every request, so the change takes effect at the next request with
@@ -280,7 +288,7 @@ the edit as a pending change, even across a restart, until you apply it in
 **Settings → Security**. Until then it has no effect.
 
 Reload the dashboard once the change is in effect: a tab that last saw the feature
-off stops asking until it reloads. The control plane URL must be `https://`
+off stops asking until it reloads. A set control plane URL must be `https://`
 (`http://` only for a loopback port-forward). A URL that breaks that rule is
 ignored with a warning, and the list then says Team Crews over the relay aren't
 set up.
@@ -300,9 +308,42 @@ still renews its lease but whose tunnel is down shows **reconnecting**, any othe
 shows **offline**, and either may also show when it was last seen. A row that
 isn't online is dimmed, and choosing it does nothing. If the list can't be loaded,
 the group says why, with the request ID as plain text when there is one. The list
-is read again about once a minute while the dashboard is open, and it never
-carries an access token. The group appears only once your account has at least
-one Team Crew, or when it has a sign-in or load problem to show.
+is read again each time you open the switcher (unless it was read in the last
+few seconds), every 15 seconds while a listed Crew isn't online, and about once
+a minute otherwise, and it never carries an access token. The control plane can
+itself take a minute or two after a host connects to report its tunnel
+connected, so a Crew can read offline for that long whatever the dashboard
+does. The group appears once your account has at least one Team Crew, when it
+has a sign-in or load problem to show, or when the gateway names the account the
+list was read for.
+
+Under its heading the group shows one muted line, **Signed in with** and the
+account kind, such as Builder ID. For IAM Identity Center it adds the portal host,
+so a sign-in to the wrong portal is visible. The line wraps rather than cutting
+the host off. It shows only when the sign-in is the same before and after the list
+read, so it never names an account that changed during the read. With such an
+account and no Team Crews, the group still shows, with that line and the empty
+text.
+
+**Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
+from the same request, so the two can't disagree. Unlike the switcher group, it
+shows every Crew in the list and says so when there are none. Choosing an online
+row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
+under it links to the AWS Management Console, where an admin creates Shared
+Crews. Both cards are hidden while the feature is off or outside the desktop app.
+
+When a list read finds a **Team** Crew you haven't been told about, the bell says
+"You've been added to <name>", with **Open**, and the switcher's caret and that
+Crew's row show a dot until you open the Crew or open the switcher. Two or more
+new Crews in one read, which is what a first sign-in with several already granted
+looks like, get one note with the count instead. Each Crew is announced once: the
+Crews already announced are kept on this computer's gateway, in
+`relay-viewer-crews.json` under the data home, so a new window doesn't announce
+them again. A failed read, or the feature turned off, never announces anything,
+and a Crew that leaves the list isn't announced as lost. Mute the **Team Crews**
+channel in Settings › Notifications to stop the notes. You only learn of a Crew
+here once Kiro Crew is installed and you've signed in; telling someone sooner is
+for whoever grants the access.
 
 ### What opening a Crew does
 
@@ -359,8 +400,9 @@ turned off is noticed at the next renewal.
 
 ### What stays local
 
-Both gateway routes behind this (`GET /api/relay-viewer/crews` and
-`POST /api/relay-viewer/token`) answer 404 while the feature is off, and the relay
+The gateway routes behind this (`GET /api/relay-viewer/crews`,
+`POST /api/relay-viewer/crews/seen` and `POST /api/relay-viewer/token`) answer 404
+while the feature is off, and the relay
 refuses them, so nobody can reach them through it. Only the owner's dashboard reads
 the list. Only the desktop app's own main process can get a token, from this
 machine. No token, sign-in or credential is logged.
@@ -368,6 +410,37 @@ machine. No token, sign-in or credential is logged.
 `tunnel.relay_viewer_credential` is for testing only. It names where a test
 credential is kept, as `secret://NAME` or the absolute path of a file, and the
 viewer then uses that credential instead of your Kiro sign-in. Leave it empty.
+
+### Hosting this Crew on the relay
+
+To let people open this Crew through the Kiro relay, turn Remote Control on where
+the Crew runs, then restart. It is off by default:
+
+```bash
+kirocrew remote-control on
+kirocrew restart
+```
+
+A personal Crew needs nothing else. A Crew is personal when it sets no
+`tunnel.relay_lease_token_type` and its host has no agent workload identity. It
+holds its lease with the Crew's own Kiro
+sign-in, which must be IAM Identity Center or your organization's identity
+provider with a Kiro profile. Builder ID and social sign-ins can't host a Crew.
+While the sign-in can't be used, the tunnel status says why and tries again, so
+signing in resumes hosting without another restart.
+
+A team Crew leases with its crew API key. Store the key under **Settings →
+Secrets**, then name it:
+
+```bash
+kirocrew config set tunnel.relay_lease_credential secret://<name>
+kirocrew config set tunnel.relay_lease_token_type API_KEY
+```
+
+Without the key, a team Crew does not connect, and the tunnel status names
+`tunnel.relay_lease_credential`. A host with a workload identity follows the same
+rule: it never falls back to the sign-in. `kirocrew remote-control off` turns hosting off
+and stops the relay within a few seconds, with no restart.
 
 ## The four things called "crew"
 

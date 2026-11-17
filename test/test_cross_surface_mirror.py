@@ -36,7 +36,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.telegram.transport import TelegramTransport
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 #: A channel whose REAL capabilities permit a proactive send, so both legs must
 #: DELIVER to it. Named rather than derived: if Weixin's declaration is ever
@@ -340,13 +340,15 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("telegram", channel_id="123")
         )
 
-        # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+        # A Slack bot token split by emphasis: no ``_`` in it, which the display form
+        # drops as markup, and a bare 40-character run stays visible by design.
+        key = SAMPLE_SLACK_BOT_TOKEN
         await _deliver_cross_surface_reply(
-            state, "k", "token Qh4Tm2Vx9K**pRc/Z8Nw**3Hd/Jf1Lb5Gs0Ye9Ua2WkE ok"
+            state, "k", f"token {key[:10]}**{key[10:20]}**{key[20:]} ok"
         )
 
         sent = tp.send_message.await_args.args[1]
-        assert SAMPLE_AWS_SECRET not in sent.replace("*", "")
+        assert key not in sent.replace("*", "")
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self, tmp_path):

@@ -19,6 +19,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # ── Reading: cursor semantics ────────────────────────────────────────────────
 
@@ -68,11 +69,13 @@ def test_a_credential_at_the_truncation_boundary_is_still_redacted(tmp_path):
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _peer_target(state, "chat-2", caller)
-    secret = "ghp_" + "B" * 36
+    secret = github_classic(seed=140)  # a ghp_ without a valid checksum is no token
     # Straddle the boundary: only the first 10 chars of the secret survive a
     # naive slice, and a 10-char fragment does not match the credential
     # scanner — so it is exactly what leaks when the order is wrong.
-    filler = "x" * (sc.MAX_READ_CONTENT_CHARS - 10)
+    filler = (
+        "x" * (sc.MAX_READ_CONTENT_CHARS - 11) + " "
+    )  # a blank: a token glued to a letter is no token by its format
     surviving_fragment = secret[:10]
     target.append("assistant", filler + secret, "msg msg-a")
 

@@ -40,7 +40,10 @@ from kiro_crew.dashboard.cron_inject import (
     move_cron_job_tab,
 )
 from kiro_crew.dashboard.cron_timeout_field import timeout_secs_from_body
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.cron_shared import (
     _CRON_BUSY_BODY,
     _CRON_BUSY_STATUS,
@@ -290,6 +293,53 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     card_refusal = card_turn_cron_tool_refusal(request, actual, name)
     if card_refusal is not None:
         return card_refusal
+    # The same rule as ``POST /api/crons``, for an agent that runs in an app's
+    # session, scheduled run or background run and names a Bot in ``cron_add``,
+    # or moves a job onto one with ``cron_update`` (whose only such argument is
+    # ``agent``). Such a job carries no ``app:`` tag, so this is the only point
+    # that judges it. Answered as the tool answers any refused create.
+    app_caller = _app_caller(request)
+    if app_caller and name in {"cron_add", "cron_update"}:
+        try:
+            # Judge the same normalized values that the tool will store.
+            arguments = mcp_cron._validate_args(name, arguments)
+        except ValidationError:
+            # Let dispatch return its usual validation error without judging identity.
+            app_caller = ""
+    if app_caller and (name == "cron_add" or (name == "cron_update" and "agent" in arguments)):
+        from kiro_crew.cron_service.identity import app_schedule_names_bot
+
+        named = [
+            arguments.get("agent"),
+            arguments.get("member_id") if name == "cron_add" else None,
+        ]
+        # An update is judged on the job it changes. A store this route cannot
+        # reach, or an id it does not hold, is judged as a create from the maker:
+        # the tool's own ownership check refuses a job that is not the maker's.
+        crons = getattr(state, "crons", None)
+        job_id = arguments.get("job_id")
+        existing = (
+            crons.get_job(job_id)
+            if name == "cron_update" and crons is not None and isinstance(job_id, str)
+            else None
+        )
+        if all(isinstance(value, str) or value is None for value in named) and (
+            await asyncio.to_thread(
+                app_schedule_names_bot,
+                named[0] or "",
+                named[1] or "",
+                maker_session=actual,
+                job=existing,
+            )
+        ):
+            _audit_app_cron(
+                app_caller, "cron.tools", "denied", "an app's schedule cannot run as a Bot"
+            )
+            return web.json_response(
+                {
+                    "result": "Error: an app's schedule cannot run as a Bot; name an agent of the app's own"
+                }
+            )
 
     presented_token = request.headers.get("X-Session-Token", "")
     # Read while the verified caller's tab is open; cron_add records the answer.
@@ -802,8 +852,21 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # reply path cannot bind. An explicit ``member_id`` is left as the caller set it.
     # The split reads the member roster from the configuration on disk, so it runs
     # on a worker thread and never holds the event loop.
-    from kiro_crew.cron_service.identity import split_cron_agent_member
+    from kiro_crew.cron_service.identity import app_schedule_names_bot, split_cron_agent_member
 
+    # An app does not reach a Bot's own memory or chat by naming the Bot, the rule
+    # the App Kit SDK's create holds (``apps.cron_sdk``). Refused before the split
+    # records a member selection, with the answer an app gets on these routes for
+    # a job that is not its own.
+    app_caller = _app_caller(request)
+    names_bot = False
+    if app_caller:
+        names_bot = await asyncio.to_thread(app_schedule_names_bot, agent_id or "", member_id or "")
+    if names_bot:
+        _audit_app_cron(
+            app_caller, "crons.create", "denied", "an app's schedule cannot run as a Bot"
+        )
+        return _owner_denial_response(request)
     agent_id, member_id = await asyncio.to_thread(
         split_cron_agent_member, agent_id or "", member_id or ""
     )
@@ -1230,6 +1293,25 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["agent_id"] = (body["agent"] or "").strip()
     elif "agent_id" in body:
         kwargs["agent_id"] = (body["agent_id"] or "").strip()
+    # An app does not move its job onto a Bot by renaming its agent or member,
+    # the rule ``POST /api/crons`` holds on create, refused in the same words.
+    # Judged on the job's own capture, the record the update would store; an id
+    # the store does not hold was refused above (``_refuse_foreign_app_job``).
+    app_caller = _app_caller(request)
+    if app_caller and ("agent_id" in kwargs or "member_id" in kwargs):
+        from kiro_crew.cron_service.identity import app_schedule_names_bot
+
+        current = await state.crons.get_job_async(job_id)
+        if current is None or await asyncio.to_thread(
+            app_schedule_names_bot,
+            kwargs.get("agent_id", current.agent_id) or "",
+            kwargs.get("member_id", current.member_id) or "",
+            job=current,
+        ):
+            _audit_app_cron(
+                app_caller, "crons.update", "denied", "an app's schedule cannot run as a Bot"
+            )
+            return _owner_denial_response(request)
     if "model" in body:
         model_raw = body["model"]
         if model_raw is not None and not isinstance(model_raw, str):

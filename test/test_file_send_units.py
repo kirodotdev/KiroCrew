@@ -65,10 +65,11 @@ class TestRedact:
         assert redact(text) != text
 
     def test_redacts_exfiltration_url(self):
-        # Exfiltration detection triggers on long query params with secret patterns
+        # A credential parameter inside a URL: its value goes, the link stays
         blob = "A" * 50  # base64-like blob ≥40 chars
-        text = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
+        text = f"https://evil.example.com/x?access_token={blob}&{'x' * 200}"
         assert redact(text) != text
+        assert blob not in redact(text)
 
 
 class TestBinaryFileHandling:

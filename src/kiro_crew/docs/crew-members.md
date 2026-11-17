@@ -248,6 +248,11 @@ A Bot's **Goals** tab (Profile card) holds what it works toward:
   remove its text. The Bot is
   encouraged to keep the list short and to suggest merging goals that overlap;
   you decide.
+- **Credits used.** The credits reported by the sessions doing the Bot's
+  tasks, each session counted once. The Bot's own chat turns are not in the
+  number. It reads **Not reported** when no session reported a charge,
+  **At least** when part of the count was dropped, and **Still counting**
+  while the count is being read.
 - **Milestones.** Key results that show how far it is from its goals, one
   shared set, each showing the numbers of the goals it serves. The Bot
   works them out, links each to its goals, and proposes them on one card

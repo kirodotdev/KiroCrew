@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
@@ -39,10 +40,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _tool_risk_meta
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
+    from kiro_crew.dashboard.chat_turn.file_change_shapes import _client_cwd, _snapshot_tool_writes
     from kiro_crew.dashboard.chat_turn.file_changes import (
         _failed_write_entries,
         _record_turn_snapshot,
-        _snapshot_write_target,
     )
     from kiro_crew.dashboard.chat_turn.native_cards import (
         _append_native_output,
@@ -377,13 +378,8 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # (authoritative) over a disk read which races with the write.
     # Offloaded: strReplace reconstruction reads the file from
     # disk, and a slow/hung filesystem must not stall the loop.
-    _file_snapshot = await asyncio.to_thread(
-        _snapshot_write_target,
-        event.raw_tool_params,
-        diff_old_text=event.diff_old_text,
-        diff_path=event.diff_path,
-    )
-    if _file_snapshot:
+    _file_snapshots = await asyncio.to_thread(_snapshot_tool_writes, event, _client_cwd(client))
+    for _file_snapshot in _file_snapshots:
         _record_turn_snapshot(
             slot,
             _file_snapshot,
@@ -580,8 +576,11 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 _mirror_active_task = f"tool_{_mirror_task_counter}"
                 turn._mirror_active_task = _mirror_active_task
                 _task_title = event.tool_purpose or _mirror_task_label(event)
-                _task_title, _ = redact_exfiltration_urls(_task_title)
-                _task_title, _ = redact_credentials(_task_title)
+                # The thread's task title is a channel post: it never stands down
+                # with the turn's CHAT seam.
+                with redaction_seams.output_seam(redaction_seams.CHANNELS):
+                    _task_title, _ = redact_exfiltration_urls(_task_title)
+                    _task_title, _ = redact_credentials(_task_title)
                 _task_title = _task_title[:75]
                 _mirror_active_task_title = _task_title
                 turn._mirror_active_task_title = _mirror_active_task_title
@@ -668,18 +667,16 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         # block (authoritative) over a disk read which races with
         # the write. Offloaded: reconstruction reads from disk and
         # a slow/hung filesystem must not stall the loop.
-        _file_snapshot_upd = await asyncio.to_thread(
-            _snapshot_write_target,
-            event.raw_tool_params,
-            diff_old_text=event.diff_old_text,
-            diff_path=event.diff_path,
+        _file_snapshots_upd = await asyncio.to_thread(
+            _snapshot_tool_writes, event, _client_cwd(turn.client)
         )
-        if _file_snapshot_upd:
+        for _file_snapshot_upd in _file_snapshots_upd:
             _record_turn_snapshot(
                 slot,
                 _file_snapshot_upd,
                 _tcid_identity_key(getattr(event, "tool_call_id", None)),
             )
+        if _file_snapshots_upd:
             # A refinement can follow its failed result, even as the
             # call's first snapshot: claim no diff, while the id still
             # names one call.

@@ -28,7 +28,7 @@ from kiro_crew.apps.routes import (
     handle_disable_app,
     handle_enable_app,
 )
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Synthetic builtin that drives the generic machinery.
 _TEST_BUILTIN = "test-svc"
@@ -324,7 +324,8 @@ class TestRedactWarning:
 
     def test_redacts_credentials(self):
         from kiro_crew.apps.routes import _redact_warning
-        secret = SAMPLE_AWS_SECRET
+
+        secret = github_classic(seed=127)  # a bare 40-character run is no credential
         result = _redact_warning(f"error: {secret} leaked")
         assert secret not in result
 

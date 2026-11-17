@@ -290,6 +290,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.security import (  # noqa: F401
         redact_credentials,
         redact_exfiltration_urls,
+        refuses,
     )
     from kiro_crew.validation import (  # noqa: F401
         _MODEL_NAME_RE,

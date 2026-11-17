@@ -32,6 +32,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
 from kiro_crew.providers.base import EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, LLMEvent
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -79,7 +80,7 @@ class TestBatchRejection:
         """The title is model-written; a credential in it must not reach the log."""
         import logging
 
-        token = "ghp_" + "a1B2" * 9
+        token = github_classic(seed=130)  # a ghp_ without a valid checksum is no token
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
         evt1 = _permission_event(title=f"git push https://x:{token}@github.com/o/r")
@@ -540,6 +541,32 @@ class TestDenyOnce:
                 if c.kwargs.get("tool_name") == "tool_a"
             ]
         assert outcomes == ["rejected_once"]
+
+    @pytest.mark.asyncio
+    async def test_an_expired_prompt_is_audited_as_expired_not_as_a_persons_no(self, tmp_path):
+        """A prompt nobody answered is the host's decline, and its SEL row says so.
+
+        Red before: the row read ``rejected`` / ``interactive``, the same as a
+        person pressing Deny.
+        """
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        state.approval_timeout_for = MagicMock(return_value=0.05)
+        evt = _permission_event(title="tool_a")
+        evt.request_id = "req-1"
+        _set_stream(client, [evt, _complete_event()])
+
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            with _patch_stats():
+                await _run_chat(state, slot, "hello")
+            rows = [
+                (c.kwargs.get("outcome"), (c.kwargs.get("metadata") or {}).get("reason"))
+                for c in mock_sel.return_value.log_tool_invocation.call_args_list
+                if c.kwargs.get("tool_name") == "tool_a"
+            ]
+        assert rows == [("rejected", "approval_expired")]
+        client.reject_tool.assert_any_call("req-1")
 
 
 class TestToolCompletionTracking:

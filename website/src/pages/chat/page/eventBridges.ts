@@ -3,6 +3,7 @@ import { type QueryClient, useQueries } from '@tanstack/react-query'
 
 import type { useDeleteTerminalSession } from '../../../components/CliPanel'
 import { normalizeUrl, setSessionPreviewPending } from '../../../components/WebPreviewPanel'
+import type { ComposeSendOutcome, ComposeSendResult } from '../../../components/chat/GrillCard'
 import { addTab as addDockTerminal } from '../../../hooks/useBottomTerminal'
 import { registerBrowserStageHost } from '../../../hooks/useBrowserLive.stage'
 import type { usePanelTabs } from '../../../hooks/usePanelTabs'
@@ -39,8 +40,8 @@ interface ChatEventBridgesOptions {
   terminalCfgUnsettledRef: MutableRefObject<boolean>
   terminalCfgReadFailedRef: MutableRefObject<boolean>
   inputRef: MutableRefObject<string>
-  /** A reply card's send (the `[GRILL:]` discussion card): sends or stages `text` for `slot` per Quick Send; null when this page does not serve `slot`. Stable. */
-  composeSend: (text: string, slot: string) => 'sent' | 'staged' | null
+  /** A reply card's send (the `[GRILL:]` discussion card): stages `text` for `slot`, or sends it (`pending`, then `onOutcome`); null when this page does not serve `slot`. Stable. */
+  composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void) => ComposeSendResult | null
 }
 
 /**
@@ -179,21 +180,21 @@ export function useChatEventBridges({
   }, [dispatch, inputRef])
   // A reply card's Start / No thanks (GrillCard): sent whatever Quick Send says
   // (see the page's `composeSend`). `result` tells the card what the page did
-  // for the card's own chat; with none, the card stays open.
+  // for the card's own chat, and a send reports back through `onOutcome`; with
+  // no result, the card stays open.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown } | undefined
-      if (!detail || detail.result || typeof detail.text !== 'string' || !detail.text || typeof detail.slot !== 'string') return
-      detail.result = composeSend(detail.text, detail.slot)
+      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown; onOutcome?: unknown } | undefined
+      if (!detail || detail.result || typeof detail.text !== 'string' || !detail.text || typeof detail.slot !== 'string' || typeof detail.onOutcome !== 'function') return
+      detail.result = composeSend(detail.text, detail.slot, detail.onOutcome as (o: ComposeSendOutcome, reason?: string) => void)
     }
     window.addEventListener('mc:compose-send', handler)
     return () => window.removeEventListener('mc:compose-send', handler)
   }, [composeSend])
-  // A redaction card's "Allow for this host" (or its Undo): the reply was saved
-  // with the link removed, and the server shows allowed hosts' links again when
-  // it serves the slot, so reload it to show the link in place of the chip.
-  // `messageTs` names the card's reply so the reload re-serves that row even
-  // when it sits above the newest page (#17023).
+  // A Blocked link card's "Allow for this host" (or its Undo): the server
+  // decides which links render live when it serves the slot, so reload it to
+  // show the link in place of the chip. `messageTs` names the card's reply so
+  // the reload re-serves that row even when it sits above the newest page.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail

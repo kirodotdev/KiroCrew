@@ -5,12 +5,13 @@ import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { sseSlots, sseSlotsPartial, sseSlotListHolds, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, readUnlistedMembers, omitsUnlistedMember, type SlotPatchFrame } from '../../store/dashboardSlice'
-import { reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
+import { reconcileSubagentQueuedFromSlots, refreshSlot, warmSlotCache, wireTurnIdentity } from '../../store/chatSlice'
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
 import type { StreamBuffers } from './streamBuffers'
 import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
+import { observedPaneSlots } from '../../api/slotMessagesQuery'
 import { autoBatched } from '../../lib/streamBatch'
 import { noteAppSlotRows } from '../../utils/appSlotPush'
 import { createSlotStorageSweep } from '../../utils/slotStorageSweep'
@@ -64,6 +65,11 @@ export function applySlotsDiff(held: ServerSlotList, frame: SlotsDiffFrame): Cha
   return changed.size ? null : rows
 }
 
+/** What a row says about its transcript: the row count and the last line. */
+function rowActivity(row: ChatSlot): string {
+  return [row.messages ?? '', row.last_message ?? ''].join('\u0000')
+}
+
 /** Tell AppHost apps (`useAppEvents('slots')`) the session list changed.
  *  No payload: an app re-reads through its own scoped API client, so the
  *  owner's full slot list never crosses into app code. */
@@ -86,9 +92,19 @@ export function useSlotListSync(
   // True from a `slots_resync` request until the numbered list answering it
   // arrives; the deltas in between cannot apply and must not ask again.
   const resyncPendingRef = useRef(false)
+  // True once this connection has applied a list. The first list warms every
+  // observed non-active pane once; later lists warm only on a turn end.
+  const listSeenRef = useRef(false)
 
   return useMemo<SlotListSync>(() => {
     const sweepSlotStorage = createSlotStorageSweep()
+    // Warm an on-screen pane that is not the active slot. A failed warm drops
+    // the idle-row record, so a `_done` that follows warms as before.
+    const warmOtherPane = (slot: string): void => {
+      void dispatch(warmSlotCache(slot)).then((result) => {
+        if (warmSlotCache.rejected.match(result)) recordIdleRowRefresh(slot, null)
+      })
+    }
     const resetForConnection = (): void => {
       // Forget the last-seen allowlist generation: it is process-local to the
       // gateway, so after a restart an equal number can mean a different
@@ -106,6 +122,7 @@ export function useSlotListSync(
       // The diff base belongs to the old socket.
       serverListRef.current = null
       resyncPendingRef.current = false
+      listSeenRef.current = false
       // A `_done` the old socket never delivered will not arrive on this one.
       clearIdleRowRefreshes()
     }
@@ -186,6 +203,21 @@ export function useSlotListSync(
       if (msg.yolo !== undefined) dispatch(autoBatched(sseYolo(msg.yolo)))
       if (msg.channelTrusted !== undefined) dispatch(autoBatched(setChannelTrusted(msg.channelTrusted)))
       const snapshotSeenBefore = beforeSettle.slotsSnapshotSeen === true
+      // Rows this tab held for the other on-screen panes, read before the frame
+      // replaces them (see the member-pane warm below).
+      const firstList = Array.isArray(data) && !listSeenRef.current
+      const otherPanes = Array.isArray(data)
+        ? observedPaneSlots(queryClient).filter(slot => slot !== activeKey)
+        : []
+      const prevPaneRows = new Map(otherPanes.map(slot =>
+        [slot, store.getState().dashboard.slots.find(s => s.key === slot)] as const))
+      // Held depth per open pane, read before the frame replaces the rows: a
+      // change means an entry's held verdict moved (the startup drain released
+      // its acceptance, say), and the per-entry flag rides only the queue a
+      // slot read returns.
+      const openPanes = activeKey ? [activeKey, ...otherPanes] : otherPanes
+      const prevHeldDepth = new Map(openPanes.map(slot =>
+        [slot, store.getState().dashboard.slots.find(s => s.key === slot)?.queue_held_depth ?? 0] as const))
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
       // localStorage is a side effect, so the orphan sweep runs here, after the
@@ -218,11 +250,30 @@ export function useSlotListSync(
       // `mustResettleActiveSlot` misses two such ends: text the flush above
       // just landed, and a pending send this row itself ends.
       const afterSettle = store.getState().chat
+      const endedIdentity = activeSlotEnded && activeKey
+        ? wireTurnIdentity(data.find(s => s.key === activeKey) ?? {})
+        : null
+      // An idle pane can miss a whole server-started turn (run, rows and `_done`
+      // all lost); the row then names a newer ended turn of the same generation.
+      const knownEnded = activeKey && Object.prototype.hasOwnProperty.call(beforeSettle.endedTurn ?? {}, activeKey)
+        ? beforeSettle.endedTurn[activeKey]
+        : undefined
+      const missedWholeTurn = !!endedIdentity && !!knownEnded
+        && knownEnded.gen === endedIdentity.gen && endedIdentity.turn > knownEnded.turn
+      let refreshedActive = false
       if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
-          && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning)
+          && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning || missedWholeTurn)
           && afterSettle.slotState === 'idle' && !afterSettle.slotRunning) {
-        recordIdleRowRefresh(activeKey, wireTurnIdentity(data.find(s => s.key === activeKey) ?? {}))
+        recordIdleRowRefresh(activeKey, endedIdentity)
         dispatch(refreshSlot(activeKey))
+        refreshedActive = true
+      }
+      // The active pane's held depth moved (an entry's held verdict changed,
+      // which only a slot read carries) and no refresh above re-read it. Other
+      // panes are warmed by the turn-end loop below, once per frame.
+      const activeRow = Array.isArray(data) && activeKey ? data.find(s => s.key === activeKey) : undefined
+      if (activeRow && !refreshedActive && (activeRow.queue_held_depth ?? 0) !== prevHeldDepth.get(activeKey!)) {
+        dispatch(refreshSlot(activeKey!))
       }
       // Seed the ['chat-folders'] query cache from the folder tree carried
       // on this frame so the sidebar groups sessions correctly on the FIRST
@@ -352,6 +403,41 @@ export function useSlotListSync(
         staleKeys.delete('chat-folders')
       }
       for (const key of staleKeys) queryClient.invalidateQueries({ queryKey: [key] })
+      // An on-screen pane that is not the active slot (a split member, a Crew
+      // Members thread) is otherwise re-read only by its turn's `_done`
+      // (`turnCompletion`), so a lost `_done` left it without the turn. Warm it
+      // from the idle row that ends a turn this tab has not seen end: the row
+      // was running before this frame, or its activity moved. A `_done` that
+      // already ended the same turn wrote `endedTurn` first and needs nothing
+      // more; a `_done` that follows skips its own warm (`takeIdleRowRefresh`).
+      for (const slot of otherPanes) {
+        // The first list of a connection is the first point this socket is
+        // known to be registered, so it warms every such pane once: a turn
+        // that ended between the pane's hydrate read and registration sent its
+        // `_done` to no socket of this tab, and no row diff can see that.
+        if (firstList) { warmOtherPane(slot); continue }
+        const row = data.find(s => s.key === slot)
+        const prev = prevPaneRows.get(slot)
+        // A moved held depth means an entry's held verdict changed, which only
+        // a slot read carries; it warms the pane whether or not a turn ended.
+        const heldMoved = !!row && (row.queue_held_depth ?? 0) !== prevHeldDepth.get(slot)
+        const identity = row ? wireTurnIdentity(row) : null
+        if (!row || !prev || row.running !== false || !identity) { if (heldMoved) warmOtherPane(slot); continue }
+        // A turn ended here if the row was running, its activity moved, or it
+        // names a newer turn than the row before it: a regenerated reply can
+        // keep the same row count and preview.
+        const prevIdentity = wireTurnIdentity(prev)
+        const newerTurn = !!prevIdentity && (prevIdentity.gen !== identity.gen || prevIdentity.turn !== identity.turn)
+        const ended = beforeSettle.endedTurn?.[slot]
+        if ((!prev.running && !newerTurn && rowActivity(prev) === rowActivity(row))
+            || (ended && ended.gen === identity.gen && ended.turn === identity.turn)) {
+          if (heldMoved) warmOtherPane(slot)
+          continue
+        }
+        recordIdleRowRefresh(slot, identity)
+        warmOtherPane(slot)
+      }
+      if (Array.isArray(data)) listSeenRef.current = true
       // App embeds re-read a watched slot whose row moved (utils/appSlotPush.ts).
       noteAppSlotRows(data)
       notifyAppsSlotsChanged()

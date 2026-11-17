@@ -45,14 +45,14 @@ The largest ❓ clusters, where one install per harness clears many cells at onc
 |---|---|---|---|---|---|
 | kiro-cli | 60 | 0 | 6 | 7 | 60/66 (91%) |
 | KAS | 72 | 0 | 1 | 0 | 72/73 (99%) |
-| claude | 44 | 7 | 14 | 8 | 44/65 (68%) |
+| claude | 45 | 7 | 13 | 8 | 45/65 (69%) |
 | codex | 43 | 8 | 13 | 9 | 43/64 (67%) |
 | opencode | 32 | 9 | 21 | 11 | 32/62 (52%) |
 | goose | 36 | 8 | 18 | 11 | 36/62 (58%) |
 | pi | 31 | 8 | 21 | 13 | 31/60 (52%) |
 | copilot | 28 | 13 | 18 | 14 | 28/59 (47%) |
 | deepseek | 29 | 10 | 19 | 15 | 29/58 (50%) |
-| all 9 | 375 | 63 | 131 | 88 | 73 rows × 9 = 657 cells |
+| all 9 | 376 | 63 | 130 | 88 | 73 rows × 9 = 657 cells |
 
 Counts cover the 73 rows shown in the matrix. The 10 rows marked 🔒 are left out of the counts.
 
@@ -75,7 +75,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-LAU-11 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | kiro-family fixes #23442, #31813, #25569, #29431; other launch paths not audited for loop blocking |
 | R-LAU-12 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | rerun gates fixed `dashboard/kiro_readiness.py` |
 | R-AUTH-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/host_auth.py` one declaration each |
-| R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for opencode, goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; opencode's hosted fall-back refused at start (`refuse_opencode_hosted_fallback`, `acp/no_model_provider.py`); claude, codex declare no phrase |
+| R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for opencode, goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; opencode's hosted fall-back refused at start (`is_opencode_hosted_fallback`, `acp/no_model_provider.py`, raised by `_refuse_opencode_hosted_fallback` in `acp/client_opencode_session.py`); claude, codex declare no phrase |
 | R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither |
 | R-AUTH-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | only kiro-cli login (cloud `cloud/login.py`) and KAS login are Crew-run |
 | R-AUTH-5 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | Kiro account check only gates kiro-family turns (`dashboard/kiro_readiness.py`) |
@@ -117,7 +117,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-MCP-13 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `acp/client_mcp_array.py` drops disabled servers and tools for every direct client; KAS #36391 |
 | R-MCP-14 | ❓ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | gateway backend and `kas_http_bridge.py` fixed (#34979); servers a harness reads directly not measured |
 | R-STR-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | card `mid_turn_steer` |
-| R-STR-2 | ✅ | ✅ | ❓ | ✅ | ✅ | ❓ | ✅ | ➖ | ➖ | claude and goose steer captures still allowlisted `scripts/check_harness_parity.py` |
+| R-STR-2 | ✅ | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ➖ | ➖ | claude capture `claude/steering-live.jsonl`; goose steer capture still allowlisted `scripts/check_harness_parity.py` |
 | R-STR-3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❓ | ❌ | ❓ | per-fix tests |
 | R-SIDE-1 | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | card `side_chat_tools`; `SIDE_READONLY` `agent_sdk/backends_routing.py` |
 | R-MOD-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | card `model_switch` |

@@ -54,6 +54,10 @@ class FakeTransport:
         # Distinct ids so a test can tell one bubble from another.
         return f"ID{self._n}"
 
+    # The real transport sends an already-converted chunk as it is; this fake
+    # converts nothing either way, so both land in ``sent``.
+    send_rendered = send_message
+
     async def send_image(self, jid: str, data: bytes, caption: str) -> str:
         self.images.append((jid, data, caption))
         return "IMG1"
@@ -125,6 +129,44 @@ class TestBufferedEmit:
         await r.on_text_chunk("Pick one.\n[OPTIONS: a | b]")
         await r.on_done()
         assert transport.sent[0][1] == "Pick one."
+
+    async def test_a_converted_chunk_is_not_converted_again(self):
+        # ``send_message`` converts Markdown, as the real transport does; a
+        # second pass would read the first pass's bold ``*x*`` as italic.
+        from kiro_crew.whatsapp.renderer import render_chunks
+
+        class Converting(FakeTransport):
+            async def send_message(self, jid: str, content: str) -> str:
+                return await FakeTransport.send_message(
+                    self, jid, "\n".join(render_chunks(content))
+                )
+
+        transport, client = Converting(), FakeClient()
+        transport.client = client
+        r = WhatsAppRenderer(transport, client, "chat@s.whatsapp.net", CAPS)
+        await r.on_turn_start()
+        await r.on_text_chunk("# Plan\n**bold** and *it* and ***both***")
+        await r.on_done()
+        assert transport.sent[0][1] == "*Plan*\n*bold* and _it_ and *_both_*"
+
+    async def test_a_scratchpad_only_reply_posts_none_of_it(self):
+        # The body renders to no chunks, so the fallback must be converted too:
+        # sent as it is, it would post the model's ``<thinking>`` text.
+        from kiro_crew.whatsapp.renderer import render_chunks
+
+        class Converting(FakeTransport):
+            async def send_message(self, jid: str, content: str) -> str:
+                return await FakeTransport.send_message(
+                    self, jid, "\n".join(render_chunks(content))
+                )
+
+        transport, client = Converting(), FakeClient()
+        transport.client = client
+        r = WhatsAppRenderer(transport, client, "chat@s.whatsapp.net", CAPS)
+        await r.on_turn_start()
+        await r.on_text_chunk("<thinking>secret plan</thinking>")
+        await r.on_done()
+        assert not any("secret plan" in text for _, text in transport.sent)
 
     async def test_option_action_tag_after_options_is_stripped(self):
         r, transport, _ = make()

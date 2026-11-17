@@ -514,8 +514,9 @@ class MemoryConfig:
             "or state) and what it does with it. 'off' (default) keeps today's "
             "prompt and writes. 'shadow' writes every fact as before and only "
             "logs, within fixed size caps, what routing would do. 'enforce' skips a "
-            "state item (a PR, CI or branch status that GitHub, git or the work "
-            "ledger already holds) and writes facts and events as before. Stored "
+            "state item (the status of tracked work, such as a code change under "
+            "review, a ticket, a CI run or a branch, or a next step, a count or a "
+            "worktree path) and writes facts and events as before. Stored "
             "facts are never changed.",
             enum=list(KIND_ROUTING_MODES),
         ),

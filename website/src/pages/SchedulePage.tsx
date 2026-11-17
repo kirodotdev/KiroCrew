@@ -79,11 +79,11 @@ const SCHEDULE_COLUMNS = 10
 
 /**
  * The jobs table's declared min-width in px: the number in its
- * `min-w-[1194px]` class. It exists as a constant only so a user's column
+ * `min-w-[1210px]` class. It exists as a constant only so a user's column
  * resize can move it (`JOBS_TABLE_MIN_WIDTH + jobCols.extra`); the class stays
  * the default, and `SchedulePage.columnContract.test.ts` holds the two equal.
  */
-const JOBS_TABLE_MIN_WIDTH = 1194
+const JOBS_TABLE_MIN_WIDTH = 1210
 
 /**
  * The user-resizable jobs columns. Each `base` restates that column's
@@ -105,8 +105,10 @@ const JOB_COLUMNS = {
   type: { base: 116, min: 64, max: 480 },
   schedule: { base: 180, min: 80, max: 480 },
   status: { base: 104, min: 60, max: 240 },
-  lastRun: { base: 82, min: 56, max: 240 },
-  nextRun: { base: 92, min: 56, max: 240 },
+  // Wide enough for the label plus the sort arrow: the jobs open sorted by
+  // Next Run, and a narrower column ellipsized its own header ("Next R…").
+  lastRun: { base: 94, min: 56, max: 240 },
+  nextRun: { base: 96, min: 56, max: 240 },
 } satisfies Record<string, TableColumnSpec>
 
 const JOB_COLUMNS_STORAGE_KEY = 'kc:schedule:jobs-column-widths'
@@ -1017,7 +1019,7 @@ export default function SchedulePage() {
                 column, and restates the rule above mechanically: the px
                 columns moved by `extra`, so min-width moves by the same
                 amount and Message keeps its floor. */}
-            <Table className="table-fixed min-w-[1194px]" style={jobCols.extra ? { minWidth: JOBS_TABLE_MIN_WIDTH + jobCols.extra } : undefined} aria-label={i18nT('pages.schedulePage.jobs_table')} {...uiLocation('schedule.job-list', attachJobsTable)}>
+            <Table className="table-fixed min-w-[1210px]" style={jobCols.extra ? { minWidth: JOBS_TABLE_MIN_WIDTH + jobCols.extra } : undefined} aria-label={i18nT('pages.schedulePage.jobs_table')} {...uiLocation('schedule.job-list', attachJobsTable)}>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">
@@ -1043,8 +1045,8 @@ export default function SchedulePage() {
                   <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[180px] relative" style={jobCols.style('schedule')} resizer={jobCols.resizer('schedule')} />
                   <TableHead>{i18nT('pages.schedulePage.message')}</TableHead>
                   <SortableTableHead label={i18nT('pages.schedulePage.status')} sortKey="status" sort={schedSort} onToggle={toggleSchedSort} className="w-[104px] relative" style={jobCols.style('status')} resizer={jobCols.resizer('status')} />
-                  <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[82px] relative" style={jobCols.style('lastRun')} resizer={jobCols.resizer('lastRun')} />
-                  <SortableTableHead label={i18nT('pages.schedulePage.next_run')} sortKey="nextRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[92px] relative" style={jobCols.style('nextRun')} resizer={jobCols.resizer('nextRun')} />
+                  <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[94px] relative" style={jobCols.style('lastRun')} resizer={jobCols.resizer('lastRun')} />
+                  <SortableTableHead label={i18nT('pages.schedulePage.next_run')} sortKey="nextRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[96px] relative" style={jobCols.style('nextRun')} resizer={jobCols.resizer('nextRun')} />
                   {/* 176px, not 164: under `table-fixed` a column width is a
                       CONTRACT, so a cell whose controls need more than it spills
                       OUT of the table instead of widening it. The three inline

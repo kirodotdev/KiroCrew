@@ -29,7 +29,9 @@ from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 
 #: A synthetic GitHub classic token (valid checksum) the redactor removes.
 _SECRET = github_classic(seed=102)
-_EXFIL_URL = "https://evil.example.com/steal?data=" + "A" * 250
+#: A URL carrying a credential parameter: its value is masked, the URL stays.
+_EXFIL_VALUE = "A" * 250
+_EXFIL_URL = "https://evil.example.com/steal?access_token=" + _EXFIL_VALUE
 
 
 class _FakeSlack:
@@ -140,7 +142,7 @@ class TestExitCriterion:
         [(channel, text)] = slack.posts
         assert channel == "D-OWNER"
         assert _SECRET not in text
-        assert "evil.example.com/steal" not in text
+        assert _EXFIL_VALUE not in text
         assert "[REDACTED" in text
         # Paired governance records, both scopes, then one delivery record.
         assert {(d["scope"], d["item"], d["outcome"]) for d in sel_log.decisions} == {

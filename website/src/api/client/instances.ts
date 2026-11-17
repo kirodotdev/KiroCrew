@@ -159,6 +159,15 @@ export interface RelayCrewEntry {
   crewUrl: string
   /** The Crew's last lease renewal in epoch seconds, or null when the control plane gave none. */
   lastSeenAt?: number | null
+  /** A team Crew announced to this person that they have not opened or seen listed yet. */
+  unseen?: boolean
+}
+
+/** The kind of Kiro account the crews list was read for, only when the gateway proved it
+ *  unchanged across the read. `startUrl` is the Identity Center portal. No e-mail. */
+export interface RelayViewerAccount {
+  accountType: string
+  startUrl?: string
 }
 
 export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, jRelayViewer, sessionKeyHeader: _sk }: ClientTransport) {
@@ -179,7 +188,10 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
     // Remote Crews reachable through the Kiro relay. 404 `RELAY_VIEWER_OFF` while
     // `tunnel.relay_viewer_enabled` is off; it throws but is not journaled.
-    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[] }>,
+    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[]; account?: RelayViewerAccount }>,
+    // Clears the dot of each named Crew; an ID the gateway does not hold is ignored.
+    relayViewerCrewsSeen: (endpointIds: string[]) =>
+      post('/api/relay-viewer/crews/seen', { endpointIds }).then(j) as Promise<{ ok: boolean }>,
     addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
     updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
       patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,

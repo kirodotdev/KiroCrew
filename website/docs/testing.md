@@ -450,6 +450,12 @@ says why): run `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before 
   - Keep the count of flaky specs at zero. CI's `retries` let a flaky spec pass its
     retry, and the gate's `MAX_FLAKY_SPECS` ceiling then fails the run naming it: it
     gets fixed, never given more retries ([e2e-gate](../../docs/ci/e2e-gate.md)).
+  - Before fixing a spec that passed only on a retry, read its `Received` value and
+    name who wrote it. It is usually the page, after the action: a replace navigation
+    from a stale render, a read applied after the spec's API write, or a real layout
+    miss. A longer wait or a looser assertion hides those. Worked cases are in
+    `docs/system-specs/common/testing-conventions.md` § A Playwright spec that passed
+    only on a retry.
   - A spec cleans up only the ids it created. A global reset races every other spec
     sharing the gateway.
 
@@ -597,7 +603,7 @@ Six more CI reds (#17237) added two shapes to the ones above:
   the mock to have been CALLED, or for its promise plus a `setTimeout(0)`, is a timing
   barrier, not a state one. The listbox is `aria-busy` exactly while the fetch is in
   flight; wait for the re-rooted call AND for `aria-busy` to clear
-  (`pickerSettledFor` in `ChatPage.dirStaging.test.tsx`).
+  (`ChatPage.dirStaging.test.tsx`).
 - **A one-shot init effect is a latch that lags its source.** `SttSettings` seeded
   its editable rows and the custom-model intent from the served config in an effect,
   so the commit that first showed the model select was one frame short of the

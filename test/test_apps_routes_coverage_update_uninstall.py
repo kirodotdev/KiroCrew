@@ -35,6 +35,9 @@ from apps_routes_coverage_helpers import (
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
 from kiro_crew.apps.routes import register_app_routes
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+_TOKEN = github_classic(seed=33)
 
 # POST /api/apps/{name}/update
 
@@ -873,7 +876,7 @@ class TestUninstallRefusals:
         ) -> dict[str, Any]:
             seen_env.update(extra_env or {})
             return {
-                "output": "wiped with token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
+                "output": f"wiped with token={_TOKEN}",
                 "failed": True,
             }
 
@@ -883,7 +886,7 @@ class TestUninstallRefusals:
             resp = await client.post(f"/api/apps/{APP}/uninstall", json={})
             assert resp.status == 200
             log = (await resp.json())["uninstall_log"]
-        assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in log
+        assert _TOKEN not in log
         assert "onUninstall script failed" in log
         # The script is told which data disposition was chosen.
         assert seen_env == {"KEEP_DATA": "1", "PURGE_DATA": "0"}
@@ -981,7 +984,7 @@ class TestMigrateCleanup:
             routes_mod._stop_backend_and_observe.return_value = (12345, True)
         if warning == "deregister":
             routes_mod._deregister_app_off_loop.return_value.errors = [
-                "cleanup failed: https://user:secret@example.test/path"
+                "cleanup failed: https://user:Pw9x-s3cr3t@example.test/path"
             ]
         from kiro_crew.apps import manager
 
@@ -992,7 +995,8 @@ class TestMigrateCleanup:
             body = await resp.json()
         assert resp.status == 200, body
         assert body["ok"] and bool(body.get("notice")) == (warning != "none")
-        assert "user:secret" not in body.get("notice", "")
+        # Only the password is masked; ``secret`` would be a placeholder word, kept.
+        assert "Pw9x-s3cr3t" not in body.get("notice", "")
         assert {p.name for p in dest.iterdir()} == {"data"}
         assert (dest / "data" / "keep.txt").read_text(encoding="utf-8") == "keep me"
         assert {p.name for p in (dest / "data").iterdir()} == {"keep.txt", ".kirocrew-deps.lock"}

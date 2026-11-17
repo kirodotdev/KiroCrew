@@ -111,9 +111,13 @@ def _is_heartbeat_id(msg_id: Any) -> bool:
 
 #: Requests a departing stub may abandon without the backend being recycled:
 #: a ping and the read-only listings run no tool work, so there is nothing a
-#: best-effort cancel could fail to stop. ``initialize`` is not listed because
-#: it is never pending under a stub's own uuid: the upstream handshake is
-#: forwarded under the ``__init__`` sentinel. See ``has_recyclable_in_flight``.
+#: best-effort cancel could fail to stop. The newer MCP protocol's
+#: ``server/discover`` handshake and ``subscriptions/listen`` stream are the
+#: same kind: a client and backend that negotiate that protocol keep a listen
+#: open for the whole session, so every disconnect leaves one in flight.
+#: ``initialize`` is not listed because it is never pending under a stub's own
+#: uuid: the upstream handshake is forwarded under the ``__init__`` sentinel.
+#: See ``has_recyclable_in_flight``.
 _RECYCLE_EXEMPT_METHODS = frozenset(
     {
         "ping",
@@ -121,6 +125,8 @@ _RECYCLE_EXEMPT_METHODS = frozenset(
         "prompts/list",
         "resources/list",
         "resources/templates/list",
+        "server/discover",
+        "subscriptions/listen",
     }
 )
 

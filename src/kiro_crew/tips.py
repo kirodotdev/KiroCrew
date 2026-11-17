@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.background_failure_log import log_background_failure
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder, ui_language_tag
@@ -811,7 +812,9 @@ def _select_tip(
 
     Weight = recency_decay ** tier, where the tier ranks a tip's catalog recency
     (doc file mtime) among the distinct mtimes present, newest first. Tips
-    sharing an mtime are equally recent and so share a tier and a weight.
+    sharing an mtime are equally recent and so share a tier and a weight. A tip
+    with no catalog doc or id match has no recency signal; all such tips share
+    the oldest tier.
     """
     if not candidates:
         return None
@@ -821,7 +824,7 @@ def _select_tip(
 
     # Build mtime lookups from catalog: key by doc filename (authoritative —
     # LLM-generated tips carry the catalog doc in "doc" but usually invent
-    # their own id, so id-keyed lookup alone degenerates to insertion order)
+    # their own id, so id-keyed lookup alone would leave them no recency)
     # and by the catalog-derived id (for catalog fallback
     # tips whose doc field may have been sanitized away).
     mtime_by_doc: dict[str, float] = {entry.doc: entry.mtime for entry in catalog}
@@ -829,17 +832,19 @@ def _select_tip(
         entry.doc.replace(".md", "-tip"): entry.mtime for entry in catalog
     }
 
-    def _tip_mtime(t: dict, index: int) -> float:  # type: ignore[type-arg]
+    def _tip_mtime(t: dict) -> float:  # type: ignore[type-arg]
         doc = t.get("doc", "")
         if doc in mtime_by_doc:
             return mtime_by_doc[doc]
         tid = t.get("id", "")
         if tid in mtime_by_id:
             return mtime_by_id[tid]
-        # Unknown provenance: insertion order as a stable last-resort proxy
-        return float(index)
+        # Unknown provenance (a curated tip carries no catalog doc): no recency
+        # signal, so all such tips share the oldest tier and are picked
+        # uniformly within it. List position must not rank them.
+        return 0.0
 
-    mtimes = {id(t): _tip_mtime(t, i) for i, t in enumerate(candidates)}
+    mtimes = {id(t): _tip_mtime(t) for t in candidates}
 
     # Sort candidates newest-first by mtime
     sorted_candidates = sorted(candidates, key=lambda t: mtimes[id(t)], reverse=True)
@@ -1228,8 +1233,8 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         text = await run_bg_oneliner(
             state.sessions, prompt, model=tips_model, sel_source="tips", timeout=90
         )
-    except Exception:
-        logger.warning("Tips generation failed; using catalog fallback", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Tips generation failed; using catalog fallback", exc)
         return _fallback_tips(cache.catalog, st)
 
     tips = _parse_tips(text, allowed_docs={e.doc for e in cache.catalog})
@@ -1248,8 +1253,8 @@ async def refresh_tips(state: DashboardState, cache: TipsCache) -> None:
     """
     try:
         tips = await generate_tips(state)
-    except Exception:
-        logger.warning("Tips generation failed", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Tips generation failed", exc)
         return
     async with cache._lock:
         cache.state.tips = tips

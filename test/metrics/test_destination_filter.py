@@ -460,7 +460,12 @@ class TestRefusedPointAttributes:
     def test_the_reviewed_key_is_accepted(self):
         wrapper = df.FilteredMetricExporter(_RecordingExporter(), point_attributes=CLIENT_ATTRS)
         assert wrapper._point_attributes == CLIENT_ATTRS
-        assert df.ALLOWED_POINT_ATTRIBUTE_KEYS == frozenset({"ClientType"})
+        assert df.ALLOWED_POINT_ATTRIBUTE_KEYS == frozenset({"ClientType", "machineId"})
+
+    def test_the_hashed_install_id_key_is_accepted(self):
+        attrs = {"ClientType": "kiro-crew", "machineId": "ab" * 32}
+        wrapper = df.FilteredMetricExporter(_RecordingExporter(), point_attributes=attrs)
+        assert wrapper._point_attributes == attrs
 
     def test_a_refused_key_costs_that_destination_its_reader_and_nothing_else(
         self, monkeypatch, caplog

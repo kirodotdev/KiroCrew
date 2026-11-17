@@ -7,22 +7,33 @@ memory mechanism decorative. Both fail quietly in production, so both are pinned
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
+from kiro_crew.testing.synthetic_credentials import synth
+
+#: GitLab tokens in their published format (``glpat-`` and 20 or more characters).
+_PAT = "glpat-" + synth(20, seed=13)
+_PAT2 = "glpat-" + synth(20, seed=14)
+
 
 class _HomeIsolated(unittest.IsolatedAsyncioTestCase):
     """Redirects the data home and resets the provider registry per test."""
+
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
 
     def setUp(self):
         import os
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         self._clear_caches()
@@ -43,7 +54,6 @@ class _HomeIsolated(unittest.IsolatedAsyncioTestCase):
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
         self._clear_caches()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _clear_caches():
@@ -1310,17 +1320,17 @@ class TestTheBriefRedactsProviderMetadata(_HomeIsolated):
         return dispatch.investigation_brief(dispatch.ClaimedIncident(incident=incident))
 
     def test_a_credential_in_the_title_is_redacted(self):
-        brief = self._brief_for(title="worker used glpat-IOSFODNN7EXAMPLE and 403'd")
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", brief)
+        brief = self._brief_for(title=f"worker used {_PAT} and 403'd")
+        self.assertNotIn(_PAT, brief)
         self.assertIn("403", brief)  # redaction, not truncation
 
     def test_a_credential_in_the_resource_is_redacted(self):
-        brief = self._brief_for(title="t", resource="arn:aws:x/glpat-IOSFODNN7EXAMPLE")
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", brief)
+        brief = self._brief_for(title="t", resource=f"arn:aws:x/{_PAT}")
+        self.assertNotIn(_PAT, brief)
 
     def test_a_token_in_the_provider_url_query_is_redacted(self):
-        brief = self._brief_for(title="t", url="https://x.example/a?key=glpat-IOSFODNN7EXAMPLE")
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", brief)
+        brief = self._brief_for(title="t", url=f"https://x.example/a?key={_PAT}")
+        self.assertNotIn(_PAT, brief)
 
     def test_fields_this_app_owns_are_not_mangled(self):
         """`source`/`severity`/`fingerprint` are ours; redacting them could only corrupt a

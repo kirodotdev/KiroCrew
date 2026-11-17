@@ -39,7 +39,11 @@ from kiro_crew.dashboard.relay_archive import (
     is_relay_archive,
 )
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
-from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
+from kiro_crew.dashboard.slot_ownership import (
+    app_names_bot,
+    app_owns_slot,
+    app_owns_slot_session,
+)
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -182,6 +186,17 @@ def _slot_busy_response(request: web.Request, slot_id: str) -> web.Response:
             "code": "slot_busy",
         },
         status=409,
+    )
+
+
+def _app_not_found_response() -> web.Response:
+    """The one 404 an app gets for a Bot it may not reach, by thread id or by name."""
+    return web.json_response(
+        {
+            "error": {"message": "not found", "type": "invalid_request_error"},
+            "code": "not_found",
+        },
+        status=404,
     )
 
 
@@ -330,13 +345,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             resources=f"slot={normalized_slot_id}",
             error="app cannot access member slots",
         )
-        return web.json_response(
-            {
-                "error": {"message": "not found", "type": "invalid_request_error"},
-                "code": "not_found",
-            },
-            status=404,
-        )
+        return _app_not_found_response()
     existing_member_slot = None
     if slot_id:
         existing = state._slots.get(normalized_slot_id)
@@ -385,6 +394,20 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             {"error": {"message": "invalid model/agent name", "type": "invalid_request_error"}},
             status=400,
         )
+    # Owning a session is not being given a Bot: for an app, ``model`` names an
+    # agent of the app's own. The same 404 as a Bot's thread id above, answered
+    # before any slot is read or made. The namespace is the one the app's own
+    # slot is stamped in, so a template that shares a Bot's name still runs.
+    caller_app = request.get("app", "") or ""
+    own_slot = state._slots.get(normalized_slot_id) if caller_app and slot_id else None
+    if await app_names_bot(
+        caller_app,
+        agent,
+        getattr(own_slot, "agent_kind", "") if app_owns_slot(caller_app, own_slot) else "",
+        "openai_compat.chat",
+        normalized_slot_id,
+    ):
+        return _app_not_found_response()
     completion_id = _make_id()
 
     if slot_id:

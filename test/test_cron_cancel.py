@@ -872,12 +872,13 @@ class TestSubprocessRegistry:
         ):
             t = threading.Thread(target=_run)
             t.start()
-            # Wait for the subprocess to register.
+            # Wait for the subprocess to register, or for the run to end without
+            # one: a spawn that failed fast must fail here, not after the wait's bound.
             wait_until(
-                lambda: "cancelme" in _RUNNING_PROCS,
+                lambda: "cancelme" in _RUNNING_PROCS or not t.is_alive(),
                 describe=lambda: f"running={list(_RUNNING_PROCS)}",
             )
-            assert "cancelme" in _RUNNING_PROCS
+            assert "cancelme" in _RUNNING_PROCS, f"the command never registered: {result}"
             assert kill_running_process("cancelme") is True
             # Lost-run bound only: what proves the cancellation is the exit code below.
             wait_until(

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from redaction_structured_cases import aws_key_id
+
 # Import cycle workaround: see test_subagent_snapshot_idle_secs.py for rationale.
 import kiro_crew.dashboard.handlers  # noqa: F401
 from kiro_crew.dashboard.ws import build_subagent_snapshot
@@ -85,8 +87,8 @@ def test_snapshot_streaming_preserves_whitespace_and_newlines():
 def test_snapshot_streaming_redacts_credentials():
     """The streaming field is rendered in the Activity Viewer, so credential-
     shaped strings must be redacted at the snapshot boundary."""
-    # A synthetic 40-character AWS secret access key.
-    text = f"Calling AWS with {SAMPLE_AWS_SECRET}"
+    # A synthetic 40-character AWS secret access key beside its key ID.
+    text = f"Calling AWS with {aws_key_id()} {SAMPLE_AWS_SECRET}"
     a = _agent(streaming_text=text)
     data = build_subagent_snapshot(a, now=1000.0)
     assert SAMPLE_AWS_SECRET not in data["streaming"]

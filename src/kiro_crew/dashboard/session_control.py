@@ -163,6 +163,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _MAX_SENDERS,
         _MAX_SLOTS,
         _NOT_A_CODE_CHANNEL,
+        AUDIENCE_UNREAD_REFUSAL,
         CONDUCTOR_GUIDANCE,
         CREATE_OPERATION,
         DISPATCH_OFF_REFUSAL,
@@ -566,6 +567,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.metrics.turns import turn_outcome  # noqa: F401
     from kiro_crew.security import redact  # noqa: F401
     from kiro_crew.security import redact_and_truncate  # noqa: F401
+    from kiro_crew.security import refuses  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.session_summary import derive_state  # noqa: F401
     from kiro_crew.terminal_safe import _is_invisible  # noqa: F401

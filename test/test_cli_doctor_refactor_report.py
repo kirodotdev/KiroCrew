@@ -256,6 +256,12 @@ class _Host:
         # Same reason: added after the move. The real section walks the host's
         # ledger stores, which no frozen report can pin.
         mp.setattr(workload, "_doctor_ledger_backlog", self._marker("_doctor_ledger_backlog"))
+        # Same reason: it reads the session tree checkpoint's marker under the data home.
+        mp.setattr(
+            workload,
+            "_doctor_session_tree_checkpoint",
+            self._marker("_doctor_session_tree_checkpoint"),
+        )
         mp.setitem(sys.modules, "faiss", None)
         mp.setitem(sys.modules, "amazon_transcribe", None)
         mp.setitem(sys.modules, "amazon_transcribe.client", None)
@@ -487,6 +493,7 @@ Other Channels
 Loop-stall Crash Dumps
   dumps:       ✅ no crash dumps found (healthy)
   dump dir:    <TMP>/dumps
+  <<_doctor_session_tree_checkpoint>>
 
 Connectivity
   kiro-cli:    ✅ kiro-cli 1.2.3
@@ -799,6 +806,7 @@ Loop-stall Crash Dumps
     job: nightly
     job is currently auto-paused
   dump dir:    <TMP>/dumps
+  <<_doctor_session_tree_checkpoint>>
 
 Connectivity
   kiro-cli:    ⏭  skipped (not installed)

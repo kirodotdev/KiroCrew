@@ -34,11 +34,23 @@ from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
+from .redaction_switch import always_scan
 from .shell_commands import sharing_views
 from .text_redaction import redact_and_truncate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def _audit_clip(text: str) -> str:
+    """*text* for an SEL row: scanned in full, then clipped to 200 characters.
+
+    The security event log stays redacted whatever the owner's setting, and a clip
+    of text a seam left unscanned can cut a credential into a fragment that the
+    writer's own pass cannot recognise.
+    """
+    with always_scan():
+        return redact_and_truncate(text, 200)
 
 
 def _schedule_push_allow_audit(command: str) -> None:
@@ -78,7 +90,7 @@ def _emit_push_allow_event(command: str) -> None:
                 outcome="allowed",
                 resources="feature_branch_push",
                 metadata={
-                    "command": redact_and_truncate(command, 200),
+                    "command": _audit_clip(command),
                     "mechanism": "BRANCH_GATE",
                 },
             )
@@ -980,6 +992,10 @@ def is_denied(
             # bytes, so drop to the whole-command span.
             if span is not None and len(lower) != len(tool_name):
                 span = None
+        elif predicate is _argv._reaches_self_over_ssh:
+            # Also the command as submitted: a wrapper's option words keep their
+            # case there (``sudo -H`` is not ``sudo -h``).
+            hit = _argv._reaches_self_over_ssh(lower, raw_text=tool_name)
         else:
             hit = predicate(lower)
         if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
@@ -1404,11 +1420,11 @@ def _emit_deny_event(
         # same hazard in either one.
         metadata = {
             "deny_pattern": deny_pattern,
-            "segment": redact_and_truncate(segment, 200) if segment else "",
+            "segment": _audit_clip(segment) if segment else "",
             "mechanism": "BUILTIN_DENY_PATTERNS",
         }
         if raw_segment and raw_segment != segment:
-            metadata["raw_segment"] = redact_and_truncate(raw_segment, 200)
+            metadata["raw_segment"] = _audit_clip(raw_segment)
         sel.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
@@ -1556,7 +1572,7 @@ def audit_injection_dropped(
                     "surface": surface,
                     "channel_id": channel_id,
                     "thread_ts": thread_ts,
-                    "sample": redact_and_truncate(sample, 200),
+                    "sample": _audit_clip(sample),
                     "mechanism": "contains_injection",
                 },
             )

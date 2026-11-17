@@ -136,6 +136,42 @@ _DEFAULT_PORT = DASHBOARD_PORT
 _SSE_INTERVAL_SECS = 5
 
 
+def _while_alive(owner: Any, call: Callable[..., Any], gone: Callable[..., Any]):
+    """A hook for a process-global seam that does not keep *owner* alive.
+
+    ``DashboardState`` wires a few module globals that live for the process
+    (``set_share_tree_reader``, ``set_parent_project_resolver``,
+    ``impl_llm.set_runner_factory``). A closure over the state there pins the state, and
+    everything it holds, until the next state replaces it. The gateway keeps its state for
+    the process, so this answers exactly as before; once *owner* is gone the hook returns
+    ``gone(*args)``, which each call site chooses to equal that seam's "not wired" answer.
+    An *owner* that cannot be weakly referenced is held strongly, as it always was.
+    """
+    try:
+        ref = weakref.ref(owner)
+    except TypeError:
+        return lambda *args: call(owner, *args)
+
+    def hook(*args: Any) -> Any:
+        live = ref()
+        return gone(*args) if live is None else call(live, *args)
+
+    return hook
+
+
+def _no_runner_after_close(model: str) -> Callable[[str], Any]:
+    """The decisions runner once its session manager is gone: every ask raises.
+
+    The lane treats a raising ``ask`` as a provider failure and fires the tick ungated,
+    which is what it does with no runner registered at all.
+    """
+
+    async def runner(_prompt: str) -> str:
+        raise RuntimeError(f"decisions runner for {model!r}: the session manager is gone")
+
+    return runner
+
+
 class DashboardState:
     """Shared state injected into all handlers via ``app["state"]``."""
 
@@ -347,7 +383,11 @@ class DashboardState:
             from kiro_crew.decisions import impl_llm
 
             impl_llm.set_runner_factory(
-                lambda model: impl_llm.build_session_runner(sessions, model=model)
+                _while_alive(
+                    sessions,
+                    lambda live, model: impl_llm.build_session_runner(live, model=model),
+                    _no_runner_after_close,
+                )
             )
         except Exception:
             logger.debug("decisions: LLM lane runner not registered", exc_info=True)
@@ -1002,7 +1042,9 @@ class DashboardState:
             from kiro_crew.dashboard.handlers._shared import session_project_for_spawn_gate
             from kiro_crew.subagent import set_parent_project_resolver
 
-            set_parent_project_resolver(lambda key: session_project_for_spawn_gate(self, key))
+            set_parent_project_resolver(
+                _while_alive(self, session_project_for_spawn_gate, lambda _key: ())
+            )
             # A child's prompt carries the folder steering its parent receives.
             from kiro_crew.dashboard.handlers._shared import session_folder_steering_dirs
 
@@ -1012,7 +1054,7 @@ class DashboardState:
         # Chat runtime sharing places a chat only inside its own session tree.
         from kiro_crew.agent_sdk.chat_runtime_sharing import set_share_tree_reader
 
-        set_share_tree_reader(lambda key: _share_tree_root(self, key))
+        set_share_tree_reader(_while_alive(self, _share_tree_root, lambda _key: ""))
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)
@@ -1266,6 +1308,8 @@ class DashboardState:
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications
     acknowledge_notifications_where = _dashboard_services.acknowledge_notifications_where
     clear_notifications = _dashboard_services.clear_notifications
+    clear_visible_notifications = _dashboard_services.clear_visible_notifications
+    acknowledge_visible_notifications = _dashboard_services.acknowledge_visible_notifications
     ensure_context_snapshots_loaded = _dashboard_services.ensure_context_snapshots_loaded
     context_snapshot_for = _dashboard_services.context_snapshot_for
     _persist_context_snapshots = _dashboard_services._persist_context_snapshots

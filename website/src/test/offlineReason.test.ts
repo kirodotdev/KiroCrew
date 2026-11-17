@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewPane, isRelayCrewWindow, isRelayRetrying, offlineCover, offlineReason } from '../utils/offlineReason'
 import en from '../i18n/locales/en.manual.json'
 
 describe('offlineReason', () => {
@@ -26,11 +26,49 @@ describe('offlineReason', () => {
     expect(offlineReason(null)).toBe(en.app.gateway_offline_reconnecting)
   })
 
+  it('reads the relay Crew pane from its own user-agent marker only', () => {
+    expect(isRelayCrewPane('Mozilla/5.0 Electron/44 kiroCrewRelayWindow kiroCrewRelayPane')).toBe(true)
+    // The separate relay Crew window keeps its own header.
+    expect(isRelayCrewPane('Mozilla/5.0 Electron/44 kiroCrewRelayWindow')).toBe(false)
+    expect(isRelayCrewPane('Mozilla/5.0 NotkiroCrewRelayPaneAtAll')).toBe(false)
+    expect(isRelayCrewPane('')).toBe(false)
+    expect(isRelayCrewPane()).toBe(false)
+  })
+
   it('treats only a plain drop in a relay Crew window as retrying', () => {
     expect(isRelayRetrying(null, true)).toBe(true)
     expect(isRelayRetrying('refused', true)).toBe(false)
     expect(isRelayRetrying('session_ended', true)).toBe(false)
     expect(isRelayRetrying(null, false)).toBe(false)
     expect(isRelayRetrying(null)).toBe(false)
+  })
+
+  describe('offlineCover', () => {
+    const down = { connected: false, connecting: false, authRequired: false, cause: null, relayCrewWindow: false, relayCrewPane: false, hostname: 'localhost' } as const
+
+    it('gives a relay Crew window whose host is gone the calm view, and keeps a real refusal red', () => {
+      // The relay closes every viewer socket 4404 once the host connection ends;
+      // that close leaves no relay reason (relayClose.test.ts), so the window
+      // keeps retrying calmly.
+      expect(offlineCover({ ...down, relayCrewWindow: true })).toBe('relay')
+      expect(offlineCover({ ...down, relayCrewWindow: true, cause: 'refused' })).toBeNull()
+      expect(offlineCover({ ...down, relayCrewWindow: true, cause: 'session_ended' })).toBeNull()
+    })
+
+    it('covers the owner\'s own dashboard on this machine while its gateway is gone', () => {
+      expect(offlineCover(down)).toBe('host')
+      expect(offlineCover({ ...down, hostname: '127.0.0.1' })).toBe('host')
+      expect(offlineCover({ ...down, hostname: 'crew.tailnet.example' })).toBeNull()
+      expect(offlineCover({ ...down, relayCrewPane: true })).toBeNull()
+      expect(offlineCover({ ...down, cause: 'refused' })).toBeNull()
+    })
+
+    it('covers nothing while connected, still connecting, or signed out', () => {
+      for (const relayCrewWindow of [false, true]) {
+        expect(offlineCover({ ...down, relayCrewWindow, connected: true })).toBeNull()
+        expect(offlineCover({ ...down, relayCrewWindow, connecting: true })).toBeNull()
+        expect(offlineCover({ ...down, relayCrewWindow, authRequired: true })).toBeNull()
+      }
+    })
   })
 })

@@ -39,11 +39,24 @@ the data. The record is read with the manifests and only ever adds masks, so a d
 directory with no manifest beside it stays masked, and only a manifest that reads
 cleanly rewrites or removes it.
 
+**The agent tool gate.** The agent's file tools refuse every declared leaf to read and
+to write, as they refuse a core crew-home secret leaf, its ``.tmp`` / ``.lock`` publish
+artifacts included: the shipped built-ins' as static rows
+(``security._CREW_SECRET_LEAVES``, from :func:`declared_crew_leaves` with
+``installed=False``), and every installed tree's and retained record's, an adopted
+former built-in's included, from a listing the gate takes within a deadline and reuses
+for at most a second (:func:`tool_gate_crew_leaves`,
+``security.paths_targets._app_credential_mask_rows``). A recorded install, update or
+uninstall retires that listing at once (:func:`declarations_generation`). Where an
+installed declaration cannot be known the gate fails closed over the app's own data: an
+``app.json`` or record that is there but does not read cleanly fences the app's whole
+data directory and what is beneath it, never a file beside it, and an ``apps/`` that
+cannot be listed fences ``apps/``.
+
 **Tightening only.** A declaration can add masks and never remove one: no seal reads
-it, the tool gate reads only the shipped built-ins' (:func:`declared_crew_leaves`), as
-more refusals, and the one carve-out that reads it (the app's own backend,
-``sandbox_tiers.app_declared_mask_targets``) drops every core leaf, so no core leaf's
-disposition depends on a manifest. An entry is refused when it is absolute, empty, holds a
+it, the tool gate reads it only as more refusals, and the one carve-out that reads it
+(the app's own backend, ``sandbox_tiers.app_declared_mask_targets``) drops every core
+leaf, so no core leaf's disposition depends on a manifest. An entry is refused when it is absolute, empty, holds a
 ``.`` / ``..`` / empty segment, a backslash, a colon, a control character or a lone
 surrogate (no filesystem path can encode one), ends a segment in a space or a dot (Windows drops both, so ``a.`` would name ``a``), or is
 over the length and depth caps. The app's name comes from where its manifest lives,
@@ -135,8 +148,12 @@ class DeclarationKind(NamedTuple):
 CREDENTIAL_MASKS = DeclarationKind(MANIFEST_KEY, RECORD_SUFFIX, directory_entries=True)
 
 _lock = threading.Lock()
-#: ``(manifest key, manifest path) -> ((dev, ino, size, mtime_ns), entries)``.
-_cache: dict[tuple[str, str], tuple[tuple[int, int, int, int], tuple[str, ...]]] = {}
+#: ``(manifest key, manifest path) -> ((dev, ino, size, mtime_ns), entries, clean)``.
+_cache: dict[tuple[str, str], tuple[tuple[int, int, int, int], tuple[str, ...], bool]] = {}
+#: Bumped whenever :func:`remember_declaration` runs (and by :func:`clear_cache`), so a
+#: reader that reuses a listing of the declarations retires it when the gateway records
+#: an install, update or uninstall (:func:`declarations_generation`).
+_generation = 0
 
 
 def entry_error(entry: object, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> str | None:
@@ -303,21 +320,38 @@ def _read_entries(
     Cached on the file's identity, so a spawn re-parses only a manifest that changed.
     Never raises: a manifest this cannot read declares nothing.
     """
+    return _read_declaration(path, expected_name, kind)[0]
+
+
+def _read_declaration(
+    path: Path, expected_name: str, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[tuple[str, ...], bool]:
+    """:func:`_read_entries`, and whether *path* is absent or reads cleanly.
+
+    Cleanly is :func:`_clean_declaration`'s sense. An absent file is clean (it declares
+    nothing); one that is there but is not a regular file within the size cap, cannot
+    be read or parsed, names another app or carries an invalid entry is not.
+    """
     key = (kind.key, str(path))
     try:
         info = os.stat(path)
+    except FileNotFoundError:
+        with _lock:
+            _cache.pop(key, None)
+        return (), True
     except OSError:
         with _lock:
             _cache.pop(key, None)
-        return ()
+        return (), False
     if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_MANIFEST_BYTES:
-        return ()
+        return (), False
     ident = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
     with _lock:
         hit = _cache.get(key)
     if hit is not None and hit[0] == ident:
-        return hit[1]
+        return hit[1], hit[2]
     entries: tuple[str, ...] = ()
+    clean = False
     data = _load_json(path)
     if isinstance(data, dict) and data.get("name") == expected_name:
         declared = data.get(kind.key)
@@ -331,9 +365,10 @@ def _read_entries(
                 "; ".join(errors),
             )
         entries = valid_entries(declared, kind=kind)
+        clean = not errors
     with _lock:
-        _cache[key] = (ident, entries)
-    return entries
+        _cache[key] = (ident, entries, clean)
+    return entries, clean
 
 
 def _builtin_manifests() -> list[tuple[str, Path]]:
@@ -350,11 +385,15 @@ def _builtin_manifests() -> list[tuple[str, Path]]:
     ]
 
 
-def _installed_manifests(kind: DeclarationKind = CREDENTIAL_MASKS) -> list[tuple[str, Path]]:
+def _installed_manifests(
+    kind: DeclarationKind = CREDENTIAL_MASKS, *, strict: bool = False
+) -> list[tuple[str, Path]]:
     """``(installed name, file)`` for every app directory and retained record in the live home.
 
     An app directory contributes its ``app.json``; a retained *kind* record
-    (``.<name><record suffix>``) contributes itself, under the name it is for.
+    (``.<name><record suffix>``) contributes itself, under the name it is for. *strict*
+    raises when the data home's ``apps/`` exists but cannot be listed, for a reader
+    that must refuse rather than read "nothing declared".
     """
     try:
         apps = config_dir() / APPS_LEAF
@@ -368,6 +407,8 @@ def _installed_manifests(kind: DeclarationKind = CREDENTIAL_MASKS) -> list[tuple
     except FileNotFoundError:
         return []
     except Exception:
+        if strict:
+            raise
         # A data home this cannot list declares nothing here; the sandbox's own pass over
         # the same home refuses the spawn when the home itself cannot be resolved.
         logger.warning("could not list the installed apps for their %s", kind.key, exc_info=True)
@@ -411,8 +452,8 @@ def declared_crew_leaves(
     ``security._CREW_SECRET_LEAVES`` adds those once, at import, so the agent's file
     tools refuse a built-in's credential file as they refuse a core one, and no core row
     has to name the app. The shipped manifests are part of the installed product, so
-    that set is fixed for the process; an installed app's manifest is sandbox-writable
-    and read per spawn, which a static gate list cannot follow.
+    that set is fixed for the process; an installed app's manifest changes with each
+    install, so the gate lists those separately (:func:`tool_gate_crew_leaves`).
     """
     return tuple(
         sorted(
@@ -455,6 +496,80 @@ def declared_crew_dir_leaves_for(app: str, *, builtin: bool) -> frozenset[str]:
     return frozenset(crew_leaf(app, e) for e in masks.get(app, ()) if is_directory_entry(e))
 
 
+class ToolGateLeaves(NamedTuple):
+    """What the agent tool gate fences for the INSTALLED apps' masks (:func:`tool_gate_crew_leaves`)."""
+
+    #: The declared leaves: each fenced with everything beneath it, and the ``.tmp`` /
+    #: ``.lock`` publish artifacts in its own directory, as a core crew-home secret leaf is.
+    declared: tuple[str, ...]
+    #: The directories fenced whole because a declaration could not be read. No artifact
+    #: rule: every file a write stages inside one is beneath it already, and the
+    #: directory each sits in (``apps/<name>``, ``apps``, the data home) is not the app's data.
+    unreadable: tuple[str, ...]
+
+
+def tool_gate_crew_leaves() -> ToolGateLeaves:
+    """The crew-home leaves the agent tool gate adds for the INSTALLED apps' masks.
+
+    Every installed tree's and retained record's ``credentialMasks`` (an adopted former
+    built-in is one of them), each at both places its app's data can be, as
+    :func:`declared_crew_leaves` gives them. The shipped built-ins' declarations are
+    static rows of the gate (``security.paths_lists._CREW_SECRET_LEAVES``); a built-in's
+    record repeats them here, and the gate leaves out a row it already holds
+    (``security.paths_targets._list_app_credential_mask_rows``).
+
+    Fails closed where the declaration cannot be known, only ever over the app's own
+    data: a manifest or record that is there but does not read cleanly
+    (:func:`_read_declaration`) adds its app's whole data directory at both places, and
+    an ``apps/`` that exists but cannot be listed adds ``apps`` itself, under which every
+    declaration lies, each as an :attr:`ToolGateLeaves.unreadable` directory. Nothing
+    here can name a path outside ``apps/<name>/data/`` or the lifecycle's move-aside of
+    it, nor a publish artifact outside them, so the gate gains refusals and loses none.
+    """
+    try:
+        sources = _installed_manifests(CREDENTIAL_MASKS, strict=True)
+    except Exception:
+        logger.warning(
+            "could not list the installed apps for their %s; the tool gate fences %s/",
+            MANIFEST_KEY,
+            APPS_LEAF,
+            exc_info=True,
+        )
+        return ToolGateLeaves((), (APPS_LEAF,))
+    declared: set[str] = set()
+    unreadable: set[str] = set()
+    for name, path in sources:
+        entries, clean = _read_declaration(path, name)
+        if not clean:
+            unreadable.add(f"{APPS_LEAF}/{name}/{DATA_LEAF}")
+            unreadable.add(f"{APPS_LEAF}/.{name}{STAGED_DATA_SUFFIX}")
+        for entry in entries:
+            declared.add(crew_leaf(name, entry))
+            declared.add(staged_crew_leaf(name, entry))
+    return ToolGateLeaves(tuple(sorted(declared)), tuple(sorted(unreadable)))
+
+
+def tool_gate_home_rows() -> ToolGateLeaves:
+    """:func:`tool_gate_crew_leaves` as ``$HOME``-relative rows, one per data-home prefix.
+
+    The shape of a ``_SENSITIVE_HOME_DIRS`` row, so the gate anchors and re-anchors them
+    (``KIROCREW_HOME``) exactly as it does a core row.
+    """
+    # Imported at call time, so loading this module never loads the security package.
+    from kiro_crew.security.paths_lists import _CREW_HOME_PREFIXES
+
+    def rows(leaves: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(f"{prefix}/{leaf}" for leaf in leaves for prefix in _CREW_HOME_PREFIXES)
+
+    leaves = tool_gate_crew_leaves()
+    return ToolGateLeaves(rows(leaves.declared), rows(leaves.unreadable))
+
+
+def declarations_generation() -> int:
+    """A counter :func:`remember_declaration` bumps, so a reused listing can be retired."""
+    return _generation
+
+
 def remember_declaration(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> None:
     """Make *app*'s retained record match its installed ``app.json``.
 
@@ -466,9 +581,25 @@ def remember_declaration(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) 
     it is, because the data beside it may still hold the files the last clean manifest
     declared. Raises ``OSError`` when the record cannot be written or removed: an
     uninstall that keeps the data refuses on it rather than leave a credential unmasked.
+    Either way it bumps :func:`declarations_generation`, so the agent tool gate's next
+    check lists the declarations afresh instead of reusing a listing taken before.
     """
     if not _APP_NAME_RE.fullmatch(app):
         return
+    try:
+        _remember_declaration(app, kind)
+    finally:
+        _bump_generation()
+
+
+def _bump_generation() -> None:
+    global _generation
+    with _lock:
+        _generation += 1
+
+
+def _remember_declaration(app: str, kind: DeclarationKind) -> None:
+    """:func:`remember_declaration`'s record update."""
     manifest = config_dir() / APPS_LEAF / app / "app.json"
     if not manifest.is_file():
         return
@@ -493,3 +624,4 @@ def clear_cache() -> None:
     """Forget every parsed manifest (tests)."""
     with _lock:
         _cache.clear()
+    _bump_generation()

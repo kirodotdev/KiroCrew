@@ -207,7 +207,10 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
     () => messages.map((m, i) => {
       const streaming = i === lastIdx && isStreamingLast
       const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
-      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
+      // A finished answer's blocked-link records ride in `meta`, where the shared
+      // bubble reads a main chat row's, so a flagged link there draws as its chip.
+      const meta = role === 'assistant' && m.link_blocks !== undefined ? { meta: { link_blocks: m.link_blocks } } : {}
+      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts, ...meta }
     }),
     [messages, lastIdx, isStreamingLast]
   )

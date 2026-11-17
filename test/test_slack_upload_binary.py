@@ -34,8 +34,10 @@ def mock_sel():
 def workspace(tmp_path):
     ws = tmp_path / "workspace"
     ws.mkdir()
-    with patch("kiro_crew.config.loader.workspace_root", return_value=ws), \
-         patch("kiro_crew.config.loader.outbox_dir", return_value=tmp_path / "outbox"):
+    with (
+        patch("kiro_crew.config.loader.workspace_root", return_value=ws),
+        patch("kiro_crew.config.loader.outbox_dir", return_value=tmp_path / "outbox"),
+    ):
         (tmp_path / "outbox").mkdir()
         yield ws
 
@@ -162,7 +164,7 @@ class TestSlackUploadDescription:
         """(b) A credential in the ``description`` is scrubbed before it reaches Slack."""
         pdf = workspace / "report.pdf"
         pdf.write_bytes(b"%PDF-1.4\n" + b"\x00\xff" * 50)
-        token = "ghp_" + "a" * 36
+        token = github_classic(seed=151)
 
         slack = MagicMock()
         slack.upload_file = AsyncMock()
@@ -181,6 +183,49 @@ class TestSlackUploadDescription:
         assert forwarded is not None
         assert token not in forwarded, "credential must not reach the Slack audience"
         assert "ghp_" not in forwarded
+
+    @pytest.mark.asyncio
+    async def test_description_stays_redacted_with_redaction_off(
+        self, workspace, mock_sel, monkeypatch
+    ):
+        """With the owner's redaction setting off the comment is channel egress like a
+        reply (``redaction_seams.CHANNELS``), and a channel is not the owner's alone, so
+        its credential is still masked; the file's content gate still refuses a file
+        that carries a credential."""
+        from kiro_crew import redaction_seams
+
+        monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+        pdf = workspace / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n" + b"\x00\xff" * 50)
+        sneaky = workspace / "sneaky.pdf"
+        sneaky.write_bytes(
+            b"%PDF-1.4\n\x00\xff" + github_classic(seed=149).encode() + b"\x00\xff" * 20
+        )
+        description = "Review please; token=" + github_classic(seed=152)
+        body = {
+            "thread_ts": "1234567890.123456",
+            "channel": "C0TEST12345",
+            "description": description,
+        }
+
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+
+        with patch("kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True):
+            async with TestClient(TestServer(_make_app(slack_client=slack))) as client:
+                resp = await client.post(
+                    "/api/slack/upload-file",
+                    json={**body, "file_path": str(pdf), "filename": "report.pdf"},
+                )
+                assert resp.status == 200, await resp.text()
+                refused = await client.post(
+                    "/api/slack/upload-file",
+                    json={**body, "file_path": str(sneaky), "filename": "sneaky.pdf"},
+                )
+                assert refused.status == 400
+        assert slack.upload_file.call_count == 1
+        shown = slack.upload_file.call_args.kwargs.get("initial_comment")
+        assert shown.startswith("Review please; token=") and shown != description
 
     @pytest.mark.asyncio
     async def test_description_mentions_are_defanged(self, workspace, mock_sel):
@@ -322,7 +367,7 @@ class TestFileSendErrorRedaction:
     async def test_upload_failure_is_redacted_in_body_and_audit(self, workspace, mock_sel):
         pdf = workspace / "report.pdf"
         pdf.write_bytes(b"%PDF-1.4\n" + b"\x00\xff" * 50)
-        token = "ghp_" + "a" * 36
+        token = github_classic(seed=151)
 
         slack = MagicMock()
         slack.upload_file = AsyncMock(side_effect=RuntimeError("upload failed: Bearer " + token))
@@ -352,7 +397,7 @@ class TestFileSendErrorRedaction:
     def test_helpers_are_imported(self):
         from kiro_crew.dashboard.handlers import files as files_mod
 
-        token = "ghp_" + "a" * 36
+        token = github_classic(seed=151)
         redacted, _count = files_mod.redact_credentials("Bearer " + token)
         assert token not in redacted
         assert callable(files_mod.redact_exfiltration_urls)

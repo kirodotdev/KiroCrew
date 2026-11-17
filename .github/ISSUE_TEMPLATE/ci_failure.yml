@@ -1,0 +1,94 @@
+name: CI failure
+description: A CI job, scheduled workflow or test is red, or passes and fails on the same code.
+title: "ci: "
+labels: ["bug", "area: ci"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a red CI run, a flaky test or a failing scheduled workflow. Something
+        broken in Kiro Crew itself goes in the bug report form.
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched open issues and this is not already reported.
+          required: true
+
+  - type: input
+    id: run
+    attributes:
+      label: Failing run
+      description: Link to the failed GitHub Actions run or job.
+      placeholder: https://github.com/kirodotdev/KiroCrew/actions/runs/123/job/456
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: Test or job
+      description: The failing test id, or the workflow and job name when no single test fails.
+      placeholder: test/test_example.py::test_name
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit the run tested, and the PR number if it ran on a PR.
+      placeholder: abc1234 (PR #123)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: pattern
+    attributes:
+      label: How it fails
+      options:
+        - Red every time on this commit
+        - Passes and fails on the same commit (flaky)
+        - Scheduled run failing
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runner
+    attributes:
+      label: Runner OS
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Several
+    validations:
+      required: true
+
+  - type: input
+    id: first-bad
+    attributes:
+      label: First bad commit
+      description: The earliest commit that fails, if you know it. Leave blank if not.
+    validations:
+      required: false
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Error output
+      description: The failing assertion or error lines. Redact anything sensitive -- this is a public issue.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Other runs that failed the same way, a suspected cause, or a fix you tried.
+    validations:
+      required: false

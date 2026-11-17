@@ -241,6 +241,57 @@ class TestOpenSlotAgentNames:
 
 
 class TestDoctorDeprecatedAgentSpecs:
+    def test_builtin_alias_crew_entry_alone_is_silent(self, no_other_surfaces, capsys) -> None:
+        # The agent sync writes the shipped alias as a builtin crew entry; the
+        # user owns nothing there to rename.
+        cfg = KiroCrewConfig()
+        cfg.agents = {
+            DEPRECATED: KiroCrewAgentConfig(kiro_agent=DEPRECATED, source="builtin"),
+            REPLACEMENT: KiroCrewAgentConfig(kiro_agent=REPLACEMENT, source="builtin"),
+        }
+        issues: list[str] = []
+        cli_doctor._doctor_deprecated_agent_specs(cfg, issues)
+        assert "Deprecated Agent Specs" not in capsys.readouterr().out
+        assert issues == []
+
+    def test_user_cron_naming_builtin_alias_is_still_flagged(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(cron, "job_agent_names_from_disk", lambda: [("nightly", DEPRECATED)])
+        monkeypatch.setattr(cli_doctor, "_open_slot_agent_names", lambda: [])
+        cfg = KiroCrewConfig()
+        cfg.agents = {DEPRECATED: KiroCrewAgentConfig(kiro_agent=DEPRECATED, source="builtin")}
+        issues: list[str] = []
+        cli_doctor._doctor_deprecated_agent_specs(cfg, issues)
+        out = capsys.readouterr().out
+        assert "cron job 'nightly'" in out
+        assert "crew " not in out
+        assert issues == ["a config names a deprecated agent spec"]
+
+    def test_builtin_sourced_user_crew_naming_deprecated_is_flagged(
+        self, no_other_surfaces, capsys
+    ) -> None:
+        # The first crewmate is written with source "builtin" but is the user's
+        # binding, so only the alias's own self-bound entry is skipped.
+        cfg = KiroCrewConfig()
+        cfg.agents = {"mate": KiroCrewAgentConfig(kiro_agent=DEPRECATED, source="builtin")}
+        issues: list[str] = []
+        cli_doctor._doctor_deprecated_agent_specs(cfg, issues)
+        assert "'mate'" in capsys.readouterr().out
+        assert issues == ["a config names a deprecated agent spec"]
+
+    def test_diagnose_probe_agrees_on_the_shipped_alias_entry(
+        self, no_other_surfaces, monkeypatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew import diagnose_probes
+        from kiro_crew.doctor_checks import agents as doctor_agents
+
+        monkeypatch.setattr(doctor_agents, "_open_slot_agent_names", lambda: [])
+        cfg = KiroCrewConfig()
+        cfg.agents = {DEPRECATED: KiroCrewAgentConfig(kiro_agent=DEPRECATED, source="builtin")}
+        result = diagnose_probes.probe_deprecated_agent_spec(SimpleNamespace(cfg=cfg))
+        assert result["status"] == diagnose_probes.OK
+
     def test_crew_binding_naming_deprecated_is_flagged(self, no_other_surfaces, capsys) -> None:
         cfg = KiroCrewConfig()
         cfg.agents = {"myteam": KiroCrewAgentConfig(kiro_agent=DEPRECATED)}

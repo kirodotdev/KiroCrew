@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { deriveFollowUpOptions, type ChatMessage } from '../app-sdk/protocol'
-import { parseGrill, stripPartialGrillMarker } from '../app-sdk/protocol/grillMarker'
+import { grillKey, grillKeysIn, grillKeysSentAfter, parseGrill, stripPartialGrillMarker } from '../app-sdk/protocol/grillMarker'
 
 const PAYLOAD = {
   q: '欢迎页的事实该谁写？',
@@ -89,5 +89,45 @@ describe('deriveFollowUpOptions with a card', () => {
 
   it('keeps the chips when the marker is invalid', () => {
     expect(deriveFollowUpOptions(msgs(reply({ ...PAYLOAD, minutes: 0 })), false).followUpOptions).toEqual(['Go A', 'Go B'])
+  })
+})
+
+describe('grill card keys', () => {
+  const card = { role: 'assistant', content: `Pick.\n[GRILL: ${JSON.stringify(PAYLOAD)}]`, meta: { mid: 'm-1' } }
+  const user = (content: string, mid?: string) => ({ role: 'user', content, meta: mid ? { mid } : { optimistic: true } })
+
+  it('is the row mid and version, and nothing without a mid', () => {
+    expect(grillKey('m-1', 2)).toBe('m-1:2')
+    expect(grillKey(undefined, 0)).toBeUndefined()
+    expect(grillKey('', 0)).toBeUndefined()
+  })
+
+  it('reads only whole key lines', () => {
+    expect(grillKeysIn('Start\nkey: m-1:0')).toEqual(['m-1:0'])
+    expect(grillKeysIn('Start\r\nkey: m-1:0\r\n')).toEqual(['m-1:0'])
+    expect(grillKeysIn('see key: m-1:0\n key: m-1:1\nkey: \nKey: m-1:2')).toEqual([])
+  })
+
+  it('finds this card\'s keys in later stored user messages only', () => {
+    const rows = [
+      user('key: m-1:9', 'u-0'),
+      card,
+      user('No discussion needed\nkey: m-1:0', 'u-1'),
+      user('No discussion needed\nkey: m-2:0', 'u-2'),
+      user('No discussion needed\nkey: m-1:1'),
+      { role: 'assistant', content: 'key: m-1:3', meta: { mid: 'a-3' } },
+    ]
+    expect(grillKeysSentAfter(rows, 1)).toBe('m-1:0')
+  })
+
+  it('counts a Start still waiting in the queue, in the rows or handed in apart', () => {
+    const queued = (content: string, queueId?: string) => ({ role: 'queued', content, meta: queueId ? { queueId } : {} })
+    expect(grillKeysSentAfter([card, queued('Start\nkey: m-1:0', 'q-1')], 0)).toBe('m-1:0')
+    expect(grillKeysSentAfter([card], 0, [queued('Start\nkey: m-1:1', 'q-2'), queued('Start\nkey: m-1:2')])).toBe('m-1:1')
+  })
+
+  it('names nothing for a row with no mid or no card', () => {
+    expect(grillKeysSentAfter([{ ...card, meta: {} }, user('key: m-1:0', 'u-1')], 0)).toBeUndefined()
+    expect(grillKeysSentAfter([{ ...card, content: 'plain' }, user('key: m-1:0', 'u-1')], 0)).toBeUndefined()
   })
 })

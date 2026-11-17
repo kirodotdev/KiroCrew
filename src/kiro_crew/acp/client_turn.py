@@ -23,8 +23,8 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``,
 Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``,
 ``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``,
-``_process``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
-``_session_key``, ``_steer_turn``, ``_turn_lock``.
+``_process``, ``_registered_session``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
+``_session_key``, ``_steer_turn``, ``_turn_clock``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -122,6 +122,7 @@ from kiro_crew.agent_sdk.backends import (
     prompt_command_issue,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.metrics.chat_runtime_share import record_turn_started
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.tracing import turn_anomalies
 from kiro_crew.tracing import turns as trace_turns
@@ -786,11 +787,27 @@ async def send_message(self: AcpClient, message: str, timeout: float | None = No
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-
-    req_id = await self._send_prompt(message)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     return await self._read_prompt_response(req_id, timeout)
+
+
+def _release_unsent_turn(client: AcpClient) -> None:
+    """End the turn a prompt entry opened and left before its prompt was sent.
+
+    The entry cleared ``_turn_done``, and the turn's read (``_prompt_loop``) sets
+    it again. Left clear, a ``wait_turn_done`` waiter waits out its whole budget,
+    and the idle reader, which starts only once the turn is done, stays off: a
+    reply the agent then sends on its own waits in the pipe and shows under the
+    next prompt.
+    """
+    client._turn_done.set()
+    client._maybe_start_idle_reader()
 
 
 async def send_message_stream(
@@ -805,10 +822,13 @@ async def send_message_stream(
     # streaming subagent adopts this method, mirror that Pre/Post instrumentation here.
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-
-    req_id = await self._send_prompt(message)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
     self._engine_fallback.begin_prompt(self)
@@ -938,9 +958,16 @@ async def stream_events(
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-    req_id = await self._send_prompt(message, allow_image=allow_image, prompt_gate=prompt_gate)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message, allow_image=allow_image, prompt_gate=prompt_gate)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
+    _turn_clock = getattr(self, "_turn_clock", None) or time.monotonic
+    _sent_at = _turn_clock()
+    _started = False
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
@@ -950,6 +977,20 @@ async def stream_events(
         )
     ) as events:
         async for event in events:
+            if not _started and not event.synthetic_completion:
+                # The same span ``session_handle_turn._run_turn`` counts, on the
+                # arm a session that does not share takes: this client owns its
+                # process alone, so never shared. A session the gateway registered
+                # (a chat on any channel, a cron or task session) is the one
+                # tenant, as its lease reads on the handle arm; an unregistered
+                # one (a subagent, a worker-pool client) holds none and reads 0.
+                _started = True
+                record_turn_started(
+                    tenants=1 if getattr(self, "_registered_session", False) is True else 0,
+                    delay_secs=_turn_clock() - _sent_at,
+                    backend=self.backend,
+                    shared=False,
+                )
             yield event
 
 
@@ -960,9 +1001,13 @@ async def stream_unsolicited(
 
     Yields nothing when no such turn is pending, or when a prompt is in
     flight: that prompt's turn reads those frames as its own. A prompt started
-    while this stream is open waits until it closes.
+    while this stream is open waits until it closes. While another reader holds
+    the turn's frames (a request wait in the hand-off window), this waits until
+    that reader has put them back.
     """
     timeout = await _effective_prompt_timeout_async(timeout)
+    while (hold_end := self._agent_turn_hold_end) is not None and not hold_end.is_set():
+        await hold_end.wait()
     gate = self._agent_turn_gate
     if gate is None or not self._agent_turn_pending():
         return

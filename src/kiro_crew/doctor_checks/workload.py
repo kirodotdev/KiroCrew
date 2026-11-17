@@ -607,3 +607,32 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
         print(f"  dump dir:    {dumps_dir}")
     except Exception as exc:
         print(f"  crash dumps: ⚠️  check failed ({exc})")
+
+
+def _doctor_session_tree_checkpoint(issues: list[str]) -> None:
+    """Render the ``Session Tree Checkpoint`` section: whether the last save of the
+    checkpoint was refused or failed, which leaves the next start replaying the crew log
+    from an older one. Reads the marker the projection leaves beside the checkpoint, so
+    it needs no running gateway."""
+    from kiro_crew.crew_log.session_tree_projection import checkpoint_refusal
+
+    print("\nSession Tree Checkpoint")
+    try:
+        refusal = checkpoint_refusal()
+        if refusal is None:
+            print("  checkpoint:  ✅ the last save landed, or none has been refused")
+            return
+        reason = refusal.get("reason")
+        if reason == "over_ceiling":
+            what = (
+                f"the tree is {refusal.get('bytes')} bytes, "
+                f"past the {refusal.get('ceiling')}-byte ceiling"
+            )
+        else:
+            what = "the write failed; the gateway log has the error"
+        print(f"  checkpoint:  ⚠  not being saved: {render._safe_display(what)}")
+        print("               The next start replays the crew log from the last checkpoint that")
+        print("               was written, or rebuilds the session tree from scratch.")
+        issues.append("session tree checkpoint is not being saved")
+    except Exception as exc:
+        print(f"  checkpoint:  ⚠  check failed ({exc})")

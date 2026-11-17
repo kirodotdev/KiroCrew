@@ -29,7 +29,7 @@ from kiro_crew import acp_backends
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.harness import copilot as copilot_mod
 from kiro_crew.acp.transport_errors import AcpError
-from kiro_crew.acp.types import JsonRpcMessage
+from kiro_crew.acp.types import RECORDED_ALWAYS_ONLY, JsonRpcMessage
 from kiro_crew.agent_sdk import tool_gate as gate
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_COPILOT,
@@ -162,8 +162,11 @@ def test_the_allowlist_never_admits_a_permission_command() -> None:
     }
 
 
-@pytest.mark.parametrize("backend", sorted(acp_backends.ACP_BACKENDS_KNOWN - {COPILOT}))
-def test_a_backend_without_a_row_is_never_refused(backend: str) -> None:
+@pytest.mark.parametrize(
+    "backend",
+    sorted(acp_backends.ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST)),
+)
+def test_a_backend_without_a_prompt_allowlist_row_is_never_refused(backend: str) -> None:
     assert prompt_command_issue(backend, ["/yolo"]) == ""
 
 
@@ -1143,7 +1146,7 @@ def test_a_cached_content_block_path_stays_a_target(tmp_path) -> None:
     [
         ({"always": True}, {"once": "allow_once", "always": "allow_always"}),
         ({"option_id": "allow_always"}, {"once": "allow_once", "always": "allow_always"}),
-        ({}, {"once": "allow_always", "always": "allow_always"}),
+        ({}, {"once": "allow_always", "always": "allow_always", RECORDED_ALWAYS_ONLY: "1"}),
     ],
 )
 @pytest.mark.asyncio

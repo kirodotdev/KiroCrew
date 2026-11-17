@@ -211,7 +211,7 @@ Available in `@kirocrew/app-sdk`:
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useAppNotifications()` | This app's own bell notifications (`items`, `unread`, `status`) and `ack(ts)` / `ackAll()` to clear them; declare `/api/notifications/own` in `permissions.api`; needs `APP_SDK_LEVEL >= 4` |
-| `useChatLauncher()` | Open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft |
+| `useChatLauncher()` | `openChat`: open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft. `createChat`: create or reopen the person's chat your manifest's `permissions.chatLaunch` declares, without declaring `/api/chat/slots`, and resolve to its key; seam level 10, so feature-detect `createChat` ([API reference](api-reference.md#app-sdk-hooks-dashboard-ui)) |
 
 `useAppInfo().active` tells your app whether its host surface is the one the user is
 looking at. A routed `ui.pages` page is always the visible surface, so it reads `true`.

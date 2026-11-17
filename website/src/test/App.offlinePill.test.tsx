@@ -25,10 +25,17 @@ import type { RootState } from '../store'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import App from '../App'
 import en from '../i18n/locales/en.manual.json'
+import { QUIET_RECONNECT_GRACE_MS } from '../utils/reconnectBackoff'
 
 // Match the App.test.tsx mock setup. Differ only in `isAuthBannerShown`
 // where each test controls it explicitly.
-vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
+// A layer the page portals out of <main>, as the guide pill and a page's Modal do.
+vi.mock('../pages/ChatPage', async () => {
+  const { OverlayPortal } = await import('../components/overlayRoot')
+  return {
+    default: () => <div data-testid="chat-page">ChatPage<OverlayPortal><div data-testid="chat-page-layer" /></OverlayPortal></div>,
+  }
+})
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => null }))
@@ -395,4 +402,85 @@ describe('App in a relay Crew window — a calm reconnecting view while it retri
     expect(statusText(connDot())).toBe(text)
     await shellSettled(queryClient)
   })
+})
+
+describe('App on this machine with the gateway gone — one calm view over every panel', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it('covers the panels while offline and shows them again once the gateway is back', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseConnected()) })
+    const main = document.getElementById('main-content')!
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    expect(main).not.toHaveAttribute('inert')
+    // The panels show while connected: the gate covers them only offline.
+    expect(screen.getByTestId('chat-page')).toBeVisible()
+    act(() => { store.dispatch(sseDisconnected()) })
+    // A drop shorter than the quiet-reconnect grace covers nothing.
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    act(() => { vi.advanceTimersByTime(QUIET_RECONNECT_GRACE_MS) })
+    vi.useRealTimers()
+    const view = screen.getByTestId('host-offline')
+    expect(view).toHaveTextContent("The gateway isn't running on this machine.")
+    // It names the way back, not just a wait.
+    expect(view).toHaveTextContent('kirocrew gateway')
+    expect(view).toHaveTextContent(en.app.host_offline_sessions_kept)
+    // No second live region: the top bar's status already speaks the drop,
+    // and its "Gateway offline — reconnecting" stays.
+    expect(view).not.toHaveAttribute('aria-live')
+    expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
+    // Every panel under it (folders, board columns, the guide, the composer) is hidden and inert.
+    expect(main).toHaveAttribute('inert')
+    expect(main).toHaveAttribute('aria-hidden', 'true')
+    // What the panels portal out of main (the guide's error pill) goes with them.
+    expect(screen.queryByTestId('chat-page-layer')).toBeNull()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    expect(main).not.toHaveAttribute('inert')
+    expect(screen.getByTestId('chat-page-layer')).toBeInTheDocument()
+    await shellSettled(queryClient)
+  })
+
+  it('leaves a relay reason to its own surface', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected('refused')) })
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    expect(document.getElementById('main-content')).not.toHaveAttribute('inert')
+    await shellSettled(queryClient)
+  })
+})
+
+describe('App in a relay Crew pane — the desktop app draws the only top bar', () => {
+  const PANE_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow kiroCrewRelayPane'
+  const WINDOW_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow'
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('drops its own header and the header row, and still speaks the connection state', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(PANE_UA)
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    expect(document.querySelector('header.topbar')).toBeNull()
+    expect(screen.getByTestId('dashboard-shell').style.gridTemplateRows).toBe('0px minmax(0,1fr)')
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.getByTestId('relay-pane-gateway-status')).toHaveTextContent(en.app.gateway_connected)
+    await shellSettled(queryClient)
+  })
+
+  it.each([['a relay Crew window', WINDOW_UA], ['a plain dashboard', 'Mozilla/5.0 (Macintosh)']])(
+    'keeps its header without the pane marker (%s)', async (_label, ua) => {
+      vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua)
+      const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+      expect(document.querySelector('header.topbar')).not.toBeNull()
+      expect(screen.getByTestId('dashboard-shell').style.gridTemplateRows).toBe('')
+      expect(screen.queryByTestId('relay-pane-gateway-status')).toBeNull()
+      await shellSettled(queryClient)
+    })
 })

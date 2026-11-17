@@ -19,7 +19,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "src/kiro_crew/slack/code_channels"
-MODULES = ("tools.py", "wrapup.py", "commands.py", "workspace/service.py")
+MODULES = ("tools.py", "wrapup.py", "commands.py", "workspace/service.py", "workspace/code_tab.py")
 COMMIT = {"commit_if_not_stopped", "_commit"}  # tools._commit raises on a refusal
 
 #: Calls that change channel state or Slack: store and record writes, the status
@@ -105,6 +105,17 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("workspace/service.py", "_recover_folder", "put"): _SETUP,
     ("workspace/service.py", "republish_bar", "put"): _PUBLISHED,
     ("workspace/service.py", "_refresh", "put"): _PUBLISHED,
+    ("workspace/code_tab.py", "_owe_tab", "put"): (
+        "records, before the send, that the Code tab may carry helper agents; "
+        "skipping it would lose track of what Slack may show"
+    ),
+    ("workspace/code_tab.py", "_unowe_tab", "put"): (
+        "undoes this call's own write-ahead after Slack refused the send it was for"
+    ),
+    ("workspace/code_tab.py", "_take_down_owed", "put"): (
+        "records a Code tab takedown Slack already answered (or that it is still "
+        "owed); skipping it would lose track of what Slack shows"
+    ),
     ("commands.py", "_gh_signed_in", "_gh_cache"): (
         "caches a gh sign-in probe for the process; not channel state"
     ),
@@ -166,13 +177,16 @@ def _module_state(tree: ast.Module) -> set[str]:
     return names
 
 
-def _writes(fn: ast.AST, state: set[str]) -> list[tuple[ast.AST, str]]:
+def _writes(
+    fn: ast.AST, state: set[str], writes: frozenset[str] | set[str] = frozenset()
+) -> list[tuple[ast.AST, str]]:
     """``(node, written name)`` for every side effect in *fn* (not nested defs)."""
+    writes = writes or WRITES
     out: list[tuple[ast.AST, str]] = []
     for node in _own_nodes(fn):
         if isinstance(node, ast.Call):
             name = _callee(node)
-            if name in WRITES:
+            if name in writes:
                 fields = [k.arg for k in node.keywords if k.arg]
                 out.append((node, fields[0] if name == "surface_update" and fields else name))
             elif name == "to_thread" and node.args:
@@ -180,7 +194,7 @@ def _writes(fn: ast.AST, state: set[str]) -> list[tuple[ast.AST, str]]:
                 inner_name = (
                     inner.attr if isinstance(inner, ast.Attribute) else getattr(inner, "id", "")
                 )
-                if inner_name in WRITES:
+                if inner_name in writes:
                     out.append((node, inner_name))
             elif (
                 name in MUTATORS
@@ -253,15 +267,21 @@ def _counts(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> bool:
     return _callee(call) == "_commit" or not isinstance(parents.get(call), ast.Expr)
 
 
-def _unchecked(fn: ast.AST, state: set[str]) -> list[tuple[int, str]]:
-    """Writes in async *fn* with no commit check since the last await."""
+def _unchecked(
+    fn: ast.AST,
+    state: set[str],
+    commit: set[str] | frozenset[str] = frozenset(),
+    writes: set[str] | frozenset[str] = frozenset(),
+) -> list[tuple[int, str]]:
+    """Writes in async *fn* with no *commit* check since the last await."""
+    commit = commit or COMMIT
     own = _own_nodes(fn)
     parents = _parents(fn)
     commits = [
-        n for n in own if isinstance(n, ast.Call) and _callee(n) in COMMIT and _counts(n, parents)
+        n for n in own if isinstance(n, ast.Call) and _callee(n) in commit and _counts(n, parents)
     ]
     bad: list[tuple[int, str]] = []
-    for node, name in _writes(fn, state):
+    for node, name in _writes(fn, state, writes):
         p = _pos(node)
 
         def between(a: ast.AST, start: tuple[int, int]) -> bool:
@@ -406,3 +426,128 @@ def test_every_surface_client_send_passes_the_commit_point() -> None:
     assert not any(
         isinstance(a, ast.Await) and check < _pos(a) < _pos(send) for a in own
     ), "an await sits between the commit check and the send"
+
+
+# ── The send gate of every write carrying the board's workers ──────────────
+#
+# Each board write (post, edit, pin, needs-you page) re-checks the board's scope
+# AND the Stop right before the raw send, with no await between: the raw Slack
+# client awaits nothing before its HTTP call.
+
+#: The raw Slack client's sends.
+RAW_SENDS = frozenset(
+    {"post_blocks", "update_message", "add_pin", "post_message", "chat_postMessage", "chat_update"}
+)
+#: (module, function) -> the gate calls that must precede each of its raw sends.
+WORKER_WRITERS: dict[tuple[str, str], tuple[frozenset[str], ...]] = {
+    # board post and edit / pin / needs-you page: _writable = scope, then Stop
+    ("board/publisher.py", "_send"): (frozenset({"_writable"}),),
+    ("board/publisher.py", "_pin"): (frozenset({"_writable"}),),
+    ("board/publisher.py", "_alert"): (frozenset({"_writable"}),),
+}
+#: Modules that produce worker content: every raw send in them is classified above.
+WORKER_MODULES = ("board/__init__.py", "board/publisher.py", "board/source.py")
+
+
+def _tree(module: str) -> ast.Module:
+    return ast.parse((ROOT / module).read_text(encoding="utf-8"))
+
+
+def _async_fn(module: str, name: str) -> ast.AsyncFunctionDef:
+    return next(
+        n for n in ast.walk(_tree(module)) if isinstance(n, ast.AsyncFunctionDef) and n.name == name
+    )
+
+
+def test_every_worker_content_writer_gates_each_raw_send() -> None:
+    found: list[str] = []
+    for (module, name), gates in WORKER_WRITERS.items():
+        fn = _async_fn(module, name)
+        sends = _writes(fn, set(), RAW_SENDS)
+        if not sends:
+            found.append(f"{module}:{name} has no raw send left: drop it from WORKER_WRITERS")
+        for gate in gates:
+            for line, send in _unchecked(fn, set(), gate, RAW_SENDS):
+                found.append(f"{module}:{line} {name} sends {send} without {sorted(gate)}")
+    assert found == [], "\n".join(found)
+
+
+def test_every_raw_send_in_the_board_modules_is_a_classified_writer() -> None:
+    """A new board write fails here until it is listed (and gated) above."""
+    unlisted = [
+        f"{module}:{fn.name}"
+        for module in WORKER_MODULES
+        for fn in ast.walk(_tree(module))
+        if isinstance(fn, ast.AsyncFunctionDef)
+        and _writes(fn, set(), RAW_SENDS)
+        and (module, fn.name) not in WORKER_WRITERS
+    ]
+    assert unlisted == [], unlisted
+
+
+def test_the_board_writes_no_folder_placement():
+    """``session_create`` is the one place a code-channel worker is filed (in the
+    channel's own folder, unless the channel turned conductor mode on). The board
+    only reads: no module under ``board/`` (nor the workspace's worker readers)
+    assigns a ``folder_id`` or writes a session's metadata record."""
+    writes = ("update_metadata", "update_metadata_if", "_slot_meta_txn_lock", "set_slot_folder")
+    readers = [ROOT / "workspace" / name for name in ("worker_prs.py", "worker_diff.py")]
+    for path in sorted((ROOT / "board").glob("*.py")) + readers:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            targets = (
+                node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+            )
+            for target in targets:
+                assert not (
+                    isinstance(target, ast.Attribute) and target.attr == "folder_id"
+                ), f"{path.name}:{node.lineno} assigns a folder_id"
+            if isinstance(node, (ast.Attribute, ast.Name)):
+                name = node.attr if isinstance(node, ast.Attribute) else node.id
+                assert name not in writes, f"{path.name}:{node.lineno} uses {name}"
+
+
+#: The agents-client writes that may carry the board's workers: *gate* is required.
+GATED_CLIENT_WRITES = ("set_diff_view",)
+
+
+def test_the_agents_client_asks_the_gate_last_and_every_caller_passes_one() -> None:
+    client = _tree("client.py")
+    for name in GATED_CLIENT_WRITES:
+        fn = next(
+            n
+            for n in ast.walk(client)
+            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name
+        )
+        kwonly = {a.arg: d for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults)}
+        assert "gate" in kwonly and kwonly["gate"] is None, f"{name}: gate must be required"
+    call = _async_fn("client.py", "_call")
+    own = _own_nodes(call)
+    send = min(
+        (n for n in own if isinstance(n, ast.Await) and "_api_call" in ast.unparse(n)), key=_pos
+    )
+    gate = [n for n in own if isinstance(n, ast.Call) and _callee(n) == "_gate_admits"]
+    assert gate and _pos(gate[0]) < _pos(send)
+    assert not any(
+        isinstance(a, ast.Await) and _pos(gate[0]) < _pos(a) < _pos(send) for a in own
+    ), "an await sits between the gate and the send"
+    surface_call = _async_fn("surface_client.py", "_call")
+    supers = [
+        n
+        for n in _own_nodes(surface_call)
+        if isinstance(n, ast.Call) and _callee(n) == "_call" and "super()" in ast.unparse(n)
+    ]
+    assert supers and all(any(k.arg == "gate" for k in n.keywords) for n in supers)
+    # Every caller, the workspace's ``self._call("set_diff_view", ...)`` included.
+    missing: list[str] = []
+    for path in sorted(ROOT.rglob("*.py")):
+        rel = str(path.relative_to(ROOT))
+        for n in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(n, ast.Call):
+                continue
+            named = _callee(n)
+            if named == "_call" and n.args and isinstance(n.args[0], ast.Constant):
+                named = str(n.args[0].value)
+            if named in GATED_CLIENT_WRITES and not any(k.arg == "gate" for k in n.keywords):
+                missing.append(f"{rel}:{n.lineno} {named}")
+    assert missing == [], missing

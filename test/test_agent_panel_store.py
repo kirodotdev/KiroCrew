@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from redaction_structured_cases import github_classic
+from redaction_structured_cases import github_classic, synth
 
 from kiro_crew import agent_panel
 
@@ -165,17 +165,13 @@ def test_a_crew_name_that_could_traverse_never_selects_a_template():
 
 #: Shapes both scanners actually recognise, verified against the redactors
 #: themselves rather than guessed. ``SECRET`` is a credential literal;
-#: ``EXFIL`` is an OAuth authorize URL carrying a state/code_challenge pair,
-#: which is the shape ``redact_exfiltration_urls`` flags -- a plain
-#: suspicious-looking host is NOT flagged, and a test built on one would have
-#: passed vacuously while proving nothing.
+#: ``EXFIL`` is a URL carrying a credential parameter, whose VALUE
+#: ``redact_exfiltration_urls`` masks -- a URL is never replaced whole, and an
+#: OAuth ``state`` or ``code_challenge`` is not a credential, so a test built on
+#: one would pass vacuously while proving nothing.
 SECRET = github_classic(seed=25)
-EXFIL = (
-    "https://api.notion.com/v1/oauth/authorize?client_id=client123"
-    "&response_type=code&state=s3cr3tstate0123456789abcdef0123456789"
-    "&code_challenge=chal0123456789abcdef0123456789abcdef01234"
-    "&code_challenge_method=S256"
-)
+EXFIL_VALUE = synth(40, seed=71)
+EXFIL = f"https://collector.example.com/c?access_token={EXFIL_VALUE}"
 
 
 def test_a_credential_in_published_data_never_reaches_the_record():
@@ -193,7 +189,7 @@ def test_a_credential_in_published_data_never_reaches_the_record():
 
 def test_an_exfiltration_url_in_published_data_never_reaches_the_record():
     _publish(data={"note": f"posting to {EXFIL}"})
-    assert EXFIL not in json.dumps(agent_panel.read(CREW))
+    assert EXFIL_VALUE not in json.dumps(agent_panel.read(CREW))
 
 
 def test_the_title_is_redacted_too():
@@ -213,7 +209,7 @@ def test_redaction_reaches_nested_values_and_keys():
     )
     blob = json.dumps(agent_panel.read(CREW))
     assert SECRET not in blob
-    assert EXFIL not in blob
+    assert EXFIL_VALUE not in blob
 
 
 def test_redaction_does_not_disturb_ordinary_values():
@@ -375,6 +371,31 @@ def test_an_installed_template_joins_the_available_set():
     assert BESPOKE not in agent_panel.available_templates()
     _install_template(BESPOKE, _BESPOKE_HTML)
     assert {agent_panel.DEFAULT_TEMPLATE_ID, BESPOKE} <= set(agent_panel.available_templates())
+
+
+def test_a_template_linked_from_outside_its_directory_is_not_offered(tmp_path):
+    """The listing agrees with ``resolve_template``: a link leaving the override
+    directory is never served, so it is never listed either, and the crew named
+    after it falls back to the default template instead of failing to publish.
+    A link to a real file INSIDE the directory stays offered and served."""
+    outside = tmp_path / "dotfiles" / f"{BESPOKE}.html"
+    outside.parent.mkdir()
+    outside.write_text(_BESPOKE_HTML, encoding="utf-8")
+    over = agent_panel.override_templates_dir()
+    over.mkdir(parents=True, exist_ok=True)
+    (over / f"{BESPOKE}.html").symlink_to(outside)
+
+    inside = _install_template("inside-real", "INSIDE" + agent_panel.DATA_MARKER)
+    (over / "inside-link.html").symlink_to(inside)
+
+    listed = agent_panel.available_templates()
+    assert BESPOKE not in listed
+    assert agent_panel.template_for_crew(BESPOKE) == agent_panel.DEFAULT_TEMPLATE_ID
+    written = _publish(template=agent_panel.template_for_crew(BESPOKE))
+    assert written["template"] == agent_panel.DEFAULT_TEMPLATE_ID
+
+    assert "inside-link" in listed
+    assert agent_panel.resolve_template("inside-link").startswith("INSIDE")
 
 
 def test_an_operator_override_wins_over_the_shipped_template():

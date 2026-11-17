@@ -158,7 +158,7 @@ function CreatorFilterSelect({ value, onChange, people }: {
     return { options: opts, labels: labs }
   }, [people, current])
   return (
-    <div className="mx-2 mb-1 flex flex-wrap items-center gap-1.5 min-w-0" data-testid="creator-filter">
+    <div className="mx-2 mb-1 flex items-center gap-1.5 min-w-0" data-testid="creator-filter">
       <Users size={12} className="shrink-0 text-muted" aria-hidden />
       <SimpleSelect
         options={options}
@@ -166,7 +166,11 @@ function CreatorFilterSelect({ value, onChange, people }: {
         value={current}
         onChange={v => onChange(v as CreatorFilterValue)}
         aria-label={i18nT('sharedCrew.filter_label')}
-        className="h-7 min-w-0 flex-1"
+        // The flex sizing goes on the wrapper (`style`): it is the row's flex
+        // item, so the trigger, and with it the open list, spans the sidebar.
+        style={{ flex: '1 1 0', minWidth: 0 }}
+        className="h-7"
+        truncateLabels
       />
     </div>
   )

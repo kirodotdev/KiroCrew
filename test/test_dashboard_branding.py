@@ -212,6 +212,20 @@ class TestBrandingEndpoint:
         assert json.loads(resp.body)["remote_editor"] == served
 
     @pytest.mark.asyncio
+    async def test_branding_serves_the_sanitized_instance_label(self, tmp_path, monkeypatch):
+        # The SPA titles the tab and draws the favicon from this field; the
+        # loader runs it through the bot-name sanitizer, so the zero-width
+        # space and the padding never reach the tab.
+        from kiro_crew.dashboard.handlers import api_branding
+
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        (tmp_path / "config.json").write_text(
+            json.dumps({"dashboard": {"instance_label": " pod\u200b-a "}})
+        )
+        resp = await api_branding(MagicMock())
+        assert json.loads(resp.body)["instance_label"] == "pod-a"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("present", [True, False])
     async def test_branding_reports_whether_the_host_has_a_desktop_launcher(self, present):
         # The dashboard offers "Show in file manager" and "Open with default app"

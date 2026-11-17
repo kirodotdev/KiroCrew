@@ -18,6 +18,12 @@ text never becomes the parent's text; a child's tool frames still continue to th
 ordinary tool path after their activity prefix, which is how a kiro-cli child's tool
 calls render too.
 
+opencode sends no child frames: its ``task`` tool runs the subagent and reports it
+only as the parent's own tool row (``_opencode_task_events``). That row still names
+the task, the agent and the end, so it feeds the same roster, keyed by the row's
+``toolCallId``, and the ``<task_result>`` the row completes with is the card's text.
+The row itself still renders as the parent's tool call.
+
 A child the adapter announced with ``capabilities.cancel`` can be stopped alone:
 ``cancel_native_child`` sends ``session/cancel`` naming it, the request a Stop on its
 card makes (``ACP_BACKENDS_NATIVE_CHILD_CANCEL``). The permission and elicitation
@@ -67,6 +73,7 @@ from kiro_crew.acp.transport_framing import write_notification_best_effort
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
     ACP_CLIENT_CAPABILITIES,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -134,6 +141,12 @@ _IDLE_FINISHED = frozenset({"end_turn", "max_tokens", "max_turn_requests", ""})
 #: The run of non-space characters a cut string ends with.
 _TRAILING_TOKEN = re.compile(r"\S+\Z")
 
+#: opencode's subagent tool, the title of its first ``tool_call`` frame
+#: (``harness_tool_names.OPENCODE_TOOL_IDS_BY_KIRO_TOOL``; measured on 1.19.1).
+_OPENCODE_TASK_TOOL = "task"
+#: The child's answer inside the text a completed ``task`` row carries.
+_OPENCODE_TASK_RESULT = re.compile(r"<task_result>(.*)</task_result>", re.DOTALL)
+
 
 def client_capabilities_for(backend: str) -> dict:
     """The ``clientCapabilities`` an ``AcpClient`` on *backend* declares."""
@@ -200,10 +213,11 @@ def _reset_native_child_turn(self: AcpClient) -> None:
     The ids, rows and Agent-call links outlive the turn, because a background child
     keeps running after the turn that started it and its frames are read by a later
     one. What the bounds refused last turn is said once here and then cleared, as the
-    open tool-call set's evictions are. A session that declares nothing keeps no child
-    state, so there is nothing to reset.
+    open tool-call set's evictions are. An opencode session keeps its ``task`` rows'
+    children without declaring anything (``_opencode_task_events``); any other session
+    that declares nothing keeps no child state, so there is nothing to reset.
     """
-    if not self._native_children_declared():
+    if not (self._native_children_declared() or self.backend == ACP_BACKEND_OPENCODE):
         return
     _start_native_child_turn(self)
 
@@ -356,6 +370,8 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
     every reader skips its ordinary handling. A child's tool frame is not consumed,
     so after its activity prefix it reaches the tool path like any other call.
     """
+    if self.backend == ACP_BACKEND_OPENCODE:
+        return _opencode_task_events(self, msg), False
     if not self._native_children_declared():
         return [], False
     params = msg.params if isinstance(msg.params, dict) else {}
@@ -432,6 +448,73 @@ def _child_text(backend: str, kind: object, update: dict[str, Any]) -> str:
         notice = parse_notice(update)
         return notice.transcript if notice is not None else ""
     return ""
+
+
+def _tool_content_text(content: object) -> str:
+    """The first text of a tool row's ``content`` list (``{"type": "content", ...}``)."""
+    if not isinstance(content, list):
+        return ""
+    for block in content:
+        inner = block.get("content") if isinstance(block, dict) else None
+        if isinstance(inner, dict) and isinstance(inner.get("text"), str):
+            return inner["text"]
+    return ""
+
+
+def _opencode_task_events(client: AcpClient, msg: JsonRpcMessage) -> list[AcpEvent]:
+    """Read an opencode ``task`` tool row as its subagent's card, in the claude shape.
+
+    The row's ``tool_call`` (titled ``task``) opens the card, keyed by its
+    ``toolCallId`` and admitted by the handle's ``_note_native_child``, so the same
+    cap holds. Each frame of that row then sets the agent (``subagent_type``), the
+    task (``description``, else ``prompt``) and the end: ``completed`` puts the
+    ``<task_result>`` text on the card and closes it, ``failed`` closes it failed. The
+    frames are never consumed: the row still renders as the parent's own call.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    update = params.get("update")
+    if not isinstance(update, dict):
+        return []
+    kind = update.get("sessionUpdate")
+    call = update.get("toolCallId")
+    if kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE) or not isinstance(call, str):
+        return []
+    if kind == UPDATE_TOOL_CALL:
+        if update.get("title") != _OPENCODE_TASK_TOOL or not _note_native_child(client, call):
+            return []
+        client._native_child_rows[call] = {
+            "sessionId": call,
+            "sessionName": "",
+            "agentName": "",
+            "initialQuery": "",
+            "status": {"type": "working", "message": ""},
+        }
+    row = client._native_child_rows.get(call)
+    if row is None:
+        return []
+    raw = update.get("rawInput")
+    if isinstance(raw, dict):
+        if raw.get("subagent_type"):
+            row["agentName"] = _label(raw["subagent_type"])
+        task = raw.get("description") or raw.get("prompt")
+        if task:
+            row["sessionName"] = row["initialQuery"] = _label(task)
+    events: list[AcpEvent] = []
+    status = update.get("status")
+    if status == "completed":
+        found = _OPENCODE_TASK_RESULT.search(_tool_content_text(update.get("content")))
+        answer = found.group(1).strip() if found else ""
+        # A row with no task never reaches the roster, so it has no card to draw on.
+        if answer and row["initialQuery"]:
+            events.append(AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=call, text=answer))
+        row["status"] = {"type": "completed", "message": ""}
+    elif status == "failed":
+        row["status"] = {
+            "type": "failed",
+            "message": _label(_tool_content_text(update.get("content"))),
+        }
+    client._native_child_turn[call] = None
+    return events + client._native_child_roster()
 
 
 def native_child_cancellable(client: Any, child_sid: str) -> bool:

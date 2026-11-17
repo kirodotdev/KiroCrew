@@ -347,7 +347,7 @@ enabled** in the panel, and Slack keeps working as before.
 | Switch | Manifest additions |
 |---|---|
 | Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
-| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`; event `agent_session_stopped` |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped` |
 
 > **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
 > `assistant_view` once the manifest is saved in Slack.
@@ -378,7 +378,9 @@ choose **New folder…** in the folder list to create one there.
 
 A conductor only plans and hands off work, so in a code channel it needs **Let code channels
 start helper agents** (`slack.code_channel_dispatch`), the sub-toggle under **Code channels**. It
-is off by default and turning Code channels on does not turn it on. Helpers work in the code
+turns on when you first turn Code channels on, and you can turn it off there or in the same save.
+If a value is already saved, including an off, turning Code channels on keeps it, so an existing
+setup does not change on upgrade. A missing, unreadable or malformed value reads as off. Helpers work in the code
 channel's folder and ask you before changing files, unless that channel is set to approve
 automatically (Trust). When on, the channel's conductor can
 create worker sessions and follow them on its work ledger, only on your own messages, only for

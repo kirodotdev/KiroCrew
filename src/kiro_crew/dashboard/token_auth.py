@@ -1469,6 +1469,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _subagent_caller_record,
         _subagent_owner,
         _subagent_record_exists,
+        app_owner_of_session_key,
         app_owns_transcript,
         caller_names_a_missing_slot,
         caller_record_is_missing,

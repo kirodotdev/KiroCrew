@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import kiro_crew.mcp_shared as mcp_shared
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture(autouse=True)
@@ -565,7 +566,7 @@ class TestFailureCause:
 
     def test_message_is_redacted_and_capped(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
-        token = "ghp_" + "a1B2" * 9
+        token = github_classic(seed=105)
         urlopen = MagicMock(side_effect=OSError(f"bad {token} " + "x" * 500))
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_tool_policy()

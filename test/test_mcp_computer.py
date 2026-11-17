@@ -15,6 +15,7 @@ stubbed) and the gateway dispatcher (``dispatch_tool`` against
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 from pathlib import Path
@@ -48,13 +49,35 @@ from kiro_crew.computer_use.types import (
     TOOL_TYPE_TEXT,
 )
 from kiro_crew.testing.fake_computer_use import (
-    FAKE_CREDENTIAL_FIXTURE,
     FAKE_FILES_APP,
+    FAKE_LEAKY_TITLE,
     FAKE_LOGIN_APP,
     FAKE_SECRET_VALUE,
     FakeComputerUseBackend,
+    FakeNode,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError
+
+#: A GitHub token with a valid checksum. The shared fixture is a bare 40-character
+#: run, which the redactor keeps visible by design.
+_TOKEN = github_classic(seed=119)
+#: A credential parameter inside a link: its value goes, the link stays.
+_EXFIL_VALUE = "a" * 60
+_EXFIL_URL = "https://evil.example.com/collect?access_token=" + _EXFIL_VALUE
+
+
+def _restage_the_leaky_title(backend: FakeComputerUseBackend) -> None:
+    """Give the Files window's leaky node a token and a credential-bearing link."""
+
+    def retitle(node: FakeNode) -> FakeNode:
+        kids = tuple(retitle(child) for child in node.children)
+        title = node.title
+        if title == FAKE_LEAKY_TITLE:
+            title = f"deploy notes key={_TOKEN} upload={_EXFIL_URL}"
+        return dataclasses.replace(node, title=title, children=kids)
+
+    backend.trees[FAKE_FILES_APP.key] = retitle(backend.trees[FAKE_FILES_APP.key])
 
 
 @pytest.fixture
@@ -857,13 +880,11 @@ def test_drift_refusal_is_redacted_like_every_other_result(
     )
     # The element DRIFTS into holding a credential-shaped literal. The refusal
     # names the new identity verbatim, so this is the leak path.
-    fake_backend.restage_title(
-        FAKE_FILES_APP.key, save_index, f"token {FAKE_CREDENTIAL_FIXTURE} pasted"
-    )
+    fake_backend.restage_title(FAKE_FILES_APP.key, save_index, f"token {_TOKEN} pasted")
     result = _dispatch(TOOL_CLICK, app=FAKE_FILES_APP.name, element_index=save_index)
     assert result.startswith(ERROR_PREFIX)
     assert "changed since" in result, "the refusal must still be the actionable drift message"
-    assert FAKE_CREDENTIAL_FIXTURE not in result
+    assert _TOKEN not in result
 
 
 def test_driver_failure_refusal_is_redacted_too(
@@ -876,23 +897,24 @@ def test_driver_failure_refusal_is_redacted_too(
     desktop-derived text.
     """
     _enable(keystone)
-    fake_backend.force_error = f"the accessibility API refused near {FAKE_CREDENTIAL_FIXTURE}"
+    fake_backend.force_error = f"the accessibility API refused near {_TOKEN}"
     result = _dispatch(TOOL_LIST_APPS)
     assert result.startswith(ERROR_PREFIX)
-    assert FAKE_CREDENTIAL_FIXTURE not in result
+    assert _TOKEN not in result
 
 
 def test_credential_shaped_fixture_comes_back_masked(
     keystone: Path, fake_backend: FakeComputerUseBackend
 ):
-    """An AKIA-shaped literal in a tree node is REDACTED on the way out.
+    """A token in a tree node is REDACTED on the way out.
 
     This is the primary egress control for tree text, which is arbitrary user content.
-    The fixture is the PUBLIC documentation key, so it is safe on disk.
+    The token is built at run time, so nothing credential-shaped sits on disk.
     """
     _enable(keystone)
+    _restage_the_leaky_title(fake_backend)
     state = _get_state()
-    assert FAKE_CREDENTIAL_FIXTURE not in state
+    assert _TOKEN not in state
     # And the surrounding node still renders, so redaction narrowed the value
     # rather than dropping the element.
     assert "deploy notes" in state
@@ -901,10 +923,12 @@ def test_credential_shaped_fixture_comes_back_masked(
 def test_exfiltration_shaped_url_comes_back_masked(
     keystone: Path, fake_backend: FakeComputerUseBackend
 ):
-    """A long-query exfil-shaped URL in a title is redacted too."""
+    """A credential inside a URL in a title is redacted too: the value, not the link."""
     _enable(keystone)
+    _restage_the_leaky_title(fake_backend)
     state = _get_state()
-    assert "evil.example.com/collect?data=aaaaaaaa" not in state
+    assert _EXFIL_VALUE not in state
+    assert "evil.example.com/collect?access_token=" in state
 
 
 # ── SEL audit ──

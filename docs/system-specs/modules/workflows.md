@@ -845,8 +845,8 @@ entry is dropped. The built-in Workflows app's `/run` handler returns its result
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`
-ancestry, the launch limits `timeout_secs` and `budget_total` (stored, and read
-back as `None` from an older record that lacks them), and the driving `task`. Statuses: `running`, `paused`, `finished`,
+ancestry, the launch limits `timeout_secs` and `budget_total` and the `admitted_at`
+epoch (stored, and read back as `None` from an older record that lacks them), and the driving `task`. Statuses: `running`, `paused`, `finished`,
 `failed`, `cancelled`; `running` and `paused` are active states.
 
 Two distinct serializations:
@@ -1030,7 +1030,12 @@ Properties that matter:
 - **Explicit checkpoint failures:** serialization/write/replace failures propagate
   as fixed sanitized errors while live execution results remain available.
   Recovery retains ordinary descriptor/path/owner checks, rejects malformed
-  records and returns records oldest-first. Inventory access failures propagate;
+  records and returns records oldest-first by the run's admission time (the
+  `admitted_at` epoch saved on the record, so the rewrite that demotes an interrupted
+  run does not move it), then by file write time. A record saved before `admitted_at`
+  existed ranks by its first event's timestamp (read as an epoch, so every timestamp
+  form compares on one scale), and one with neither by its write time. Inventory
+  access failures propagate;
   corrupt individual records cannot manufacture a replacement member identity.
 
 `RunRegistry.load_persisted()` rehydrates on startup, fills only ids not already
@@ -2184,7 +2189,7 @@ crashing.
 
 The backend half of the tab is covered without gate ids, in
 `test_workflows_app.py` (manifest shape, `handle_validate` / `handle_run` /
-`handle_examples`, and redaction of credentials and exfiltration URLs before a
+`handle_examples`, and redaction of credentials, inside URLs too, before a
 run payload leaves the handler) and `test_workflow_handler_json_contract.py`
 (every legacy mutation handler rejects a non-object JSON body with a coded 400
 before service dispatch, while object bodies still reach that service).

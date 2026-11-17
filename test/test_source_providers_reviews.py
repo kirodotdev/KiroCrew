@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
@@ -368,7 +369,7 @@ async def test_pending_review_reports_no_draft_when_none_is_pending(monkeypatch)
 @pytest.mark.asyncio
 async def test_pending_review_redacts_a_credential_in_the_draft_body(monkeypatch) -> None:
     """The body is provider-controlled text; a hand-written draft can quote a secret."""
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=91)
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock())
     _stub_run_json(
         monkeypatch,
@@ -424,7 +425,7 @@ async def test_pending_review_detects_a_credential_in_an_inline_comment(
     monkeypatch,
 ) -> None:
     """Submission publishes every stored comment, not just the body this app reads."""
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=91)
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock())
     _stub_run_json(
         monkeypatch,
@@ -510,7 +511,7 @@ async def test_submit_review_refuses_a_draft_whose_text_needs_redaction(
     So a draft the dashboard rendered as `[REDACTED]` would go out verbatim. Refuse:
     a leak the user was shown as redacted is worse than no publish button.
     """
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=91)
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock())
     invalidate = AsyncMock()
     monkeypatch.setattr(source, "_invalidate_pull_request_cache", invalidate)
@@ -532,7 +533,7 @@ async def test_submit_review_refuses_a_draft_whose_text_needs_redaction(
 async def test_submit_review_refuses_when_only_an_inline_comment_needs_redaction(
     monkeypatch,
 ) -> None:
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=91)
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock())
     monkeypatch.setattr(source, "_invalidate_pull_request_cache", AsyncMock())
     calls = _stub_run_json(
@@ -554,7 +555,7 @@ async def test_pending_review_scans_every_page_of_inline_comments(monkeypatch) -
     Drives the multi-page `--paginate --slurp` shape directly: the credential sits
     on the SECOND page, which an unpaginated read would clear for publishing.
     """
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=91)
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock())
 
     async def fake(*argv, **kwargs):

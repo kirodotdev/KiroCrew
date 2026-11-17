@@ -1037,19 +1037,18 @@ class TestAFallbackPassSaysItRehearsedTheWrongFilesystem:
     """
 
     @staticmethod
-    def _pass_in_tmpdir(monkeypatch, fallback):
+    def _pass_in_tmpdir(monkeypatch, tmp_path, fallback):
         """Drive ``probe`` to a real-install pass whose scratch fell back to TMPDIR.
 
         ``_make_scratch`` is stubbed so the reason under test is the only variable;
-        ``_install_already_proven`` returns ``None`` so the install actually runs,
-        which is the path the disclosure is about; every subprocess returns 0, so
-        ``git show`` extracts and ``npm ci`` passes.
+        it makes the scratch under ``tmp_path`` so pytest reclaims it even when
+        ``probe`` raises. ``_install_already_proven`` returns ``None`` so the
+        install actually runs, which is the path the disclosure is about; every
+        subprocess returns 0, so ``git show`` extracts and ``npm ci`` passes.
         """
-        scratch: list[str] = []
 
         def fake_make_scratch(git, repo):
-            made = Path(np.tempfile.mkdtemp(prefix=np._SCRATCH_PREFIX))
-            scratch.append(str(made))
+            made = Path(np.tempfile.mkdtemp(prefix=np._SCRATCH_PREFIX, dir=tmp_path))
             return made, None, fallback
 
         monkeypatch.setattr(np, "_make_scratch", fake_make_scratch)
@@ -1059,12 +1058,7 @@ class TestAFallbackPassSaysItRehearsedTheWrongFilesystem:
             "run",
             lambda argv, **kw: subprocess.CompletedProcess(argv, 0, b"{}", b""),
         )
-        code, detail = np.probe(
-            git="/usr/bin/git", npm="/usr/bin/npm", repo="/repo", ref="origin/main"
-        )
-        for made in scratch:
-            shutil.rmtree(made, ignore_errors=True)
-        return code, detail
+        return np.probe(git="/usr/bin/git", npm="/usr/bin/npm", repo="/repo", ref="origin/main")
 
     @pytest.mark.parametrize(
         "fallback",
@@ -1076,18 +1070,18 @@ class TestAFallbackPassSaysItRehearsedTheWrongFilesystem:
         ],
     )
     def test_every_reason_reaches_the_detail_line_without_changing_the_verdict(
-        self, monkeypatch, fallback
+        self, monkeypatch, tmp_path, fallback
     ):
-        code, detail = self._pass_in_tmpdir(monkeypatch, fallback)
+        code, detail = self._pass_in_tmpdir(monkeypatch, tmp_path, fallback)
         assert code == np.EXIT_OK, "the fallback must not change the pass verdict"
         assert "incoming lockfile is installable" in detail, "a fallback pass still reads as a pass"
         assert "TMPDIR" in detail, detail
         assert fallback in detail, detail
 
-    def test_a_repo_hosted_pass_stays_the_generic_line(self, monkeypatch):
+    def test_a_repo_hosted_pass_stays_the_generic_line(self, monkeypatch, tmp_path):
         """No fallback means no disclosure: ``probe`` returns the empty detail that
         ``main`` renders as the generic pass line."""
-        code, detail = self._pass_in_tmpdir(monkeypatch, None)
+        code, detail = self._pass_in_tmpdir(monkeypatch, tmp_path, None)
         assert code == np.EXIT_OK
         assert detail == "", "a faithful rehearsal must not claim it fell back"
 

@@ -33,6 +33,7 @@ from kiro_crew import (  # noqa: F401
     mcp_apps_render,
     model_registry,
     prompt_segments,
+    redaction_seams,
     resource_status,
     runtime_death,
     session_directive,
@@ -168,6 +169,10 @@ from kiro_crew.dashboard.chat_turn.eager_spawn import (
     stop_eager_spawns,
 )
 from kiro_crew.dashboard.chat_turn.elicitation_prompt import _on_elicitation_request
+from kiro_crew.dashboard.chat_turn.file_change_shapes import (  # noqa: F401
+    _client_cwd,
+    _snapshot_tool_writes,
+)
 from kiro_crew.dashboard.chat_turn.file_changes import _MAX_RECONSTRUCT_BYTES  # noqa: F401
 from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     _on_mcp_oauth_request,
@@ -265,6 +270,7 @@ from kiro_crew.dashboard.chat_turn.stream_chunks import (
     _on_text_chunk,
     _on_thinking_chunk,
     _release_held_text,
+    _settle_echo_hold,
 )
 from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
@@ -327,7 +333,6 @@ from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
-    BLOCKED_LINKS_ORDERED_KEY,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,
@@ -477,7 +482,6 @@ from kiro_crew.security import (
     oauth_url_contains_credential,
     redact_credentials,
     redact_exfiltration_urls,
-    redact_exfiltration_urls_with_records,
 )
 from kiro_crew.sel import sel, sel_is_warm
 from kiro_crew.session import (
@@ -752,14 +756,17 @@ def _hands_off_queue_on_exit(
             # (shared_crew.turn_gate); a pass-through when admission is off.
             from kiro_crew.shared_crew.turn_gate import gate_turn
 
-            await gate_turn(
-                state,
-                slot,
-                args[0] if args else "",
-                kwargs,
-                lambda: fn(state, slot, turn_exit, *args, **kwargs),
-                stop_reason=lambda: turn_exit.stop_reason,
-            )
+            # The turn is the chat output seam: with the owner's redaction setting
+            # off, nothing it streams, saves or shows is redacted (redaction_seams).
+            with redaction_seams.output_seam(redaction_seams.CHAT):
+                await gate_turn(
+                    state,
+                    slot,
+                    args[0] if args else "",
+                    kwargs,
+                    lambda: fn(state, slot, turn_exit, *args, **kwargs),
+                    stop_reason=lambda: turn_exit.stop_reason,
+                )
         except GeneratorExit:
             closing = True
             raise
@@ -1241,6 +1248,7 @@ async def _run_chat(
             elif event.kind == EVENT_THINKING_CHUNK:
                 await _on_thinking_chunk(turn, event)
             elif event.kind == EVENT_TOOL_CALL:
+                await _settle_echo_hold(turn)
                 await _release_held_text(turn, before_tool=True)
                 await _on_tool_call(turn, event)
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
@@ -1299,10 +1307,13 @@ async def _run_chat(
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 await _on_subagent_activity(turn, event)
             elif event.kind == EVENT_COMPLETE:
+                await _settle_echo_hold(turn)
                 _flow = await _on_complete(turn, event)
                 if _flow is _Flow.BREAK:
                     break
 
+        # A stream that ended with no terminal event still ends the segment.
+        await _settle_echo_hold(turn)
         _flow = await _turn_stop_recovery(turn)
         if _flow is _Flow.END:
             return
@@ -1411,6 +1422,9 @@ async def _run_chat(
             and acp_error_is_transient(exc)
             and slot._transient_5xx_retries >= TRANSIENT_RETRIES
             and _prompt_depth == 0
+            # Kiro's per-user rate limit is shared by every model: a swap cannot
+            # clear it, so the turn ends on its own error row instead.
+            and getattr(exc, "user_rate_limit", False) is not True
             and not _should_suppress_requeue(slot)
             and (_fb_candidate := await _fallback_swap_for_turn(slot, turn.client)) is not None
         ):

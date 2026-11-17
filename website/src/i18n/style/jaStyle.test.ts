@@ -121,6 +121,19 @@ describe('ja punctuation (style/ja.md §1)', () => {
     expect(bad, report(bad)).toEqual([])
   })
 
+  it('keeps no source line break and indentation beside Japanese', () => {
+    // A value copied from a wrapped JSX literal keeps its `\n` plus indent, and
+    // the browser draws that as a space mid-sentence (`ありません。 チャットから`).
+    // A break whose both sides are Latin or code (the theme JSON placeholder)
+    // is intentional and is not judged.
+    const FULL_WIDTH = '\u3000-\u303f\uff00-\uffef'
+    const re = new RegExp(`[${JP}${FULL_WIDTH}]\\n[ \\t]+|\\n[ \\t]+[${JP}${FULL_WIDTH}]`)
+    const bad = prose
+      .filter(([, value]) => re.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+
   it('never stores an ideographic space', () => {
     // U+3000 is layout smuggled into a string. Spacing is the stylesheet's job,
     // and the character survives trim() so it cannot be normalised downstream.

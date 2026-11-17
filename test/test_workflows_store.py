@@ -144,3 +144,113 @@ def test_no_store_is_pure_in_memory(tmp_path) -> None:
     assert reg.load_persisted() == 0  # nothing to load, no crash
     # and no files were created anywhere we control
     assert not list(Path(tmp_path).glob("**/*.json"))
+
+
+def _events(rid: str, ts: str) -> WorkflowEvent:
+    return WorkflowEvent(run_id=rid, seq=0, ts=ts, type="run_started", data={})
+
+
+def _admit(reg: RunRegistry, rid: str, admitted_at) -> RunHandle:
+    """Register a run that was admitted at ``admitted_at`` (None: an older record)."""
+    handle = RunHandle(run_id=rid, name="demo", source="META={}\n")
+    handle.admitted_at = admitted_at  # type: ignore[attr-defined]
+    reg.register(handle)
+    return handle
+
+
+def _set_mtimes(tmp_path, **mtimes) -> None:
+    import os
+
+    for rid, mtime in mtimes.items():
+        os.utime(tmp_path / "runs" / f"{rid}.json", (mtime, mtime))
+
+
+def test_the_run_list_keeps_its_order_across_a_restart(tmp_path) -> None:
+    """Runs reload in the order they were admitted, not the order their files were written."""
+    reg_a = RunRegistry(store=_store(tmp_path))
+    for rid, admitted in (("wf_000001", 1_000.0), ("wf_000002", 2_000.0)):
+        _admit(reg_a, rid, admitted)
+        reg_a.record_event(rid, _events(rid, "2026-01-01T00:00:00Z"))
+        reg_a.mark_terminal(rid, STATUS_FINISHED, result=1)
+    assert [s["run_id"] for s in reg_a.list()] == ["wf_000002", "wf_000001"]
+    # The older run finished last, so its file is the newest on disk.
+    _set_mtimes(tmp_path, wf_000002=1_000_000_000, wf_000001=1_000_000_100)
+
+    reg_b = RunRegistry(store=_store(tmp_path))
+    reg_b.load_persisted()
+    assert [s["run_id"] for s in reg_b.list()] == ["wf_000002", "wf_000001"]
+
+
+def test_a_run_with_no_event_keeps_its_place_across_two_restarts(tmp_path) -> None:
+    """The restart that demotes an interrupted run rewrites its file, not its place."""
+    reg_a = RunRegistry(store=_store(tmp_path))
+    _admit(reg_a, "wf_000001", 1_000.0)  # still running, no event written
+    _admit(reg_a, "wf_000002", 2_000.0)
+    reg_a.mark_terminal("wf_000002", STATUS_FINISHED, result=1)
+    _set_mtimes(tmp_path, wf_000001=1_000_000_000, wf_000002=1_000_000_100)
+
+    first = RunRegistry(store=_store(tmp_path))
+    first.load_persisted()  # demotes wf_000001 to failed and rewrites its file
+    assert [s["run_id"] for s in first.list()] == ["wf_000002", "wf_000001"]
+    second = RunRegistry(store=_store(tmp_path))
+    second.load_persisted()
+    assert [s["run_id"] for s in second.list()] == ["wf_000002", "wf_000001"]
+
+
+def test_a_record_saved_before_admission_times_ranks_by_its_first_event(tmp_path) -> None:
+    reg_a = RunRegistry(store=_store(tmp_path))
+    for rid, started in (
+        ("wf_000001", "2026-01-01T00:00:00Z"),
+        ("wf_000002", "2026-01-01T01:00:00Z"),
+    ):
+        _admit(reg_a, rid, None)  # a record from an older version
+        reg_a.record_event(rid, _events(rid, started))
+        reg_a.mark_terminal(rid, STATUS_FINISHED, result=1)
+    _set_mtimes(tmp_path, wf_000002=1_000_000_000, wf_000001=1_000_000_100)
+
+    reg_b = RunRegistry(store=_store(tmp_path))
+    reg_b.load_persisted()
+    assert [s["run_id"] for s in reg_b.list()] == ["wf_000002", "wf_000001"]
+
+
+def test_start_order_prefers_the_admission_time_and_ignores_unusable_values() -> None:
+    from kiro_crew.workflows.store import _start_order
+
+    events = [{"ts": "2026-01-01T00:00:00Z"}]
+    jan_first = _start_order((500.0, {"events": events}))[0]
+    assert _start_order((500.0, {"admitted_at": 42.0, "events": events}))[0] == 42.0
+    for bad in (None, True, float("nan"), float("inf"), -1.0, 0, "42", 10**309):
+        assert _start_order((500.0, {"admitted_at": bad, "events": events}))[0] == jan_first, bad
+    assert _start_order((500.0, {"admitted_at": "x"}))[0] == 500.0
+
+
+def test_start_order_reads_every_timestamp_form_on_one_scale(local_tz) -> None:
+    from kiro_crew.workflows.store import _start_order
+
+    local_tz("Pacific/Kiritimati")  # UTC+14: a zone-less stamp read as local time would differ
+
+    def start(ts, mtime=500.0):
+        return _start_order((mtime, {"events": [{"ts": ts}]}))[0]
+
+    assert start("2026-01-01T00:00:00Z") == start("2026-01-01T00:00:00+00:00")
+    assert start("2026-01-01T00:00:00") == start("2026-01-01T00:00:00Z")  # no zone is UTC
+    assert start("2026-01-01T01:00:00+01:00") == start("2026-01-01T00:00:00Z")
+    assert start("not a time") == 500.0  # unreadable: the write time stands in
+    assert _start_order((500.0, {"events": []}))[0] == 500.0
+
+
+def test_a_record_with_an_oversized_admission_time_does_not_stop_the_load(tmp_path) -> None:
+    import json
+
+    reg_a = RunRegistry(store=_store(tmp_path))
+    _admit(reg_a, "wf_000001", 1_000.0)
+    reg_a.mark_terminal("wf_000001", STATUS_FINISHED, result=1)
+    _admit(reg_a, "wf_000002", 2_000.0)
+    reg_a.mark_terminal("wf_000002", STATUS_FINISHED, result=1)
+    path = tmp_path / "runs" / "wf_000001.json"
+    path.write_text(path.read_text(encoding="utf-8").replace("1000.0", "1" + "0" * 309))
+
+    reg_b = RunRegistry(store=_store(tmp_path))
+    assert reg_b.load_persisted() == 2  # the bad value costs one record its rank, not the load
+    assert json.loads(path.read_text(encoding="utf-8"))["admitted_at"] == 10**309
+    assert sorted(s["run_id"] for s in reg_b.list()) == ["wf_000001", "wf_000002"]

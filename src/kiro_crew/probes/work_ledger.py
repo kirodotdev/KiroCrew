@@ -39,8 +39,12 @@ a stall, and a worker that is gone is judged as a quiet one (see
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+import threading
+import time
+from collections import OrderedDict
 from typing import Callable
 
 from kiro_crew import irq, ledger_wake, work_ledger, work_preview
@@ -214,34 +218,17 @@ class WorkLedgerProbe(irq.Probe):
         """
         key = self._conductor or _conductor_key(getattr(ctx, "message", ""))
         self._watcher = str(getattr(getattr(ctx, "job", None), "id", "") or "")
-        record = work_ledger.read_conductor(key)
-        if record is None:
+        read = _read_board(key)
+        if read is None:
             # No ledger, or one that could not be read. Deliberately NOT the same
             # answer as "a ledger with no items": a conductor that has not opened
             # one yet is indistinguishable from a torn read at this layer, and the
             # cheap failure is to keep firing on the existing timer.
             return irq.Tick(fetch_ok=False, detail="work ledger unreadable")
-
-        items = work_ledger.list_work_items(key)
-        # How many item files EXIST, against how many were readable. ``list_work_items``
-        # skips a torn file so one bad item cannot hide the rest, which is right for a
-        # board and wrong for the "every item is closed" wake: if the only OPEN item
-        # is the unreadable one, every item this tick can see is closed, and the
-        # wake would tell the conductor its board is done while work is still live.
-        try:
-            stored = sum(1 for _ in work_ledger.items_dir(key).glob("it_*.json"))
-        except OSError:
-            stored = len(items)
-        all_readable = stored <= len(items)
-        newest: dict[str, str] = {}
-        tails: dict[str, list[work_ledger.WorkEvent]] = {}
-        for item in items:
-            # One event past the tail, read only as the oldest event's predecessor:
-            # without it a repeat rolling into the oldest slot reads as news.
-            events = work_ledger.read_events(key, item.item_id, limit=_EVENT_TAIL + 1)
-            tails[item.item_id] = events
-            if events:
-                newest[item.item_id] = events[-1].id
+        items, all_readable, tails = read.items, read.all_readable, read.tails
+        # Open items only: a closed item never wakes again, and every observation
+        # this probe raises is ``ResetsOn.NEVER``, which an epoch reset keeps.
+        newest = {item_id: events[-1].id for item_id, events in tails.items() if events}
         epoch = ledger_wake.revision(newest)
         self.revision = worker_report_revision(items)
 
@@ -515,6 +502,121 @@ class WorkLedgerProbe(irq.Probe):
         return True
 
 
+#: How long an unchanged board read may be served again without reading the store.
+#: Only a backstop: a store write in this process moves ``change_mark``, and one in
+#: another process renames a file into the directory and moves its mtime. This bounds
+#: an edit that does neither (a file rewritten in place by hand). Six patrol ticks.
+_REUSE_MAX_AGE_SECS = 1800.0
+
+#: A read is kept for reuse only when the store's directories last changed at least
+#: this long before it started. A write in the same mtime tick as the stat would
+#: otherwise leave the mtime unmoved and be missed (git's "racy" rule).
+_RACY_SECS = 2.0
+
+#: Boards whose last read is kept, oldest read dropped first, and the items
+#: all kept reads may hold together. The same budgets as the store's listing memo
+#: (``work_ledger_store._LISTING_MEMO_BOARDS`` / ``_LISTING_MEMO_ITEMS``): a board too
+#: big for that memo is not kept here either.
+_KEPT_BOARDS = 256
+_KEPT_ITEMS = 10_000
+
+
+@dataclasses.dataclass(frozen=True)
+class _BoardRead:
+    """One read of a board. Shared between ticks: callers must not mutate it."""
+
+    items: list[work_ledger.WorkItem]
+    all_readable: bool
+    #: Each OPEN item's event tail, by item id.
+    tails: dict[str, list[work_ledger.WorkEvent]]
+    mark: int
+    signature: tuple[int, int]
+    read_at: float
+
+
+_BOARD_READS: OrderedDict[str, _BoardRead] = OrderedDict()
+_BOARD_READS_LOCK = threading.Lock()
+
+
+def _read_board(key: str) -> _BoardRead | None:
+    """*key*'s items and each open item's event tail, or ``None`` for no readable ledger.
+
+    Serves the last read again while nothing could have written the store since:
+    the same ``change_mark`` (every write here), the same directory mtimes (a file
+    renamed in by another process), and younger than :data:`_REUSE_MAX_AGE_SECS`.
+    Liveness, undelivered reports and staleness are not part of it; the caller
+    still judges those every tick.
+    """
+    started = time.time()
+    mark = work_ledger.change_mark(key)
+    signature: tuple[int, int] | None
+    try:
+        items_dir = work_ledger.items_dir(key)
+        signature = (items_dir.parent.stat().st_mtime_ns, items_dir.stat().st_mtime_ns)
+    except OSError:
+        items_dir, signature = None, None
+    slot = str(items_dir) if items_dir is not None else ""
+    with _BOARD_READS_LOCK:
+        kept = _BOARD_READS.get(slot)
+    if (
+        kept is not None
+        and kept.mark == mark
+        and kept.signature == signature
+        and 0 <= started - kept.read_at < _REUSE_MAX_AGE_SECS
+    ):
+        return kept
+
+    # After the stat, not before: a listing that joins a walk begun earlier gets that
+    # walk's result, which can predate a write by another process the stat already
+    # saw. With no walk in flight now, any walk this read leads or joins began after
+    # the stat. ``work_ledger_store.list_work_items`` keys its walks the same way.
+    with work_ledger._LISTINGS_LOCK:
+        fresh_walk = slot not in work_ledger._LISTINGS
+    if work_ledger.read_conductor(key) is None:
+        with _BOARD_READS_LOCK:
+            _BOARD_READS.pop(slot, None)
+        return None
+    items = work_ledger.list_work_items(key)
+    # How many item files EXIST, against how many were readable. ``list_work_items``
+    # skips a torn file so one bad item cannot hide the rest, which is right for a
+    # board and wrong for the "every item is closed" wake: if the only OPEN item
+    # is the unreadable one, every item this tick can see is closed, and the
+    # wake would tell the conductor its board is done while work is still live.
+    try:
+        stored = sum(1 for _ in (items_dir or work_ledger.items_dir(key)).glob("it_*.json"))
+    except OSError:
+        stored = len(items)
+    tails = {
+        # One event past the tail, read only as the oldest event's predecessor:
+        # without it a repeat rolling into the oldest slot reads as news.
+        item.item_id: work_ledger.read_events(key, item.item_id, limit=_EVENT_TAIL + 1)
+        for item in items
+        if not item.is_terminal
+    }
+    read = _BoardRead(items, stored <= len(items), tails, mark, signature or (0, 0), started)
+    # An item file the listing could not read once is retried next tick rather than
+    # kept missing, and so is an empty tail: every item's log starts with its ``create`` event, so an empty
+    # one is a read that failed (``read_events`` answers ``[]`` for an I/O error).
+    # An empty listing is not kept either: it is also what a failed scan returns,
+    # and an empty board costs little to read again.
+    keep = (
+        fresh_walk
+        and bool(items)
+        and read.all_readable
+        and all(tails.values())
+        and signature is not None
+        and started - max(signature) / 1e9 >= _RACY_SECS
+    )
+    with _BOARD_READS_LOCK:
+        _BOARD_READS.pop(slot, None)
+        if keep and len(items) <= _KEPT_ITEMS:
+            _BOARD_READS[slot] = read
+            kept_items = sum(len(r.items) for r in _BOARD_READS.values())
+            while len(_BOARD_READS) > _KEPT_BOARDS or kept_items > _KEPT_ITEMS:
+                kept_items -= len(_BOARD_READS.popitem(last=False)[1].items)
+    return read
+
+
 def has_open_items(conductor_key: str) -> bool:
     """Whether *conductor_key*'s ledger holds at least one non-terminal item.
 
@@ -601,13 +703,13 @@ def person_wait_fingerprint(
             work_preview.remote_dispatch()
             and all(work_ledger.remote_pull_fresh(conductor_key, item) for item in remote)
         ):
-            # A remote worker's reports reach this board through the hub's
-            # background puller (``remote_puller``), every
-            # ``REMOTE_PULL_INTERVAL_SECS``. While its last pull is fresh the fields
-            # here stand for the peer's and a new report moves the fingerprint like
-            # a local one. A stale, failed or missing pull, or the switch off (no
-            # puller), could hold the patrol past the report that moves the item,
-            # so the patrol runs instead: the liveness fallback.
+            # A remote worker's reports reach this board through the pull the
+            # patrol tick runs before this read (``remote_puller.pull_on_patrol``).
+            # While its last pull is fresh the fields here stand for the peer's and
+            # a new report moves the fingerprint like a local one. A stale, failed
+            # or missing pull, or the switch off (no pull), could hold the patrol
+            # past the report that moves the item, so the patrol runs instead: the
+            # liveness fallback.
             return None
         closed = worker_closed or _always_open
         if any(_worker_gone(conductor_key, item, closed) for item in open_items):

@@ -243,7 +243,7 @@ destination, so a standalone build behaves as it
 did when this module constructed that exporter itself. It then adds each
 `otlp_endpoints` entry and the built-in `kiro-telemetry` destination
 (`metrics/kiro_export.py`): the `PRODUCT_METRICS` preset to a fixed Kiro telemetry
-endpoint, with `ClientType=kiro-crew` on every point, a reduced resource (no
+endpoint, with `ClientType=kiro-crew` and `machineId` (the header's hash) on every point, a reduced resource (no
 install id, pid, `os.type` or `host.*`), delta temporality, no process-wide OTel credentials,
 and a session that adds only `x-kiro-machineid` (a hash of the install id). It is
 the one destination that exports under the recording default
@@ -612,7 +612,7 @@ the wrapper sits:
 
 **A point-attribute key is refused, not dropped.** Keys are checked at
 construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
-(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+(`ClientType` and `machineId` today), and an unreviewed key raises. `_build_otlp_reader`
 turns that into "this destination gets no reader", so the cost is one
 destination's egress and local collection continues. Dropping the label instead
 would publish a series the receiving side cannot route, with only a debug line to
@@ -792,12 +792,12 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.mcp_gateway.sessions.attached` | gauge (1) | `class` | Same module and population: the summed stub attachments (`Backend.refcount`) on those backends. `sessions.attached - backends.live` is the number of backend processes pooling avoided. One runtime opens one stub per server however many sessions it hosts, so this is a lower bound on sessions and the saving derived from it is a lower bound too. |
 | `kirocrew.mcp_gateway.backends.rss_bytes` | gauge (By) | `class` | Same module and population: summed current RSS of each backend through `mcp_gateway/pool.py::backend_rss_kb`, the probe the dashboard's pool snapshot uses (the backend pid AND its descendants, so a launcher that forks the real server is measured with it; KiB, exported as bytes). A pid with no reading (it died, or the platform has no `/proc` subtree walk: macOS and Windows) adds 0 and is skipped; a class where no backend could be read publishes nothing, a gap rather than a fake zero. `bytes_saved ~= (sessions.attached - backends.live) * backends.rss_bytes / backends.live`. gatewayd's own RSS is `kirocrew.process.memory.rss_bytes` where the resource has `kirocrew.process.role=gatewayd`; the main process's has no `kirocrew.process.role`. |
 | `kirocrew.chat_runtime_share.toggled` | counter | `state` (`on` / `off`) | `dashboard/server_runtime/config_watch.py` live-config applier on `dashboard.feature_previews` -> `metrics/chat_runtime_share.py::record_toggled`: one count when the `chat_runtime_sharing` preview flips between two applied documents, from any writer (Settings, CLI, a hand edit). Both sides are read by `acp.chat_runtime_sharing.chat_runtime_sharing_enabled`, through `agent_sdk/chat_runtime_sharing.py`, the same reader the inventory gauge uses. Whether it is on NOW is `kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. |
-| `kirocrew.chat_runtime_share.placed` | counter | `outcome` (`spawned` / `joined` / `refused`), `reason` (`chat_sharing_ineligible_reason`'s branch names plus `native_subagents` and `auto_permission_mode`, `none` on a placement, `other`), `tenants` (`1` / `2` / `3` / `4+` after the placement, `none` on a refusal), `tree` (`chat` / `bot`: whether the process serves a Bot's session tree, `none` on a refusal), `harness` (`metrics.harness.harness_for_backend` of the chat's backend; with `reason=harness_switched_off` it names the harness whose own switch is off) | `providers/chat_share.py`: `resolve_chat_share` counts a refusal (preview on, start refused); `ChatSharePlacement._accept` counts the confirmed placement, beside its WARNING line. Nothing counts while the preview is off: `resolve_chat_share` returns before either. |
+| `kirocrew.chat_runtime_share.placed` | counter | `outcome` (`spawned` / `joined` / `refused`), `reason` (`chat_sharing_ineligible_reason`'s branch names plus `native_subagents` and `auto_permission_mode`, `none` on a placement, `other`), `tenants` (`1` / `2` / `3` / `4-7` / `8-10` / `11+` after the placement, `none` on a refusal), `tree` (`chat` / `bot`: whether the process serves a Bot's session tree, `none` on a refusal), `harness` (`metrics.harness.harness_for_backend` of the chat's backend; with `reason=harness_switched_off` it names the harness whose own switch is off) | `providers/chat_share.py`: `resolve_chat_share` counts a refusal (preview on, start refused); `ChatSharePlacement._accept` counts the confirmed placement, beside its WARNING line. Nothing counts while the preview is off: `resolve_chat_share` returns before either. |
 | `kirocrew.chat_runtime_share.processes` / `.tenants` | gauge (1) | none | `metrics/chat_runtime_share.py::register_chat_runtime_share_gauges` (registered from `metrics/shared_process_gauges.py` beside the MCP gateway pool gauges), read at collection from `RuntimeOwnership.keyed_lease_counts`: live runtimes placed under a compatibility key (a `ChatRuntimeKey`; registration leases are keyed by the runtime itself and are left out), and the chat leases on them. `tenants - processes` is processes saved. Publishes nothing until this process has placed or refused a chat with the preview on, so no other process exports zeros. |
-| `kirocrew.chat_runtime_share.rss_sampled` | counter | `tenants` (`2` / `3` / `4+`), `rss` (`le_512m` / `le_1g` / `le_2g` / `le_4g` / `le_8g` / `gt_8g`, MiB, each edge inclusive) | `session_cleanup_spare.py::note_rss_measured`, called where the RSS watchdog tick first measures a pid's tree (`session_cleanup.py::_rss_threshold_check`, `session_cleanup_leftovers.py`), so a shared process is counted once per tick. Only pids holding two or more chat leases. No sample while `session.watchdog_rss_max_mb` is 0. |
+| `kirocrew.chat_runtime_share.rss_sampled` | counter | `tenants` (`2` / `3` / `4-7` / `8-10` / `11+`), `rss` (`le_512m` / `le_1g` / `le_2g` / `le_4g` / `le_8g` / `gt_8g`, MiB, each edge inclusive) | `session_cleanup_spare.py::note_rss_measured`, called where the RSS watchdog tick first measures a pid's tree (`session_cleanup.py::_rss_threshold_check`, `session_cleanup_leftovers.py`), so a shared process is counted once per tick. Only pids holding two or more chat leases. No sample while `session.watchdog_rss_max_mb` is 0. |
 | `kirocrew.chat_runtime_share.reclaimed` | counter | `reason` (`rss`) | `session_cleanup_spare.py::rss_limit_for`, when a shared process over its scaled ceiling is newly closed to joins (`RuntimeOwnership.close_to_joins` returned non-zero), once per process. |
-| `kirocrew.chat_runtime_share.process_died` | counter | `expected` (`true` / `false`), `tenants` (`0` / `1` / `2` / `3` / `4+` chat leases at death) | `runtime_death.py::announce`, the one place every ACP runtime death is classified. `tenants` is the larger of the kill gate's live count and `RuntimeOwnership.held_leases_on_runtime` (by identity, alive or not), so a process the exit watcher reaped before `_mark_dead` still counts the chats it held. `expected=false, tenants>=2` is a shared crash; `tenants` is its blast radius. |
-| `kirocrew.chat_runtime_share.turn_started` | counter | `tenants` (chat leases on the process when the prompt went out, `0` unless this turn's own session holds one of them: a subagent on its host chat's process or a background runtime reads `0`), `delay` (`le_1s` / `le_2s` / `le_5s` / `le_10s` / `le_20s` / `le_30s` / `le_60s` / `gt_60s`, each edge inclusive), `harness` (`metrics/harness.py::harness_for_backend`, as on `kirocrew.turn.completed`) | `acp/session_handle_turn.py::_run_turn`: prompt written to the turn's first own event (a co-tenant's fanned `runtime_global` frame and a watchdog-synthesized terminal are skipped, so a turn the backend never answered records no start). Every ACP turn on every surface. |
+| `kirocrew.chat_runtime_share.process_died` | counter | `expected` (`true` / `false`), `tenants` (`0` / `1` / `2` / `3` / `4-7` / `8-10` / `11+` chat leases at death) | `runtime_death.py::announce`, the one place every ACP runtime death is classified. `tenants` is the larger of the kill gate's live count and `RuntimeOwnership.held_leases_on_runtime` (by identity, alive or not), so a process the exit watcher reaped before `_mark_dead` still counts the chats it held. `expected=false, tenants>=2` is a shared crash; `tenants` is its blast radius. |
+| `kirocrew.chat_runtime_share.turn_started` | counter | `tenants` (chat leases on the process when the prompt went out, `0` unless this turn's own session holds one of them: a subagent on its host chat's process or a background runtime reads `0`), `delay` (`le_1s` / `le_2s` / `le_5s` / `le_10s` / `le_20s` / `le_30s` / `le_60s` / `gt_60s`, each edge inclusive), `shared` (`true` when the process was placed by chat runtime sharing, `RuntimeOwnership.placed_by_sharing`, founder or joiner; `false` otherwise, preview off included), `harness` (`metrics/harness.py::harness_for_backend`, as on `kirocrew.turn.completed`) | `acp/session_handle_turn.py::_run_turn`: prompt written to the turn's first own event (a co-tenant's fanned `runtime_global` frame and a watchdog-synthesized terminal are skipped, so a turn the backend never answered records no start). `acp/client_turn.py::stream_events` counts the same span on the `AcpClient` arm (a claude, goose or deepseek chat that does not share, and every other per-process harness) with `tenants` `1` for a session the gateway registered (any channel, the one tenant of its own process: `runtime_ownership.acquire_session_lease` marks the client where a runtime-backed session takes its lease) and `0` for an unregistered one (a subagent, a worker-pool client), `shared=false`, skipping a synthesized terminal. Every ACP turn a provider streams. |
 | `kirocrew.chat_runtime_share.turn_ended` | counter | `tenants` (as read at start), `outcome` (`metrics/turns.py::turn_outcome`, the classifier `kirocrew.turn.completed` uses), `harness` | Same function, once per turn at the first `EVENT_COMPLETE` it hands its consumer. `tool_stall` and `stale_recover` are the watchdog terminals. |
 | `kirocrew.chat_runtime_share.kas_queued` | counter | `tenants` | `acp/session_handle_kas.py::_handle_kas_session_info` on a `session_info_update` with `_meta.kiro.kind == "queued"`: KAS parked the prompt behind another session's turn (`AgentExecutionWaitingForActiveSlot`). From engine 0.66.104 a chat turn never waits there, so on a shared process this stays at about zero. |
 | `kirocrew.kas.engine_install` | counter | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) | `acp/kas_engine_install.py::install_pinned_engine`, one per download attempt that ran (an engine already present counts nothing). A failed spawn-time install fails that spawn; there is no relay fallback. |
@@ -1864,7 +1864,7 @@ from fields the row store already carries — no new instrumentation:
 | sub-block | derivation |
 |-----------|-----------|
 | totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
-| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show. The stored model is keyed through `model_registry.canonicalize_for_provider` with the row's `provider`, the same reading the daily chart and the series use, so a model stored under two ids across a provider's id migration is one row |
 | `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
@@ -2798,7 +2798,8 @@ consent flow:
   it goes, then offers **Keep on** and **Turn off**, in the
   `OnboardingChapterShell` layout, so a new user sees what is recorded and sent
   and can turn it off before reaching the product. Every path out of chapter 1
-  routes through it, including "Skip all", and it offers no skip and no Escape.
+  routes through it, including "Skip all", and it offers no skip, and no Escape
+  until a save has failed (below).
   The text follows the effective state read from `GET /api/telemetry/beacon` and
   `GET /api/telemetry/collection`: with local recording on, "Performance metrics
   are on" and the recording list; with only the heartbeat on, "A daily heartbeat
@@ -2823,7 +2824,11 @@ consent flow:
   re-reads both effective states; only when both are off does it write the ack
   fields. An env var or a `config.local.json` entry that keeps either on leaves
   the chapter open, naming that setting. A failed write keeps the chapter open
-  with an `ErrorNotice` and marks nothing as seen.
+  with an `ErrorNotice` and marks nothing as seen. From then on the chapter
+  offers Close in its eyebrow row, and Escape does the same: both hide it
+  without recording a choice, as the Ask the agent hand-off does, so it opens
+  again at the next load (`onClose`). A Turn off held by a pin offers no Close,
+  since Keep on still saves.
 - **The notice is versioned.** `dashboard.privacy_ack_version` (int, default 0,
   never seeded from `privacy_acked`, `onboarded` or localStorage) means "told that
   local recording is on", and both writers apply that one rule: the chapter writes
@@ -2832,7 +2837,7 @@ consent flow:
   recording on (not on `disable`, and not when it leaves recording off because an
   export destination is configured); the dashboard's
   `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
-  `beacon.PRIVACY_NOTICE_VERSION` are both 2 and a backend test pins them
+  `beacon.PRIVACY_NOTICE_VERSION` are both 4 and a backend test pins them
   together. An existing user whose stored version is lower sees the chapter once
   at the next dashboard load, decided once per page load, and only while local
   recording is on; a heartbeat-only or already-off user does not see it. A user
@@ -3160,6 +3165,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
 | `kirocrew.app.task.completed` | counter | `app`: a shipped built-in app id (`BUILTIN_NAMES`, its `apps/builtins/` directory name) or `private`; `outcome`: `ok` / `error` / `other` | a finished Papyrus compile (`record_app_task`) |
+| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
 | `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
@@ -3169,14 +3175,14 @@ Shared attributes (`metrics/usage_attrs.py`):
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
 
-The attributes above are what the emit sites pass. The last three rows are the
-behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
+The attributes above are what the emit sites pass. `kirocrew.app.installed` and the
+last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
 subset of `PRODUCT_METRICS`). On the live provider `MetricsRecorder` creates them on
 a second meter with scope `kiro.crew` (every other metric uses `kiro_crew`) and
 reshapes their attributes on the way in, so every sink sees: `Feature` (`tips`,
-`feature_video` or `milestone`), `Activity` (the tip `action`, the video `status`,
-or the milestone metric's last name segment), and `Entity` in place of `feature` /
-`milestone`. Other keys are kept. The reshape renames keys and adds constants only,
+`feature_video`, `milestone` or `app`), `Activity` (the tip `action`, the video
+`status`, or the metric's last name segment), and `Entity` in place of `feature` /
+`milestone` / `app`. Other keys are kept. The reshape renames keys and adds constants only,
 so it cannot add a value the emit site did not close. A collector can then admit
 user behavior by scope with no per-metric rule.
 

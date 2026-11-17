@@ -24,12 +24,14 @@ and the tools refuse.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.sel import sel
 from kiro_crew.slack.code_channels.store import Binding, store
 from kiro_crew.slack.code_channels.surface_client import SurfaceClient
@@ -289,6 +291,11 @@ def display_text(text: str, *, mentions: bool = True) -> str:
     active platform context (an installation's own patterns apply), and, with
     *mentions*, Slack's mention grammar defanged. ``mentions=False`` is for text
     no Slack message parses (a dashboard transcript row).
+
+    The channel output seam (``redaction_seams.CHANNELS``): with the owner's
+    redaction setting off the credential pass stands down and the text stays as
+    written. A caller whose result reaches a sink that stays redacted (an SEL row)
+    calls it inside ``redaction_switch.always_scan``.
     """
     from dataclasses import replace
 
@@ -299,7 +306,8 @@ def display_text(text: str, *, mentions: bool = True) -> str:
     capabilities = (
         SLACK_CAPABILITIES if mentions else replace(SLACK_CAPABILITIES, mention_grammars=False)
     )
-    return display_safe_for(text, capabilities, redactor=redact_via_context)
+    with redaction_seams.output_seam(redaction_seams.CHANNELS):
+        return display_safe_for(text, capabilities, redactor=redact_via_context)
 
 
 def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
@@ -379,6 +387,13 @@ def channel_admits(cfg: Any, binding: Binding) -> bool:
 # (:func:`admit`, a context variable that every await below it inherits). Work
 # admitted before a later stop of its channel writes nothing more to Slack:
 # ``SurfaceClient._call`` re-checks right before every send.
+#
+# A Stop stops the channel's own session only; its helper agents keep running.
+# So the board's own passes (:func:`own_pass`: the workspace refresh and its
+# watch) are fenced by the admission alone: one in flight at the press writes
+# nothing more and arms one re-publish in a clean context (``board.settle``),
+# and the next helper-agent event republishes too: the board and its needs-you
+# alerts.
 
 _stop_seq = 0
 _stopped_at: dict[str, int] = {}
@@ -386,6 +401,19 @@ _turn_started_at: dict[str, int] = {}
 _ADMITTED: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "code_channel_admitted", default=None
 )
+_OWN_PASS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "code_channel_own_pass", default=False
+)
+
+
+@contextlib.contextmanager
+def own_pass() -> Iterator[None]:
+    """Run the block as the board's own pass, not a turn (see :func:`channel_stopped`)."""
+    mark = _OWN_PASS.set(True)
+    try:
+        yield
+    finally:
+        _OWN_PASS.reset(mark)
 
 
 def mark_stopped(channel_id: str) -> None:
@@ -443,12 +471,17 @@ def channel_stopped(channel_id: str) -> bool:
     """Whether Slack's Stop silenced a turn of *channel_id* that is still unwinding.
 
     Slack's rule after ``agent_session_stopped``: no further posts and no
-    ``agents.*`` calls for that context. True when the stop fence says the
-    current turn or the admitted work was stopped, or a thread-session fence
-    scope for the channel is stopped.
+    ``agents.*`` calls for that context -- the stopped turn and the work it
+    admitted. True when the stop fence says the current turn or the admitted
+    work was stopped, or a thread-session fence scope for the channel is
+    stopped. In the board's own pass (:func:`own_pass`) only the admitted work
+    counts: that pass is no turn of the channel, and the helper agents it shows
+    were not stopped.
     """
     if admitted_work_stopped(channel_id):
         return True
+    if _OWN_PASS.get():
+        return False
     started = _turn_started_at.get(channel_id)
     if started is not None and _stopped_since(channel_id, started):
         return True

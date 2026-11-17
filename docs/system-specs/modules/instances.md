@@ -2032,7 +2032,10 @@ Two SSM-specific behaviours:
   `session-manager-plugin` grandchild is what actually holds the forwarded port:
   `terminate()` on the `aws` wrapper alone orphans it and wedges the port. Doing
   this with raw `os.killpg`/`os.getpgid` would silently degrade to
-  wrapper-only termination on Windows, which Kiro Crew supports.
+  wrapper-only termination on Windows, which Kiro Crew supports. Windows records
+  no process group, so a plugin that outlives an already-exited wrapper is not
+  reaped there; when either pipe is still open after the settle wait, teardown
+  logs a WARNING naming the instance and `127.0.0.1:<port>`, and signals nothing.
 - **Readiness timeout.** `session-manager-plugin` completes a WebSocket handshake
   with the SSM service before binding, so the SSM transport uses a longer default
   connect timeout than a direct ssh TCP connect. An explicit caller-supplied
@@ -2273,7 +2276,7 @@ existing session, on either side. Consequences worth stating:
 | **`layer_b_kas`** (a KAS session: `session.json` + `messages.jsonl`) | **yes (v2)** | The same, for the default engine's session store (§14.1a). `messages.jsonl` is byte-exact; `session.json` drops `_meta` and `description` before it leaves, and gets a fresh `sess_` id, an empty title and this host's default workspace on arrival. |
 | sub-agent conversations | no | Their results are already inside Layer B as injected context. Only `spawn_continue` on one specific sub-agent is lost. |
 | memory (preferences, semantic KV, lessons) | no | A workspace's memory is a per-instance scope, and copying it across hosts is the risky, hard-to-undo part of a transfer. The peer keeps its own. |
-| `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. |
+| `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. The sender's `origin` is its `dashboard.instance_label` when set, else its host's first DNS label (`local_instance_label`), so two gateways on one host send distinguishable origins only once each has a label. |
 | `agent` | hint only | Applied only if the target has an agent by that name, else dropped. An agent template is a local object; carrying the name blindly would leave the slot pointing at nothing. |
 | **`project`** | **no** | The headline decision. The source's checkout path almost never exists on the target (a Mac worktree path on a Linux dev desk), and a slot pointing at a missing directory scopes file search and steering to nothing. The session arrives **unscoped** and the user re-picks a project. |
 | `model` | no | Accounts differ in entitlement, so an id the source is served can fail at runtime on the target. The target resolves its own default ([model-selection](../common/model-selection.md)). |

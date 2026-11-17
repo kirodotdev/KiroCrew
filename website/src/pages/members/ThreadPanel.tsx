@@ -92,7 +92,7 @@ function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply
       <div className="min-w-0 flex-1 flex flex-col items-start">
         {opens && <AuthorLine name={crewmateLabel || crewmateName} ts={reply.ts} align="left" />}
         <Bubble pos={pos} side="left">
-          <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks /></MessageErrorBoundary>
+          <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks blockedLinks={reply.link_blocks} /></MessageErrorBoundary>
         </Bubble>
       </div>
     </li>
@@ -307,7 +307,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
               <div className="min-w-0 flex-1 flex flex-col items-start">
                 <AuthorLine name={crewmateLabel || crewmateName} ts={parent.ts} align="left" />
                 <Bubble side="left" testId="thread-parent-bubble">
-                  <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks /></MessageErrorBoundary>
+                  <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks blockedLinks={parent.link_blocks} /></MessageErrorBoundary>
                 </Bubble>
               </div>
             </div>

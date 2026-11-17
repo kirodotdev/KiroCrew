@@ -16,7 +16,7 @@ import type { BeaconStatus } from './PrivacyDisclosure'
  * something new. The backend keeps the same number as
  * `beacon.PRIVACY_NOTICE_VERSION`; a backend test pins the two together.
  */
-export const PRIVACY_NOTICE_VERSION = 3
+export const PRIVACY_NOTICE_VERSION = 4
 
 /** GET /api/telemetry/collection, the fields the notice reads. */
 interface CollectionStatus {

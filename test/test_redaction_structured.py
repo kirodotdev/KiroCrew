@@ -90,15 +90,17 @@ def test_structural_identifier_beats_contained_label_hit() -> None:
 def test_unterminated_block_runs_to_end_of_text() -> None:
     text = f"intro {PEM_BEGIN}\n{PEM_BODY}\n" + "prose after the header " * 50
     out, spans = redact(text)
-    assert out == "intro " + TAG
-    assert spans[-1][:3] == (6, len(text), "pem.private_key_unterminated")
+    # The body runs to the end; only the text's last blank stays.
+    assert out == f"intro {PEM_BEGIN}\n" + TAG + " "
+    body = 6 + len(PEM_BEGIN) + 1
+    assert spans[-1][:3] == (body, len(text) - 1, "pem.private_key_unterminated")
 
 
 def test_block_past_max_block_is_unterminated() -> None:
     body = "A" * 16001
     text = f"{PEM_BEGIN}\n{body}\n" + PEM_BEGIN.replace("BEGIN", "END") + "\nafter"
     out, spans = redact(text)
-    assert out == TAG
+    assert out == f"{PEM_BEGIN}\n{TAG}"
     assert secret_rules(spans) == ["pem.private_key_unterminated"]
 
 
@@ -157,6 +159,11 @@ def test_rule_inventory() -> None:
         "hashicorp.vault",
         "shopify.token",
         "digitalocean.token",
+        "openai.project_key",
+        "npm.token",
+        "pypi.token",
+        "discord.bot_token",
+        "telegram.bot_token",
         "jwt",
         "jwe",
         "link_token",
@@ -173,6 +180,33 @@ def test_rule_inventory() -> None:
         "url.oauth_param.id_token",
         "url.oauth_param.code_verifier",
         "url.oauth_param.password",
+        "url.secret_param.passwd",
+        "url.secret_param.api_key",
+        "url.secret_param.apikey",
+        "url.secret_param.private_token",
+        "url.signature_param.sig",
+        "url.signature_param.signature",
+        "url.signature_param.x_amz_signature",
+        "url.signature_param.x_amz_security_token",
+        "url.signature_param.x_goog_signature",
+        "url.token_param.token",
+        "url.userinfo_password",
+        "slack.app_token",
+        "slack.webhook_url",
+        "discord.webhook_url",
+        "huggingface.token",
+        "docker.pat",
+        "openai.legacy_key",
+        "labelled.secret",
+        "encoded_credential",
+        "http.bearer_token",
+        "http.basic_credentials",
+        "http.api_key_header",
+        "http.session_cookie",
+        "cli.curl_user_password",
+        "cli.mysql_password",
+        "cli.docker_login_password",
+        "netrc.password",
     }
     assert identifier == {
         "git.object_name",

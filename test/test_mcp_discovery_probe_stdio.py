@@ -896,9 +896,10 @@ class TestProbeServerLauncherStdout:
         # Synthetic credentials, each split so no scanner reads it as one literal.
         key = github_classic(seed=93)
         key_line = ("launcher: key " + key + " rejected\n").encode()
-        url = "https://collector.example.net/c?d=" + base64.b64encode(b"x" * 80).decode()
+        value = base64.b64encode(b"x" * 80).decode()
+        url = "https://collector.example.net/c?access_token=" + value
         url_line = f"launcher: GET {url} failed\n".encode()
-        token = "gh" + "p_" + "Q7x9Kd2mLp4Rt8Vw1Zb6Nc3Hf5Jg0Ys2Ae4X"
+        token = github_classic(seed=94)
         prefix = "launcher: auth "
         # The token starts five characters before the shown width ends.
         pad = "." * (_STDOUT_TAIL_LINE_CHARS - len(prefix) - 5)
@@ -909,8 +910,9 @@ class TestProbeServerLauncherStdout:
         assert result.status == "error"
         assert key not in result.error
         assert "launcher: key [REDACTED: credential] rejected" in result.error
-        assert "collector.example.net/c?d=" not in result.error
-        assert "[REDACTED: suspicious URL to collector.example.net]" in result.error
+        # The link stays; only the credential value in it goes.
+        assert value not in result.error
+        assert "https://collector.example.net/c?access_token=[REDACTED: credential]" in result.error
         assert token[:5] not in result.error
         shown = (prefix + pad + "[REDACTED: credential]")[:_STDOUT_TAIL_LINE_CHARS]
         assert result.error.splitlines()[-1] == shown

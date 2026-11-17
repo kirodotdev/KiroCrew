@@ -291,6 +291,8 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
 
 const MAX_PEEK = 2
 const CARD_H = 40
+/** The held line's row before it is measured: one 11px line at `leading-4`. */
+const HELD_ROW_H = 16
 const PEEK = 6
 const EXPANDED_GAP = 4
 const SCALE_STEP = 0.04
@@ -563,9 +565,44 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
     if (open) onEditOpen?.(open, false)
   }
 
+  // A held card (the server's `meta.held`: it waits for the person) says so on
+  // a row of its own under the message. No row while an action on the card is
+  // in flight (an accepted Send now stays pending until the card leaves), while
+  // its editor is open, or where the stack does not offer Send now, edit and
+  // cancel, the actions the line leaves to the card's buttons.
+  const heldRowShown = (m: ChatMessage, i: number) => {
+    const id = m.meta?.queueId as string | undefined
+    return m.meta?.held === true && !!id && !pendingIds?.has(id) && editingId !== id
+      && !!onInterrupt && !!onCancel && !!onEdit && (expanded || i === 0)
+  }
+  // The row wraps, so its height is measured, and the card grows by it.
+  const [heldRowH, setHeldRowH] = useState<Readonly<Record<string, number>>>({})
+  const heldObserver = useRef<ResizeObserver | null>(null)
+  const heldRowEls = useRef(new Map<string, HTMLElement>())
+  const measureHeldRow = (id: string) => (el: HTMLElement | null) => {
+    if (typeof ResizeObserver === 'undefined') return
+    const prev = heldRowEls.current.get(id)
+    if (prev && prev !== el) { heldObserver.current?.unobserve(prev); heldRowEls.current.delete(id) }
+    if (!el || prev === el) return
+    heldRowEls.current.set(id, el)
+    heldObserver.current ??= new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.queueId
+        const h = Math.ceil((entry.target as HTMLElement).offsetHeight)
+        if (id) setHeldRowH(prev => (prev[id] === h ? prev : { ...prev, [id]: h }))
+      }
+    })
+    heldObserver.current.observe(el)
+  }
+  useEffect(() => () => heldObserver.current?.disconnect(), [])
+  const cardH = messages.map((m, i) => {
+    if (!heldRowShown(m, i)) return CARD_H
+    const id = m.meta?.queueId as string
+    return CARD_H + (heldRowH[id] ?? HELD_ROW_H)
+  })
   const peekCount = Math.min(MAX_PEEK, Math.max(0, messages.length - 1))
-  const collapsedHeight = messages.length > 0 ? CARD_H + peekCount * PEEK : 0
-  const expandedHeight = messages.length > 0 ? messages.length * CARD_H + (messages.length - 1) * EXPANDED_GAP : 0
+  const collapsedHeight = messages.length > 0 ? cardH[0] + peekCount * PEEK : 0
+  const expandedHeight = messages.length > 0 ? cardH.reduce((a, b) => a + b, 0) + (messages.length - 1) * EXPANDED_GAP : 0
 
   const targetHeight = expanded ? expandedHeight : collapsedHeight
   const targetMargin = messages.length > 0 && !expanded && fuseBelow ? -OVERLAP : 0
@@ -637,18 +674,22 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
 
             if (expanded) {
               const pos = messages.length - 1 - i
-              y = pos * (CARD_H + EXPANDED_GAP)
+              // Index 0 sits at the bottom; each card stands on the ones before it.
+              y = expandedHeight - cardH.slice(0, i + 1).reduce((a, b) => a + b, 0) - i * EXPANDED_GAP
               scale = 1
               opacity = 1
               zIndex = pos + 1
             } else if (i <= MAX_PEEK) {
               const depth = i
-              y = (collapsedHeight - CARD_H) - depth * PEEK
+              // Every card in the collapsed stack lines its top up with the
+              // front card's, one PEEK higher per depth, so a taller held front
+              // card still leaves the peeks showing above it.
+              y = (collapsedHeight - cardH[0]) - depth * PEEK
               scale = 1 - (depth + 1) * SCALE_STEP
               opacity = 1
               zIndex = (MAX_PEEK + 1) - depth
             } else {
-              y = (collapsedHeight - CARD_H) - MAX_PEEK * PEEK
+              y = (collapsedHeight - cardH[0]) - MAX_PEEK * PEEK
               scale = 1 - (MAX_PEEK + 1) * SCALE_STEP - HIDDEN_EXTRA_SCALE
               opacity = 0
               zIndex = 0
@@ -658,6 +699,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
             const queueId = m.meta?.queueId as string | undefined
             const isEditing = !!queueId && editingId === queueId
             const isPending = !!queueId && !!pendingIds?.has(queueId)
+            const held = heldRowShown(m, i)
             // Per-card actions show on the front single card or when expanded.
             const showActions = (expanded || messages.length === 1) && !!queueId
             // App-message entries are read-only-but-visible: the backend
@@ -708,7 +750,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                 exit={{ y: y + 40, zIndex: 50, transition: SPRING }}
                 transition={SPRING}
                 className="absolute top-0 left-0 right-0"
-                style={{ transformOrigin: 'bottom center', height: CARD_H, zIndex }}
+                style={{ transformOrigin: 'bottom center', height: cardH[i], zIndex }}
               >
               {/* `glass-warn`, not a theme-specific color: the warn tint step is
                   what every pending-decision pane in the dock wears, and the
@@ -733,12 +775,13 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                 className="@container/queuecard h-full glass-warn px-3 py-2 text-[13px] glass-warn-fg"
                 title={readOnlyHint}
               >
-                <span className="flex items-center gap-1.5 h-full">
+                <span className="flex flex-col h-full">
+                <span className="flex items-center gap-1.5 h-6 shrink-0">
                   <span className="shrink-0 text-[10px] font-mono opacity-50 w-4 text-center">{i + 1}</span>
-                  {/* A restored card waits for the person (nothing sends it on
-                      its own), so its hourglass stands still. */}
+                  {/* A held card waits for the person (nothing sends it on its
+                      own), so its hourglass stands still. */}
                   {isFrontCollapsed && (
-                    <span data-testid="queue-card-hourglass" className={`shrink-0 inline-flex${m.meta?.restored === true ? '' : ' animate-[hourglass-flip_3s_ease-in-out_infinite]'}`}>
+                    <span data-testid="queue-card-hourglass" className={`shrink-0 inline-flex${m.meta?.held === true ? '' : ' animate-[hourglass-flip_3s_ease-in-out_infinite]'}`}>
                       <Hourglass size={13} />
                     </span>
                   )}
@@ -866,6 +909,12 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                       )}
                     </>
                   )}
+                </span>
+                {held && (
+                  <span ref={measureHeldRow(queueId!)} data-queue-id={queueId} data-testid="queue-card-held" className="block pl-[22px] text-[11px] leading-4 italic opacity-80 break-words">
+                    {i18nT('components.queueStack.restored_held')}
+                  </span>
+                )}
                 </span>
               </Glass>
               </motion.div>

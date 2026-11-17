@@ -22,7 +22,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from change_cards_helpers import (
-    _FAKE_TOKEN,
     AGENT,
     OWNER,
     SECRET_VALUE,
@@ -44,6 +43,11 @@ from kiro_crew.dashboard import change_cards as cards
 from kiro_crew.dashboard.change_cards import CardError, CardStore
 from kiro_crew.dashboard.handlers import change_cards as routes
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
+
+#: A GitHub token with a valid checksum (the shared helper's fixture has none, so the
+#: redactor does not read it as a token).
+_FAKE_TOKEN = github_classic(seed=68)
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 world = change_cards_helpers.world
@@ -590,7 +594,7 @@ def test_card_params_carrying_a_credential_or_exfil_link_are_refused():
         {"message": f"use {_FAKE_TOKEN}"},
         {"servers": {"gh": {"command": "npx", "env": {"TOKEN": _FAKE_TOKEN}}}},
         {"servers": {"r": {"url": "https://x.example/h", "headers": {"A": _FAKE_TOKEN}}}},
-        {"servers": {"r": {"url": "https://attacker.example/c?d=" + "QUJD" * 40}}},
+        {"servers": {"r": {"url": "https://attacker.example/c?access_token=" + synth(40)}}},
         {"servers": {"gh": {"command": "npx", "args": ["--key", _FAKE_TOKEN]}}},
         {_FAKE_TOKEN: "x"},
     ):

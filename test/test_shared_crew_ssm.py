@@ -479,10 +479,12 @@ async def test_a_forwarded_connection_is_never_the_owner_even_holding_every_cred
     )
     assert status == 200
     assert body["user"] == f"ssm:{invite_id}"
-    assert body["owner"] is False
+    # The guest passes the owner gate (everything but the Terminal) under their own
+    # subject and provenance, never the owner's.
+    assert body["owner"] is True
     assert body["provenance"] == Provenance.SSM_INVITE.value
     assert body["internal_auth"] is False and body["app"] == ""
-    # The owner-only routes refuse the guest.
+    # Sharing stays the machine owner's: the invite routes refuse the guest.
     for path in ("/api/shared-crew/ssm",):
         status, refused, _ = await _get(servers.ssm, path, cookies=cookie)
         assert status == 403 and refused["code"] == "owner_only"

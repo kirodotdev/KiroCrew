@@ -9,9 +9,11 @@ The rootdir conftest is reached through the plugin manager: ``import conftest`` 
 
 from __future__ import annotations
 
+import array
 import gc
 import linecache
 import pathlib
+import types
 import warnings
 import weakref
 
@@ -222,13 +224,14 @@ class TestCollectedFixtureBookkeepingIsShared:
             "_SHARED_FIXTUREDEF_TUPLES",
             "_SHARED_INITIALNAMES",
             "_SHARED_NAME2FIXTUREDEFS",
+            "_SHARED_NAMES_CLOSURES",
         ):
             monkeypatch.setattr(root_conftest, name, {})
         monkeypatch.setattr(root_conftest, "_COMPACTED_FIXTUREINFO", set())
         return root_conftest
 
     @staticmethod
-    def _item(defs: dict[str, tuple]):
+    def _item(defs: dict[str, tuple], *, asyncio: bool = False):
         from types import SimpleNamespace
 
         from _pytest.fixtures import FuncFixtureInfo
@@ -239,7 +242,15 @@ class TestCollectedFixtureBookkeepingIsShared:
             names_closure=list(defs),
             name2fixturedefs=dict(defs),
         )
-        return SimpleNamespace(_request=object(), _fixtureinfo=info)
+        mark = pytest.mark.asyncio.mark if asyncio else None
+        return SimpleNamespace(
+            _request=object(),
+            _fixtureinfo=info,
+            # pytest makes ``fixturenames`` the very list ``names_closure`` is.
+            fixturenames=info.names_closure,
+            obj=lambda: None,
+            get_closest_marker=lambda name: mark if name == "asyncio" else None,
+        )
 
     def test_two_functions_with_the_same_fixtures_share_one_lookup(self, fresh_tables) -> None:
         floor, home = object(), object()
@@ -255,6 +266,19 @@ class TestCollectedFixtureBookkeepingIsShared:
         assert b.initialnames is a.initialnames
         assert b.name2fixturedefs == {"floor": (floor,), "home": (home,)}
 
+    def test_a_shared_lookup_is_keyed_by_one_packed_id_per_name(self, fresh_tables) -> None:
+        """8 bytes per name: a ``(name, id)`` tuple per name cost 347 MiB of a collection.
+
+        One value is a list, as pytest's direct parametrization leaves it.
+        """
+        item = self._item({"floor": (object(),), "home": [object()]})
+
+        fresh_tables.compact_collected_item(item)
+
+        (key,) = fresh_tables._SHARED_NAME2FIXTUREDEFS
+        values = item._fixtureinfo.name2fixturedefs.values()
+        assert key == array.array("Q", map(id, values)).tobytes()
+
     def test_a_different_resolution_keeps_its_own_lookup(self, fresh_tables) -> None:
         """Sharing is by identity of the FixtureDefs, so an override is never merged away."""
         floor = object()
@@ -267,15 +291,44 @@ class TestCollectedFixtureBookkeepingIsShared:
         assert overridden._fixtureinfo.name2fixturedefs is not base._fixtureinfo.name2fixturedefs
         assert len(overridden._fixtureinfo.name2fixturedefs["floor"]) == 2
 
-    def test_the_closure_list_stays_per_function(self, fresh_tables) -> None:
-        """``names_closure`` is ``item.fixturenames``; pytest-asyncio inserts into it."""
+    def test_two_functions_with_the_same_closure_share_one_list(self, fresh_tables) -> None:
         floor = object()
         first, second = self._item({"floor": (floor,)}), self._item({"floor": (floor,)})
 
         fresh_tables.compact_collected_item(first)
         fresh_tables.compact_collected_item(second)
 
-        assert first._fixtureinfo.names_closure is not second._fixtureinfo.names_closure
+        assert second._fixtureinfo.names_closure is first._fixtureinfo.names_closure
+        assert second.fixturenames is first.fixturenames is first._fixtureinfo.names_closure
+
+    def test_an_asyncio_test_keeps_its_own_closure_list(self, fresh_tables) -> None:
+        """pytest-asyncio inserts ``event_loop`` into such a test's ``fixturenames``."""
+        floor = object()
+        plain = self._item({"floor": (floor,)})
+        marked = self._item({"floor": (floor,)}, asyncio=True)
+
+        fresh_tables.compact_collected_item(plain)
+        fresh_tables.compact_collected_item(marked)
+
+        assert marked.fixturenames is not plain.fixturenames
+        assert marked.fixturenames is marked._fixtureinfo.names_closure
+
+    def test_a_parametrized_sibling_follows_the_shared_list(self, fresh_tables) -> None:
+        """Siblings share one ``FuncFixtureInfo``; each item's own attribute must move too."""
+        floor = object()
+        first = self._item({"floor": (floor,)})
+        other_function = self._item({"floor": (floor,)})
+        sibling = types.SimpleNamespace(
+            _request=object(),
+            _fixtureinfo=other_function._fixtureinfo,
+            fixturenames=other_function._fixtureinfo.names_closure,
+        )
+
+        fresh_tables.compact_collected_item(first)
+        fresh_tables.compact_collected_item(other_function)
+        fresh_tables.compact_collected_item(sibling)
+
+        assert sibling.fixturenames is first.fixturenames
 
     def test_the_request_is_dropped_to_the_state_pytest_rebuilds_from(self, fresh_tables) -> None:
         item = self._item({"floor": (object(),)})
@@ -311,3 +364,68 @@ class TestCollectedFixtureBookkeepingIsShared:
 
         assert any(candidate is lookup for candidate in shared.values())
         assert all(tuples.get((name, *map(id, defs))) is defs for name, defs in lookup.items())
+        closures = root_conftest._SHARED_NAMES_CLOSURES.values()
+        assert any(closure is request.node.fixturenames for closure in closures)
+
+
+class TestCollectionCostPerItem:
+    """Every xdist worker collects its whole share before it runs a test, so the cost of one
+    collected item is multiplied by every item and every worker.
+
+    Budgeted per item rather than in total, so adding tests never fails it; a change that
+    makes every item heavier does. Measured on the full Linux suite (283,605 items) at
+    ~11 KiB per item once fixture bookkeeping is shared, and ~19 KiB before. The fixed
+    part covers importing ``kiro_crew`` and the conftests, which a file shard pays too.
+    """
+
+    FIXED_MIB = 600
+    PER_ITEM_KIB = 16
+    MIN_ITEMS = 5_000
+
+    def test_collection_stays_inside_its_per_item_budget(self, root_conftest) -> None:
+        start = root_conftest._RSS_AT_CONFIGURE_KIB
+        peak = root_conftest._HWM_AT_COLLECTION_KIB
+        items = root_conftest._ITEMS_AT_COLLECTION
+        if start is None or peak is None:
+            pytest.skip("needs /proc/self/status")
+        if items < self.MIN_ITEMS:
+            pytest.skip(f"only {items} items collected; the budget is about large runs")
+
+        spent_kib = peak - start
+        budget_kib = self.FIXED_MIB * 1024 + self.PER_ITEM_KIB * items
+        assert spent_kib <= budget_kib, (
+            f"collecting {items} items took {spent_kib / 1024:.0f} MiB, over the "
+            f"{budget_kib / 1024:.0f} MiB budget ({self.FIXED_MIB} MiB + "
+            f"{self.PER_ITEM_KIB} KiB per item). Look for a new autouse fixture, a "
+            "module-level payload, or lost fixture sharing (testing-conventions.md, "
+            "Running on a machine with little RAM)."
+        )
+
+    def test_items_are_counted_as_collected_not_as_selected(
+        self, root_conftest, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``-k``/``-m`` drop items after collection, but VmHWM already paid for them.
+
+        A count taken from ``session.items`` would shrink the budget under ``-k`` and fail
+        a healthy run, so each collected item counts once, in ``pytest_itemcollected``.
+        """
+        monkeypatch.setattr(root_conftest, "_ITEMS_AT_COLLECTION", 0)
+        monkeypatch.setattr(root_conftest, "compact_collected_item", lambda _item: None)
+
+        for _ in range(3):
+            root_conftest.pytest_itemcollected(object())
+
+        assert root_conftest._ITEMS_AT_COLLECTION == 3
+
+    def test_the_hooks_recorded_what_the_budget_reads(self, root_conftest, request) -> None:
+        if root_conftest._RSS_AT_CONFIGURE_KIB is None:
+            pytest.skip("needs /proc/self/status")
+        assert root_conftest._HWM_AT_COLLECTION_KIB >= root_conftest._RSS_AT_CONFIGURE_KIB
+        # Counted before ``-k``/``-m`` deselection: every collected item is either still
+        # selected or was deselected. A count overwritten from ``session.items`` after
+        # deselection fails here under any ``-k``.
+        selected = len(request.session.items)
+        assert selected > 0
+        assert root_conftest._ITEMS_AT_COLLECTION == (
+            selected + root_conftest._DESELECTED_AT_COLLECTION
+        )

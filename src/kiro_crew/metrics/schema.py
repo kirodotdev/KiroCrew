@@ -23,7 +23,7 @@ import re
 from typing import Dict, Optional, Union
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 
 # ---------------------------------------------------------------------------
 # C4 — Namespace constants
@@ -142,7 +142,7 @@ def redact(value: str) -> str:
     # warnings) tuples — a changed cleaned_text means something sensitive was
     # found. The AKIA/ASIA STS-token shape is also covered by the patterns
     # above.
-    if redact_credentials(redact_exfiltration_urls(value)[0])[0] != value:
+    if refuses(value, lambda text: redact_credentials(redact_exfiltration_urls(text)[0])[0]):
         return "[REDACTED]"
     if _is_high_entropy(value):
         return "[REDACTED]"

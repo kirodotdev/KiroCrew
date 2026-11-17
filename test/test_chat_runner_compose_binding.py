@@ -33,6 +33,7 @@ import types
 from pathlib import Path
 
 import pytest
+import source_corpus
 from test_chat_runner_composition_contract import _BASE_NAMES, _facade_patched_names
 
 import kiro_crew.dashboard.chat_runner as cr
@@ -275,16 +276,17 @@ def test_the_runner_importer_scan_sees_a_by_name_import() -> None:
 def test_every_name_the_runner_imports_is_read() -> None:
     # Only files mentioning "chat_runner" can hold a by-name import from the runner;
     # pre-filtering avoids parsing ~3,900 irrelevant files that would never match.
-    importers = [
-        text
-        for path in sorted(
-            (Path(__file__).resolve().parents[1] / "src" / "kiro_crew").rglob("*.py")
-        )
-        if path.name != "chat_runner.py" and "chat_turn" not in path.parts
-        for text in (path.read_text(encoding="utf-8"),)
-        if "chat_runner" in text
-    ]
-    keep = set(_BASE_NAMES) | _facade_patched_names() | _imported_from_the_runner(importers)
+    with source_corpus.untraced():
+        importers = [
+            text
+            for path in sorted(
+                (Path(__file__).resolve().parents[1] / "src" / "kiro_crew").rglob("*.py")
+            )
+            if path.name != "chat_runner.py" and "chat_turn" not in path.parts
+            for text in (path.read_text(encoding="utf-8"),)
+            if "chat_runner" in text
+        ]
+        keep = set(_BASE_NAMES) | _facade_patched_names() | _imported_from_the_runner(importers)
     runner = Path(cr.__file__).read_text(encoding="utf-8")
     owners = [
         Path(owner.__file__).read_text(encoding="utf-8") for owner in chat_turn.owner_modules()

@@ -1,0 +1,159 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.19.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "write",
+        "tool_call_id": "call_1_0",
+        "tool_kind": "edit",
+        "wire_title": "write"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "content": "hello\n",
+          "filePath": "<cwd>/probe.txt"
+        },
+        "title": "write",
+        "tool_call_id": "call_1_0",
+        "tool_input": "{\n  \"content\": \"hello\\n\",\n  \"filePath\": \"<cwd>/probe.txt\"\n}",
+        "tool_kind": "edit",
+        "wire_title": "write"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_1_0",
+        "tool_final": true,
+        "tool_output": "Wrote file successfully.",
+        "tool_output_bytes": 24,
+        "tool_output_digest": "e3e06ec0f8c958669ed3682941ab88218ff9ee42a7ab9b48fd78126336aa968c",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "title": "probe.txt",
+        "tool_call_id": "call_1_0",
+        "wire_title": "probe.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "edit",
+        "tool_call_id": "call_2_0",
+        "tool_kind": "edit",
+        "wire_title": "edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "filePath": "<cwd>/probe.txt",
+          "newString": "hello world",
+          "oldString": "hello"
+        },
+        "title": "edit",
+        "tool_call_id": "call_2_0",
+        "tool_input": "{\n  \"filePath\": \"<cwd>/probe.txt\",\n  \"newString\": \"hello world\",\n  \"oldString\": \"hello\"\n}",
+        "tool_kind": "edit",
+        "wire_title": "edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "filePath": "<cwd>/probe.txt",
+          "newString": "hello world",
+          "oldString": "hello"
+        },
+        "title": "edit",
+        "tool_call_id": "call_2_0",
+        "tool_input": "{\n  \"filePath\": \"<cwd>/probe.txt\",\n  \"newString\": \"hello world\",\n  \"oldString\": \"hello\"\n}",
+        "tool_kind": "edit",
+        "wire_title": "edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_2_0",
+        "tool_final": true,
+        "tool_output": "Edit applied successfully.",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "8caec1349d76de16c89d9b64f22a46c79f641ab12a2540c8d2433217dac59f07",
+        "tool_status": "completed"
+      },
+      {
+        "diff_old_text": "hello",
+        "diff_path": "<cwd>/probe.txt",
+        "kind": "tool_call_update",
+        "title": "probe.txt",
+        "tool_call_id": "call_2_0",
+        "tool_input": "--- <cwd>/probe.txt\n+++ <cwd>/probe.txt\n@@ -1 +1 @@\n-hello\n+hello world",
+        "wire_title": "probe.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

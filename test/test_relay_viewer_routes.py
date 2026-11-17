@@ -11,6 +11,7 @@ import dataclasses
 import hashlib
 import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,6 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from token_auth_helpers import _make_request, _ok_handler, clear_nonces  # noqa: F401
 
+from kiro_crew.auth import bridge
 from kiro_crew.dashboard.handlers import relay_viewer as rv
 from kiro_crew.dashboard.kiro_relay import limits
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_CALLER_KEY, RelayCaller, RelayCallerKind
@@ -44,6 +46,10 @@ PROFILE = "arn:aws:codewhisperer:us-east-1:000000000000:profile/EXAMPLEPROFILE"
 TEAM_CREW = dataclasses.replace(CREW, crew_type="TEAM", name="Team box")
 FP_A = "fingerprint-of-account-a"
 FP_B = "fingerprint-of-account-b"
+START = "https://example-portal.awsapps.example.test/start"
+IDC = {"identity": "identity_center", "provider": "Enterprise", "start_url": START}
+#: The real vault read, kept before the fixture replaces it.
+_REAL_VAULT_CLAIMS = bridge.vault_identity_claims
 
 
 def _marker(fingerprint: str) -> str:
@@ -105,6 +111,14 @@ def viewer(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.auth.bridge.vault_identity_fingerprint", lambda: state.fingerprint
     )
+    state.claims = {"identity": "builder_id", "provider": "BuilderId"}
+    state.claim_reads = 0
+
+    def _claims():
+        state.claim_reads += 1
+        return (state.fingerprint, dict(state.claims)) if state.fingerprint else ("", {})
+
+    monkeypatch.setattr("kiro_crew.auth.bridge.vault_identity_claims", _claims)
     return state
 
 
@@ -160,6 +174,7 @@ async def test_crews_lists_for_the_owner_with_no_token(viewer, caplog) -> None:
             "relayConnectionStatus": "CONNECTED",
             "crewUrl": CREW.crew_url,
             "lastSeenAt": None,
+            "unseen": False,
         }
     ]
     assert BEARER not in text and BEARER not in caplog.text
@@ -812,6 +827,17 @@ async def test_both_routes_pass_the_relay_domain_to_the_list(viewer) -> None:
 
 
 @pytest.mark.asyncio
+async def test_with_no_domain_set_the_mint_pins_the_window_to_the_listed_host(viewer) -> None:
+    viewer.tunnel.relay_viewer_relay_domain = ""
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert resp.status == 200 and viewer.crew_domains == [""]
+    assert (body["crewUrl"], body["relayDomain"]) == (CREW.crew_url, "relay.example.test")
+    assert ("mint", EP) in viewer.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "crew_url",
     [
@@ -836,7 +862,8 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
     viewer, monkeypatch, crew_url, domain
 ) -> None:
     on_domain = crew_url == f"https://{EP}.relay.example.test"
-    kept = not domain.strip() or (domain == "relay.example.test" and on_domain)
+    on_port = crew_url.endswith(":8443")
+    kept = (not domain.strip() and not on_port) or (domain == "relay.example.test" and on_domain)
     viewer.tunnel.relay_viewer_relay_domain = domain
     raw = {"endpointId": EP, "crewUrl": crew_url, "name": "Build box", "crewType": "PERSONAL"}
 
@@ -853,18 +880,15 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
         minted_body = await minted.json()
     assert listed.status == 200
     assert [c["endpointId"] for c in listed_body["crews"]] == ([EP] if kept else [])
-    if not domain.strip():
-        # Listed, but no token is minted until the relay domain is set.
-        assert (minted.status, minted_body["code"]) == (409, cps.NOT_SET_UP)
-        assert ("mint", EP) not in viewer.calls
-    elif kept:
+    if kept:
+        # With no domain set, the window is pinned to the host the list gave.
         assert minted.status == 200 and minted_body["crewUrl"] == crew_url
+        assert minted_body["relayDomain"] == crew_url.split(f"{EP}.", 1)[1]
     else:
         assert (minted.status, minted_body["code"]) == (403, "CREW_ACCESS_NOT_GRANTED")
         assert ("mint", EP) not in viewer.calls
     assert listed_body.get("code") != "NOT_SET_UP"
-    if domain.strip():
-        assert minted_body.get("code") != "NOT_SET_UP"
+    assert minted_body.get("code") != "NOT_SET_UP"
 
 
 @pytest.mark.asyncio
@@ -900,3 +924,258 @@ async def test_a_personal_crew_with_no_profile_is_minted_as_before_and_logs_no_v
     assert "has no profile" in caplog.text
     for value in (BEARER, ACCESS, PROFILE):
         assert value not in caplog.text
+
+
+#: A made-up profile ARN in a second region.
+EU_PROFILE = "arn:aws:codewhisperer:eu-central-1:000000000000:profile/EXAMPLEPROFILE"
+US_HOST = "https://management.us-east-1.kiro.dev/"
+
+
+def _recording_urls(monkeypatch) -> list[tuple[str, str]]:
+    """The fixture's list and mint fakes, recording the control plane URL each gets."""
+    urls: list[tuple[str, str]] = []
+    listed, minted = cps.list_crew_endpoints, cps.create_crew_access_token
+
+    async def _list(url, bearer, *, crew_domain, token_type=""):
+        urls.append(("list", url))
+        return await listed(url, bearer, crew_domain=crew_domain, token_type=token_type)
+
+    async def _mint(url, bearer, endpoint_id, *, token_type="", profile_arn=""):
+        urls.append(("mint", url))
+        return await minted(
+            url, bearer, endpoint_id, token_type=token_type, profile_arn=profile_arn
+        )
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    monkeypatch.setattr(cps, "create_crew_access_token", _mint)
+    return urls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "credential", "host"),
+    [
+        (EU_PROFILE, "", "https://management.eu-central-1.kiro.dev/"),
+        (PROFILE, "", US_HOST),
+        # The test credential, and a sign-in with no profile of its own.
+        ("", "secret://RELAY_VIEWER_TEST", US_HOST),
+        ("", "", US_HOST),
+        ("not-a-profile-arn", "", US_HOST),
+    ],
+)
+async def test_an_empty_url_uses_the_built_in_control_plane_for_the_sign_ins_region(
+    viewer, monkeypatch, profile, credential, host
+) -> None:
+    urls = _recording_urls(monkeypatch)
+    viewer.tunnel.relay_viewer_cps_url = ""
+    viewer.tunnel.relay_viewer_credential = credential
+    viewer.profile_arn = profile
+    async with _client() as client:
+        listed = await client.get("/api/relay-viewer/crews")
+        assert listed.status == 200
+        assert (await _mint(client)).status == 200
+    assert urls == [("list", host), ("list", host), ("mint", host)]
+
+
+@pytest.mark.asyncio
+async def test_a_set_url_still_wins_over_the_built_in_control_plane(viewer, monkeypatch) -> None:
+    urls = _recording_urls(monkeypatch)
+    viewer.profile_arn = EU_PROFILE
+    async with _client() as client:
+        assert (await client.get("/api/relay-viewer/crews")).status == 200
+        assert (await _mint(client)).status == 200
+    set_url = "https://cps.example.test"
+    assert urls == [("list", set_url), ("list", set_url), ("mint", set_url)]
+
+
+# Captured at import, before the fixture fakes them, so a test can use the real client.
+_REAL_LIST, _REAL_MINT = cps.list_crew_endpoints, cps.create_crew_access_token
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "code", "posted"),
+    [
+        ("http://cps.example.invalid/", "NOT_SET_UP", []),
+        ("", "UNREACHABLE", [US_HOST]),
+    ],
+    ids=["rejected", "empty"],
+)
+async def test_a_rejected_url_is_not_set_up_and_only_an_empty_one_uses_the_built_in_plane(
+    viewer, monkeypatch, tmp_path, url, code, posted
+) -> None:
+    import json
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config_file = tmp_path / "config.json"
+    tunnel = {
+        "relay_viewer_enabled": True,
+        "relay_viewer_cps_url": url,
+        "relay_viewer_relay_domain": "relay.example.test",
+    }
+    config_file.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
+    monkeypatch.setattr(rv, "_load_tunnel", lambda: KiroCrewConfig.load().tunnel)
+    monkeypatch.setattr(cps, "list_crew_endpoints", _REAL_LIST)
+    monkeypatch.setattr(cps, "create_crew_access_token", _REAL_MINT)
+    urls: list[str] = []
+
+    async def _post(post_url, bearer, target, body, token_type):
+        urls.append(post_url)
+        raise cps.CpsRefused(cps.UNREACHABLE, "stand-in: no network in this test")
+
+    monkeypatch.setattr(cps, "_post", _post)
+    async with _client() as client:
+        listed = await client.get("/api/relay-viewer/crews")
+        minted = await _mint(client)
+        assert (await listed.json())["code"] == code
+        assert (await minted.json())["code"] == code
+    assert urls == posted * 2
+
+
+# The account the list was read for: {accountType, startUrl?}, only when proven.
+
+
+async def _crews():
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        return resp, await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_crews_names_the_account_when_both_reads_match(viewer) -> None:
+    resp, body = await _crews()
+    assert resp.status == 200 and body.get("account") == {"accountType": "BuilderId"}
+    viewer.claims = dict(IDC)
+    _, body = await _crews()
+    assert body.get("account") == {"accountType": "IamIdentityCenter", "startUrl": START}
+    assert viewer.claim_reads == 4, "one vault read before and one after each list"
+
+
+@pytest.mark.asyncio
+async def test_crews_leaves_the_account_out_when_the_sign_in_changes(viewer, monkeypatch) -> None:
+    async def _list(url, bearer, *, crew_domain, token_type=""):
+        viewer.fingerprint = FP_B  # a sign-in landed during the list call
+        return (CREW,)
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    resp, body = await _crews()
+    assert resp.status == 200 and len(body["crews"]) == 1
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fingerprint", "claims"),
+    [("", IDC), (FP_A, {"identity": "unknown_slot", "provider": ""})],
+    ids=["signed-out", "unlabelled-slot"],
+)
+async def test_crews_leaves_the_account_out_when_nothing_is_known(
+    viewer, fingerprint, claims
+) -> None:
+    viewer.fingerprint, viewer.claims = fingerprint, dict(claims)
+    _, body = await _crews()
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_signed_out_refusal_carries_no_account(viewer, monkeypatch) -> None:
+    _refusing_list(viewer, monkeypatch, [401, 401])
+    resp, body = await _crews()
+    assert (resp.status, body["code"]) == (409, "SIGNED_OUT")
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+async def test_the_test_credential_names_no_account(viewer) -> None:
+    viewer.tunnel.relay_viewer_credential = "relay-viewer-test-credential"
+    _, body = await _crews()
+    assert "account" not in body
+    assert viewer.claim_reads == 0, "the vault is never read for the test credential"
+
+
+@pytest.mark.asyncio
+async def test_the_start_url_is_capped_and_only_for_identity_center(viewer) -> None:
+    viewer.claims = {**IDC, "start_url": "https://" + "a" * 300}
+    _, body = await _crews()
+    assert len((body.get("account") or {}).get("startUrl", "")) == 200
+    viewer.claims = {"identity": "builder_id", "provider": "BuilderId", "start_url": START}
+    _, body = await _crews()
+    assert body.get("account") == {"accountType": "BuilderId"}
+
+
+@pytest.mark.asyncio
+async def test_the_account_never_reaches_the_log(viewer, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    viewer.claims = dict(IDC)
+    _, body = await _crews()
+    assert (body.get("account") or {}).get("startUrl") == START
+    assert "relay viewer: crews -> 1 listed" in caplog.text
+    for value in (START, "example-portal", "IamIdentityCenter", FP_A):
+        assert value not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_forced_refresh_keeps_the_fingerprint_and_the_account(
+    viewer, monkeypatch, tmp_path
+) -> None:
+    # The real vault read over a real store: a CPS 401, then one forced refresh
+    # whose result is built by the real SSO-OIDC refresh and saved, as the
+    # provider does. The refresh completes no sign-in, so the fingerprint holds.
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.auth import refresh
+    from kiro_crew.auth.store import KasToken, TokenStore
+
+    monkeypatch.setattr(bridge, "vault_identity_claims", _REAL_VAULT_CLAIMS)
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+    stored = KasToken(
+        access_token=BEARER,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        provider="Enterprise",
+        identity="identity_center",
+        refresh_token="rt-1",
+        profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+        region="us-east-1",
+        client_id="client-1",
+        client_secret="client-secret-1",
+        extra={"start_url": START},
+    )
+    store.save(stored)
+    store.bump_signin_generation()
+    first = _REAL_VAULT_CLAIMS()[0]
+
+    class _Answer:
+        status = 200
+
+        async def json(self):
+            return {"accessToken": FRESH, "expiresIn": 3600, "refreshToken": "rt-2"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    session: Any = SimpleNamespace(post=lambda *a, **k: _Answer())
+    seen = _refusing_list(viewer, monkeypatch, [401])
+
+    async def _bearer(ref, rejected=""):
+        seen.append(rejected)
+        if not rejected:
+            return BEARER, "", ""
+        current = store.resolve()
+        assert current is not None
+        store.save(await refresh._refresh_sso_oidc(current, session=session))
+        return FRESH, "", ""
+
+    monkeypatch.setattr(rv, "_bearer", _bearer)
+    resp, body = await _crews()
+    assert resp.status == 200
+    assert seen == ["", BEARER] and viewer.calls == [("list", BEARER), ("list", FRESH)]
+    refreshed = store.resolve()
+    assert refreshed is not None and refreshed.access_token == FRESH
+    assert _REAL_VAULT_CLAIMS()[0] == first != ""
+    assert body.get("account") == {"accountType": "IamIdentityCenter", "startUrl": START}

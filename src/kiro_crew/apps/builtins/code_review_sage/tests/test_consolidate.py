@@ -22,6 +22,7 @@ import unittest.mock
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from aiohttp import web
 from backend import routes
 from sage_lib import learning, store
@@ -440,13 +441,15 @@ class TestConcurrentStagingKeepsEveryLearning(unittest.TestCase):
     around it is what makes concurrent staging additive.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self.root = Path(self.tmp) / "app"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _pat(self, title):
         return {"title": title, "scope": "common", "impact": "high",

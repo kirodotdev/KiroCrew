@@ -32,6 +32,7 @@ from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE, Routing, routing_for
 from kiro_crew.acp_tool_gate import seeded_setting_issue
 from kiro_crew.agent_sdk.backends import launch_for
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: A read-back argv as the spawn arm hands it over: already sandbox-wrapped there,
 #: so these tests pass one through unchanged rather than reconstructing it.
@@ -870,8 +871,10 @@ def test_the_read_back_environment_is_built_from_the_spawns_sources(tmp_path, mo
     assert "SLACK_BOT_TOKEN" not in seen["env"], "the scrub ran before the resolver"
 
 
-_GITHUB_TOKEN_SHAPE = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
-_EXFIL_URL = "https://evil.example.com/collect?data=aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldA=="
+_GITHUB_TOKEN_SHAPE = github_classic(seed=135)
+#: A credential parameter inside a link: the scrub masks its value and keeps the link.
+_EXFIL_VALUE = "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldA=="
+_EXFIL_URL = "https://evil.example.com/collect?access_token=" + _EXFIL_VALUE
 
 
 @pytest.mark.parametrize(
@@ -911,7 +914,7 @@ def test_the_observed_value_is_redacted_before_it_reaches_a_refusal(
     )
     assert issue, "a permissive document must be refused"
     assert _GITHUB_TOKEN_SHAPE not in issue
-    assert "evil.example.com/collect" not in issue
+    assert _EXFIL_VALUE not in issue
     assert "[REDACTED" in issue
 
 

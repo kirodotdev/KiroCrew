@@ -103,7 +103,10 @@ def register_restore_parser(sub: _Commands) -> None:
     rest_parser.add_argument(
         "--mode",
         choices=("replace", "merge"),
-        help="replace = overwrite existing state, merge = keep it and add (default: auto-detect)",
+        help=(
+            "replace = overwrite existing state, merge = keep it and add; "
+            "asked on a terminal when omitted, refused off a terminal"
+        ),
     )
     rest_parser.add_argument(
         "--dry-run", action="store_true", help="Preview what would be restored, write nothing"
@@ -873,7 +876,14 @@ Examples:
     )
 
     _c_iam = cloud_sub.add_parser(
-        "iam-policy", help="Print the least-privilege IAM policy to apply"
+        "iam-policy",
+        help="Print the least-privilege IAM policy to apply",
+        description="Print the launcher's least-privilege IAM policy as one JSON document. "
+        "It is too big for an inline user policy: create it as a customer-managed policy "
+        "(aws iam create-policy --policy-document file://launcher-policy.json) and attach "
+        "it to the IAM user, group or role behind the launch profile, or reference it from "
+        "an Identity Center permission set. See 'Applying the launcher policy' in "
+        "docs/guides/cloud-instance-ssm-vs-ssh.md, which also lists what it denies.",
     )
     _cloud_creds_opts(_c_iam)
     _c_iam.add_argument(

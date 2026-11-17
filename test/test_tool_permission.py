@@ -1887,8 +1887,8 @@ async def _ladder_rungs(policy: Policy, ask: Ask) -> tuple[set[str], set[str]]:
         responders.append(policy.child.responder)
     for responder in responders:
         assert responder.attended, f"responder {responder.name!r} is not attached"
-        # A person's yes is approved under the responder's name, a no refused under it.
-        refusals.add(responder.name)
+        # A yes is approved under its name, a no refused under it, an unanswered one as expired.
+        refusals |= {responder.name, "approval_expired"}
         approvals.add(responder.name)
     return refusals, approvals
 

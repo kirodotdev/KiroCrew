@@ -8,11 +8,11 @@ import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../compo
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { clearPreviewFlagWriteError, usePreviewFlagWriteError } from '../../hooks/usePreviewFlagServerSync'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Badge, Btn } from '../../components/ui'
+import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -131,7 +131,6 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_CREW_OAUTH: return i18nT('pages.developer.featurePreviewsTab.crew_oauth')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
-    case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
     case PREVIEW_DASHBOARD_STALE_FIELDS: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_fields')
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
@@ -190,7 +189,6 @@ export function FeaturePreviewsSection() {
   const artifactDeploy = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const remoteCrewChat = useRemoteCrewChat()
-  const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
   const dashboardStaleFields = usePreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
@@ -296,8 +294,10 @@ export function FeaturePreviewsSection() {
         {/* Shared Crew (People, invites, shared sessions). Unlike the flags here, the
             switch is not a browser setting: it is the owner's stored choice behind
             `/api/shared-crew/preview` (a keystone file), which the gateway reads at
-            start, so a change waits for a restart -- the Restart badge says so
-            before the switch is touched. No `configKey` and no `previewFlags.ts`
+            start, so a change waits for a restart -- the muted note under the
+            description says so before the switch is touched, and the warn-coloured
+            notice below appears only while a restart is actually pending. No
+            `configKey` and no `previewFlags.ts`
             entry for that reason. The row shows whether or not the People tab
             does; a gateway without the route, or a caller who is not the owner,
             gets no row. */}
@@ -306,15 +306,12 @@ export function FeaturePreviewsSection() {
             <SettingsToggle
               label={i18nT('sharedCrew.preview_title')}
               description={i18nT('sharedCrew.preview_desc')}
-              descriptionBadge={
-                <Badge variant="warn" className="text-[11px] font-sans px-1.5 py-0">
-                  {i18nT('pages.settings.developerPanel.restart_badge')}
-                </Badge>
-              }
+              describedBy="shared-crew-preview-restart-hint"
               checked={!!sharedCrewSetting && (sharedCrewSetting.env_override || sharedCrewSetting.enabled)}
               disabled={!sharedCrewSetting || sharedCrewSetting.env_override || sharedCrewPreview.saving}
               onChange={sharedCrewPreview.set}
             />
+            <p id="shared-crew-preview-restart-hint" className="text-[12px] text-muted -mt-1" data-testid="shared-crew-preview-restart-hint">{i18nT('sharedCrew.preview_restart_hint')}</p>
             {sharedCrewSetting?.env_override && (
               <p className="text-[12px] text-muted pt-1" data-testid="shared-crew-preview-env">{i18nT('sharedCrew.preview_env_on')}</p>
             )}
@@ -601,28 +598,6 @@ export function FeaturePreviewsSection() {
             description={i18nT('pages.developer.featurePreviewsTab.secrets_vault_desc')}
             checked={secretsVault}
             onChange={v => setPreviewFlag(PREVIEW_SECRETS_VAULT, v)}
-          />
-        )}
-      </PreviewGroup>
-
-      <PreviewGroup title={i18nT('pages.settings.developerPanel.group_for_developers')}>
-        {/* Dev-only MECHANISM preview, not a shippable surface: the composable-layout
-            mechanism (placement-driven renderer + scope + editor) being built beside
-            the Members page. This row is the FLAG PLUMBING only — the switch exists so
-            the mechanism can be built and tested behind a preview gate.
-
-            NO ingress button, on purpose: unlike the webhooks row, this preview has no
-            routable door in the bundle yet, so a link here would point at a route that
-            does not exist. It follows the toggle-only shape of "Chat on a crew" —
-            an honest switch with no door to promise. Add a "See what it looks like" intro
-            and/or an ingress the day the feature lands a real capture and route. */}
-        {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.layout_harness')}
-            description={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc')}
-            checked={layoutHarness}
-            onChange={v => setPreviewFlag(PREVIEW_LAYOUT_HARNESS, v)}
           />
         )}
       </PreviewGroup>

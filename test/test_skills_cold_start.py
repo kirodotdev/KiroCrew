@@ -16,7 +16,7 @@ from kiro_crew import skills
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import paths
 from kiro_crew.skill_search_index import SkillSearchIndex
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 
 def _skill(root: Path, key: str, *, always: bool = False) -> Path:
@@ -31,6 +31,10 @@ def _skill(root: Path, key: str, *, always: bool = False) -> Path:
 
 
 def test_cold_metadata_reads_overlap_and_join_with_tail_pinned_instruction(tmp_path, monkeypatch):
+    # The cold walk of 64 skills outran the 2 s production wait on a loaded Windows
+    # runner, which serves an empty catalog by design. Lifted to a lost-run bound so
+    # the assertion reads the joined walk, not the runner's speed.
+    monkeypatch.setattr(skills, "_COLD_CATALOG_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
     root = tmp_path / "skills"
     for i in range(64):
         _skill(root, f"skill-{i:03}", always=i == 63)

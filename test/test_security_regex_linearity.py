@@ -24,8 +24,6 @@ Covered:
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from kiro_crew.security import is_sensitive_path, redact_credentials
@@ -44,16 +42,6 @@ _ANT = "sk-ant-api03-" "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"
 _GLPAT = "glpat-" "xxxx1234xxxx5678xxxx"
 _XOXB = "xoxb-" "1234567890-abcdefghij"
 _TAG = "[REDACTED: credential]"
-
-
-@pytest.fixture
-def _structured_detectors_off():
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(False)
-    yield
-    compat.publish_use_rule_table(before)
 
 
 REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
@@ -127,81 +115,16 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
 ]
 
 
-@pytest.mark.usefixtures("_structured_detectors_off")
-@pytest.mark.parametrize(
-    ("text", "expected_text", "expected_warnings"),
-    REDACTION_GOLDEN,
-    ids=[f"case-{i}" for i in range(len(REDACTION_GOLDEN))],
-)
-def test_pass1_single_sub_is_byte_identical_to_pre_change_loop(
-    text: str, expected_text: str, expected_warnings: list[str]
-) -> None:
-    """Pass 1 as one ``sub()`` reproduces the old loop's bytes and warnings.
-
-    Covers the plan with the structured detectors off: the goldens are pass 1's
-    own spans and warnings, and the detectors decide several of these formats
-    by structure instead.
-
-    Differential for the pass-1 rewrite. ``expected_warnings`` is compared with ``==`` on
-    the list, so both the CONTENT and the ORDER are pinned -- appending in the
-    replacement callback has to keep the left-to-right match order the old
-    ``finditer`` loop had.
-    """
-    result, warnings = redact_credentials(text)
-    assert result == expected_text
-    assert warnings == expected_warnings
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_pass1_warning_order_tracks_match_order_not_length() -> None:
-    """Warnings come out in match order, not sorted or grouped.
-
-    Covers the plan with the structured detectors off, where pass 1 reads the
-    AWS key ID branch.
-
-    A replacement callback that batched or reordered its appends would still
-    produce identical TEXT, so this asserts the ordering separately.
-    """
-    text = f"{_ANT} {_AKIA} {_GHP}"
-    _, warnings = redact_credentials(text)
-    assert warnings == [
-        f"Redacted credential pattern ({len(_ANT)} chars)",
-        f"Redacted credential pattern ({len(_AKIA)} chars)",
-        f"Redacted credential pattern ({len(_GHP)} chars)",
-    ]
-
-
 def test_pass1_warnings_still_carry_no_secret_bytes() -> None:
     """The replacement callback must not slice the match into the warning."""
-    text = f"KEY={_ANT}"
+    # An Anthropic key of its published length; ``_ANT`` above is too short to be one.
+    key = "sk-ant-api03-" + "Zq8vT3mK9pLxW2nR7" * 5
+    text = f"KEY={key}"
     _, warnings = redact_credentials(text)
     joined = " ".join(warnings)
-    assert _ANT not in joined
-    assert _ANT[:20] not in joined
+    assert key not in joined
+    assert key[:20] not in joined
     assert "Redacted credential pattern" in joined
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_pass1_is_linear_on_credential_dense_text() -> None:
-    """Complexity guard for the pass-1 rewrite.
-
-    Covers the plan with the structured detectors off, where pass 1 reads the
-    AWS key ID branch.
-
-    A per-match rebuild of the whole string makes redacting N credentials in an
-    N-credential string O(N^2). The rebuild is a C-level copy, which no work
-    counter can see, so the shared ramp holds this thread's CPU to its default
-    budget at growing credential counts, each costing at most a linear multiple
-    of the one before.
-    """
-    from conftest import assert_rejected_without_backtracking
-
-    def redact_all(dense: str) -> None:
-        result, warnings = redact_credentials(dense)
-        assert len(warnings) == dense.count(_AKIA)
-        assert _AKIA not in result
-
-    assert_rejected_without_backtracking(redact_all, lambda n: f"{_AKIA} " * n)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,33 +153,3 @@ def inspect_source(func: object) -> str:
     import inspect
 
     return inspect.getsource(func)  # type: ignore[arg-type]
-
-
-def test_credential_pattern_module_still_compiles_one_alternation() -> None:
-    """Invariant: pass 1 uses the shared compiled pattern, gated by its pre-filter.
-
-    Guards against a future refactor swapping in a locally compiled regex, which
-    would silently drop the ``_might_contain_credential`` pre-filter pairing, and
-    against the pre-filter and the scan being asked about different strings --
-    the pre-filter is only a sound gate for the exact text the scan then walks.
-    """
-    from kiro_crew import security as security_mod
-
-    assert isinstance(security_mod._CREDENTIAL_PATTERNS, re.Pattern)
-    # `redact_credentials` is a wrapper over the one plan both redactors share;
-    # the scan lives in that plan's pass 1.
-    from kiro_crew.security import redaction as redaction_mod
-
-    body = inspect_source(redaction_mod._pattern_pass)
-    # Pass 1 reads its matches through `_pass1_matches`, which picks the shared
-    # pattern's matches or, on the engine its plan chose, the ones the detectors leave.
-    assert "_pass1_matches(text, residual)" in body
-    assert "_credential_matches(text)" in inspect_source(redaction_mod._pass1_matches)
-    assert "_credential_search(text, pos, starts)" in inspect_source(
-        redaction_mod._credential_matches
-    )
-    assert "_CREDENTIAL_PATTERNS.match(text, first)" in inspect_source(
-        redaction_mod._credential_search
-    )
-    assert "_might_contain_credential(text)" in body
-    assert "re.compile(" not in body

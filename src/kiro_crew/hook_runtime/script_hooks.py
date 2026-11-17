@@ -1114,7 +1114,11 @@ class ScriptHookStore:
                     "allowed",
                     "skills-only hook permitted",
                 )
-                skills_directive = " ".join(f"${s.rpartition('/')[2]}" for s in hook.skills)
+                from kiro_crew.skill_package_key import split_package_key
+
+                skills_directive = " ".join(
+                    f"${split_package_key(s.rpartition('/')[2])[1]}" for s in hook.skills
+                )
                 hook.last_run = time.time()
                 hook.last_status = "ok"
                 hook.last_error = ""

@@ -28,6 +28,7 @@ import pytest
 
 from kiro_crew.dashboard.handlers import cron
 from kiro_crew.learn import LessonStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.vector_memory import VectorMemoryStore
 
 pytestmark = pytest.mark.asyncio
@@ -333,10 +334,11 @@ def test_cli_learn_list_renders_the_scope_for_both_tiers(tmp_path, capsys) -> No
 # selector must round-trip byte-exact to name its row, so it cannot be emitted
 # redacted either: the row is reported as unusable and only the unselective
 # delete reaches it -- the same shape as a broken scope.
-SECRET_SCOPE = "repos/ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234"
+_SCOPE_TOKEN = github_classic(seed=166)
+SECRET_SCOPE = "repos/" + _SCOPE_TOKEN
 
 
-SPLIT_SECRET_SCOPE = "repos/ghp_ABCDEFGHIJKLMNOPQRST\x1b[0mUVWXYZabcdefghij1234"
+SPLIT_SECRET_SCOPE = "repos/" + _SCOPE_TOKEN[:20] + "\x1b[0m" + _SCOPE_TOKEN[20:]
 
 
 async def test_control_split_credential_scope_is_withheld_from_the_list(tmp_path) -> None:
@@ -438,7 +440,7 @@ def test_cli_learn_list_judges_the_scope_after_stripping_terminal_controls() -> 
     from kiro_crew import cli_commands
     from kiro_crew.security import redact
 
-    split = "repos/ghp_ABCDEFGHIJKLMNOPQRST\x1b[0mUVWXYZabcdefghij1234"
+    split = SPLIT_SECRET_SCOPE
     assert redact(split) == split, "fixture must pass the redactor unstripped"
     assert cli_commands._lesson_scope_suffix(split) == " (scope: unusable)"
     assert cli_commands._lesson_scope_suffix("src/pkg") == " (scope: src/pkg)"

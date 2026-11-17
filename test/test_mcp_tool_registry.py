@@ -206,7 +206,9 @@ def test_the_session_control_rows_are_the_strict_rows() -> None:
 
     table = _dashboard_table()
     assert SESSION_CONTROL_TOOLS == table.names("strict")
-    session_rows = {n for n in table.names() if n.startswith("session_") or n == "work_dispatch"}
+    session_rows = {
+        n for n in table.names() if n.startswith("session_") or n in ("work_dispatch", "crew_list")
+    }
     assert session_rows == set(SESSION_CONTROL_TOOLS)
 
 
@@ -233,12 +235,16 @@ def test_the_dashboard_advertises_its_rows_in_order(monkeypatch) -> None:
     # Held on: with it off, `tools/list` drops `backend` from two rows on purpose
     # (test_session_harness_preview.py), which is not what this test compares.
     monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
+    # Held off, the default: `crew_list` is then the one row not listed.
+    monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: False)
 
     table = _dashboard_table()
-    assert [t["name"] for t in mcp_dashboard._list_tools()] == list(table.names())
+    names = [n for n in table.names() if n != "crew_list"]
+    assert [t["name"] for t in mcp_dashboard._list_tools()] == names
     assert all("title" not in d for d in mcp_dashboard._tool_definitions())
     assert mcp_dashboard._list_tools() == with_titles(
-        mcp_dashboard.SERVER_NAME, mcp_dashboard._tool_definitions()
+        mcp_dashboard.SERVER_NAME,
+        [d for d in mcp_dashboard._tool_definitions() if d["name"] != "crew_list"],
     )
 
 

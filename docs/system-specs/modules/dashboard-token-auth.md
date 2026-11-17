@@ -389,24 +389,28 @@ Request flow:
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each
-   refusal is a `403` with a machine-readable `code` matching its SEL
+   refusal is a `403` with a machine-readable `code` naming its SEL
    `token.local` record's `resources`: `loopback_only` (`non-loopback`),
    `invalid_secret` (`invalid-secret`) and `member_owner_token_refused`
-   (`unverified-owner-process`). The owner-process check answers with
+   (`unverified-owner-process`, or `app-backend-refused app=<name>`). The owner-process check answers with
    provenance, not a bare verdict (`member_memory_auth.local_owner_bootstrap_provenance`
    returns a `LocalOwnerProvenance`): when the caller is owned by an app backend
    this gateway spawned, the backend registry's name for that app
    (`apps.backend.spawned_backend_owner`) is consulted before the host-process
    leg, so an unsandboxed backend that would also pass as a host process is still
-   attributed to its app. The success record's `resources` is `token-issued` for
-   a host process and `token-issued app=<name>` for an app backend; the response
-   body is unchanged. The name is the registry key, which `apps.manifest.app_name_error`
-   holds to kebab-case, so it can carry neither a space nor `=` and cannot forge a
-   second field in the row. It is NOT a token claim: an `app`-scoped token is
-   refused by `is_owner_dashboard_request`, so a claim would withdraw the
-   capability the admission grants. Consulting the registry first changes what is
-   recorded, never what is admitted; a registry that raises names no app and
-   leaves the host-process leg to decide as before. On loopback TCP the caller's
+   named. A caller the registry names (`provenance.app is not None`, including an
+   empty registry key) is an app backend or a descendant of one: it is code the
+   owner enabled, not the owner, so the mint signs no token of any kind for it. It
+   gets `403` `member_owner_token_refused` with the body `An app backend cannot
+   request an owner token.` and a `denied` record whose `resources` is
+   `app-backend-refused app=<name>`; this is a second `resources` value under the
+   same `code`, beside `unverified-owner-process`. The name is the registry key,
+   which `apps.manifest.app_name_error` holds to kebab-case, so it can carry
+   neither a space nor `=` and cannot forge a second field in the row. A host
+   process gets an owner token with no `app` claim and a success record whose
+   `resources` is `token-issued`. A registry that raises names no app and leaves
+   the host-process leg to decide as before. `/api/relay-viewer/token` refuses the
+   same callers by the same `is not None` test. On loopback TCP the caller's
    pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
    descriptors, so it is resolved once per accepted connection: the answer is kept
    against that connection's transport with the process start id read beside it,
@@ -469,7 +473,9 @@ it before step 1, and no other request is affected: loopback, the unix socket an
    /api/shared-crew/tailscale/credential` and `DELETE /api/sessions` from it also
    need `X-Kirocrew-Confirm: irreversible`, else 428 `confirm_required`. Anyone
    else is the dashboard user `tailnet:uid:<id>`, which never matches the owner
-   subject, so owner-gated routes refuse it. Either way `auth_tailnet_direct` is
+   subject; that person is a Shared Crew teammate, whom the owner gate admits on
+   every route but the Terminal's
+   ([shared-crew § What a teammate may do](shared-crew.md#what-a-teammate-may-do)). Either way `auth_tailnet_direct` is
    set, `auth_token` is empty, no cookie is minted, the Shared Crew actor is the
    verified person, and `_caller_bounds` lends this listener no lifetime, so
    nobody on it can mint a bearer link.
@@ -1103,7 +1109,9 @@ prefix, so a client-sent copy on any other request is dropped by the strip.
 the published caller before any other branch: the owner of a personal Crew as the
 owner's own subject (`owner_id`, or `local-app` when none is configured), so every
 owner gate decides for them as for the owner at the machine; a teammate as
-`relay:<Kiro user ID>`, which no owner gate matches. It publishes `user`, an empty
+`relay:<Kiro user ID>`, which is never the owner's subject: the owner gate admits
+them as a Shared Crew teammate on every route but the Terminal's
+([shared-crew § What a teammate may do](shared-crew.md#what-a-teammate-may-do)). It publishes `user`, an empty
 `app`, `is_dashboard_user`, `auth_from_query_token=false` and an empty
 `auth_token`. Admission runs before every token branch and token auth returns
 right after it, so no Crew credential is read, honored or issued over the relay: a
@@ -1111,7 +1119,8 @@ right after it, so no Crew credential is read, honored or issued over the relay:
 exchanged or turned into an app scope, and no Crew cookie is set on the response.
 
 **Remote limits** (`kiro_relay/limits.py`), applied by the ingress after the owner
-check:
+check, to the owner and teammates alike (what a teammate may do inside the Crew is
+the owner gates' question, not the transport's):
 
 | Limit | Code | Routes |
 |---|---|---|
@@ -1119,44 +1128,18 @@ check:
 | Instances | `instances_disabled` | `/api/instances` and everything under it, for everyone remote. The code the instances gate already answers when the feature is off, which the dashboard reads as "no instances here" |
 | Local token and secret routes | `relay_local_credential` | `/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`, `/api/auth/refresh`, `/api/apps/<name>/token`, `/api/apps/register`, each path a shipped built-in app declares as a `relay_credential_paths` host grant (`apps.builtin_host_grants`; today Dev Fleet's `/api/apps/dev-fleet/pod-token` and `/apps/dev-fleet/api/pod/token`, a pod's dashboard token), `/api/webhooks/tokens` and under it (a webhook bearer and signing secret that invoke an agent on their own), `/api/logout`, `/api/update/revalidate`, `/api/secrets` and under it, `/api/relay-viewer` and under it (the relay viewer calls the control plane with this machine's Kiro sign-in and mints relay access tokens) |
 | Shutdown | `relay_shutdown_refused` | `/api/shutdown` |
-| Apps for teammates | `relay_apps_teammate` | for a teammate only: `/apps/*` (each app's UI and backend proxy), `/api/apps` with everything under it (app management and every route an app registers in-process), `/api/publish-providers` and `/api/app-store/refresh` |
 | Non-canonical path | `relay_path_noncanonical` | a path with a `%` left after decoding, an empty segment or a dot segment, checked before any route: a later hop could read it as another path (the app proxy re-encodes what it captured, so `%2574` reaches an app's backend as `t`) |
 
-**App output on the shared feeds.** An app's output also reaches the dashboard
-outside its routes, and a relayed teammate is withheld it there too. The
-WebSocket a teammate opens is marked (`kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG`),
-and the broadcast gate (`WebSocketHub._ws_client_allowed`) drops an app frame
-(`ws_event_scope.app_origin_frame`: an `app_event`, a `notification` whose source
-is `app:<name>`, a `notification_channel_settings` for an app's channel) before the
-dashboard-user grant. The SSE stream
-and `GET /api/notifications` drop app-sourced notifications for a teammate the
-same way, and `GET /api/notifications/channels` leaves out an app's channels while
-`PUT /api/notifications/channels/settings` refuses one (`relay_apps_teammate`,
-through `kiro_relay.ingress.refuse_relayed`). A teammate's changes to the feed reach
-only what they see: Clear all keeps the app notifications withheld from them (and
-broadcasts no whole-feed clear), Mark all read leaves those unread, and a delete,
-ack or unack that names one by its timestamp is refused (`relay_apps_teammate`).
-Every one of these decisions writes a
-denied SEL row, whichever transport made it: a withheld frame or entry is
-`ws_event_scope.audit_teammate_withheld` (reason `relay_teammate_app_frame`), and
-the refused write is the same `kiro_relay` row an ingress refusal writes, with the
-handler's operation. The Crew's own frames, notifications and channels still reach
-them. A chat session an app started is a Crew session, so it is listed like any
-other.
-
 **App proxy.** A relayed owner of a personal Crew reads as `owner-session`
-([App Kit §24](app-kit-platform.md#24-a-backends-principal-claim-is-opt-in-and-bound-to-one-request)).
-A teammate never reaches an app backend: the whole app surface is off for
-teammates. Their
-`relay:` subject never matches the owner predicate, so if an app opts in to
-teammates later, the proxy's existing `none` kind (an authenticated non-owner)
-already names no owner.
+([App Kit §24](app-kit-platform.md#24-a-backends-principal-claim-is-opt-in-and-bound-to-one-request)),
+and so does a teammate, who passes the owner predicate: the claim names the
+teammate's own `relay:` subject, never the owner's.
 
 **Audit.** Ingress refusals are `relay_ingress` rows (source `kiro_relay`, the code
 as the error). Token auth's rows and the request audit name the person,
 `relay:<Kiro user ID>`, with the `_via_proxy` suffix and `forwarded=true`.
 
-Tests: `test/test_kiro_relay_caller_identity.py`, `test/test_kiro_relay_teammate_app_frames.py`.
+Tests: `test/test_kiro_relay_caller_identity.py`, `test/test_shared_crew_teammate_owner_access.py`.
 
 ## Configuration
 

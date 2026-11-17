@@ -462,6 +462,15 @@ class SubagentManager:
         # fast-failing first member cannot fire the wave digest while later POSTs
         # are still in flight. Pruned by finalize_batch().
         self._batch_submitted: dict[str, list[int]] = {}
+        # batch_id -> the ``(app, parent session key)`` every counted submission
+        # was admitted under, or ``None`` when owner-only members span parents.
+        # Both counting sites check and claim synchronously: a conflicting
+        # submission involving an app is refused without counting, changing the
+        # owner or announcing into the wave. Written from what the route handed
+        # the gate, so an app token joins or reconciles only its own wave,
+        # whatever its members' state (queued, refused, finished, evicted).
+        # Pruned by finalize_batch.
+        self._batch_owner: dict[str, tuple[str, str] | None] = {}
         # batch_id -> last submission-progress time.monotonic(), for the reaper's
         # stuck-wave backstop (a wave with lost submissions and no progress is
         # force-reconciled). Pruned by finalize_batch.
@@ -906,6 +915,7 @@ class SubagentManager:
     _is_startup_stalled = _monitor_surface._is_startup_stalled
     _note_tool_dispatch = staticmethod(_monitor_surface._note_tool_dispatch)
     _note_tool_result = staticmethod(_monitor_surface._note_tool_result)
+    _note_tool_update = staticmethod(_monitor_surface._note_tool_update)
     _clear_tool_dispatch = staticmethod(_monitor_surface._clear_tool_dispatch)
     _retire_subagent_oracle = staticmethod(_monitor_surface._retire_subagent_oracle)
     _stall_verdict = _monitor_surface._stall_verdict

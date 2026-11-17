@@ -924,6 +924,7 @@ export default function CrewEditorNextDialog({
                       <CrewWakeSection
                         crew={editing}
                         memberId={memberId}
+                        memberStore={memoryStore}
                         agentTemplate={kiroAgent}
                         isDefaultCrew={isDefaultCrew}
                         hideKindBadge

@@ -98,7 +98,6 @@ BUDGET: dict[str, int] = {
     "test/test_prompts.py": 2,
     "test/test_recovery_l1_chat_runner.py": 1,
     "test/test_redaction_allow.py": 1,
-    "test/test_redaction_blocked_links.py": 5,
     "test/test_refusal_inband_notice.py": 2,
     "test/test_runloop_integration.py": 1,
     "test/test_runtime_death_is_a_process_event.py": 3,

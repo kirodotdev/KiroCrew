@@ -29,7 +29,7 @@ import os
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -402,6 +402,16 @@ async def _inbound_gate(
                 await asyncio.to_thread(store().drop_binding, channel)
             except StoreWriteError:
                 logger.warning("code channel %s: unbind not saved; retried next message", channel)
+            # Then a Code tab that may carry helper agents' commits comes down, best
+            # effort: after the unbind, so no refresh's send gate (which reads the
+            # stored binding) admits their content past this takedown.
+            try:
+                from kiro_crew.slack.code_channels.workspace import core as workspace
+
+                if (service := workspace.service()) is not None:
+                    await service._take_down_owed(binding.team_id or "", channel)
+            except Exception:
+                logger.warning("code channel %s: Code tab not taken down", channel, exc_info=True)
             _audit(
                 sender_id, "slack.code_channel.unbind", "denied", f"channel={channel}", kind.value
             )
@@ -1834,6 +1844,24 @@ async def _deliver_first_turn(
 # ── Stop ──────────────────────────────────────────────────────────────────
 
 
+def _idle_stop_text(binding: Binding | None, link_for: Callable[[str], str]) -> str:
+    """The answer to a Stop while the channel's own session is idle.
+
+    A Stop stops only that session, so helper agents still running are named,
+    each linked to its chat (:func:`~.board.render.idle_stop_text`). Synchronous:
+    the helpers are read, under the board's scope check, right before the send.
+    """
+    from kiro_crew.slack.code_channels.board import render
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    try:
+        service = workspace.service()
+        helpers = service.running_helpers(binding) if service is not None and binding else []
+    except Exception:
+        helpers = []
+    return render.idle_stop_text(helpers, link_for, str(getattr(binding, "session_key", "") or ""))
+
+
 async def _stop_bound(
     orch: Any,
     binding: Binding | None,
@@ -1859,8 +1887,21 @@ async def _stop_bound(
         from kiro_crew.slack.code_channels.status import settle_after_stop
 
         await settle_after_stop(channel)
+        if binding is not None:
+            # Stop set the status itself: the watch's record of what it showed is
+            # stale, so its next pass shows the helper agents' state again.
+            from kiro_crew.slack.code_channels.workspace import core as workspace
+
+            service = workspace.service()
+            if service is not None:
+                service._forget_worker_status(binding)
         if say_idle:
-            await _post(orch, channel, "Nothing running.", None)
+            from kiro_crew.slack.code_channels.board import links
+
+            link_for = await asyncio.to_thread(links.link_builder)
+            # No await from here to the raw send: the helpers named are the ones
+            # the board's scope admits when the reply goes out.
+            await _post(orch, channel, _idle_stop_text(binding, link_for), None)
         return "idle"
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 

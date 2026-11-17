@@ -99,8 +99,9 @@ class TestRedactAndConvert:
         sensitive-source heuristic on this real call path.
         """
         run = _make_run()
-        # cut lands 8 chars into the fabricated 40-char token
-        run.description = "x" * 3992 + github_classic(seed=1) + " trailing"
+        # cut lands 8 chars into the fabricated 40-char token; a blank before it,
+        # since a token glued to a letter is no token by its format
+        run.description = "x" * 3991 + " " + github_classic(seed=1) + " trailing"
         result = _run_to_project(run)
         assert github_classic(seed=1)[:8] not in result["description"]
         assert len(result["description"]) <= 4000

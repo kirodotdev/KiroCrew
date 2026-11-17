@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
-from kiro_crew import name_grant, runtime_death
+from kiro_crew import name_grant, redaction_seams, runtime_death
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
@@ -74,8 +74,10 @@ from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
+    OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
+    relocate_glued_tail_marker,
     strip_control_comments,
 )
 from kiro_crew.context import (
@@ -337,6 +339,8 @@ from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _append_footer_actions,
     _backfill_late_link,
+    _block_texts,
+    _footer_landed,
     _maybe_auto_title_slack,
     _mirror_to_dashboard,
     _post_review_draft,
@@ -344,6 +348,7 @@ from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _review_drafts_pop,
     _review_drafts_set,
     build_timing_footer,
+    seal_stream,
 )
 from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     LinkedRoute,
@@ -393,8 +398,10 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _comment_hold_is_protocol,
     _filter_options_brackets,
     _resolve_comment_hold,
+    _resolve_options_hold,
     _safe_final_update,
     _safe_update,
+    _settle_options_head,
     _ts_before,
 )
 from kiro_crew.slack.handler_runtime.turn import (  # noqa: F401
@@ -410,6 +417,9 @@ from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
     _safe_voice_reply,
     _str_or_default,
     load_voice_reply_config,
+)
+from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners
+    store_for_slot as store_linked_thread_images,
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
@@ -1104,9 +1114,11 @@ async def handle_message(
         session_key=session_key,
     )
     try:
-        if await _dispatch_before_turn(turn) and await _run_turn(turn):
-            await _deliver_answer(turn)
-            await turn.fire_stop_hooks()
+        # Everything the turn posts is channel egress, which the owner switch governs.
+        with redaction_seams.output_seam(redaction_seams.CHANNELS):
+            if await _dispatch_before_turn(turn) and await _run_turn(turn):
+                await _deliver_answer(turn)
+                await turn.fire_stop_hooks()
     except asyncio.CancelledError:
         # A cancel (``!stop``, warm-pool reclaim, shutdown) can land at any await
         # in any phase, and ``CancelledError`` passes every ``except Exception``

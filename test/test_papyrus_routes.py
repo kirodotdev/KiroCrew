@@ -38,8 +38,13 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from redaction_structured_cases import github_classic
 
-from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, routes, store, tectonic
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.apps.builtins.papyrus.backend import (
+    gitops,
+    latex,
+    routes,
+    store,
+    tectonic,
+)
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -1130,7 +1135,7 @@ class TestFieldCoercion:
 
 
 _FAKE_PAT = github_classic(seed=63)
-_FAKE_AWS_SECRET = SAMPLE_AWS_SECRET
+_FAKE_AWS_SECRET = github_classic(seed=138)  # a bare 40-character run is no credential
 
 
 @pytest.mark.asyncio

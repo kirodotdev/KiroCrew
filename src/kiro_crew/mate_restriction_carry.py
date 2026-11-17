@@ -137,9 +137,12 @@ def carried_policy(base: dict[str, Any], source: dict[str, Any]) -> dict[str, An
     (``mate_config_migration._restrictions``). So is a ``toolsSettings`` entry made only of
     grant keys (:data:`_GRANT_ONLY_SETTINGS`): it limits nothing.
     """
-    from kiro_crew.mate_spec_policy import policy_of, without_held
+    from kiro_crew.mate_spec_policy import fold_shell_settings, policy_of, without_held
 
-    policy = without_held(policy_of(source), base)
+    policy = policy_of(source)
+    if "toolsSettings" in policy:
+        policy["toolsSettings"] = fold_shell_settings(policy["toolsSettings"])
+    policy = without_held(policy, base)
     settings = policy.get("toolsSettings")
     if isinstance(settings, dict):
         kept_settings = _limiting_settings(settings)

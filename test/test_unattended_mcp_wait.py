@@ -786,3 +786,67 @@ async def test_a_reused_heartbeat_session_does_not_wait_again(monkeypatch):
     await _heartbeat_result(client, monkeypatch, is_new=False)
 
     assert client.waits == []
+
+
+# ── A sub-agent spawn ───────────────────────────────────────────────────────
+
+
+def _spawn_coordinator(client: _FakeClient, *, is_new: bool = True) -> MagicMock:
+    """A run coordinator whose manager hands *client* out on either arm."""
+    manager = MagicMock()
+    manager._create_shared_session = AsyncMock(return_value=client)
+    manager._ensure_dedicated_start_priced = AsyncMock()
+    manager._is_cc_provider = MagicMock(return_value=False)
+    manager._sessions.get_or_create = AsyncMock(return_value=(client, is_new, False))
+    return MagicMock(_manager=manager)
+
+
+@pytest.fixture()
+def spawn_facade(monkeypatch):
+    """The session re-checks ``acquire_session`` reads off ``kiro_crew.subagent``, inert."""
+    import kiro_crew.subagent as sa
+
+    async def keep(client, *_a, **_k):
+        return client
+
+    async def reproject(_sessions, _key, _agent, claimed, _claim):
+        return claimed
+
+    monkeypatch.setattr(sa, "replace_stale_shared_session", keep)
+    monkeypatch.setattr(sa, "invalidate_stale_kas_session", AsyncMock())
+    monkeypatch.setattr(sa, "reproject_claimed_session", reproject)
+
+
+async def _acquire(client: _FakeClient, *, shared: bool, is_new: bool = True) -> None:
+    from kiro_crew.subagent_manager import turn_session
+
+    info = MagicMock(id="sub1", parent_session_key="parent")
+    await turn_session.acquire_session(
+        _spawn_coordinator(client, is_new=is_new),
+        info,
+        "subagent:sub1",
+        "kirocrew",
+        parent_policy="auto",
+        extra_kwargs={},
+        use_session_sharing=shared,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", [True, False], ids=["shared-runtime", "dedicated"])
+async def test_a_spawn_waits_for_its_slow_server_before_its_first_prompt(spawn_facade, shared):
+    """A spawn prompts as soon as its session opens, so the start's brief wait
+    left a routed server that takes a few seconds out of its first turn."""
+    client = _FakeClient(slow_reports=True)
+    await _acquire(client, shared=shared)
+
+    assert client.waits == [mcp_problems.UNATTENDED_MCP_WAIT_SECS]
+    assert client._report.declared_not_ready() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_on_a_reused_session_does_not_wait_again(spawn_facade):
+    client = _FakeClient(slow_reports=True)
+    await _acquire(client, shared=False, is_new=False)
+
+    assert client.waits == []

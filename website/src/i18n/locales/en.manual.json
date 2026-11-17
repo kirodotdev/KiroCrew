@@ -256,6 +256,9 @@
     "relay_crew_dropped": "The connection dropped for a moment.",
     "relay_crew_reconnects_on_its_own": "{{productName}} is reconnecting on its own. You don't need to do anything.",
     "relay_crew_connecting": "connecting…",
+    "host_offline_title": "The gateway isn't running on this machine.",
+    "host_offline_reconnects": "Start it from a terminal with {{command}}. This page reconnects when it's back.",
+    "host_offline_sessions_kept": "Your sessions are kept.",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — session expired, see banner above",
     "signed_in_with": "Signed in with {{provider}}",
     "updates": "updates",
@@ -1142,7 +1145,10 @@
         "unknown": "Unknown",
         "view_graph": "Graph",
         "view_tree": "Tree",
-        "view_label": "View"
+        "view_label": "View",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "Cancel {{name}}",
+        "cancelling_run": "Cancelling {{name}}"
       }
     },
     "crewCompanion": {
@@ -2084,6 +2090,13 @@
         "chat_slots_desc": "It can start chats it owns, listed under the app in the sidebar, send them work, stop or archive them, and keep them going on a timer. Never your chats. Their tool calls follow your approval rules for this app.",
         "hidden_sessions_heading": "Its chats stay out of your session list",
         "hidden_sessions_desc": "Chats it creates as its own private chats do not appear in your sidebar or Older sessions; open them from the app's page. Its other chats stay listed under the app. Approvals and questions from hidden chats still reach you.",
+        "chat_launch_heading": "This app can also open chats for you",
+        "chat_launch_desc": "It can start or reopen a chat with {{agents}}, filed in the {{folder}} folder. The chat is yours and follows your approval rules. Never your other chats.",
+        "chat_launch_desc_unfiled": "It can start or reopen a chat with {{agents}}. The chat is yours and follows your approval rules. Never your other chats.",
+        "chat_launch_scope": "Chat keys start with {{keyPrefix}}. Memory: {{memoryModes}}.",
+        "chat_launch_memory_persistent": "persistent",
+        "chat_launch_memory_incognito": "incognito (no memory writes)",
+        "chat_launch_memory_temporary": "temporary (no memory reads or writes)",
         "user_session_reach_heading": "This app also lets your chats reach the sessions it runs",
         "user_session_reach_read": "Your chats can read those sessions.",
         "user_session_reach_send": "Your chats can send messages to those sessions. Each message shows which chat sent it.",
@@ -2310,6 +2323,7 @@
       "switching_project": "Switching project…",
       "queue_run_after_the_current_work_finishes_enter": "Queue — run after the current work finishes (Enter)",
       "recording_click_mic_to_stop": "Recording… click mic to stop",
+      "muted_click_mic_to_stop": "Muted… click mic to stop",
       "reject_all": "Reject all",
       "reject_sub_agent": "Reject sub-agent: {{name}}",
       "resized_to_fit_model_limits_2": "Resized to fit model limits: {{fromW}}×{{fromH}} to {{toW}}×{{toH}}",
@@ -3178,6 +3192,7 @@
       "format_markdown": "Copy Markdown",
       "expand_table": "Widen table",
       "narrow_table": "Narrow table",
+      "table_region": "Table",
       "expand_table_word": "Widen",
       "collapse_table_word": "Narrow",
       "table_width_not_saved": "Couldn't save the table width in this browser",
@@ -3293,7 +3308,12 @@
         "moved_to_history_startup_body_one": "{{count}} older open tab was left in History at startup to keep {{limit}} sessions open at most. Open History to resume it.",
         "moved_to_history_startup_body_other": "{{count}} older open tabs were left in History at startup to keep {{limit}} sessions open at most. Open History to resume one.",
         "moved_to_history_idle_body_one": "Archived {{count}} session idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume it.",
-        "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one."
+        "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one.",
+        "relay_crew_added_title": "You've been added to {{name}}",
+        "relay_crew_added_body": "Open it from Team Crews in the Crew switcher.",
+        "relay_crews_available_title_one": "You have access to {{count}} Team Crew",
+        "relay_crews_available_title_other": "You have access to {{count}} Team Crews",
+        "relay_crews_available_body": "Open them from Team Crews in the Crew switcher."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
@@ -3979,6 +3999,7 @@
     "privacyChapter": {
       "changeLater": "You can change this anytime in Settings > Privacy: performance metrics are the Record metrics switch, and the heartbeat is the Send anonymous usage heartbeat switch.",
       "collectedFeatures": "How often features are used, and errors and retries",
+      "collectedApps": "Which built-in apps are installed or used, and which store apps are installed, by their public store name. Apps you add from anywhere else are counted without a name.",
       "collectedInstallId": "A random install ID that is not linked to you",
       "collectedTimings": "How long things take, such as startup, replies and actions",
       "collectedTitle": "What is collected",
@@ -5090,14 +5111,17 @@
       "not_sent": "This view has no chat box to send to.",
       "question": "Question",
       "send_decline": "No discussion needed",
+      "send_failed": "It did not go out. Try again.",
       "send_must": "Must: {{text}}",
       "send_question": "Question: {{text}}",
       "send_skip": "Not discussing: {{text}}",
       "send_start": "Start the discussion",
+      "sending": "Sending…",
       "sent": "Sent.",
       "skip": "Not discussing",
       "staged": "Put in the chat box. Send it from there.",
       "start": "Start",
+      "unconfirmed": "Not confirmed. It may have gone out. If it is not in the chat, reload the page to try again.",
       "who": "Who talks"
     }
   },
@@ -5167,7 +5191,8 @@
       "toggle_terminal": "Toggle terminal",
       "toggle_side_terminal": "Toggle side-panel terminal",
       "previous_terminal": "Previous terminal",
-      "next_terminal": "Next terminal"
+      "next_terminal": "Next terminal",
+      "toggle_dictation_mute": "Mute or unmute dictation"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} new notification",
@@ -5415,6 +5440,8 @@
       "grants_reconsent_worker_auto_approve": "Approving tool calls in its own background sessions, so they keep working while nobody watches.",
       "worker_auto_approve_desc": "Can approve tool calls in the background sessions it starts itself, never in your chats. Each grant expires, is audited and ends when the app is turned off.",
       "chat_slots_desc": "Runs chat sessions it owns, listed under the app, and can keep them going on a timer. Never your chats.",
+      "chat_launch_desc": "Opens chats for you with {{agents}}, filed in {{folder}}. Never your other chats.",
+      "chat_launch_desc_unfiled": "Opens chats for you with {{agents}}. Never your other chats.",
       "user_session_reach_read": "Your chats can read the sessions this app runs.",
       "user_session_reach_send": "Your chats can send messages to the sessions this app runs.",
       "link_open_remembered": "Remembered link choices",
@@ -5603,6 +5630,24 @@
     },
     "artifactsPage": {
       "actions_for_folder": "Actions for folder {{name}}",
+      "home": "Home",
+      "folders": "Folders",
+      "library_navigation": "Artifact library",
+      "no_folders_yet": "No folders yet",
+      "create_new": "Create new",
+      "quick_doc": "Doc",
+      "recent": "Recent",
+      "recent_subtitle": "Things you made or kept",
+      "recent_output": "Recent output",
+      "recent_output_subtitle": "From your sessions. Star one to keep it, or it clears as newer output arrives.",
+      "recent_output_subtitle_cap": "Unstarred output is deleted once there are more than {{cap}} ({{used}} now). Star one to keep it.",
+      "recent_empty": "Nothing made or kept yet",
+      "recent_output_empty": "No recent output from your sessions",
+      "see_all": "See all",
+      "star_to_keep": "Star to keep",
+      "output_file": "File",
+      "more_ways_to_add_an_artifact": "More ways to add an artifact",
+      "preview_failed": "Couldn't load this preview",
       "add_a_file_from_your_computer_to_the_library": "Add a file from your computer to the library",
       "add_artifact_error_empty": "That file is empty, so there is nothing to add.",
       "add_artifact_error_not_text": "That file isn't UTF-8 text, so the library can't render it.",
@@ -5628,7 +5673,6 @@
       "load_more_artifacts": "Load more {{provider}} artifacts",
       "loading_more_artifacts": "Loading more {{provider}} artifacts…",
       "masonry_preview_gallery": "Masonry preview gallery",
-      "more_ways_to_add_an_artifact": "More ways to add an artifact",
       "new_artifact": "New artifact",
       "no_artifacts_directly_in_this_folder": "No artifacts directly in this folder.",
       "no_artifacts_match_your_filters": "No artifacts match your filters.",
@@ -7193,6 +7237,7 @@
       "connection_unreachable": "{{provider}} could not be reached to check this connection.",
       "connections": "Connections",
       "could_not_load_status": "Connection status could not be loaded. Cards may be out of date.",
+      "crew_sign_in_not_owned_help": "Your own {{provider}} entry in <mcpLink>MCP Servers</mcpLink> signs in by itself, so there is nothing to do here.",
       "disconnect": "Disconnect",
       "disconnect_census_incomplete": "The stored grant was kept because a configuration source could not be read to rule out another server using it. Check your server configuration and disconnect again.",
       "disconnect_census_incomplete_source": "The stored grant was kept because {{source}} could not be read to rule out another server using it. Fix or remove that file and disconnect again.",
@@ -7211,6 +7256,7 @@
       "grant_unproven_help": "The saved sign-in for {{provider}} no longer works. Connect to sign in again.",
       "invalid_return_address": "Paste the full http://127.0.0.1:PORT/…?code=… address from your browser.",
       "managed_by_connections": "Managed by Connections",
+      "managed_in_mcp_servers": "Managed in MCP Servers",
       "mint_failure_grant_unproven": "The saved sign-in could not be confirmed. Try connecting again.",
       "mint_failure_process_gone": "The authorization process stopped before approval finished. Try connecting again.",
       "mint_failure_kiro_cli_missing": "Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.",
@@ -7280,6 +7326,8 @@
       "chat_use_lacks_oauth": "Saved for chats that support it. Some chats can't use this kind of sign-in yet.",
       "chat_use_kas_sign_in": "Chats sign in separately: type {{word}} in a chat once.",
       "set_up_provider": "Set up {{provider}}",
+      "needs_crew_sign_in_help": "{{provider}} signs in through {{productName}}. To connect it: (1) turn on {{productName}} sign-in with the button, (2) in <settingsLink>Settings</settingsLink>, set chats to run on Kiro Agent.",
+      "open_crew_sign_in_setting": "Turn on {{productName}} sign-in",
       "google_entry_name": "Google",
       "choose_google_products": "Choose Google products",
       "google_entry_step_set_up": "Set up the Google OAuth app below first. Then press Connect on each product you want.",
@@ -7294,7 +7342,8 @@
       "prerequisite_google_calendar": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
       "prerequisite_google_sheets": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
       "prerequisite_google_docs": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
-      "prerequisite_google_slides": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue."
+      "prerequisite_google_slides": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
+      "prerequisite_slack": "Slack does not support dynamic client registration, so Connect uses the Slack app registered under Settings → Connections, with both its Client ID and its Client Secret. The Slack consent page names that app; approve it to continue."
     },
     "crewBoard": {
       "title": "Work items",
@@ -8139,6 +8188,7 @@
         "sign_in_kas_chat_again_note": "Chats on Kiro Agent don't use this sign-in yet. Sign in again to save it for them.",
         "sign_in_unsupported_on_kas": "This server can't sign in with the Kiro Agent engine yet. It was set up with its own sign-in settings, which Kiro Agent can't use.",
         "sign_in_unavailable": "Sign-in unavailable",
+        "sign_in_needs_oauth_app": "{{provider}} needs its OAuth app before anyone can sign in.",
         "sign_in": "Sign in",
         "sign_in_retry": "Try again",
         "sign_in_again": "Sign in again",
@@ -9151,8 +9201,6 @@
         "group_chats_and_dashboards": "Chats and Dashboards",
         "group_engines_and_workspaces": "Engines and Workspaces",
         "group_publishing_and_sign_in": "Publishing and Sign-in",
-        "group_for_developers": "For {{productName}} developers",
-        "restart_badge": "Restart",
         "feature_previews_save_denied": "Only the owner of this {{productName}} can change feature previews, so “{{name}}” was switched back.",
         "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again."
       },
@@ -9200,6 +9248,9 @@
         "auto_link_sessions": "Connect new sessions to Slack automatically",
         "auto_link_sessions_desc": "Every new dashboard session gets a Slack thread on its first message, in your private direct message with the bot. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone. A session connected this way does not count as a Slack session for the folder setting below: it stays where it is in the sidebar, and only conversations that start in Slack are filed.",
         "auto_link_sessions_desc_summary": "Posts every new dashboard chat to your Slack DM with the bot.",
+        "show_in_session_list": "Show Slack conversations in the session list",
+        "show_in_session_list_desc": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+        "show_in_session_list_desc_summary": "Lists conversations that start in Slack with your other sessions.",
         "create_the_slack_app_from_the_manifest": "Create the Slack app from the pre-filled manifest below (Socket Mode and permissions\n            included, named KiroCrew-{{alias}}). Install it to your\n            workspace, then paste the bot token and app-level token here.",
         "connected": "Connected",
         "copy_manifest_yaml": "Copy manifest YAML",
@@ -9246,10 +9297,10 @@
           "agent_sessions_note": "Turning this on changes nothing in Slack yet. It only adds to the app manifest, the setup text you copy into Slack in the steps below.",
           "update_keeps_working": "Slack keeps working as before until you update.",
           "code_channels": "Code channels",
-          "code_channels_desc": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+          "code_channels_desc": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and pin messages and keep notes there under its own name. Your Slack app gets 6 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
           "stage_tag": "Preview",
           "code_channel_dispatch": "Let code channels start helper agents",
-          "code_channel_dispatch_desc": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+          "code_channel_dispatch_desc": "On by default when you first turn on Code channels. Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
           "code_channel_dispatch_overlay_on": "On, set in {{path}}, which overrides this switch. Change it there.",
           "code_channel_dispatch_overlay_off": "Off, set in {{path}}, which overrides this switch. Change it there.",
           "code_channel_dispatch_overlay_unreadable": "{{path}} can't be read, so helper agents are off. Fix that file, then restart {{productName}}.",
@@ -9820,7 +9871,8 @@
         "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once.",
         "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included.",
         "channel_memory": "Repeated failures",
-        "channel_tip_memory": "Once a week, when an agent tool failure kept coming back. Only if you turned on the weekly note in Memory."
+        "channel_tip_memory": "Once a week, when an agent tool failure kept coming back. Only if you turned on the weekly note in Memory.",
+        "channel_tip_relay": "Once per Crew, when a Team Crew you can open through the relay first shows up in your list."
       },
       "securityPanel": {
         "configPending": {
@@ -10088,8 +10140,6 @@
         "distribution_refresh_rejected_detail": "The last policy refresh was rejected by the source.",
         "distribution_refresh_unreachable_detail": "The last policy refresh could not reach the source.",
         "denied_commands_load_failed": "Could not load the denied-command rules. The lists below are empty because the read failed, not because there are no rules.",
-        "credential_redaction_section": "Credential redaction in file views",
-        "credential_redaction_toggle": "Redact credentials in files the dashboard opens for you",
         "safetySwitches": {
           "section_title": "Safety switches",
           "intro": "These switches control what the agent can do without asking you first.",
@@ -10107,38 +10157,17 @@
           "read_failed": "Could not read the safety switches.",
           "write_failed": "Could not save the change, so the switch is unchanged."
         },
-        "credential_redaction_toggle_help": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views.",
-        "credential_redaction_toggle_help_summary": "Off shows these files as written, in your own dashboard only.",
-        "credential_redaction_off_notice": "Files you open are shown unredacted; chat and messaging channels stay redacted.",
-        "credential_redaction_off_since": "Off since {{time}}.",
-        "credential_redaction_read_failed": "Could not read the redaction setting. Nothing is shown here because the read failed, not because redaction is off. The 'Open a chat with the agent' link shares only this error message.",
-        "credential_redaction_write_failed": "Could not save the change. {{state}} The 'Open a chat with the agent' link shares only this error message.",
+        "credential_redaction_section": "Credential redaction",
+        "credential_redaction_toggle": "Redact credentials",
+        "credential_redaction_toggle_help": "Hides keys, tokens and passwords in chat, messaging channels, the agent's prompt, files and logs.",
+        "credential_redaction_locked": "An administrator controls this setting.",
+        "credential_redaction_read_failed": "Could not read the redaction setting.",
+        "credential_redaction_write_failed": "Could not save the change. {{state}}",
         "credential_redaction_retry": "Retry",
-        "credential_redaction_desc_intro": "{{productName}} redacts anything that looks like a credential — access keys, tokens, private keys — from agent output before you see it. When it redacts a value of your own that you need to read back, these four steps get it in front of you.",
-        "credential_redaction_step_write": "Ask the agent to write the value to a file.",
-        "credential_redaction_step_off": "Turn off the switch below.",
-        "credential_redaction_step_open": "Open that file from the Files tab of the chat side panel.",
-        "credential_redaction_step_on": "Turn the switch back on.",
-        "credential_redaction_desc_tail": "This is separate from the Secrets page, which stores values for the agent to use. This setting only controls whether you see credential-shaped values in the files the dashboard opens for you. Links that look like they carry data out — for example an approval link with a long token in its URL — stay redacted either way, and every command-blocking rule stays enforced.",
-        "credential_redaction_owner_only": "Only the dashboard owner can read or change this setting. The 'Open a chat with the agent' link shares only this error message.",
+        "credential_redaction_owner_only": "Only the dashboard owner can read or change this setting.",
         "credential_redaction_still_on": "Redaction is still on.",
         "credential_redaction_still_off": "Redaction is still off.",
-        "credential_redaction_ask_agent": "Open a chat with the agent about this error",
-        "credential_redaction_engine_section": "Readable IDs",
-        "credential_redaction_engine_toggle": "Keep IDs readable",
-        "credential_redaction_engine_toggle_help_summary": "On: keeps IDs readable, such as an AWS key ID (AKIA…, not a secret) or a 40-character commit hash. Off: AWS key IDs and commit hashes are hidden like secrets. This setting doesn't change whether secrets are hidden.",
-        "credential_redaction_engine_toggle_help": "A change applies here at once; other {{productName}} processes use it when they next start.",
-        "credential_redaction_engine_legacy_notice": "AWS key IDs and commit hashes are hidden like secrets. Secrets are hidden either way.",
-        "credential_redaction_engine_write_failed": "Could not change 'Keep IDs readable'. {{state}} The 'Open a chat with the agent' link shares only this error message.",
-        "credential_redaction_engine_still_structured": "IDs are still kept readable.",
-        "credential_redaction_engine_still_legacy": "IDs are still hidden.",
-        "credential_redaction_seams_still_on": "Credentials are still hidden from the AI model and server logs.",
-        "credential_redaction_seams_still_off": "Credentials can still reach the AI model and server logs.",
-        "credential_redaction_seams_section": "AI model and server logs",
-        "credential_redaction_seams_toggle": "Hide credentials from the AI model and server logs",
-        "credential_redaction_seams_toggle_help_summary": "Turn off to let the agent read a credential you gave it earlier in the chat; the AI model then receives it and the app's own log files on this computer can show it. Chats, Slack and values on the Secrets page stay protected either way.",
-        "credential_redaction_seams_toggle_help": "On by default. The file-view switch above is a separate setting.",
-        "credential_redaction_seams_off_notice": "Credentials can reach the AI model and the app's own log files on this computer."
+        "credential_redaction_ask_agent": "Open a chat with the agent about this error"
       },
       "skillsPanel": {
         "failed_to_save_skills_setting": "Failed to save skills setting",
@@ -10864,9 +10893,6 @@
         "decisions_browser_images": "Also send screenshots of the agent's browser tab",
         "decisions_browser_images_desc": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. A System One endpoint, hosted or on your own SageMaker endpoint, accepts screenshots; a local model gets the outline only. On a SageMaker endpoint this starts off: turn it on yourself to send screenshots there.",
         "decisions_browser_images_desc_summary": "Turn this off to keep screenshots on this machine.",
-        "layout_harness": "Composable layout",
-        "layout_harness_desc": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
-        "layout_harness_desc_summary": "Developer-only test harness, with no visible change.",
         "decisions_provider_download_note": "The first time, {{productName}} downloads {{size}} of model files and about 1 GB of software, then starts the model for you.",
         "decisions_provider_memory_cost": "While it runs, {{name}} keeps about {{peak}} of memory in use, even between decisions. Other sessions and apps get that much less: when memory runs low, {{productName}} runs fewer subagents at once and other software on this machine can slow down. Pick No model to free it.",
         "decisions_provider_ready": "Downloaded. {{productName}} starts it when you press the button below.",
@@ -10991,6 +11017,7 @@
         "keep_it": "Keep it"
       },
       "agentBackendTab": {
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",
@@ -11201,10 +11228,6 @@
       "connections_client_secret_manage": "Manage in Connections"
     },
     "tabs": {
-      "advanced": {
-        "description": "Every setting in one list",
-        "label": "Advanced"
-      },
       "about": {
         "description": "Version, update channel, check for updates, and license",
         "label": "About"
@@ -11327,9 +11350,6 @@
       "crew_pane_cannot_pop_out_in_desktop_app": "In the desktop app, pop-out windows don't work inside a remote crew. Keep working in this crew here.",
       "desktop_app_could_not_open_pop_out_window": "The desktop app couldn't open the pop-out window. Keep working in this window.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."
-    },
-    "sanitize": {
-      "redacted_suspicious_url": "[REDACTED: suspicious URL to {{domain}}]"
     },
     "sessionColors": {
       "black": "Black",

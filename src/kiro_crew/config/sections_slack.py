@@ -219,6 +219,17 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    home_tab_builtin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Built-in Home Tab",
+            "Publish the Kiro Crew status page to the bot's Slack Home tab each "
+            "time an allowed user opens it. Turn it off to keep a Home view you "
+            "publish yourself with the same bot: the tab then stays as you "
+            "published it. Read at each open, so a change needs no restart.",
+            tags=["slack"],
+        ),
+    )
     home_tab_sessions_per_kind: int = field(
         default=5,
         metadata=_meta(
@@ -258,6 +269,23 @@ class SlackConfig:
             "folder name, created when these settings are saved and marked with "
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
+            tags=["slack"],
+        ),
+    )
+    show_in_session_list: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Slack Conversations In The Session List",
+            "List conversations that start in Slack (threads, DMs, channel "
+            "mentions) in the dashboard's session list. Off removes them from "
+            "the list only: they keep working in Slack, stay in History and "
+            "search, still raise approvals and notifications, and come back "
+            "when this is turned on again; nothing is closed or deleted. The "
+            "conversation open in the dashboard, and one waiting on an approval "
+            "or an answer, keep their rows. Sessions started "
+            "in the dashboard and linked to Slack, and Slack code channel "
+            "sessions with their helper agents, are always listed. On by "
+            "default; no restart.",
             tags=["slack"],
         ),
     )
@@ -301,11 +329,12 @@ class SlackConfig:
             "Only on turns the owner started, only for workers it created itself, "
             "one level deep, filed in the channel's folder, with the channel's own "
             "approval mode and never more; channels shared beyond this workspace "
-            "are excluded. Needs slack.code_channels on as well; turning that on "
-            "does not turn this on. Off keeps the full channel containment: a "
-            "conductor in a code channel cannot hand off work. Off by default, and "
-            "a missing, unreadable or malformed value reads as off. Takes effect "
-            "on the next call; no restart.",
+            "are excluded. Needs slack.code_channels on as well; a save that first "
+            "turns that on from the settings page turns this on with it, unless a "
+            "value is already stored (an explicit off is kept). Off keeps the full "
+            "channel containment: a conductor in a code channel cannot hand off "
+            "work. Off when unset, and a missing, unreadable or malformed value "
+            "reads as off. Takes effect on the next call; no restart.",
             tags=["slack"],
         ),
     )
@@ -317,7 +346,7 @@ class SlackConfig:
             "that is one session, with a context bar and a diff tab. Adds "
             "features.code_channels and the code-channel scopes "
             "(code_channels:manage, chat:write.customize, canvases:write, "
-            "channels:write.invites, groups:write.invites) to the generated app "
+            "channels:write.invites, groups:write.invites, pins:write) to the generated app "
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",

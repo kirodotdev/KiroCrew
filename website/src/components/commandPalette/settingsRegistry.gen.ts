@@ -53,13 +53,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
-    "id": "advanced.all-settings",
-    "labelKey": "settings.advanced.title",
-    "tab": "advanced",
-    "type": "input",
+    "id": "agent.orchestrator-memory",
+    "label": "Orchestrator memory",
+    "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
+    "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+    "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+    "tab": "agent",
+    "type": "toggle",
     "occurrence": 1,
-    "label": "All settings",
-    "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
+    "configKey": "agent.orchestrator_memory"
   },
   {
     "id": "agent.kiro-sign-in",
@@ -323,7 +325,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Code channels (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
     "labelSuffix": "Slack",
-    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and pin messages and keep notes there under its own name. Your Slack app gets 6 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -740,7 +742,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Let code channels start helper agents (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channel_dispatch",
     "labelSuffix": "Slack",
-    "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+    "description": "On by default when you first turn on Code channels. Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -825,6 +827,21 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "imessage"
     }
+  },
+  {
+    "id": "channels.show-slack-conversations-in-the-session-list-slack",
+    "label": "Show Slack conversations in the session list (Slack)",
+    "labelKey": "pages.settings.slackPanel.show_in_session_list",
+    "labelSuffix": "Slack",
+    "description": "Lists conversations that start in Slack with your other sessions.",
+    "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.show_in_session_list"
   },
   {
     "id": "channels.show-thinking-slack",
@@ -1369,6 +1386,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.hide-empty-folders",
+    "label": "Hide Empty Folders",
+    "labelKey": "pages.settings.chatPanel.hide_empty_folders",
+    "hint": "In List view, folders with no open sessions stay hidden until a session is created or moved into them, and show while you drag a session",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
     }
   },
   {
@@ -2173,6 +2202,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "connections.oauth-client-slack",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Slack",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-slack",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
     "id": "connections.oauth-client-google",
     "labelKey": "pages.settings.connectionsPanel.oauth_app",
     "labelSuffix": "Google",
@@ -2290,19 +2330,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
     "description": "Starts chats on a connected remote crew.",
     "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.composable-layout",
-    "label": "Composable layout",
-    "labelKey": "pages.developer.featurePreviewsTab.layout_harness",
-    "description": "Developer-only test harness, with no visible change.",
-    "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -3320,18 +3347,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Governance Policy"
   },
   {
-    "id": "security.hide-credentials-from-the-ai-model-and-server-logs",
-    "labelKey": "pages.settings.securityPanel.credential_redaction_seams_toggle",
-    "tab": "security",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "section": "redaction"
-    },
-    "label": "Hide credentials from the AI model and server logs",
-    "description": "Turn off to let the agent read a credential you gave it earlier in the chat; the AI model then receives it and the app's own log files on this computer can show it. Chats, Slack and values on the Secrets page stay protected either way."
-  },
-  {
     "id": "security.how-long-auto-approve-stays-on",
     "labelKey": "pages.settings.securityPanel.yolo_duration_title",
     "tab": "security",
@@ -3342,18 +3357,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "configKey": "agent.yolo_duration",
     "label": "How long auto-approve stays on"
-  },
-  {
-    "id": "security.keep-ids-readable",
-    "labelKey": "pages.settings.securityPanel.credential_redaction_engine_toggle",
-    "tab": "security",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "section": "redaction"
-    },
-    "label": "Keep IDs readable",
-    "description": "On: keeps IDs readable, such as an AWS key ID (AKIA…, not a secret) or a 40-character commit hash. Off: AWS key IDs and commit hashes are hidden like secrets. This setting doesn't change whether secrets are hidden."
   },
   {
     "id": "security.live-security-posture",
@@ -3367,7 +3370,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Live Security Posture"
   },
   {
-    "id": "security.redact-credentials-in-files-the-dashboard-opens-for-you",
+    "id": "security.redact-credentials",
     "labelKey": "pages.settings.securityPanel.credential_redaction_toggle",
     "tab": "security",
     "type": "toggle",
@@ -3375,8 +3378,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "section": "redaction"
     },
-    "label": "Redact credentials in files the dashboard opens for you",
-    "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+    "label": "Redact credentials",
+    "description": "Hides keys, tokens and passwords in chat, messaging channels, the agent's prompt, files and logs."
   },
   {
     "id": "security.config-pending",

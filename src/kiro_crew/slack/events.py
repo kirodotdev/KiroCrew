@@ -112,6 +112,7 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
@@ -147,6 +148,7 @@ from kiro_crew.slack.handler import (
     slack_cfg,
 )
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
+from kiro_crew.slack.linked_thread_images import set_inbound_files as set_linked_thread_files
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
     _SESSION_KIND_DASHBOARD,
@@ -361,9 +363,10 @@ async def init_socket_mode(
                         outcome="allowed",
                         source="slack",
                     )
-                    task = asyncio.ensure_future(_publish_home_tab(orch, user))
-                    _background_tasks.add(task)
-                    task.add_done_callback(_background_tasks.discard)
+                    if _home_tab_builtin_enabled(orch):
+                        task = asyncio.ensure_future(_publish_home_tab(orch, user))
+                        _background_tasks.add(task)
+                        task.add_done_callback(_background_tasks.discard)
                 else:
                     sel().log_api_access(
                         caller=user,
@@ -1511,6 +1514,9 @@ async def _route_message(
         slack=_ingest_slack if _ingest_slack is not None else _route_slack,
     ):
         return
+    # A linked dashboard chat's turn reads these after this task deletes them;
+    # route_linked_thread stores the pictures in its session first.
+    set_linked_thread_files(_attachment_temp_paths)
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──
     # Keyed on the SAME session the turn will run under. A single-session DM keys
@@ -1574,7 +1580,7 @@ async def _route_message(
         logger.info(
             "Message %s queued for busy session %s (session_obj=%s)", msg_ts, session_key, _queued
         )
-        if orch.slack:
+        if orch.slack and not code_channel_no_reactions(channel):
             try:
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
@@ -1602,7 +1608,7 @@ async def _route_message(
         **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
-        if orch.slack:
+        if orch.slack and not code_channel_no_reactions(channel):
             try:
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
@@ -1841,6 +1847,7 @@ from kiro_crew.slack.events_block_text import _extract_trusted_bot_attachment_te
 from kiro_crew.slack.events_block_text import _forwarded_messages  # noqa: E402
 from kiro_crew.slack.events_block_text import _has_share_attachments  # noqa: E402
 from kiro_crew.slack.events_block_text import _string_field  # noqa: E402
+from kiro_crew.slack.events_home_tab import _home_tab_builtin_enabled  # noqa: E402
 from kiro_crew.slack.events_home_tab import _publish_home_tab  # noqa: E402
 from kiro_crew.slack.events_inbound import SeenCache  # noqa: E402
 from kiro_crew.slack.events_inbound import _background_tasks  # noqa: E402

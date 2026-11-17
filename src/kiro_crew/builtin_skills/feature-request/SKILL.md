@@ -96,6 +96,27 @@ Guide the user to describe:
 Don't force structure. Ask follow-up questions if the description is vague.
 Two to three exchanges is usually enough.
 
+**For a feature request, dig to the real need with a 5 Whys chain.** Reason
+from first principles: a request usually arrives as a solution ("add a button
+for X"), so set that solution aside and find the basic need underneath it. Ask
+"why?" one question at a time, and build each question from the user's last
+answer, not from a generic prompt:
+
+```text
+I want: a button to export my chat history.
+Why do you want to export chat history?
+  -> So I can share a session with a teammate.
+Why do you need to share a session with a teammate?
+  -> They need to see how I got the agent to fix a bug.
+```
+
+Stop as soon as an answer names who hits this, what they are trying to get
+done, and what it costs them today. Five is the most, not the goal. If an
+answer is still a solution or restates the feature, ask the next "why". Finish
+the chain before you search for duplicates (step 3) or draft (step 4): the root
+need is what both should be built from. Keep the questions and answers as the
+user gave them; the draft carries the chain. Bug reports skip this step.
+
 ### 3. Check for Duplicates
 
 Every `gh` call below targets Kiro Crew's own public repository — a fixed target on
@@ -148,20 +169,83 @@ failed probe, means no labels. Steps 5 and 6 use this result.
 
 ### 4. Draft the Issue
 
-Compose a clean title and markdown body from the conversation. Structure:
+Compose a clean title and a body shaped like the repository's issue form, so an
+issue filed from this conversation reads the same as one filed on github.com.
+Each field of the form is one `###` heading, spelt exactly as the field's label
+in `.github/ISSUE_TEMPLATE/feature_request.yml` or `bug_report.yml`, in the
+form's order. Triage reads the answers under those headings (the bug form's
+Release channel and Platform pick labels), so never rename, merge or reorder
+them. A dropdown answer is one of the form's options, verbatim; an optional
+field with nothing to say gets `_No response_`. A red CI run or a flaky test
+uses `ci_failure.yml`'s labels the same way, and a docs fix `documentation.yml`'s.
+
+A feature request:
 
 ```markdown
-## What
+### Existing issues
 
-[One paragraph describing the feature/bug]
+- [x] I searched open issues and this is not already requested.
 
-## Why
+### Problem
 
-[Why this matters / what problem it solves]
+[What the user is trying to do, and what stops them today]
 
-## Additional Context
+### Why does this matter? (5 Whys)
 
-[Any extra details, reproduction steps, environment info]
+[The 5 Whys chain from step 2, each question and its answer in order, ending
+at the root need]
+
+### Proposed behaviour
+
+[What should happen instead, and where the user would expect to find it]
+
+### Alternatives considered
+
+[Other approaches, or "None"]
+
+### Anything else
+
+[Mockups, prior art, related discussion]
+```
+
+A bug report:
+
+```markdown
+### Existing issues
+
+- [x] I searched open issues and this is not already reported.
+
+### KiroCrew version
+
+[The version the user runs, as the form's hint asks]
+
+### Release channel
+
+[Stable | Insider (prerelease) | Nightly | Not sure]
+
+### How is it installed?
+
+[Desktop app | Desktop app (deb) | Desktop app (rpm) | pip / pipx | Docker | From source | Not sure]
+
+### Platform
+
+[macOS | Windows | Linux | Not platform-specific]
+
+### What happened
+
+[What the user observed, and what they expected instead]
+
+### Steps to reproduce
+
+[Numbered steps from a known starting state]
+
+### Relevant log output
+
+[Log lines the form's hint asks for, redacted]
+
+### Anything else
+
+[Screenshots, related config, workarounds tried]
 ```
 
 Show the draft to the user for confirmation before submitting.
@@ -204,7 +288,7 @@ Rules:
 If the permission check in step 3 did not allow labels, or never ran, pass no
 `--label` flag at all and never tell the user labels will be attached. Tell them
 triage will label the issue. You may list the labels you would suggest in the
-body under Additional Context; put them in the draft before you show it, or show
+body under Anything else; put them in the draft before you show it, or show
 the changed draft again before submitting.
 
 Otherwise, collect the chosen names for the submit step below.
@@ -223,14 +307,9 @@ all three options below may apply. If it did not, Option 3 is unavailable on thi
 host; offer Option 1, and Option 2 only when its query string is short (see
 below).
 
-Lead with the routes that reliably reach the user. Crew's chat redacts any
-model-written URL whose query string is 200 characters or longer, with no
-exception for issue links (this is intentional — injected content could hide
-private context in a prefilled `body=`, and the issue it creates is public). A
-prefilled link carrying a drafted title and body almost always crosses that
-length and would render as `[REDACTED: suspicious URL]` rather than a clickable
-link, so Option 1 is the primary route and Option 2 is offered only in the rare
-short-query case where it survives redaction.
+Lead with the routes that reliably reach the user. A prefilled issue link carries
+the drafted title and body in its query string, and GitHub truncates a long URL, so
+Option 1 is the primary route and Option 2 is offered only in the short-query case.
 
 **Option 1: Copy/paste** (always works, nothing to install)
 
@@ -271,13 +350,10 @@ into the URL fragment, either of which silently drops the drafted body from the
 pre-filled issue.
 
 You build this URL, so you know its length: offer it **only when its query
-string is under 200 characters** (a short title and little or no body). At or
-above 200, Crew redacts it in chat as a suspicious URL (intentional, no
-exception for issue links), so do not offer it — leave it out silently and use
-Option 1 rather than handing the user a link that renders as a
-`[REDACTED: suspicious URL]` placeholder. (A URL over ~4000 chars may also be
-truncated by GitHub, another reason the short-query case is the only one worth
-offering here.)
+string is under 200 characters** (a short title and little or no body). Above
+that, leave it out silently and use Option 1: a long prefilled link is hard to
+check before the user submits it, and GitHub may truncate one over about 4000
+characters.
 
 **Option 3: Direct creation via `gh` CLI** (only if the step 3 check succeeded)
 

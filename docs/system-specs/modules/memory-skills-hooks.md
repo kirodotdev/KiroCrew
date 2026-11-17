@@ -182,6 +182,137 @@ SQLite authority with no JSONL fallback. Global V1 and each configured named
 store are separate destinations selected by the owning execution context.
 See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
 
+### The engine's own memory store (`agent.orchestrator_memory`)
+
+Everything above is Kiro Crew's memory. The KAS engine keeps a SEPARATE local
+store of the host's own memories, which Kiro Crew neither writes nor reads: it
+is reached only by the engine, inside the session.
+
+`agent.orchestrator_memory` (default off, KAS only) controls whether Crew states
+a native memory policy for the sessions it starts. While it is off, Crew
+sends no native memory setting on `initialize`, `session/new` or `session/load`,
+and checks no memory acknowledgement, so those sessions run on the engine's own
+defaults. While it is on, Crew explicitly disables native memory on local KAS
+processes and on sessions without a recall grant, and grants read-only recall
+to one session shape; it then does not depend on the engine's or the device's
+defaults. Changing the setting does not rekey anything already running: a live
+session keeps the policy its SID stated, none included, and a reload of it or
+a fresh conversation on its provider re-sends exactly that, while a running KAS
+process keeps the `initialize` default it started with. Both follow the setting
+after their next restart.
+`acp/kas_memory.py` owns both halves of it.
+
+**Which sessions ask, and for what.** `memory_plan` returns a `MemoryPlan`
+whose `mode` is `read_only` only for a session that meets all of: the key's
+namespace is owner-minted (`constants.is_owner_minted_session_key`, so a
+channel thread, a sub-agent, a cron run and a task-runner step are refused by
+namespace); cold allocation also requires a template execution with no member
+identity or app attribution, no selected Crew member, and no registered Bot
+worker. Dashboard keys alone grant nothing: Bot workers, member child chats and
+member new tabs can use ordinary dashboard keys. The gateway's in-memory and
+protected durable member vouches withhold recall even if the transcript is
+rewritten to claim an owner execution. Transcript facts can withhold a grant;
+they cannot override those gateway facts. Bot DM keys remain excluded. The
+session has no channel dispatcher, Slack link (paused links included), outbound
+mirror or inbound-resume mirror. No app owns the session; the chat's privacy
+mode reads stored memory at all (`persistent` or `incognito`, never `temporary`); and nobody but the local
+operator can reach this Crew (`crew_reachable_by_others`, which fails closed —
+an unreadable sharing mode counts as shared, because the host's memories are
+one person's and a shared Crew answers every admitted person's turns from the
+same store). While the setting is on, every other local KAS session states
+`disabled` for itself; while it is off, no session states a mode. Other
+harnesses carry no native memory setting. Kiro Cloud Sessions are excluded: their relay does not forward this
+policy, so the toggle grants nothing and rotates no cloud SID, and the Kiro
+Cloud harness (`acp/harness/kas_cloud.py`) removes the memory setting from its
+own requests, so the runtime validates no acknowledgement for them. A remote
+workspace whose KAS engine still runs locally is distinct and remains eligible.
+Crew global memory, consolidation and Bot/V2 store selection are unchanged.
+
+**What reaches the wire.** While the setting is on, local KAS `initialize`
+carries
+`clientCapabilities._meta.kiro.settings.memory = {"mode": "disabled", "reflection": false}`,
+and every local `session/new` states its own pair in
+`_meta.kiro.settings.memory`. A session that requests no mode of its own, such
+as a worker that bypasses session allocation, is resolved to `disabled` by the
+runtime (`kas_memory.runtime_memory_mode`), which reads the setting when the
+process spawns and when the session starts (`orchestrator_memory_enabled`;
+unreadable config counts as off). This prevents device or native defaults from
+filling either field. A live reload, or a fresh conversation on the same
+provider, re-sends the mode the SID stated (recorded on its handle, `""` for
+none) and does not resolve it again. Other initialization settings are preserved. While the
+setting is off none of these requests carries a memory setting.
+Reflection is stated rather than omitted so the session's stored engine record
+names both halves of the request. `read_only` grants the engine's memory index
+in the session's first message and the memory tool's reads; it refuses every
+add, update and delete, and all background reflection, in the engine's own
+policy. Because a `customAgents` entry's `tools` is an allowlist and the shipped
+list does not name the engine's memory tool, a reading session also gets
+`memory` appended to each entry's `tools` (`mount_memory_tool`; `"*"` already
+covers it, and an entry that declares no `tools` gains none). It is NOT added to
+`allowedTools`. KAS's native context and permission policy owns whether an
+index or a retrieval asks approval; Crew does not change permission behavior.
+
+Before a recalling session receives any prompts, Crew requires the response's
+`_meta.memoryConfig` to confirm `read_only` and literal `reflection: false`, plus
+a supported `memoryReflection` select config option reporting `off`. The mode
+checked is the one the request carried after the host's last word on it
+(`kas_memory.sent_memory_mode`). Missing,
+malformed or mismatched acknowledgements refuse the session, including late
+startup adoption and reloads. A failed new session is torn down; a refused load
+is evicted without deleting its stored conversation. Disabled sessions reject
+any returned mismatched policy. An engine without native memory may omit its
+acknowledgement for a disabled request; omission never permits recall. A request
+that states no mode checks no acknowledgement, whatever policy the engine
+reports.
+
+**New chats only, and how the setting is withdrawn.** The engine honours a
+session's STORED memory record over whatever a `session/load` names once that
+record is explicit, so the setting cannot be applied or withdrawn by a reload.
+While the setting is on, Kiro Crew sends the saved SID's policy on
+`session/load` (`disabled` when the mapping recorded none) as well as
+re-sending its agent definitions and memory tool mount. The policy protects a load whose
+record is missing; it does not replace an explicit stored policy. The response
+must confirm the expected pair before the session can receive prompts. A chat
+that already has an engine session retains its saved mode. While the setting is on,
+KAS sessions bypass the warm pool because each pooled engine session was
+created before its eventual session key and memory mode were known.
+
+Withdrawal is a session rotation instead. `SessionMap` records the actual mode
+beside the SID (`KAS_MEMORY_FIELD`). A mapping write distinguishes an omitted
+mode, which preserves the mapped SID's mode in `seed_conversation`, from `""`,
+which records no addon policy for a non-KAS or cloud SID or for one created
+while the setting was off. Local excluded SIDs created while it was on record
+`disabled`. Clearing a SID clears its mode too. If
+a compaction restart cannot start its successor, restoring the kept SID also
+records the live provider's actual mode. On the next cold start,
+`memory_plan` returns a plan with `MemoryPlan.rotate` set when the recorded mode
+no longer matches the grant. Recorded `read_only`
+against anything else — the setting turned off, the chat switched to
+`temporary`, a second person now on the Crew, a member/worker identity or a
+channel link — drops the resumable session id
+(`clear_sid`) and takes the same fresh-session-plus-Kiro-Crew-replay path a
+provider switch takes (`session_allocation_parts/get_or_create.py`). The
+comparison is one-directional on purpose: turning the setting ON never rotates
+anything, so an existing chat is left alone; its resume states `disabled`, and
+a saved session whose engine record contradicts that is refused and replaced
+by a fresh session plus replay. With the setting off, a SID recorded
+`disabled` resumes without stating a policy and is re-saved with no mode; its
+engine record keeps whatever policy it was created with.
+
+A successful load uses and re-saves the recorded mode, because that is the
+policy the loaded SID actually has; its re-sent agent definitions mount the
+memory tool only for that mode. If load falls back to `session/new`, the new
+session uses and saves the current requested mode. A live MCP projection reload
+carries the provider's actual SID mode for the same reason. Edit & Resend also
+records that mode alongside its replacement SID before another turn can use it.
+
+Eligibility is checked at cold allocation, not on live turns or link actions.
+Linking an already-recalling session does not revoke its active policy or scrub
+recalled material from its context or transcript. Even a cold rotation replays
+Crew history; it prevents further native recall but does not sanitize earlier
+answers. Blocking or scrubbing active link actions would require a separate
+channel-lifecycle change and is outside this Preview's native-memory scope.
+
 ## Memory (`memory.py`)
 
 Global V1 uses structured files under `~/.kiro/crew/workspace/memory/`:
@@ -3410,7 +3541,7 @@ does not prove the provenance of vectors created before any weight digest.
 Signatures retain the original SHA-256 encoding of `model_id|dim`, truncated to
 16 hex characters, so unchanged bundled vectors need no rebuild. Custom-model
 tests derive expected
-identities with `_custom_model_id(path, configured_label)` and spaces with
+identities with `_custom_model_id(path, configured)` and spaces with
 `embedding_space_signature`, including an independent SHA-256 check of the
 weight bytes rather than a basename/size or label-only assertion.
 
@@ -3522,7 +3653,7 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 
 `HistoryConsolidator._consolidate()` extracts structured data alongside existing fields:
 - A `"semantic"` item whose key is `lesson.*` is moved to the `"lessons"` array first (`_reroute_lesson_semantic_keys`, once on the shared result before it branches to either write path), so a misfiled lesson gets the lessons path's dedup, volatile-fact screen and extraction-enabled gate instead of a plain `set_semantic`/`_write_semantic` write that stores a duplicate under each model-chosen key. Only a create is rerouted (a `delete` of a `lesson.*` key stays in `"semantic"`, where the delete site already tier-protects standing lessons); the rule is the item's `value`, so a non-text or empty value is not a lesson and is dropped rather than written as a plain semantic row.
-- **Kind routing** (`memory_kind_routing.py`, setting `memory.kind_routing`, default `off`; `shadow` and `enforce` are opt-in). Under `off` and `shadow` the consolidation prompt and every write are today's, word for word. Under `enforce` the prompt asks for a `kind` on every semantic item, and under `shadow` a separate label call does (below): `fact` (still true in a month and not looked up elsewhere), `event` (something that happened, worth a dated record) or `state` (the status of a PR, issue, CI run, branch, round or SHA that GitHub, git or the work ledger already holds). Shadow trials candidate rules (`SHADOW_KIND_RULES`, `RULES_VERSION` 3) that also tag as `state` a next step, a pending action, what something is blocked on, a count of tests, cycles or budgets, a local worktree or scratch path, and a value marked final or latest that will change again (`CANDIDATE_STATE_RULES`). `enforce` asks only the adopted rules (`ENFORCE_KIND_RULES`, unchanged), because it drops what is tagged `state`; a separate promotion change adopts a candidate once the shadow samples back it. Only under `enforce` does it also ask to name keys by topic, never by PR, issue or round number,, so the keys written in `shadow` stay the ones the log is measuring. A missing or unknown `kind` reads as `fact`, so an older answer routes as before. The class comes from the model rather than a key/value pattern because, on a 300-row hand-graded sample, a key-or-value regex that caught 79% of work state also flagged half the durable facts. `route_consolidation_by_kind` runs right after `_withhold_unseen_deletes` on BOTH write paths (`_write_structured_memory`, and the pass's member branch before `apply_consolidation`), on the first 20 items, and reads only `project.*` creates and updates under a well-formed key (`_KEY_PATTERN`, at most `_MAX_KEY_LEN` characters, so every key the log keeps is bounded; a malformed key is not routed and the writer refuses it as before): `pref.*`, `user.*`, `lesson.*`, deletes and `user_explicit` writes (which never come through consolidation) are not routed. `off` asks for no tag and ignores any tag sent. Under `shadow`, `route_consolidation_by_kind` hands back the answer with no decisions, so both write paths read, write and log exactly what `off` does. The pass itself reads the routed items of the fenced answer (`_withhold_unseen_deletes` without its log line, then `route_semantic_by_kind`) and their prior state before any write, and after its last memory write makes one label call (`label_shadow_kinds`): each routed item by its index, with its key and its own value (cut to 200 characters once JSON-encoded, so escapes cannot widen it; no transcript, no other memory), under `SHADOW_KIND_RULES`, answered as `{"kinds": {index: kind}}` so a key named twice is labelled per value, through the same `_call_llm` and store session as the pass, within `LABEL_INPUT_TOKENS` (3,000, estimated at three characters a token, which CJK text can exceed about threefold; twenty items at the key and value bounds fit, and a prompt over it is not sent) and `LABEL_TIMEOUT_SECS` (120). The mode is the one the prompt was built under. An item the answer gives no known kind is left out of the log. A call that fails, times out, is throttled or answers no usable JSON logs nothing for that pass; it never fails the pass or changes a write. Its answer only feeds the log of what `enforce` would do. `RULES_VERSION` 3 marks this: samples of version 2 and before were tagged inside the consolidation prompt, which changed what it extracted, so they are not a clean baseline. `enforce` drops a `state` item and records it as a `work_state` `memory_events` row (`SemanticRejectCode.WORK_STATE`, in `_AUDITABLE_REJECT_CODES` and `get_rejection_stats`). A `fact` and an `event` are both written as facts, as before; an `event` is still counted and sampled as one. Turning an `event` into a dated episode is deferred to a follow-up that reads the shadow samples first, because each attempt to convert it hit a store-side refusal (episodic capacity, dedup, the injection screen) that could lose or double the event. No stored row is changed or deleted by any mode. The consolidation value bound (`_refuse_oversized_semantic`) runs after routing on both paths, so routing counts and samples every item as it would without the bound, and an over-bound `state` item `enforce` drops is reported as `work_state`, not as `consolidation_value_size`.
+- **Kind routing** (`memory_kind_routing.py`, setting `memory.kind_routing`, default `off`; `shadow` and `enforce` are opt-in). Under `off` and `shadow` the consolidation prompt and every write are today's, word for word. Under `enforce` the prompt asks for a `kind` on every semantic item, and under `shadow` a separate label call does (below): `fact` (still true in a month and not looked up elsewhere), `event` (something that happened, worth a dated record) or `state` (the current status of a tracked work item that the system tracking it already holds: a code change under review by any name or number, its revisions, a ticket or task, a CI or build run, a branch or SHA, or which chat or session owns it). The rules name no single tracker, so a team whose reviews are "changes" or whose work is "tickets" gets the same routing as one on GitHub. An owner can add their own tracker's words through `memory.extraction_instructions`; that text reaches the consolidation prompt only, so it steers `enforce` and not the shadow label call. `state` also covers a next step, a pending action, what something is blocked on, a count of tests, cycles or budgets, a local worktree or scratch path, and a value marked final or latest that will change again (`WIDER_STATE_RULES`), and an item that mixes a lasting lesson with a status is `state` unless it still reads true with every work-item number removed (`MIXED_ITEM_RULE`), because the item is stored whole and a `fact` tag would keep the status with it. `enforce` and `shadow` ask the same rules (`ENFORCE_KIND_RULES`, `RULES_VERSION` 4), so without owner guidance the shadow log measures what `enforce` drops. Only under `enforce` does it also ask to name keys by topic, never by the number of a code change, ticket, issue or round, so the keys written in `shadow` stay the ones the log is measuring. A missing or unknown `kind` reads as `fact`, so an older answer routes as before. The class comes from the model rather than a key/value pattern because, on a 300-row hand-graded sample, a key-or-value regex that caught 79% of work state also flagged half the durable facts. `route_consolidation_by_kind` runs right after `_withhold_unseen_deletes` on BOTH write paths (`_write_structured_memory`, and the pass's member branch before `apply_consolidation`), on the first 20 items, and reads only `project.*` creates and updates under a well-formed key (`_KEY_PATTERN`, at most `_MAX_KEY_LEN` characters, so every key the log keeps is bounded; a malformed key is not routed and the writer refuses it as before): `pref.*`, `user.*`, `lesson.*`, deletes and `user_explicit` writes (which never come through consolidation) are not routed. `off` asks for no tag and ignores any tag sent. Under `shadow`, `route_consolidation_by_kind` hands back the answer with no decisions, so both write paths read, write and log exactly what `off` does. The pass itself reads the routed items of the fenced answer (`_withhold_unseen_deletes` without its log line, then `route_semantic_by_kind`) and their prior state before any write, and after its last memory write makes one label call (`label_shadow_kinds`): each routed item by its index, with its key and its own value (cut to 200 characters once JSON-encoded, so escapes cannot widen it; no transcript, no other memory), under `ENFORCE_KIND_RULES`, answered as `{"kinds": {index: kind}}` so a key named twice is labelled per value, through the same `_call_llm` and store session as the pass, within `LABEL_INPUT_TOKENS` (3,000, estimated at three characters a token, which CJK text can exceed about threefold; twenty items at the key and value bounds fit, and a prompt over it is not sent) and `LABEL_TIMEOUT_SECS` (120). The mode is the one the prompt was built under. An item the answer gives no known kind is left out of the log. A call that fails, times out, is throttled or answers no usable JSON logs nothing for that pass; it never fails the pass or changes a write. Its answer only feeds the log of what `enforce` would do. `RULES_VERSION` 3 moved the labelling into this separate call: samples of version 2 and before were tagged inside the consolidation prompt, which changed what it extracted, so they are not a clean baseline; version 4 is the tracker-neutral wording and the two added rules. `enforce` drops a `state` item and records it as a `work_state` `memory_events` row (`SemanticRejectCode.WORK_STATE`, in `_AUDITABLE_REJECT_CODES` and `get_rejection_stats`). A `fact` and an `event` are both written as facts, as before; an `event` is still counted and sampled as one. Turning an `event` into a dated episode is deferred to a follow-up that reads the shadow samples first, because each attempt to convert it hit a store-side refusal (episodic capacity, dedup, the injection screen) that could lose or double the event. No stored row is changed or deleted by any mode. The consolidation value bound (`_refuse_oversized_semantic`) runs after routing on both paths, so routing counts and samples every item as it would without the bound, and an over-bound `state` item `enforce` drops is reported as `work_state`, not as `consolidation_value_size`.
   - **The log is bounded by construction.** It lives in the store's own `memory_meta` table, which every lineage has, so it needs no schema change, no migration on the frozen V1 list or the no-upgrade member format, and no second file per store. One counter row per UTC day (`memory_kind_log:counts:<day>`, counts by mode and kind, plus `sibling_suffix: {mode: n}` on a day where a routed key ending in `_final`, `_latest`, `_new`, `_updated` or `_v2`..`_vN` had its unsuffixed key or another such sibling already active; that is a count only and changes no write), pruned past 400 days. Shadow samples (`memory_kind_log:samples:<day>`: key, kind, value cut to 200 characters, store name, timestamp, the `rules` version, `sk` (the pass's session tag, when it has one), and `existed` / `same_value` read from the store before the pass writes) are a reservoir sample of at most 150 over the whole UTC day (Algorithm R, so a late item is as likely to be kept as an early one; the stream is counted in one `memory_kind_log:reservoir` row (`{day, rules, seen}`, overwritten each day), so a window restarted mid-day numbers only its own items, and samples of other rules already in that day's row are kept and take their share of the 150), 2,000 in all, oldest dropped first, and never more than 1,000,000 bytes together. Readers accept a sample without the newer fields. `existed` and `same_value` come from one indexed read of the routed keys (plus one key-prefix read per sibling-suffix key) taken before the writes: by the V1 writer under the store lock, by the member store inside the span's transaction, both under the key the model named (a member-store identity match that files the value under another key does not change the sample). A failed read leaves the fields out; it never fails the pass. Samples stop 14 days after shadow first logged in that store (`memory_kind_log:shadow_started_at`); counters keep going. `memory_kind_log:rules_version` holds the `RULES_VERSION` of the prompt rules, and `memory_kind_log:rules_changed_at` when it last changed; when the code's version differs from the stored one on a shadow pass (an `enforce` pass never touches either, so it cannot spend a restarted window while nothing is sampled) the window restarts, so samples under the new rules are collected and told apart by their `rules` field. With the defaults the 14-day stop alone bounds samples at 2,100, so the ring (2,000) and the byte cap bound them. `memory_events` gets no per-item row in shadow mode. Under `enforce` the V1 writer logs in its own transaction after its semantic writes, inside `_publication_hold_checked` like every other write of the pass (a switch turned off or a lease lost before the first commit refuses the log too); the member store logs inside the span's transaction under a savepoint, so a replayed span logs nothing twice. Under `shadow` the pass logs the labelled routing in its own transaction under the same hold, after the label call; there `existed` and `same_value` come from the pass's read before the writes. A log that cannot be written is a warning, never a failed pass. The samples are kept so a small local classifier can be trained on them later; none is built.
 - **Lesson origin gate** (`memory_origin_gate.py`, setting `memory.lesson_origin_gate`, default `off`; `shadow` and `enforce` are opt-in). Runs once on the shared result after the stale-result check, before it branches to either write path, over the rows the model read (`_prompt_rows(chunk)`). `classify_turn` reads only gateway-written markers, and human is an allowlist (`history.HUMAN_TURN_META_KEY`): a `user` row stamped `meta.human` is `human` (a person's steer carries it; an app's steer does not); an unmarked `user` row with `meta.relay` or the `session_send` envelope prefix (`_RELAY_PREFIX`) is `agent`; every other input row (`nudge`, `inject`, `subagent`, `system`, or an unmarked `user` row) is `automatic`. A span with no human turn has its standing lessons (`always` or untagged, the first `_MAX_LESSONS_PER_CONSOLIDATION`) stored `on_topic` under `enforce`; none is dropped. A messaging-channel session (`messaging.link.is_channel_session_key`) is not gated or logged, because most channel transports write the person's row without `meta.human`. A span with a human turn keeps every tier (a mixed span is not traced to one turn). `off` reads nothing and hands back the answer object; `shadow` hands it back too and logs. The `/api/lessons` route applies `gate_learn_add` to an internal-auth (MCP `learn_add`) write: when the latest input row of any role in the caller's slot is not human (fail-closed, so no turn opener is walked past), `enforce` stores it `on_topic` under source `agent_learn_add`, never `user_explicit`, and without its NOT-clause; every consolidation lesson of a span with no human turn, a finding included, also loses its clause, so an exact-rule re-submit cannot enrich a standing row; a session with no live slot is left as submitted. `kirocrew learn add` (`cli_commands_learn._learn`) has no chat to read: run where `cloud.aws._in_agent_session` sees an agent session, it is gated as a `learn_add` with an automatic trigger and logged under path `cli_learn_add`; run from a person's own terminal (no agent marker) it is never gated or logged, and `off` reads no marker. The log mirrors kind routing in `memory_meta`: `memory_origin_log:counts:<day>` (`{mode: {path: {passes, no_human, lessons, standing, demoted}}}`, pruned past 400 days) and, in shadow only, `memory_origin_log:ids:<day>` (lesson keys, at most 150 a day, the kind-routing total and byte caps, 14-day window, restarted on a `RULES_VERSION` change). Each id entry also carries `at` (UTC time) and, when the pass has a session, `sk` (the first 12 hex characters of SHA-256 over the session key), and `memory_origin_log:control:<day>` keeps a control sample of the lessons the gate keeps (`{key, rules, sk, at}`, `memory_shadow_trace.add_control`: about 1 in 10 kept keys by hash, at most 20 a day, the same total and byte caps, stopped with the shadow window, never writing the window key). Readers accept entries without `sk` and `at`. No text is logged. Each log write is its own transaction under the pass's publication hold; it never fails a pass or a write.
 - **Lesson tier policy** (`memory_tier_policy.py`, setting `memory.lesson_tier_policy`, default `off`; `shadow` and `enforce` are opt-in). Runs right after the lesson origin gate, on the answer it returned, over the same rows (`_prompt_rows(chunk)`); the mode is read once per pass so the prompt and the policy agree. Under `enforce` a new consolidation lesson with no tier is stored `on_topic`, and an `always` lesson stays `always` only when its `user_quote` passes `quote_check`: after NFKC normalization, case folding and whitespace collapse it is a substring of one row `classify_turn` calls human that carries no relay marker, and it holds at least three tokens of the shared relevance tokenizer; every other lesson becomes `on_topic`, and every lesson but a quoted standing rule, a model-tagged finding included, is written without its NOT-clause (so an exact-rule match cannot enrich a stored standing row); none is dropped. The quote is not checked against the rule's wording, only against the person's turns. Only `enforce` adds `QUOTE_INSTRUCTION` to the lesson schema in the prompt; under `off` and `shadow` the prompt is today's byte for byte, so shadow counts every standing lesson as a would-be demotion (an upper bound) and counts only quotes the model offers unasked. A messaging-channel session is not gated or logged. `learn_add`, dashboard and CLI writes are not gated, and no stored row changes. The log mirrors the origin gate's in `memory_meta`: `memory_tier_log:counts:<day>` (`{mode: {consolidation: {passes, lessons, unstated, always, quote_present, quote_pass, quote_fail, demoted}, reteach: {checked, matched}}}`, pruned past 400 days) and, in shadow only, `memory_tier_log:ids:<day>` (lesson keys tagged `consolidation` or `reteach`, the same caps and window), with the same `sk` and `at` fields and a `memory_tier_log:control:<day>` sample of the lessons the policy keeps in their tier. Under shadow the `/api/lessons` route, before `write_lesson`, compares the new rule's vector with the stored vectors of the logged would-be demoted keys (`record_reteach`); a cosine above 0.85 counts as a re-teach. A dashboard or CLI write is checked; an internal-auth (agent) write only when `triggering_turn` of the caller's slot is human. No text is logged; a log write never fails a pass or a write.
@@ -5127,6 +5258,26 @@ command the skill cites with the `doctor` registrar in `cli_parser_gateway.py`,
 abbreviations off. Wording outside the security route, the other routes' prose,
 the repository link and the plain and prefilled new-issue links are not checked.
 
+For a feature request, both copies dig to the real need before drafting: they
+tell the agent to reason from first principles and ask "why?" one question at a
+time, each question built from the user's last answer, stopping once an answer
+names who hits it, what they are trying to get done and what it costs them
+(five at most), and finishing the chain before the duplicate search and the
+draft. The drafted "Why does this matter? (5 Whys)" section carries that
+question-and-answer chain.
+`.github/ISSUE_TEMPLATE/feature_request.yml` asks for the same chain in a
+required "Why does this matter? (5 Whys)" field, whose description names first
+principles so an agent filing through the form questions the request rather than
+restating it (#33078). Bug reports skip the chain.
+
+Both copies draft the issue body in the shape GitHub gives a form issue: one
+`###` heading per field of `feature_request.yml` or `bug_report.yml`, spelt as
+the field's label and in the form's order, because `gh issue create --body-file`
+skips the form and triage reads the answers by those headings. The same test
+file holds the skill's two draft blocks to the forms' field labels, and the
+fallback's two field lists to the same labels in order. `kirocrew-prepare-pr`
+sends its issue-first step through this skill's draft step.
+
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
 path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
@@ -5355,7 +5506,7 @@ scope.
 successful `$skillname` selection as one `system` row with
 `meta.kind=skill_load`. `meta.skills` keeps the ordered `{name, body}` list that
 entered that turn. `resolve_dollar_skills` has already removed frontmatter, and
-the runner applies credential and outbound-URL redaction before it writes either
+the runner applies credential redaction, inside URLs too, before it writes either
 the model block or the snapshot. The snapshot therefore remains accurate if a
 skill changes or disappears later and adds no second filesystem read. Existing
 dollar-skill count and file-read caps bound the row. The dashboard renders the
@@ -5750,8 +5901,8 @@ in-context copy is not sufficient rather than trying and failing.
 
 **Both tools label their output untrusted**, because a registry publisher's text
 reaches the model verbatim: `skill_fetch` prefixes the body, and `skill_discover`
-leads with the label. The gateway's `_redact_external` scrubs credential shapes
-and exfiltration URLs but cannot tell imperative prose from a description, so the
+leads with the label. The gateway's `_redact_external` scrubs credential shapes,
+inside URLs too, but cannot tell imperative prose from a description, so the
 label is the only signal — and it must **lead**, not trail. `sanitize_response`
 drops the TAIL at `MAX_RESPONSE_LEN` (100k) and `SkillSearchResult` puts no bound
 on `id` / `name` / `author`, so a trailing label could be padded off the end by
@@ -6629,8 +6780,8 @@ bundled names from `.bundled_manifest` and hub-installed names/install paths
 from `.hub/lock.json`; `.archive`, `.hub`, dependency, and cache trees are
 pruned before the file budget, leaving only active local packages selectable.
 Accepted packages retain their ordinary assets. Every regular UTF-8 text asset
-in a complete, package-bounded traversal is screened in full for credentials
-and exfiltration URLs; clean assets are copied byte-for-byte, including leading
+in a complete, package-bounded traversal is screened in full for credentials,
+inside URLs too; clean assets are copied byte-for-byte, including leading
 and trailing whitespace. No per-asset preview truncation is used for either the
 security decision or the copied content.
 
@@ -6834,7 +6985,7 @@ reuse_count: 0                          # omitted when zero
 ### Safety rails (non-negotiable per `security.md`)
 
 1. **Sensitive-session skip** — `_session_touched_sensitive()` scans all tool names across the session; any match in `_SENSITIVE_TOOL_PATTERNS` (AWS/SSH/GPG/netrc/.env/IMDS) skips extraction entirely. Complements the runtime hook-layer block; if the LLM *tried* to read credentials, we still don't synthesize a skill from the session.
-2. **Output redaction** — `redact_credentials()` + `redact_exfiltration_urls()` applied to `description`, `triggers`, and `procedure_md` before the SKILL.md is written. `AKIA*`, `ASIA*`, private key headers, Slack tokens, base64-encoded credentials all get scrubbed. Defense even against a prompt-injected LLM that tries to embed credentials in the procedure.
+2. **Output redaction** — `redact_credentials()` + `redact_exfiltration_urls()` applied to `description`, `triggers`, and `procedure_md` before the SKILL.md is written. AWS secret keys, private-key blocks, Slack tokens and base64-encoded credentials all get scrubbed, inside URLs too. Defense even against a prompt-injected LLM that tries to embed credentials in the procedure.
 3. **Size cap** — `AUTO_SKILL_MAX_PROCEDURE_CHARS = 10_240`; oversized outputs are rejected entirely (indicates the aux LLM went off-task).
 4. **Similarity dedup** — `find_similar()` rejects near-duplicates above `skills.auto_similarity_threshold` (default 0.85) Jaccard overlap on description words.
 5. **Namespace lock** — `update_auto_skill()` refuses to touch any skill whose name doesn't start with `auto/`, preventing the refine path from ever clobbering hand-authored skills.
@@ -7664,12 +7815,7 @@ project, daily-history, settings, lessons, semantic and episodic browsers remain
 visible in the page flow; the bulk editor does not replace or collapse them.
 Their paged list
 uses `GET /api/memory/records` with `store`, `q`, `kind`, `offset` and
-`limit` (1–100), plus optional `applies` (comma list of `always`, `on_topic`,
-`unstated`: a lesson's tier, `unstated` for a lesson written before tiers),
-`source` (exact), `status` (`active` by default; `forgotten` for rows the owner
-or a bulk edit dropped, `superseded` and `expired` for rows whose metadata names
-why they left, `any` for all) and `never_recalled=1` (an experience no episodic
-search has stamped; only experiences record a recall). Filtering precedes pagination. The authentication middleware's
+`limit` (1–100). Filtering precedes pagination. The authentication middleware's
 `token` query parameter is permitted but never used as a filter or returned in
 records. Unknown query fields are refused instead of silently broadening the
 selection. Record addresses are readable
@@ -7683,9 +7829,7 @@ outside the page has no fingerprint computed and its metadata row is not read,
 and with no search term its value is not decoded either. A search reads the
 three metadata fields it matches on (category, subject, predicate) through one
 join in the listing query, not one query per record. `POST /api/memory/records/refresh` resolves up to 500 exact
-identities after a concurrent change without discarding the user's draft. An
-optional `status` widens that explicit refresh past live rows, so an undo of a
-forget can name the forgotten rows it brings back. Its
+identities after a concurrent change without discarding the user's draft. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
 under the same normalized selector and selection caps as preview; deleted or
 nonmatching exclusions do not subtract from the count. The editor refreshes
@@ -7744,10 +7888,7 @@ value server side and only the matched span changes.
 Owner-only `POST /api/memory/bulk/preview` accepts one store and either explicit
 record identities with revisions (up to 500), or an all-matching filter with
 exclusions. Operations are literal text replacement, single-record correction,
-restoring one record to a kept version, forgetting, `unforget` (clears the
-tombstone of a forgotten row in place, keeping its id, content and vector; a live
-row is unchanged) and `set_tier` (`applies: always | on_topic` on each selected
-lesson; other kinds and lessons already on that tier count as unchanged). Replacement walks JSON string values; it never rewrites object
+restoring one record to a kept version, and forgetting. Replacement walks JSON string values; it never rewrites object
 keys, repository scope, provenance or classification. Preview validates the
 entire selection, returns counts and the first 25 changed before/after pairs,
 and signs the selector, operation, store and full selection digest. A selection

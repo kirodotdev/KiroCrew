@@ -7,7 +7,7 @@ import { act, render, within } from '@testing-library/react'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import TranscriptScrollShell, { PANE_WIDTH_PROPERTY } from '../pages/chat/TranscriptScrollShell'
+import TranscriptScrollShell, { PANE_WIDTH_PROPERTY, PANE_WIDTH_REST_MS } from '../pages/chat/TranscriptScrollShell'
 import { beginPanelSlide } from '../utils/panelSlide'
 import { readIndexCss } from './indexCssSource'
 
@@ -242,7 +242,7 @@ describe('transcript scroll shell pane width', () => {
     else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
   })
 
-  function Shell() {
+  function Shell({ widened = false }: { widened?: boolean }) {
     const scrollerRef = useRef<HTMLDivElement | null>(null)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
     const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -250,44 +250,70 @@ describe('transcript scroll shell pane width', () => {
       <TranscriptScrollShell scrollerRef={scrollerRef} onScroll={() => {}} loadingOlder={false}
         virt={{ topSentinelRef, bottomSentinelRef, offsetBefore: 0, offsetAfter: 0 }}>
         <div data-testid="row" />
+        {widened && <div className="markdown-table" data-expanded="" />}
       </TranscriptScrollShell>
     )
   }
 
-  it('publishes the scroller clientWidth on the scroller and follows resizes', () => {
+  it('publishes the scroller clientWidth, then the resized width once it rests', () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     const { container, unmount } = render(<Shell />)
     const scroller = container.querySelector<HTMLElement>('.chat-container')!
     expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
     // Inheritance down to the rows and the measure farm is a browser fact jsdom
     // does not model; scripts/capture-chat-table-breakout.mjs measures it.
 
-    act(() => {
-      paneWidth = 1000
-      FakeResizeObserver.instance?.fire()
-    })
+    // A panel that opens with a click resizes the scroller on every frame of
+    // its tween. No widened table is mounted, so nothing reads the property:
+    // publishing each frame would only restyle the whole transcript.
+    for (const w of [1180, 1100, 1000]) {
+      act(() => { paneWidth = w; FakeResizeObserver.instance?.fire(); vi.advanceTimersByTime(16) })
+      expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
+    }
+    act(() => { vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
     expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1000px')
 
+    // A publish still waiting when the shell goes is dropped with it.
+    act(() => { paneWidth = 900; FakeResizeObserver.instance?.fire() })
     unmount()
     expect(FakeResizeObserver.instance?.disconnected).toBe(true)
+    act(() => { vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
+    expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1000px')
+  })
+
+  it('follows every resize while a widened table is mounted', () => {
+    const { container } = render(<Shell widened />)
+    const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    // The widened table reads the property, so it must reflow with the pane.
+    for (const w of [1180, 1100, 1000]) {
+      act(() => { paneWidth = w; FakeResizeObserver.instance?.fire() })
+      expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe(`${w}px`)
+    }
   })
 
   it('holds the width while a side panel slides and publishes the final one when it rests', () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     const { container } = render(<Shell />)
     const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    // A resize still waiting to rest when the slide starts must not publish
+    // in the middle of it.
+    act(() => { paneWidth = 1200; FakeResizeObserver.instance?.fire() })
     const end = beginPanelSlide()
     try {
       // Every frame of a slide resizes the scroller: an inherited property set
       // on each one restyled the whole transcript per frame.
       for (const w of [1180, 1100, 1010]) {
-        act(() => { paneWidth = w; FakeResizeObserver.instance?.fire() })
+        act(() => { paneWidth = w; FakeResizeObserver.instance?.fire(); vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
         expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
       }
     } finally {
       act(() => { end() })
     }
     expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1010px')
-    // Resting again: a resize publishes at once.
-    act(() => { paneWidth = 990; FakeResizeObserver.instance?.fire() })
+    // Resting again: a resize publishes once the width holds still.
+    act(() => { paneWidth = 990; FakeResizeObserver.instance?.fire(); vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
     expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('990px')
   })
 })

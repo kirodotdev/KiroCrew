@@ -16,7 +16,7 @@ import { api } from '../../../api/client'
 import type { CrewWorker, ConductorModeRun } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
 import { timedPoll, usePollRule } from '../../../lib/pollRule'
-import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
+import { crewBoardQueryKey, CREW_BOARD_GC_MS, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
 import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
 import { fmtMinutes } from '../../../lib/crewWork'
@@ -703,8 +703,11 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.
+  // A board shown in the last CREW_BOARD_GC_MS paints at once on entry, and every
+  // entry still reads it again (`refetchOnMount: 'always'`), so the cached copy is
+  // replaced as soon as the read answers.
   const boardInterval = usePollRule(`crew-board:${root}`, CREW_BOARD_POLL_MS, active, crewBoardQueryKey(root))
-  const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => timedPoll(`crew-board:${root}`, () => api.crewBoard(root)) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: boardInterval, retry: false })
+  const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => timedPoll(`crew-board:${root}`, () => api.crewBoard(root)) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: boardInterval, gcTime: CREW_BOARD_GC_MS, refetchOnMount: 'always', retry: false })
   // ISO timestamps from the board: a byte compare orders them, no locale involved.
   const items = useMemo(() => [...(board.data?.items ?? [])].sort((a, b) => { const x = a.created_at || '', y = b.created_at || ''; return x < y ? -1 : x > y ? 1 : 0 }), [board.data])
   const goalText = (board.data?.conductor?.goal || '').replace(/\s+/g, ' ').trim()

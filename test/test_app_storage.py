@@ -615,22 +615,54 @@ class TestAppStorageLongKeys:
         except OSError as exc:
             pytest.fail(f"probing the own-name location raised: {exc}")
 
-    def test_set_of_a_key_whose_own_file_name_is_too_long_still_raises(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("key", ["a" * 300, "é" * 200], ids=["ascii", "non-ascii"])
+    def test_a_safe_key_too_long_for_its_own_name_round_trips(
+        self, key: str, tmp_path: Path
     ) -> None:
-        """A filename-safe key keeps its own name, so a too-long one cannot be stored.
+        """A filename-safe key past the byte limit is stored under the digest name.
 
-        ``set`` must fail loudly for it, as before, rather than store nothing.
+        ``"é" * 200`` is 200 characters but 400 bytes, so it is over the limit
+        even though it would fit a limit counted in characters.
         """
-        key = "a" * 300
         storage = AppStorage("test-app", tmp_path)
-        with pytest.raises(OSError):
-            storage.set(key, {"v": 1})
-        try:
-            stored = storage.get(key)
-        except OSError as exc:
-            pytest.fail(f"get of a key whose own name is too long crashed: {exc}")
-        assert stored is None
+        assert app_storage_mod._is_digest_stem(storage._key_path(key).stem)
+        storage.set(key, {"v": 1})
+        assert storage.get(key) == {"v": 1}
+        assert storage.list_keys() == [key]
+        assert storage.delete(key) is True
+        assert storage.get(key) is None
+        assert storage.list_keys() == []
+
+    def test_a_safe_key_within_the_limit_keeps_its_own_name(self, tmp_path: Path) -> None:
+        """The longest safe key that fits is not rewritten by length."""
+        key = "a" * (app_storage_mod._MAX_FILENAME_BYTES - len(".json"))
+        storage = AppStorage("test-app", tmp_path)
+        assert storage._key_path(key).name == f"{key}.json"
+
+    def test_a_long_safe_key_stored_under_its_own_name_stays_readable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A value an older build stored under the key's own name is migrated.
+
+        Such a file exists where the limit counts characters (NTFS); a lowered
+        limit stands in for that here, so the own name can be created.
+        """
+        monkeypatch.setattr(app_storage_mod, "_MAX_FILENAME_BYTES", 40)
+        key = "a" * 50
+        kv = tmp_path / "kv"
+        kv.mkdir(parents=True)
+        planted = kv / f"{key}.json"
+        planted.write_text(json.dumps({"from": "own-name"}), encoding="utf-8")
+        storage = AppStorage("test-app", tmp_path)
+        assert app_storage_mod._is_digest_stem(storage._key_path(key).stem)
+        assert storage.get(key) == {"from": "own-name"}
+        assert storage.list_keys() == [key]
+        storage.set(key, {"from": "digest"})
+        assert not planted.exists(), "the superseded own-name copy is still on disk"
+        assert storage.get(key) == {"from": "digest"}
+        assert storage.list_keys() == [key]
+        assert storage.delete(key) is True
+        assert storage.list_keys() == []
 
     def test_a_digest_file_without_a_key_is_skipped(self, tmp_path: Path) -> None:
         storage = AppStorage("test-app", tmp_path)

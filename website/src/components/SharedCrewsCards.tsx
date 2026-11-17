@@ -16,10 +16,11 @@
  */
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Users } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  isRelayCrewOnline, openRelayCrew, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
+  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { Btn, Card } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -84,15 +85,24 @@ export default function SharedCrewsCards() {
   const { t } = useTranslation()
   const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
   const [refusals, setRefusals] = useState<Record<string, string>>({})
+  const queryClient = useQueryClient()
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
       const { [endpointId]: _dropped, ...rest } = prev
       return rest
     })
     void openRelayCrew(endpointId).then(res => {
-      if (!res.ok) setRefusals(prev => ({ ...prev, [endpointId]: relayRefusalText(res.error) }))
+      if (!res.ok) {
+        setRefusals(prev => ({ ...prev, [endpointId]: relayRefusalText(res.error) }))
+        return
+      }
+      // Opened, so it is seen, as an Open from the switcher records it.
+      void recordRelayCrewsSeen([endpointId]).then(({ saved, failed }) => {
+        void clearRelayCrewsUnseen(queryClient, saved)
+        if (failed) setRefusals(prev => ({ ...prev, [endpointId]: i18nT('components.relayCrews.seen_not_saved') }))
+      })
     })
-  }, [])
+  }, [queryClient])
   if (hidden) return null
   return (
     <>

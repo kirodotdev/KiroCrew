@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch, notify_out
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import Signal
@@ -82,10 +83,14 @@ class _NotifyBase(unittest.TestCase):
     ``TestChannelsMatchTheManifest``, so this stub cannot drift into fiction.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
         self._prev = os.environ.get("KIROCREW_HOME")
-        os.environ["KIROCREW_HOME"] = self._tmp.name
+        os.environ["KIROCREW_HOME"] = str(self._tmp_path)
         # Patched ON THE MODULE UNDER TEST, not as "kiro_crew.apps.manager.is_app_enabled".
         # A dotted patch walks package attributes, and `test_ledger_sync_git` evicts this
         # app's modules from `sys.modules` to simulate two processes — after which the two
@@ -111,7 +116,6 @@ class _NotifyBase(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        self._tmp.cleanup()
 
     def _state(self, **kw: Any) -> tuple[_FakeState, _FakeBus, AppRateLimiter]:
         bus = _FakeBus(**kw)
@@ -220,7 +224,7 @@ class TestSilentByDefault(_NotifyBase):
 
     def test_enabling_writes_no_secret_material(self) -> None:
         notify_out.set_settings(enabled=True)
-        secrets = Path(self._tmp.name) / "ops_mission_control_secrets.json"
+        secrets = self._tmp_path / "ops_mission_control_secrets.json"
         self.assertFalse(secrets.exists())
 
 

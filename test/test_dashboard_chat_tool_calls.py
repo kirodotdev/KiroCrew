@@ -678,7 +678,7 @@ class TestRunChatToolCallUpdate:
                 kind=EVENT_TOOL_CALL_UPDATE,
                 title="echo secret",
                 tool_kind="execute",
-                tool_input='{"command":"echo ' + SAMPLE_AWS_SECRET + '"}',
+                tool_input='{"command":"echo aws_secret_access_key=' + SAMPLE_AWS_SECRET + '"}',
                 tool_call_id="tc-cred",
             ),
             LLMEvent(kind=EVENT_COMPLETE),

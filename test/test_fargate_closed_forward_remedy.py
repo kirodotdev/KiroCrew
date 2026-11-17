@@ -20,6 +20,7 @@ from kiro_crew.instances.ssh_tunnel_manager import (
     _SshTunnel,
     _ssm_close_reason,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import finished
 
 # The exact literals session-manager-plugin writes to stdout, from its source:
@@ -185,7 +186,7 @@ class TestStdoutCaptureHygiene:
         the reason text back to nobody, so there is no return value to observe
         it through.
         """
-        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        secret = github_classic(seed=132)  # a bare 40-character run is no credential
         raw = f"SessionId: {SESSION_ID} : closed {secret}\n"
         assert secret not in _sanitize_ssm_stdout(raw)
         # The notice is still classifiable with the credential gone.
@@ -242,6 +243,9 @@ class _FakeStream:
             raise OSError("pipe went away")
         chunk, self._payload = self._payload[:n], self._payload[n:]
         return chunk
+
+    def at_eof(self) -> bool:
+        return not self._payload
 
 
 class _FakeProc:

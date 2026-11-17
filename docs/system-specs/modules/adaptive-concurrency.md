@@ -237,9 +237,8 @@ exactly the pressure the loop already backs off from. `compute_max_subagents`
 is therefore not a memory figure at all: it is `agent.subagent_auto_max` as
 written (3 when host memory cannot be read, because the floor then fails open,
 and sized from host memory when `agent.spawn_min_memory_gb <= 0` turns the floor
-off);
-`agent.subagent_cpu_cost_cores` is deprecated and inert, preserved on load and
-save so an existing config is not rewritten.
+off). The retired `agent.subagent_cpu_cost_cores` is ignored at load and
+dropped on save (`_SECTION_KEYS_RETIRED`).
 
 `probe_host` reads live signals only: free memory, process RSS, process CPU
 seconds (for metrics only, never classified), fd count and the fd soft limit. It

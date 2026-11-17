@@ -996,6 +996,20 @@ async def clear_notifications(self: DashboardState) -> None:
     await _notifications_for(self).clear(self)
 
 
+async def clear_visible_notifications(
+    self: DashboardState, hidden: Callable[[dict[str, Any]], bool]
+) -> tuple[bool, list[Any]]:
+    """Persist, then clear the notes *hidden* does not withhold; ``(persisted, cleared)``."""
+    return await _notifications_for(self).clear_visible(self, hidden)
+
+
+async def acknowledge_visible_notifications(
+    self: DashboardState, hidden: Callable[[dict[str, Any]], bool]
+) -> bool:
+    """Persist, then acknowledge the unread notes *hidden* does not withhold."""
+    return await _notifications_for(self).acknowledge_visible(self, hidden)
+
+
 def ensure_context_snapshots_loaded(self: DashboardState) -> bool:
     return _persistence_for(self).ensure_context_snapshots_loaded(self)
 

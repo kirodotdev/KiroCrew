@@ -21,8 +21,8 @@ no other.
 The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads:
 ``_clear_tool_dispatch``, ``_completion_keep``, ``_completion_keep_chars``, ``_ctx_builder``,
 ``_effective_turn_limit``, ``_fire_event``, ``_leave_startup``, ``_note_tool_dispatch``,
-``_note_tool_result``, ``_provider_label_of``, ``_sessions``, ``_sharing_plan``,
-``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
+``_note_tool_result``, ``_note_tool_update``, ``_provider_label_of``, ``_sessions``,
+``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
 ``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
 ``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
 ``_yield_for_infra_retry``, ``_yield_for_stop_recovery``, ``arm_report_in_flight``,
@@ -1086,6 +1086,9 @@ async def _run_inner_impl(
     _row_t0[0] = _turn_t0
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_MODEL_FALLBACK, engine_served_model
 
+    # The harness the run is on: opencode names a Crew tool only in its title.
+    _harness = getattr(getattr(client, "client", None), "backend", None)
+    _harness = _harness if isinstance(_harness, str) else None
     async for event in _stream_with_transient_retry():
         # Refresh the activity clock for every event kind that BELONGS to
         # this session (thinking chunks, tool-call updates, etc.) before
@@ -1256,7 +1259,7 @@ async def _run_inner_impl(
             # increment is parent-scoped.
             info.last_tool = event.title or ""
             info.last_tool_call_id = event.tool_call_id or ""
-            self._manager._note_tool_dispatch(info, event)
+            self._manager._note_tool_dispatch(info, event, _harness)
             _card_titles.note_call(event)
             # Persist turn state for orphan recovery diagnostics. Off-loop
             # and drained on cancellation via _write_state_off_loop — the
@@ -1351,7 +1354,7 @@ async def _run_inner_impl(
             info.last_tool = event.title or info.last_tool
             if event.title:
                 info.last_tool_call_id = event.tool_call_id or ""
-            self._manager._note_tool_dispatch(info, event)
+            self._manager._note_tool_dispatch(info, event, _harness)
             _card_titles.note_call(event)
             await self._manager._fire_event(
                 "subagent_tool",
@@ -1402,6 +1405,7 @@ async def _run_inner_impl(
                     agent_role=info.agent or None,
                 )
         elif event.kind == EVENT_TOOL_CALL_UPDATE:
+            self._manager._note_tool_update(info, event)
             await _card_titles.refine(self._manager, info, event)
         elif event.kind == EVENT_TOOL_RESULT:
             # A FINAL result means the tool is done: drop the attribution

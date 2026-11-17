@@ -316,6 +316,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
     path_key: str = body.get("path", "")
     value: Any = body.get("value")
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+    from kiro_crew.shared_crew.teammate_access import is_admission_config_key
+
+    if is_admission_config_key(path_key) and not is_host_owner_dashboard_request(request):
+        # A Shared Crew teammate passes the owner gate above, but which listeners run
+        # and who an allow-list lets in stay the machine owner's to decide.
+        return _deny(
+            "only the Crew owner can change who may reach this Crew",
+            f"admission key {path_key}",
+            status=403,
+            code="owner_only",
+        )
     if_unset = body.get("if_unset", False)
     if not isinstance(if_unset, bool):
         return _deny("if_unset must be a boolean")

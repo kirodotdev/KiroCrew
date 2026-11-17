@@ -115,7 +115,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_flush_generation,
         _slot_has_unflushed_rows,
         _stamp_welcome_claimed,
-        _teammate_roster,
         _transcript_holds_message,
         _transcript_holds_person_message,
         api_members,

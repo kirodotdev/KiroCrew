@@ -358,7 +358,7 @@ describe('SecretsPanel add pane', () => {
     const user = userEvent.setup()
     mount()
     await openAdd(user)
-    await user.click(screen.getByRole('radio', { name: /Login/ }))
+    await user.click(screen.getByRole('tab', { name: /Login/ }))
     await user.type(screen.getByLabelText('Secret name'), 'GITHUB')
     await user.type(screen.getByLabelText(S.username_label), 'octocat')
     await user.type(screen.getByLabelText(S.password_label), 'pw-1')
@@ -382,7 +382,7 @@ describe('SecretsPanel add pane', () => {
     const user = userEvent.setup()
     mount()
     await openAdd(user)
-    await user.click(screen.getByRole('radio', { name: /Login/ }))
+    await user.click(screen.getByRole('tab', { name: /Login/ }))
     await user.type(screen.getByLabelText('Secret name'), 'GITHUB')
     await user.type(screen.getByLabelText(S.password_label), 'pw-1')
     await user.type(screen.getByLabelText(S.add_website), '  https://github.com  ')
@@ -412,7 +412,8 @@ describe('SecretsPanel add pane', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'POST')).toBe(true))
     expect(screen.getByLabelText('Secret name')).toBeDisabled()
-    expect(screen.getByRole('radio', { name: /Login/ })).toBeDisabled()
+    // The type the save writes stays selected; the others wait for it.
+    expect(screen.getByRole('tab', { name: /Login/ })).toHaveAttribute('aria-disabled', 'true')
     listNames = ['MY_KEY']
     await act(async () => release())
   })
@@ -421,7 +422,7 @@ describe('SecretsPanel add pane', () => {
     const user = userEvent.setup()
     mount()
     await openAdd(user)
-    await user.click(screen.getByRole('radio', { name: /Note/ }))
+    await user.click(screen.getByRole('tab', { name: /Note/ }))
     await user.type(screen.getByLabelText('Secret name'), 'WIFI')
     await user.type(screen.getByLabelText(S.text_label), 'ssid=home')
     await user.click(screen.getByRole('button', { name: 'Save' }))
@@ -501,6 +502,12 @@ describe('SecretsPanel item pane', () => {
     // The rail row and the pane both name the user; the pane's is the definition term's value.
     expect(screen.getAllByText('octocat')).toHaveLength(2)
     expect(screen.getByText('https://github.com')).toBeInTheDocument()
+    // Used by names the host browser sign-in offers the login at.
+    expect(await screen.findByText(S.usage_signs_in_at.replace('{{host}}', 'github.com'))).toBeInTheDocument()
+    // A login has no tool card; its references wait behind the closed Advanced.
+    expect(screen.queryByText(S.use_in_tool_title)).toBeNull()
+    expect(screen.queryByText('secret://GITHUB')).toBeNull()
+    await user.click(screen.getByRole('button', { name: S.advanced_title }))
     expect(screen.getByText('secret://GITHUB')).toBeInTheDocument()
     expect(screen.getByText('secret://GITHUB#username')).toBeInTheDocument()
     // A login keeps no one-time-password seed, so there is nothing to show.
@@ -518,7 +525,36 @@ describe('SecretsPanel item pane', () => {
     mount()
     await user.click(await screen.findByRole('option', { name: /OPENAI_API_KEY/ }))
     expect(await screen.findByText('secret://OPENAI_API_KEY')).toBeInTheDocument()
+    expect(screen.getByText(S.use_in_tool_title)).toBeInTheDocument()
     expect(screen.queryByText(/secret:\/\/OPENAI_API_KEY#/)).not.toBeInTheDocument()
+  })
+
+  it('puts the authorize command with the real name behind Advanced', async () => {
+    const user = userEvent.setup()
+    listNames = ['OPENAI_API_KEY', 'MY KEY']
+    mount()
+    await user.click(await screen.findByRole('option', { name: /OPENAI_API_KEY/ }))
+    const command = 'kirocrew secrets authorize OPENAI_API_KEY https://api.example.com'
+    await screen.findByText('secret://OPENAI_API_KEY')
+    expect(screen.queryByText(command)).toBeNull()
+    await user.click(screen.getByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText(command)).toBeInTheDocument()
+    // A name a shell would split keeps the placeholder: quoting differs per shell.
+    await user.click(screen.getByRole('option', { name: /MY KEY/ }))
+    await user.click(await screen.findByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText('kirocrew secrets authorize NAME https://api.example.com')).toBeInTheDocument()
+  })
+
+  it('keeps the placeholder for a name with a shell pattern or a leading dash', async () => {
+    const user = userEvent.setup()
+    listNames = ['A$&B', '-TOKEN']
+    mount()
+    await user.click(await screen.findByRole('option', { name: /A\$&B/ }))
+    await user.click(await screen.findByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText('kirocrew secrets authorize NAME https://api.example.com')).toBeInTheDocument()
+    await user.click(screen.getByRole('option', { name: /-TOKEN/ }))
+    await user.click(await screen.findByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText('kirocrew secrets authorize NAME https://api.example.com')).toBeInTheDocument()
   })
 
   it('edits a login through the typed write, prefilling only what the list showed', async () => {

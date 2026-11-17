@@ -286,6 +286,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_app_declared_row_listings,
     _forget_app_turn_approver,
     _forget_enterprise_profile_pin,
     _forget_gatewayd_telemetry_override,
@@ -294,6 +295,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_sandbox_launch_mark,
     _forget_tracing_switch,
     _fresh_aws_bin_dir_trust,
+    _fresh_dev_fleet_service_reads,
     _fresh_hardlink_spec_warnings,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
@@ -312,6 +314,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _no_managed_venv_override,
     _no_release_feed_network,
     _no_restart_ready_timeout_override,
+    _published_redaction_verdict_on,
     _release_source_corpus_after_module,
     _release_stt_engine,
     _reset_channel_turn_ceiling,
@@ -396,10 +399,11 @@ _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 #: a cut may fall (``test_display_split_safety.py``) and the renderer that applies
 #: it (``test_wecom_renderer.py``) -- and a duplicated fixture table drifts.
 #:
-#: The key-shaped rows split a synthetic 40-character secret the redactor removes
-#: (letters and digits only, so no half carries markup of its own); an AWS key ID
-#: stays visible as an identifier and would prove nothing here.
-_STRADDLE_KEY = _synthetic_credentials.synth(40, seed=17)
+#: The key-shaped rows split a synthetic Google API key the redactor removes by its
+#: published format (``AIza`` and 35 letters and digits, so no half carries markup of
+#: its own); a bare 40-character run and an AWS key ID stay visible and would prove
+#: nothing here.
+_STRADDLE_KEY = "AIza" + _synthetic_credentials.synth(35, seed=17)
 CREDENTIAL_STRADDLE_SHAPES = [
     pytest.param(
         f"[{_STRADDLE_KEY[:4]}](https://ex.test/a,b)", _STRADDLE_KEY[4:], id="link-target-comma"
@@ -411,8 +415,12 @@ CREDENTIAL_STRADDLE_SHAPES = [
     ),
     pytest.param(f"{_STRADDLE_KEY[:8]}_", f"_{_STRADDLE_KEY[8:]}", id="underscore-emphasis"),
     pytest.param(f"{_STRADDLE_KEY[:8]}~", f"~{_STRADDLE_KEY[8:]}", id="tilde-emphasis"),
-    pytest.param("https://evil.test/?q=AKIAIOSFODNN7", "EXAMPLE.", id="url-punctuation"),
-    pytest.param("[l](https://ex.test/x/AKIAIOSF", "ODNN7EXAMPLE)", id="cut-inside-a-url"),
+    pytest.param(
+        f"https://evil.test/?q={_STRADDLE_KEY[:14]}", f"{_STRADDLE_KEY[14:]}.", id="url-punctuation"
+    ),
+    pytest.param(
+        f"[l](https://ex.test/x/{_STRADDLE_KEY[:8]}", f"{_STRADDLE_KEY[8:]})", id="cut-inside-a-url"
+    ),
     pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
     pytest.param(f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"),
     pytest.param(_STRADDLE_KEY[:8], _STRADDLE_KEY[8:], id="no-markup-at-all"),

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         _app_acquisition_conflict,
-        _app_claim_refused,
+        _app_send_refused,
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
         _arm_pending_reset_retry,
@@ -384,9 +384,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
 async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
-    # Imported here because this module's bodies run in the chat_handlers
-    # namespace, which carries only the names it re-exports.
-    from kiro_crew.dashboard import card_send, channel_prompt
+    # Imported here: this module's bodies run in the chat_handlers namespace.
+    from kiro_crew.dashboard import card_send, channel_prompt, redaction_audience
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -394,11 +393,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    # Whether a PERSON typed this send. An app token never did, and neither did a
-    # hub conductor's send marked agent-origin (`agent_origin`), whose turn is
-    # the `crew` actor's. Every person-only grant below reads `_person_send`; the
-    # app-scope checks keep reading `request_app` as before.
+    # Whether a PERSON typed this send: not an app token, nor a hub conductor's send
+    # marked agent-origin (`agent_origin`, the `crew` actor's turn). Every person-only
+    # grant below reads `_person_send`; app-scope checks read `request_app`.
     from kiro_crew.dashboard.agent_origin import note_person_send, send_is_agent_origin
+    from kiro_crew.dashboard.headless_marker import apply as _headless
 
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
@@ -413,14 +412,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         return not_string
     message = message.strip()
     if _agent_origin and isinstance(message, str):
-        # Not the session's own human's words, so the same redaction the queue
-        # drain gives a non-user entry (`queue_drain`, `deliver_as_typed`): the
-        # `user` row is served unredacted, and this text becomes both that row
-        # and the turn's input, here as on the queued path.
+        # Not the session's own human's words, so the same redaction the queue drain
+        # gives a non-user entry (`queue_drain`, `deliver_as_typed`): the `user` row is
+        # served unredacted, and this text is that row and the turn's input, as queued.
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
         message, _ = redact_exfiltration_urls(message)
         message, _ = redact_credentials(message)
+    message = _headless(request, body, message)  # owner headless opener; defangs typed copies
     agent = body.get("agent", "")
     slot_name = body.get("slot")
     color_theme = body.get("color_theme", "")
@@ -554,15 +553,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # because a card has no optimistic bubble of its own.
         _card_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         user_meta = {"sendId": _card_sid} if _card_sid else None
-    # An app's auto-created slot must not land on a transcript it does not own:
-    # its first save would stamp the app onto that transcript's metadata line.
-    if (
-        _requested_key
-        and existing is None
-        and await _app_claim_refused(
-            state, request.get("app", ""), "chat_send", (_history_key_for(_requested_key),)
-        )
-    ):
+    # An app's send keeps to its own transcripts and its own agents.
+    if await _app_send_refused(state, request_app, agent, existing, _requested_key):
         return slot_not_found()
     if (
         existing is not None
@@ -1944,6 +1936,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 return web.json_response(_receipt, status=202)
         return web.json_response(_receipt)
 
+    sse_events = redaction_audience.SseEvents(request)  # in full for a non-owner while off
     resp = web.StreamResponse()
     resp.headers.update(admission_entry.admission_headers(turn_admission))
     resp.content_type = "text/event-stream"
@@ -1975,7 +1968,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     if msg["cls"] == "done" or (
                         turn_scoped_stream and (msg["cls"] == TURN_END_WIRE_CLS or foreign_user_row)
                     ):
-                        await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
+                        await write_sse_or_abort(request, resp, sse_events.done())
                         slot._has_reader = False
                         return resp
                     if msg["cls"] == TURN_END_WIRE_CLS:
@@ -1985,8 +1978,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         # A placeholder for a later turn (a cron notification or
                         # an MCP-App message queued meanwhile), never this one.
                         continue
-                    chunk = _build_stream_chunk(msg)
-                    await write_sse_or_abort(request, resp, f"data: {chunk}\n\n".encode())
+                    for event in sse_events.events(_build_stream_chunk(msg)):
+                        await write_sse_or_abort(request, resp, f"data: {event}\n\n".encode())
                     turn_timing.sse_first_frame(slot.key)
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)

@@ -31,7 +31,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_synthesis_recheck``, ``_task``, ``_task_started_at``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``, ``_turn_lineage``,
-``_turn_reply_mids``, ``_turns_started``, ``_unsent_resends``, ``_unstarted_generation``,
+``_turn_project_pin``, ``_turn_reply_mids``, ``_turns_started``, ``_unsent_resends``, ``_unstarted_generation``,
 ``_wake_starting_task``,
 ``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
 ``event``,
@@ -296,6 +296,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # says it. A refused wake leaves its finished task here, which matches no
     # later ``task``.
     self._wake_starting_task = None
+    # The directory the running turn's process works in, with the
+    # ``_turn_generation`` it belongs to. A project pick made mid-reply moves
+    # ``project`` at once, so the summary's ``turn_project`` reads this
+    # instead; a pin from an earlier generation names no running turn.
+    self._turn_project_pin = None
     # Wire seq of the newest chat_chunk this slot has emitted, across turns:
     # the counter never restarts, so a client's replay floor (the seq its
     # transcript already holds) orders every later chunk above it without
@@ -743,6 +748,16 @@ def register_approval(
     mid = row_mid(permission_row)
     if mid:
         self._approval_instances[request_id] = (future, mid)
+    # A code-channel conductor's worker: its channel's work board shows the wait
+    # while it lasts and clears it when answered (one dict lookup otherwise). The
+    # board is a bystander here: nothing it does may fail the registration, so a
+    # future without done-callbacks (a test double) only skips the clearing hop.
+    from kiro_crew.slack.code_channels.board import note_session_turn
+
+    note_session_turn(self.key)
+    add_done = getattr(future, "add_done_callback", None)
+    if callable(add_done):
+        add_done(lambda _done: note_session_turn(self.key))
 
 
 def approval_instance(self: _ChatSlot, request_id: str, message: dict | None = None) -> str | None:

@@ -42,8 +42,12 @@ def _fast_no_report_ceiling(monkeypatch):
     session pays the full production ceiling. drain_init() resolves the module
     constant at call time precisely so this patch takes effect. Nothing in this
     module asserts on the ceiling itself.
+
+    A zero ceiling, the value production passes for an MCP-free runtime: any
+    positive one still holds the drain for its full ``duration``, because the
+    drain waits until ``max(duration, ceiling)`` for a first report.
     """
-    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05)
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.0)
 
 
 #: Records what the client injected so a test can read it back, and gates

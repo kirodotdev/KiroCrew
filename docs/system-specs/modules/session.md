@@ -14,6 +14,8 @@ past its TTL, a dead one, and one started before a request was refused for a
 changed tools list (`kiro_cli.spawned_before_tools_list_refusal`), because that
 process read its Tool Search never-defer list before the refusal was known and
 may still defer Kiro Crew's own tools ([mcp](../../architecture/mcp.md#what-belongs-in-kirocrew-core-and-what-does-not)).
+While KAS orchestrator memory is enabled, KAS sessions bypass the pool because
+their requested memory mode is fixed when the engine session is created.
 
 Successful native ACP resume suppresses replay from both disk and the
 dashboard's live slot window. The runner honors the actual provider client's
@@ -424,6 +426,14 @@ crew and opened here through its window. A slot already on disk with
 `executor: "remote"` still loads, as a read-only relay archive: a send, regenerate, rewind,
 continue or checklist write, and a change of agent, model, effort or workspace, answer
 `409 relay_archive_read_only` (`dashboard/relay_archive.py`).
+
+A create body carrying `app_launch: <app>` is an app's page opening a person's chat
+under that app's `permissions.chatLaunch`: right after the title check it is held to the
+declaration (`dashboard/app_chat_launch.py`), and a key that took an app-owned or
+non-chat slot, or a letter-case alias of a live slot, during the create's awaits is
+refused again with no await before the mint.
+Otherwise it is the same create. The rule:
+[app-kit-platform §44](app-kit-platform.md#44-app-chat-launch-the-persons-chat-an-apps-page-opens-seam-level-10).
 
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
@@ -1343,7 +1353,8 @@ a sweep. An acquire whose
 recorded result no longer holds after the store read waits for any check another acquire
 started meanwhile. One whose result still holds returns with it.
 `_shared_check_still_covers` refuses an empty reading, so under a sign-out every
-acquire still retries an incomplete sweep. The dashboard chat turn still retries on every turn. A `cron:` key never claims a warm-pool process
+acquire still retries an incomplete sweep. The dashboard chat turn still retries on every turn,
+except under a sign-out a complete sweep already covered (below). A `cron:` key never claims a warm-pool process
 (`bypass_stateless`), so the child that can still hold the previous account is
 the cron's own session: a fire whose sub-agents are still running skips the
 reset in its `finally`, and the next fire of a `persistent_session` job, or of
@@ -1364,6 +1375,13 @@ new sign-out). After that sweep nothing that held the old account is left. A
 session started since holds no account or brings its own `KIRO_API_KEY` (a
 cron job's `env` block), which no sweep spares, so sweeping again would only
 cancel its sub-agents. Otherwise it touches no session.
+The dashboard chat turn skips that repeat sweep as well, after its stamp check:
+under `identity_absence_is_definitive` with `identity_absence_already_swept` it
+touches no session, so a send while signed out does not first drain and
+cold-start every idle chat. It still sweeps on every turn under an absence the
+read did not prove (a social login, an unreadable store), and it runs the first
+sweep of each new sign-out, which is what retires a runtime still holding the
+account just signed out of.
 
 **Identity fingerprint** (`current_identity_fingerprint`): one string over
 every credential source a child may have loaded, each kept as its OWN
@@ -1722,6 +1740,19 @@ against sweep completeness, and are torn down at `close_all`.
   placeholder, so it is kept even when the echo never comes; only text with no
   tool call after it is dropped. That is a known trade-off: a turn whose steer
   is requeued keeps the text it wrote before a tool call.
+  **The placeholder at a turn's start.** The model also repeats that
+  placeholder as the FIRST text of a later turn (after a quiet end, a
+  tool-only turn or an interrupted one), where no `ends_turn` signal exists.
+  There the dashboard runner keys on the wording (`dashboard/alternation_echo.py`):
+  a segment that opens like `(No assistant response was recorded` is held off
+  the wire and the window while it could still be that text. It is dropped
+  when the segment ends (a tool call, the turn's end) as the whole placeholder,
+  and any words after it in the same segment are kept. A segment that stops
+  matching is replayed in order. A turn is judged as if the dropped
+  placeholder never came: one whose only text was the placeholder gets the
+  usual empty-reply handling, the same as a turn with no text at all. Rows an
+  older build stored with only that text stay visible as they were stored. The
+  backend's own history keeps its placeholder.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened
@@ -1769,7 +1800,9 @@ against sweep completeness, and are torn down at `close_all`.
   via `MACHINERY_ROLES` and every other surface suppresses it too
   (`transcriptRenderers` `automation_notice_inject` draws nothing), so the raw
   `[Automation notice] …` text never appears as a row beside the refusal's own
-  `notice` bar. The Sessions page keeps drawing the `notice` bar as today.
+  `notice` bar. Regenerate on the answer to that turn refuses
+  (`automated_turn_reply`) and removes nothing. The Sessions page keeps drawing
+  the `notice` bar as today.
   `ask_question` needs no exemption here: the tool BLOCKS and returns the
   user's answers as its own result, so the turn that asked continues and ends
   with ordinary visible output rather than parking on an unanswered card.
@@ -4105,6 +4138,27 @@ when a switch is detected (stored SID exists AND providers differ).
    the premise the first-turn history settle already uses: a prompt kept by the
    live session is in its transcript once a later answer lands.
 
+**The same rotation, for a withdrawn engine memory grant.** KAS honours a
+session's stored memory record over anything a `session/load` names, so turning
+`agent.orchestrator_memory` off (or switching the chat to Temporary, or adding a
+second person to the Crew) cannot disable a session created while the setting
+granted recall. `SessionMap` records the mode of the actual mapped SID beside
+`provider` (`KAS_MEMORY_FIELD`, read through `get_kas_memory`). Clearing the SID
+clears its mode; `clear_sid` still answers True only when it dropped a SID or a
+pending native fork, not a leftover mode alone. `seed_conversation` omits the
+mode to preserve it on a mapped SID; if a compaction restart cannot start a
+successor, restoring the cleared SID records the kept provider's actual mode.
+When `acp.kas_memory.memory_plan` returns a plan with `MemoryPlan.rotate` set,
+`get_or_create` drops `resume_sid`, calls `clear_sid` and arms
+`provider_switch_replay` — the five steps above, for the same reason: the
+conversation has to move to a session the current answer applies to. A
+successful load retains and re-saves the mapped SID's actual mode; a fallback
+`session/new` uses the current requested mode. With the setting off, no
+request states a mode, so a resume re-saves none. Turning
+the setting ON rotates nothing, so an existing chat keeps the engine session it
+has. Contract:
+[memory-skills-hooks](memory-skills-hooks.md#the-engines-own-memory-store-agentorchestrator_memory).
+
 **Fresh first-turn history debt.** A fresh dashboard session has a second, separate
 lease, `_Session.first_turn_history_owed`, so the replay lease's SID-preservation
 role in `close_all` is untouched. The one-shot `first_turn` observation is spent
@@ -4290,6 +4344,10 @@ to exclude from reclaiming (a mapped session is resumable), and the key each ID
 belongs to so a session's transcript can be paired with its replay log. Returning
 the mapping rather than only the ID set is what lets a caller reclaim a session
 whole instead of leaving one half behind.
+`SessionMap.mapped_sid_cwds(provider)` returns the `(sid, cwd)` pairs of the
+entries mapped under that provider label with both recorded; the Storage report
+sizes Claude Code's own files for the Claude ones
+([session-storage](session-storage.md#what-claude-code-keeps)).
 
 **Dashboard history key round-trip:** Session keys use `:` (e.g.
 `dashboard:chat-1-xxx`) but JSONL filenames use `_safe_key()` which replaces
@@ -4749,6 +4807,9 @@ so absence clears it.
   superseded or already-in-progress press logs `outcome="noop"`. Requests
   rejected before a command outcome, including validation and idle-dispatch
   race refusals, are recorded by the generic mutating-API audit instead.
+  The drain also runs an entry `session_run_queued` marked chosen
+  (`RUN_NOW_CHOSEN_KEY`) first, past the sub-agent hold, except while a teardown or
+  edit hold is on.
 
 - **The session's own human is never held behind sub-agents.** The sub-agent
   hold (`_dequeue_next_system_message`) drains system injections and keeps
@@ -6141,7 +6202,7 @@ NOT-applied notice; acknowledgement alone never confirms activation. The
 subagent, caller, single-consumption and argument-matching fences still apply.
 
 
-The session-bound MCP tools in `session_directive.DIRECTIVE_TOOLS` (the monitor verbs, `autonudge_stop`, `set_project`, `suggest_followup`, `nothing_to_do`, `reset_conversation`, `chat_tag`) are **stateless**, so they need no per-process identity source and work with MCP-gateway pooling off (`ask_question` is not in the set: it blocks on the `/api/agent-ask/*` routes and returns the answers as its result): the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, the `EVENT_TOOL_RESULT` phase `_on_tool_result` (`dashboard/chat_turn/tool_results.py`), decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session. The directives that act on the user's own surface (`_USER_SURFACE_DIRECTIVES`: `set_project`, `reset_conversation`, `chat_tag`) additionally require a user-turn provenance.
+The session-bound MCP tools in `session_directive.DIRECTIVE_TOOLS` (the monitor verbs, `autonudge_stop`, `set_project`, `suggest_followup`, `nothing_to_do`, `reset_conversation`, `chat_tag`, `chat_rename`) are **stateless**, so they need no per-process identity source and work with MCP-gateway pooling off (`ask_question` is not in the set: it blocks on the `/api/agent-ask/*` routes and returns the answers as its result): the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, the `EVENT_TOOL_RESULT` phase `_on_tool_result` (`dashboard/chat_turn/tool_results.py`), decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session. The directives that act on the user's own surface (`_USER_SURFACE_DIRECTIVES`: `set_project`, `reset_conversation`, `chat_tag`, `chat_rename`) additionally require a user-turn provenance.
 
 Subagent isolation is therefore **structural, not cryptographic**: a subagent's tool result flows through the subagent's own runner and can only ever bind to the subagent's session, never its parent's — there is no `/proc` walk to get wrong. The tools still call `_resolve_session_key_strict()`, but only as a context guard to short-circuit sessions where a directive can never be applied (cron/hook/subagent) — not to bind the effect. `ask_question` is NOT a directive: it blocks on the strict `/api/agent-ask/*` routes, which attest the key the tool resolves and address the card to that session's own slot, so a sub-agent (no strict key) is refused before any card is shown.
 

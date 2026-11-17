@@ -366,6 +366,12 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append("  Chat:      runs its own chat sessions, listed under the app")
     if perms.hiddenSessions:
         lines.append("  Chat list: keeps its own chats out of your session list")
+    if perms.chatLaunch is not None:
+        launch = perms.chatLaunch
+        where = f" in the {launch.folder!r} folder" if launch.folder else ""
+        lines.append(f"  Chats:     may open chats for you with {', '.join(launch.agents)}{where}")
+        modes = ", ".join(launch.memory_modes)
+        lines.append(f"             chat keys start with {launch.key_prefix!r}; memory: {modes}")
     if perms.workerAutoApprove:
         lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
     if perms.reachableByUserSessions:

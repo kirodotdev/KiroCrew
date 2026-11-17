@@ -790,7 +790,8 @@ def _corpus_records(paths: Iterable[Path], root: Path) -> tuple[_CorpusFile, ...
 @functools.lru_cache(maxsize=1)
 def _corpus_files() -> tuple[_CorpusFile, ...]:
     """:func:`_corpus_records` of the whole test tree, read once for the three scans."""
-    return _corpus_records(_test_tree_files(), source_corpus.repo_root())
+    with source_corpus.untraced():
+        return _corpus_records(_test_tree_files(), source_corpus.repo_root())
 
 
 def install_census(root: Path) -> tuple[set[str], set[str]]:

@@ -759,7 +759,7 @@ def test_higher_is_better_false_flips_improved_and_regressed() -> None:
     assert faster.verdict == "improved"
     assert slower.verdict == "regressed"
     # And the sign of the delta is unaffected by the direction of "better".
-    assert faster.delta < 0 < slower.delta
+    assert faster.delta < 0 < slower.delta  # flake-ok: signs of two fixed metric deltas, not a time
 
 
 def test_relative_is_none_rather_than_a_division_by_zero_baseline() -> None:

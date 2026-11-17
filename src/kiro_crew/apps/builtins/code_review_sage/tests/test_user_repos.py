@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
+import pytest
 from sage_lib import discovery, store
 
 from .test_backend_routes import _load_routes_module
@@ -44,8 +43,13 @@ def _repo(name: str, owner: str = "acme", **over) -> dict:
 
 
 class _Home(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         store.ensure_layout()
@@ -55,7 +59,6 @@ class _Home(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 class TestListUserRepos(_Home):

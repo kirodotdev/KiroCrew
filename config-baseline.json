@@ -120,6 +120,7 @@
         "tool_approval_timeout_secs": 600,
         "deny_override": true,
         "session_control": true,
+        "orchestrator_memory": false,
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
         "member_dispatch": true,
@@ -127,7 +128,6 @@
         "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
-        "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
         "subagent_spawn_stagger_secs": 0.25,
         "windows_background_qos": false,
@@ -362,11 +362,11 @@
       "kind": "core",
       "type": "string",
       "required": false,
-      "deprecated": false,
+      "deprecated": true,
       "sensitive": false,
       "tags": [],
       "label": "Provider",
-      "help": "LLM provider backend (KiroACP / kiro-cli).",
+      "help": "Deprecated: the harness is chosen by agent.acp_backend, and this build accepts only 'acp' here, so the value changes nothing. Preserved on load and save so an existing config, or an edition that reads it, keeps working.",
       "hasChildren": false,
       "enumValues": [
         "acp"
@@ -1925,6 +1925,20 @@
       "defaultValue": true
     },
     {
+      "path": "agent.orchestrator_memory",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Orchestrator memory",
+      "help": "Let a new chat in your own dashboard read the memories the Kiro agent engine already stored for you, so it recalls your preferences without being told again. Read-only: the chat never adds, changes or deletes a memory, and it reflects on nothing. It applies to chats you start after turning it on, never to one already open, and only on the Kiro agent engine (agent.acp_backend unset). Withheld from workers, Bot DM threads, app-owned and scheduled sessions, Temporary chats, and from every session once anyone else can reach this Crew, because the memories are yours alone. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.session_manager_chain",
       "kind": "core",
       "type": "boolean",
@@ -2021,20 +2035,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.5
-    },
-    {
-      "path": "agent.subagent_cpu_cost_cores",
-      "kind": "core",
-      "type": "number",
-      "required": false,
-      "deprecated": true,
-      "sensitive": false,
-      "tags": [],
-      "label": "SubAgent CPU Cost (cores)",
-      "help": "Deprecated and inert: CPU never sizes subagent concurrency, because over-committing memory is an unrecoverable OOM while over-committing CPU only slows work the adaptive controller already backs off from. Preserved on load and save so an existing config is not rewritten out from under the operator.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 1.0
     },
     {
       "path": "agent.subagent_auto_max",
@@ -3564,7 +3564,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Consolidation Kind Routing",
-      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (a PR, CI or branch status that GitHub, git or the work ledger already holds) and writes facts and events as before. Stored facts are never changed.",
+      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. Stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -7188,7 +7188,8 @@
         "remote_dispatch": false,
         "remote_dispatch_memory_gb": 5.0,
         "remote_dispatch_disk_gb": 5.0,
-        "remote_dispatch_retire_minutes": 30.0
+        "remote_dispatch_retire_minutes": 30.0,
+        "remote_dispatch_tags": []
       }
     },
     {
@@ -7260,6 +7261,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30.0
+    },
+    {
+      "path": "work_ledger.remote_dispatch_tags",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch tags",
+      "help": "Words this crew advertises to a dispatching hub, such as [\"gpu\", \"docker\"]. A work item whose requires.tags names a word this list lacks is never placed here. Each tag is 1-32 characters of a-z, 0-9, '_' or '-', starting with a letter or digit and holding at least one letter; at most 16. Anything else is dropped. Do not put a host or account name here. Used only with remote_dispatch on.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "work_ledger.remote_dispatch_tags.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "power",
@@ -7545,10 +7574,12 @@
         "reactions_enabled": true,
         "show_thinking": true,
         "dm_single_session": false,
+        "home_tab_builtin": true,
         "home_tab_sessions_per_kind": 5,
         "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": "",
+        "show_in_session_list": true,
         "auto_link_sessions": false,
         "agent_sessions": false,
         "code_channel_dispatch": false,
@@ -7819,6 +7850,22 @@
       "defaultValue": false
     },
     {
+      "path": "slack.home_tab_builtin",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Built-in Home Tab",
+      "help": "Publish the Kiro Crew status page to the bot's Slack Home tab each time an allowed user opens it. Turn it off to keep a Home view you publish yourself with the same bot: the tab then stays as you published it. Read at each open, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "slack.home_tab_sessions_per_kind",
       "kind": "core",
       "type": "integer",
@@ -7883,6 +7930,22 @@
       "defaultValue": ""
     },
     {
+      "path": "slack.show_in_session_list",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Show Slack Conversations In The Session List",
+      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off removes them from the list only: they keep working in Slack, stay in History and search, still raise approvals and notifications, and come back when this is turned on again; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed. On by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "slack.auto_link_sessions",
       "kind": "core",
       "type": "boolean",
@@ -7925,7 +7988,7 @@
         "slack"
       ],
       "label": "Code Channel Dispatch",
-      "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; turning that on does not turn this on. Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off by default, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
+      "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; a save that first turns that on from the settings page turns this on with it, unless a value is already stored (an explicit off is kept). Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off when unset, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -7941,7 +8004,7 @@
         "slack"
       ],
       "label": "Code Channels",
-      "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
+      "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites, pins:write) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10137,6 +10200,7 @@
         "theme_mode": "",
         "sso_login_flags": "",
         "theme_color": "",
+        "instance_label": "",
         "language": "",
         "recent_tint_count": 0,
         "show_unread_dot": true,
@@ -10664,20 +10728,6 @@
       "tags": [],
       "label": "Feature preview: folder_conductor",
       "help": "Turn on the 'folder_conductor' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
-      "path": "dashboard.feature_previews.layout_harness",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: layout_harness",
-      "help": "Turn on the 'layout_harness' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -11605,6 +11655,20 @@
       "defaultValue": ""
     },
     {
+      "path": "dashboard.instance_label",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Instance Label",
+      "help": "A short name for this gateway (e.g. 'pod-a', 'Lab box'), shown in the browser tab title and favicon and sent as the origin of a session transferred to another instance. Empty = unset (the tab title and icon stay as they are and a transfer names the host).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "dashboard.language",
       "kind": "core",
       "type": "string",
@@ -12391,7 +12455,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Kiro Relay",
-      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Off by default. It connects only when Relay Lease Service URL and Relay Lease Credential are set, so the Crew can hold a lease. Without them no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Off by default. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -12406,7 +12470,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Lease Service URL",
-      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) means no host token source, so the relay client cannot connect. Must be https:// (http:// only for a loopback port-forward).",
+      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL: the one for the sign-in profile's region on the Kiro sign-in, and us-east-1 otherwise. Must be https:// (http:// only for a loopback port-forward).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -12421,7 +12485,7 @@
       "sensitive": true,
       "tags": [],
       "label": "Relay Lease Credential",
-      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, the absolute path of a file holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity Center or your organization's identity provider), refreshed automatically. Never the credential itself; it is read for each call and never logged.",
+      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, the absolute path of a file holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity Center or your organization's identity provider), refreshed automatically. Empty (the default) uses that sign-in too, on a personal Crew: one with no Relay Lease Token Type, on a host with no agent workload identity. A team Crew must name its crew API key here. Never the credential itself; it is read for each call and never logged.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -12494,7 +12558,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Viewer Control Plane URL",
-      "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) means not set up. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning.",
+      "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) uses the built-in Kiro control plane for your sign-in's region. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning, and the viewer says it is not set up. A test setup that uses tunnel.relay_viewer_credential must also set this.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -12536,7 +12600,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Viewer Relay Domain",
-      "help": "The relay's domain, for example us-east-1.relay.example.invalid. When set, the viewer lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the default) lists a Crew whose address's host starts with its endpoint ID, but the desktop app opens no Crew until this is set. Any other value matches no Crew address, so no Crew is listed.",
+      "help": "The relay's domain, for example us-east-1.relay.example.invalid. When set, the viewer lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the default) lists a Crew whose address is https://<endpoint ID>.<any domain> with no port, and the desktop app opens it at exactly that address. Any other value matches no Crew address, so no Crew is listed.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

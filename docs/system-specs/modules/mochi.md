@@ -45,6 +45,17 @@ machine with nothing to dismiss: a main-frame `did-fail-load` (gateway
 unreachable) and any `>=400` navigation both hide and latch the overlay, and
 the reconcile tick re-arms it once a target answers.
 
+**The pet stands down for a record the window host serves.** The host probe has a
+fourth, definite answer, `hosted`: this computer's Mochi record declares a manifest
+`desktop` block (`hostOwnsAppWindows`, app-kit-platform §35), so the desktop window
+host serves Mochi here, from whichever crew it chose. The reconcile then takes the
+full teardown whatever the pet shows, a remote's pet included, and backs off like the
+settled disabled state. The probe's answer is `instanceGate.localMochiState`. A
+remote whose Mochi record declares one reads as a definite
+`disabled` for the built-in pet (`instanceGate.parseMochiEnabled`), so the pet shows
+this computer's Mochi. The built-in record declares no block, so neither answer occurs
+until a record that declares one replaces it.
+
 ## Layout
 
 | Path | What it is |

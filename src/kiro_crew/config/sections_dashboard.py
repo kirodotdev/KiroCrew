@@ -60,7 +60,6 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
-    "layout_harness",
     "remote_crew_chat",
     "secrets_vault",
     "session_environments",
@@ -976,6 +975,16 @@ class DashboardConfig:
             "Theme Color",
             "Dashboard color theme slug (e.g. 'kiro', 'emerald', 'monokai'). "
             "Empty = unset (frontend falls back to localStorage or 'kiro').",
+        ),
+    )
+    instance_label: str = field(
+        default="",
+        metadata=_meta(
+            "Instance Label",
+            "A short name for this gateway (e.g. 'pod-a', 'Lab box'), shown in the "
+            "browser tab title and favicon and sent as the origin of a session "
+            "transferred to another instance. Empty = unset (the tab title and "
+            "icon stay as they are and a transfer names the host).",
         ),
     )
     language: str = field(

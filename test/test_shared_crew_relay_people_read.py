@@ -172,7 +172,10 @@ async def test_invite_management_stays_owner_only_for_a_relayed_teammate(tmp_pat
         )
     assert listed.status == 403
     assert created.status == 403
-    assert renamed.status == 403
+    # A name-and-picture edit is not invite management: a teammate clears its owner
+    # gate as every Shared Crew teammate does, and meets the route's own answer for
+    # a person the daemon never named.
+    assert renamed.status == 404
 
 
 # -- the marker is the ingress-published caller, never the actor alone --

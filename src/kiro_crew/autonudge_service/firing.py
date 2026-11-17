@@ -201,6 +201,10 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
         logger.info("AutoNudge: stop sentinel found for %s — deactivating loop", loop.id)
         await _tick_update(self, loop.id, active=False, stopped_reason=STOP_SENTINEL_REASON)
         return
+    # Remote dispatch (preview): pull this board's remote worker reports first, so the
+    # hold and the gate below read them on this tick. A board with no remote item, or
+    # a build with no puller, makes no peer call.
+    await self._pull_remote_reports(loop)
     # The person-wait HOLD, ahead of both bounds: a work-ledger watch whose open items
     # all wait on a person, unchanged since its last delivered turn, has nothing to
     # read. Held, it fires no turn, takes no floor turn (the gate below is never
@@ -840,6 +844,35 @@ def _ledger_person_wait_fp(
     from kiro_crew.probes.work_ledger import person_wait_fingerprint
 
     return person_wait_fingerprint(conductor_key, worker_closed=worker_closed)
+
+
+async def _pull_remote_reports(self: AutoNudgeService, loop: NudgeLoop) -> None:
+    """Pull a work-ledger watch's remote worker reports into its ledger. Never raises.
+
+    The injected puller (``remote_puller.on_patrol_tick``) is bounded per board and
+    decides itself whether the board needs a pull; the probe cannot reach a peer. It
+    also sweeps retired peer slots to close (``remote_puller.sweep_closes``).
+    """
+    pull = self._remote_report_puller
+    if pull is None or not loop.active or not self._observes_work_ledger(loop):
+        return
+    # The pull files reports, and each filed report pushes a pull-forward
+    # (``conductor_wake`` -> ``fire_now``). Re-arming now would cancel THIS tick, the
+    # one about to read what the pull filed. Held in ``_firing`` for the pull, such a
+    # push is refused (``defer_if_firing``) and its deferral is dropped after: this
+    # tick reads the ledger next. shortcut: a push landing after the pull still re-arms
+    # and costs one extra pull; widen the span if that shows up.
+    held = loop.id not in self._firing
+    if held:
+        self._firing.add(loop.id)
+    try:
+        await pull(loop.slot_key)
+    except Exception:  # noqa: BLE001 - a failed pull must never fail the tick
+        logger.debug("AutoNudge: remote report pull failed for loop %s", loop.id, exc_info=True)
+    finally:
+        if held:
+            self._firing.discard(loop.id)
+            self._pulled_forward.discard(loop.id)
 
 
 async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> bool:

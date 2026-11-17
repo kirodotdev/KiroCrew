@@ -185,6 +185,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "read_slack_history",
     # Reads and reorders a worker's queued instructions; same exfiltration reason.
     "session_queue",
+    # Stops a running turn and chooses what the target runs next, so it carries
+    # `session_stop`'s containment reason and `session_send`'s together.
+    "session_run_queued",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's
@@ -195,6 +198,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # whoever is in that thread -- the same exfiltration `session_read_message` is
     # blocked for, one step shallower.
     "session_status",
+    # The remote-crew roster: crew names and their agents, the same
+    # exfiltration reason as session_status.
+    "crew_list",
     "session_create",
     # Creates, opens, binds and seeds a worker in one call: session_create's and
     # session_send's containment reasons together.
@@ -1642,14 +1648,13 @@ async def _stream_task(
                 # authority. ``tool_input_redacted`` is transport provenance:
                 # re-running the scanners cannot reveal bytes an ACP transport
                 # already removed. Either signal makes the command display-only.
-                from kiro_crew.security import redact_with_findings
+                from kiro_crew.security import redact, redact_with_findings, refuses
 
                 _safe_cmd, _cmd_credential_redacted, _cmd_url_redacted = redact_with_findings(_cmd)
                 _command_grantable = bool(_cmd) and not (
                     bool(getattr(event, "tool_input_redacted", False))
                     or _cmd_credential_redacted
-                    or _cmd_url_redacted
-                    or _safe_cmd != _cmd
+                    or refuses(_cmd, redact)
                     or "[REDACTED" in _cmd
                 )
                 if _cmd:

@@ -291,7 +291,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
 
 
 async def api_branding(request: web.Request) -> web.Response:
-    """GET /api/dashboard/branding — bot name and avatar config.
+    """GET /api/dashboard/branding — bot name, instance label and avatar config.
 
     Reads the config the live watcher has already adopted. Every dashboard tab
     asks for branding, and ``KiroCrewConfig.load()`` rebuilds every config
@@ -320,6 +320,7 @@ async def api_branding(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
+            "instance_label": cfg.dashboard.instance_label,
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
             "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
@@ -770,6 +771,7 @@ for _owner in _OWNERS:
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.core_config_models import (
         _KAS_VAULT_IDENTITY_KEY,
+        _LIVE_IDENTITY_KEY,
         _ROLE_PIN_REVALIDATING,
         _ROLE_PIN_REVALIDATION_MAX_RESELECTS,
         _active_advertised_ids,
@@ -781,6 +783,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _provider_backend,
         _read_kas_vault_identity,
         _revalidate_role_pin_evidence,
+        _spawned_for_another_account,
         _validate_role_model,
     )
     from kiro_crew.dashboard.handlers.core_config_patch import (

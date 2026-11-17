@@ -13,6 +13,7 @@ from kiro_crew.slack.interactions import (
     _extract_selected_value,
     _mark_button_clicked,
 )
+from kiro_crew.testing.synthetic_credentials import synth
 
 # ---------------------------------------------------------------------------
 # _mark_button_clicked
@@ -317,14 +318,13 @@ async def test_standard_options_post_message_failure_aborts(
 
 @pytest.mark.asyncio
 async def test_redaction_applied_to_payload(orch_fixture: MagicMock) -> None:
-    """Exfiltration URLs in action payload are redacted before context."""
+    """A credential value in a URL in the action payload is masked before context."""
     from kiro_crew.slack import interactions
 
     orch = orch_fixture
 
-    # base64-like blob (40+ chars) triggers _EXFIL_PATTERNS
-    blob = "A" * 50
-    evil_url = f"https://evil.com/exfil?data={blob}"
+    blob = synth(50, seed=77)
+    evil_url = f"https://evil.com/exfil?access_token={blob}"
     payload, action, channel, msg_ts = _base_payload(
         value=f"action::{evil_url}", action_id="btn_evil"
     )
@@ -336,9 +336,9 @@ async def test_redaction_applied_to_payload(orch_fixture: MagicMock) -> None:
             await t
 
         ctx = mock_hm.call_args.kwargs["action_context"]
-        # Full URL should be replaced with [REDACTED: ...]
+        # Only the value is replaced; the rest of the URL stays.
         assert blob not in ctx
-        assert "REDACTED" in ctx
+        assert "https://evil.com/exfil?access_token=[REDACTED" in ctx
 
 
 @pytest.mark.asyncio

@@ -425,6 +425,20 @@ def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forget_app_declared_row_listings():
+    """Forget the tool gate's listings of the apps' declared rows before each test.
+
+    ``paths_targets._APP_CREDENTIAL_MASK_ROWS`` is reused on every thread for up to a
+    second, keyed on ``KIROCREW_HOME``, so a test that patches ``config_dir`` under the
+    same variable would otherwise read the previous test's installed apps.
+    """
+    from kiro_crew.security import paths_targets
+
+    paths_targets._APP_CREDENTIAL_MASK_ROWS.reset()
+    paths_targets._APP_READONLY_ROWS.reset()
+
+
+@pytest.fixture(autouse=True)
 def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
     """Forget when the periodic mount-source pass last ran and where it stopped.
 
@@ -623,6 +637,23 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     via ``monkeypatch.setattr(worktree_ops, "_background_tasks_disabled", lambda: False)``.
     """
     _floor_monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_dev_fleet_service_reads(_floor_monkeypatch):
+    """Start each test with no cached start identity and no in-flight service read.
+
+    ``dev_fleet.live_service`` keeps the health route's start-id cache and the two
+    in-flight tasks (start id, service probe) as process globals. A value one test
+    cached would answer the next test's ``/api/health`` inside the TTL, and a task
+    left in flight belongs to that test's closed event loop. Patched only when the
+    module is already imported, so a test that never loads Dev Fleet pays nothing.
+    """
+    live_service = sys.modules.get("kiro_crew.apps.builtins.dev_fleet.live_service")
+    if live_service is not None:
+        _floor_monkeypatch.setattr(live_service, "_GATEWAY_START_ID_CACHE", None)
+        _floor_monkeypatch.setattr(live_service, "_GATEWAY_START_ID_INFLIGHT", None)
+        _floor_monkeypatch.setattr(live_service, "_GATEWAY_SERVICE_INFLIGHT", None)
 
 
 @pytest.fixture(autouse=True)
@@ -1322,3 +1353,21 @@ def _reset_materialized_agents_snapshot():
         yield
     finally:
         clear()
+
+
+@pytest.fixture(autouse=True)
+def _published_redaction_verdict_on():
+    """Every test starts and ends with redaction published ON in this process.
+
+    The owner's setting defaults to OFF, so a test that boots the dashboard
+    (``seed_pushed_switch``) publishes OFF; left in place, every later output-seam
+    test in that xdist worker would read raw text. A test that wants OFF publishes
+    it itself.
+    """
+    seams = sys.modules.get("kiro_crew.redaction_seams")
+    if seams is not None:
+        seams.publish(False)
+    yield
+    seams = sys.modules.get("kiro_crew.redaction_seams")
+    if seams is not None:
+        seams.publish(False)

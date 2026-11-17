@@ -9,6 +9,14 @@ body:
         skill files, and in-product help text. If the docs are correct but the
         behaviour is wrong, file a bug report instead.
 
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched open issues and this is not already reported.
+          required: true
+
   - type: input
     id: location
     attributes:

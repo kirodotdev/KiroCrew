@@ -524,7 +524,7 @@ prints the exact command, already pointed at the right interpreter.
 |-------|------|-----|
 | `voice-aws` | `boto3`, `amazon-transcribe` | AWS Transcribe provider without the local recognizer |
 | `voice` | `voice-aws`, `pywhispercpp` | Full speech-to-text transcription |
-| `otlp` | `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP metrics export. Installing it does not enable egress; that still needs an explicit `telemetry.otlp_endpoint` |
+| `otlp` | `opentelemetry-exporter-otlp-proto-http` | Kept for compatibility: the OTLP/HTTP exporter is now a base dependency at the same pin. Installing it enables no egress of its own; the built-in Kiro telemetry destination and your own collectors follow the rules in [the OTLP export guide](telemetry-otlp-export.md) |
 | `perf` | `py-spy` | Out-of-process profiling (`kirocrew perf sample --pid`). The in-process sampler needs nothing extra |
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |
 | `whatsapp` | `neonize` | QR-linked WhatsApp channel |

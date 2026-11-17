@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers import cron
 from kiro_crew.history import ConversationLog
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
 from kiro_crew.lesson_validation import LESSON_APPLIES_ALWAYS, LESSON_APPLIES_ON_TOPIC
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 pytestmark = pytest.mark.asyncio
 
@@ -261,7 +262,7 @@ async def test_a_redacted_rule_is_listed_as_not_editable(tmp_path) -> None:
         [
             Lesson(
                 ts="t0",
-                rule="push with ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234",
+                rule=f"push with {github_classic(seed=146)}",
                 category="tool",
             ),
             Lesson(ts="t1", rule=OLD, category="tool"),

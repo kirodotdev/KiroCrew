@@ -39,6 +39,7 @@ import ast
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
@@ -160,15 +161,16 @@ def _parse(path: Path) -> ast.Module | None:
 
 def _bypass_sites() -> dict[str, list[tuple[int, str]]]:
     sites: dict[str, list[tuple[int, str]]] = {}
-    for path in sorted(SRC.rglob("*.py")):
-        if path.name == PRIMITIVE_HOME:
-            continue
-        tree = _parse(path)
-        if tree is None:
-            continue
-        found = _primitive_calls(tree)
-        if found:
-            sites[path.relative_to(SRC).as_posix()] = found
+    with source_corpus.untraced():
+        for path in sorted(SRC.rglob("*.py")):
+            if path.name == PRIMITIVE_HOME:
+                continue
+            tree = _parse(path)
+            if tree is None:
+                continue
+            found = _primitive_calls(tree)
+            if found:
+                sites[path.relative_to(SRC).as_posix()] = found
     return sites
 
 

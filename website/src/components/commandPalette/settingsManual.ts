@@ -121,7 +121,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     // Same shape as the third-party-apps override above: the toggle lives in
     // the `redaction` rail section, so without `section=redaction` the deep
     // link lands on the security rail with the card unmounted.
-    id: 'security.redact-credentials-in-files-the-dashboard-opens-for-you',
+    id: 'security.redact-credentials',
     labelKey: 'pages.settings.securityPanel.credential_redaction_toggle',
     descriptionKey: 'pages.settings.securityPanel.credential_redaction_toggle_help',
     tab: 'security',
@@ -167,29 +167,6 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { section: 'posture' },
     settingId: 'security.config-pending',
-  },
-  {
-    // The second switch in the same Redaction section (AI model and server logs).
-    // The id is the one the extractor derives from the label, so this entry
-    // replaces the extracted one instead of listing the toggle twice.
-    id: 'security.hide-credentials-from-the-ai-model-and-server-logs',
-    labelKey: 'pages.settings.securityPanel.credential_redaction_seams_toggle',
-    descriptionKey: 'pages.settings.securityPanel.credential_redaction_seams_toggle_help_summary',
-    tab: 'security',
-    type: 'toggle',
-    occurrence: 1,
-    params: { section: 'redaction' },
-  },
-  {
-    // The engine selector, last in the same Redaction section. Same id as the
-    // extracted entry, so it replaces it and adds the section deep link.
-    id: 'security.keep-ids-readable',
-    labelKey: 'pages.settings.securityPanel.credential_redaction_engine_toggle',
-    descriptionKey: 'pages.settings.securityPanel.credential_redaction_engine_toggle_help_summary',
-    tab: 'security',
-    type: 'toggle',
-    occurrence: 1,
-    params: { section: 'redaction' },
   },
   {
     id: 'security.trust-this-machine-s-tailnet-name',
@@ -466,16 +443,6 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     labelKey: 'settings.secrets.wakatime_api_key_label',
     descriptionKey: 'settings.secrets.wakatime_api_key_description',
     tab: 'secrets',
-    type: 'input',
-    occurrence: 1,
-  },
-  {
-    // Settings > Advanced lists every config key from the gateway's schema at
-    // run time, so no row has a literal label to extract; one entry finds the page.
-    id: 'advanced.all-settings',
-    labelKey: 'settings.advanced.title',
-    descriptionKey: 'settings.advanced.intro',
-    tab: 'advanced',
     type: 'input',
     occurrence: 1,
   },

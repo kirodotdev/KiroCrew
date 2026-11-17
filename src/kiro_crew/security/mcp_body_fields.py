@@ -51,7 +51,6 @@ from kiro_crew.mcp_gateway.tool_surface import admits_name
 from kiro_crew.platform.tool_paths import strip_server_qualifier
 from kiro_crew.security.exfil import scan_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
-from kiro_crew.security.redaction_switch import code_text
 
 logger = logging.getLogger(__name__)
 
@@ -306,10 +305,9 @@ def warn_body_field_matches(bodies: Mapping[str, str], server: str, tool: str) -
     the server, tool, field and check, never the body or the match.
     """
     for field, s in bodies.items():
-        # The credential test is the redaction's code-text pass, so an inline
-        # image, a document link, an SRI digest or an ARN is not a hit.
-        with code_text():
-            has_credential = redact_credentials(s)[0] != s
+        # The credential test is the rule table, which masks only a value that grants
+        # access, so an inline image, a document link, an SRI digest or an ARN is not a hit.
+        has_credential = redact_credentials(s)[0] != s
         for check, hit in (
             ("credential", has_credential),
             ("exfiltration-URL", bool(scan_exfiltration_urls(s))),

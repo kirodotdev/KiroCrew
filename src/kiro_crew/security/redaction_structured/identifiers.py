@@ -17,8 +17,9 @@ from .charsets import (
     first_of,
     run_start,
 )
-from .model import TAG, Hit
-from .table import StructureRow, UrlParamRow
+from .checks import is_placeholder
+from .model import PLAN_TAGS, Hit
+from .table import StructureRow, UrlParamRow, UrlPathSecretRow, UrlUserinfoRow
 
 _ARN_STOPS = " \t\r\n\"'`<>,;()[]{}|\\"
 _URL_STOPS = " \t\r\n\"'`<>\\"
@@ -36,6 +37,20 @@ _PARAM_STOPS = "?#&"
 _HEXDIGITS = frozenset(DIGITS + "abcdefABCDEF")
 # An encoded key is at most three characters per decoded character.
 _KEY_ENCODING = 3
+# Bytes RFC 3986 forbids in a query: a value ends before one (``?token=abc{x}``), as a
+# template, not a credential, writes it.
+_VALUE_STOPS = "{}|^"
+_TEMPLATE_HEAD = "${"
+
+
+def _is_tag(text: str, i: int) -> bool:
+    """Whether a placeholder this redactor writes starts at *i*, byte for byte.
+
+    A value or path segment that is one is not read again, so redacting masked text
+    leaves it byte for byte; a value that only opens like one (``[REDACTED<value>``)
+    is read.
+    """
+    return any(text.startswith(tag, i) for tag in PLAN_TAGS)
 
 
 def _by_kind(rows: tuple[StructureRow, ...]) -> dict[str, StructureRow]:
@@ -182,22 +197,124 @@ def _secret_param_hits(
     """Values of the owner's OAuth keys in ``text[start:end]``, a query and/or fragment.
 
     The text is split on ``?``, ``#`` and ``&`` into parameters and each parameter at
-    its first ``=``; the key is percent-decoded and compared case-insensitively. Only
-    a non-empty value is a hit; the key and the separators stay.
+    its first ``=``; a separator written ``&amp;`` (as a renderer decodes it in a link
+    destination) is one ``&``. The key is percent-decoded and compared case-insensitively. The
+    value ends before a byte of :data:`_VALUE_STOPS`; only a non-empty one is a hit, and
+    a template (``${x}``) or a placeholder (:func:`_is_tag`) is none. The key and the
+    separators stay.
     """
     keys, raw_max = cached(rows, _key_plan)
     pos = start + 1
     while pos < end:
         stop = first_of(text, pos, _PARAM_STOPS, end)
         eq = text.find("=", pos, stop)
-        if eq != -1 and eq + 1 < stop and 0 < eq - pos <= raw_max:
-            row = keys.get(_decoded_key(text[pos:eq]))
-            # A value already replaced by this redactor's tag is not read again.
-            if row is not None and not text.startswith(TAG, eq + 1):
+        key = pos + 4 if text[pos - 1] == "&" and text.startswith("amp;", pos) else pos
+        if eq != -1 and eq + 1 < stop and 0 < eq - key <= raw_max:
+            row = keys.get(_decoded_key(text[key:eq]))
+            value_end = first_of(text, eq + 1, _VALUE_STOPS, stop)
+            if (
+                row is not None
+                and value_end > eq + 1
+                and not _is_tag(text, eq + 1)
+                and not text.startswith(_TEMPLATE_HEAD, eq + 1)
+            ):
+                # Decided by the exact key of a parsed URL: it names a span it shares
+                # with a looser reader (a label glued after ``&``).
                 hits.append(
-                    Hit(eq + 1, stop, row.id, row.tier, "url_param", "known_key", anchor=anchor)
+                    Hit(
+                        eq + 1,
+                        value_end,
+                        row.id,
+                        row.tier,
+                        "url_param",
+                        "fixed_format",
+                        anchor=anchor,
+                    )
                 )
         pos = stop + 1
+
+
+#: Userinfo passwords that are documentation placeholders, not a value (compared folded).
+_PLACEHOLDER_PASSWORDS = frozenset({"password", "pass", "passwd", "pwd", "pw", "secret"})
+_AUTHORITY_STOPS = "/?#"
+
+
+def _userinfo_hit(
+    text: str, q: int, end: int, row: UrlUserinfoRow, anchor: int, hits: list[Hit]
+) -> None:
+    """The password in ``scheme://user:password@host``, between ``://`` at *q* and *end*.
+
+    The authority ends at the first ``/``, ``?`` or ``#``; its LAST ``@`` ends the
+    userinfo, and the password is what follows the userinfo's first ``:``. An empty
+    password, or a placeholder, is not a hit; the user and the host stay either way.
+    """
+    start = q + 3
+    auth_end = first_of(text, start, _AUTHORITY_STOPS, end)
+    at = text.rfind("@", start, auth_end)
+    if at == -1:
+        return
+    colon = text.find(":", start, at)
+    if colon == -1 or colon + 1 == at:
+        return
+    password = text[colon + 1 : at]
+    if is_placeholder(password) or ascii_lower(password) in _PLACEHOLDER_PASSWORDS:
+        return
+    hits.append(Hit(colon + 1, at, row.id, row.tier, "url_userinfo", "known_key", anchor=anchor))
+
+
+_HOST_STOPS = "/?#:@"
+#: How far past the URL row's cap the credential parameters of one long URL are read.
+_LONG_URL_PARAMS_MAX = 1 << 16
+
+
+def _after_port(text: str, host_end: int, path_end: int) -> int:
+    """Where the path starts after the host: past an explicit ``:<port>`` of 1 to 5
+    ASCII digits (``hooks.slack.com:443``), else at *host_end*.
+    """
+    if host_end >= path_end or text[host_end] != ":":
+        return host_end
+    end = host_end + 1
+    while end < path_end and end - host_end <= 5 and "0" <= text[end] <= "9":
+        end += 1
+    return end if 1 < end - host_end <= 6 else host_end
+
+
+def _path_secret_hits(
+    text: str,
+    q: int,
+    path_end: int,
+    rows: tuple[UrlPathSecretRow, ...],
+    anchor: int,
+    hits: list[Hit],
+) -> None:
+    """The secret path segment of a webhook URL a row names (host, path prefix, segment).
+
+    Segments are counted after the prefix from 1; the segment must be non-empty and
+    must not be a redaction tag (:func:`_is_tag`; a URL ends at the tag's blank, so the
+    reader would otherwise take ``[REDACTED:`` for the secret and tag it again).
+    """
+    start = q + 3
+    host_end = first_of(text, start, _HOST_STOPS, path_end)
+    path_at = _after_port(text, host_end, path_end)
+    if path_at >= path_end or text[path_at] != "/":
+        return
+    host = ascii_lower(text[start:host_end])
+    for row in rows:
+        if host not in row.hosts or not text.startswith(row.path_prefix, path_at):
+            continue
+        pos = path_at + len(row.path_prefix)
+        for _ in range(row.segment - 1):
+            slash = text.find("/", pos, path_end)
+            if slash == -1:
+                return
+            pos = slash + 1
+        seg_end = text.find("/", pos, path_end)
+        seg_end = path_end if seg_end == -1 else seg_end
+        if seg_end > pos and not _is_tag(text, pos):
+            hits.append(
+                Hit(pos, seg_end, row.id, row.tier, "url_path_secret", "known_key", anchor=anchor)
+            )
+        return
 
 
 def detect_urls(
@@ -205,6 +322,8 @@ def detect_urls(
     rows: tuple[StructureRow, ...],
     final: bool,
     url_params: tuple[UrlParamRow, ...] = (),
+    userinfo: tuple[UrlUserinfoRow, ...] = (),
+    path_secrets: tuple[UrlPathSecretRow, ...] = (),
 ) -> tuple[list[Hit], list[int]]:
     q = text.find("://")
     if q == -1:
@@ -232,11 +351,33 @@ def detect_urls(
             e = scanner.end(q + 3, k + cap + 1)
             if not final and e == n and e - k <= cap:
                 opens.append(k)
+            elif e - k > cap and url_params and q + 3 >= params_done:
+                # Longer than the URL row reads: it is no Identifier, but its credential
+                # parameters are still read, up to a bounded stretch past the cap.
+                long_end = scanner.end(q + 3, k + _LONG_URL_PARAMS_MAX)
+                if final or long_end < n:
+                    path_end = path_scanner.end(q + 3, long_end)
+                    # Its authority and path are read as a short URL's are: the
+                    # password in the userinfo and a webhook's secret segment do not
+                    # depend on how long the query is.
+                    if userinfo:
+                        _userinfo_hit(text, q, path_end, userinfo[0], k, hits)
+                    if path_secrets:
+                        _path_secret_hits(text, q, path_end, path_secrets, k, hits)
+                    if path_end < long_end:
+                        _secret_param_hits(text, path_end, long_end, url_params, hits, k)
+                    params_done = long_end
+                else:
+                    opens.append(k)
             elif e - k <= cap:
                 if e != trim_for:
                     trim_for, trimmed_to = e, _trim(text, q + 3, e)
                 end = max(q + 3, trimmed_to)
+                if userinfo:
+                    _userinfo_hit(text, q, end, userinfo[0], k, hits)
                 path_end = path_scanner.end(q + 3, end)
+                if path_secrets:
+                    _path_secret_hits(text, q, path_end, path_secrets, k, hits)
                 if path_end > q + 3:
                     row = url_row
                     if permalink_row is not None and _permalink(

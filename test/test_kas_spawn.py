@@ -72,8 +72,12 @@ def _fast_no_report_ceiling(monkeypatch):
     session pays the full production ceiling. drain_init() resolves the module
     constant at call time precisely so this patch takes effect. Nothing in this
     module asserts on the ceiling itself.
+
+    A zero ceiling, the value production passes for an MCP-free runtime: any
+    positive one still holds the drain for its full ``duration``, because the
+    drain waits until ``max(duration, ceiling)`` for a first report.
     """
-    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05)
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.0)
 
 
 class TestArgv:
@@ -783,6 +787,25 @@ class TestKasInvocation:
             tmp_path, monkeypatch, tools=["fs_read", "tool_search"], tool_search=None
         )
         assert settings == {}
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_memory_on_disables_native_memory_beside_tool_search(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        """With the preview on, the process default is disabled, and Tool Search stays."""
+        from kiro_crew.acp import kas_memory
+
+        monkeypatch.setattr(kas_memory, "orchestrator_memory_enabled", lambda: True)
+        settings = await self._handshake_settings(
+            tmp_path,
+            monkeypatch,
+            tools=["fs_read", "tool_search"],
+            tool_search=ToolSearchSettings(True, 5, 50_000),
+        )
+        assert settings == {
+            "memory": {"mode": "disabled", "reflection": False},
+            "toolSearch": {"enabled": True, "minPct": 5, "minTokens": 50_000},
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

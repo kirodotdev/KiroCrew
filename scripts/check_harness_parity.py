@@ -496,6 +496,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": "standard ACP: advertised model list",
+    "ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL": "standard ACP: advertised configOptions model select",
     "ACP_BACKENDS_DEFAULT_PSEUDO_MODEL": "standard ACP: advertised model list and config options",
     "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": "standard ACP: advertised config options",
@@ -592,10 +593,6 @@ def handshake_matches(d: str, meta: dict) -> bool:
 # (set, fixture dir) -> the capture that is missing. Shrink-only: an entry not on
 # the base ref fails, and an entry whose member now passes fails until removed.
 X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("ACP_BACKENDS_STEERING_REQUEST", "claude"): (
-        "live 0.94.0 steer during Bash ends the turn early and starts an unowned turn; "
-        "under investigation"
-    ),
     ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",

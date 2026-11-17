@@ -1660,10 +1660,10 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # event ids the crew log holds. It reads the conductor's board's work fold
         # and the store's caps and id shape, takes no identity and writes nothing.
         "dashboard/handlers/remote_ingest_peer.py",
-        # Its background puller (rfc-conductor-remote-dispatch open question 1). It
-        # takes no identity and writes nothing itself: it lists the boards holding an
-        # open crew-bound item (``boards_with_open_remote``) and hands each to
-        # ``remote_ingest.ingest_board``, which files exactly as on a read.
+        # Its patrol-tick pull (rfc-conductor-remote-dispatch open question 1). It
+        # takes no identity and writes nothing itself: it asks whether the patrol's
+        # own board holds an open crew-bound item (``board_has_open_remote``) and
+        # hands it to ``remote_ingest.ingest_board``, which files exactly as on a read.
         "dashboard/handlers/remote_puller.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are

@@ -39,6 +39,12 @@ so the loader's mirror does not reach them). The loader facade and
 it with `.clear()`, never rebind it. `test_config_refactor_contract.py` pins
 representative seams of each kind; `test_facade_mirror_guards.py` holds every name
 the test trees patch through the loader to reaching every owner that binds it.
+`cli_config.py` is not a loader owner, so it does not copy `config_path` or
+`config_local_path` at import: its own functions of those names call
+`loader.config_path()` / `loader.config_local_path()` at every call. A patch of
+the loader therefore reaches `config set`, an undo restores it, and a patch of
+`kiro_crew.cli_config.config_path` stays a seam for that module alone
+(`test_cli_config_path_lookup.py`).
 
 | Owner | Owns |
 |---|---|
@@ -1639,6 +1645,19 @@ import also refuses a member that did not land under its own top directory. The
 manifest is capped at `_MAX_SETTINGS_DOCUMENT_BYTES` (8 MiB, the budget the export
 sizes its own manifest to, session times included) before it is decoded.
 
+**Size limits and rebuildable folders.** Both `validate_import_zip` and
+`apply_import_zip` judge size through one function,
+`portability.import_size_problem`. No member may unpack to more than
+`_MAX_IMPORT_UNCOMPRESSED` (2 GiB), and a total at or under that is accepted. A
+larger total is still accepted while it is at most
+`_MAX_IMPORT_COMPRESSION_RATIO` (100) times the archive's own size, stays under
+`_MAX_IMPORT_UNCOMPRESSED_CEILING` (64 GiB), and the data home's disk has twice
+the total plus `_IMPORT_DISK_RESERVE` (1 GiB) free. A refusal names the biggest
+folders and how to make a smaller export. Files inside a `REBUILDABLE_DIRS`
+folder (`node_modules`, `.venv`, `venv`, tool caches) under `workspace/` are
+left out of the export and skipped by the import, and not counted against these
+limits (`portability._in_rebuildable_dir`, read by both sides).
+
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
@@ -1767,7 +1786,7 @@ silent on them (`False` and `0` are chosen values and are still announced). It
 is silent too on a field holding its own schema default (`_is_own_default`,
 which never equates a bool with a number): that value behaves exactly as an
 absent key, and the default-config writer serializes every field, so a config
-Kiro Crew has just created carries `agent.subagent_cpu_cost_cores: 1.0` and the
+Kiro Crew has just created carries `agent.provider: "acp"` and the
 loader would otherwise warn about its own write on the first launch. For
 each populated field, `validation` warns once per process for each distinct
 `repr(value)`. It stores only a SHA-256 digest of that representation in the
@@ -1798,7 +1817,7 @@ an underscore, or appears in one of two explicit maps in `resolution.py`:
 | map | why the key is excluded |
 | --- | --- |
 | `_SECTION_KEYS_EMITTED_ELSEWHERE` | `to_dict()` writes it from outside the section dataclass, either conditionally (`slack.channels`, `dm_activation`, `trusted_bot_ids` — absence is a deliberate deletion) or from the top-level object (`slack.observe_max_messages`, `observe_ttl_hours`). |
-| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it. The union of `_SECTION_KEYS_RENAMED` (`knowledge.auto_ingest_doc_links`: still read, so only `save()` drops it, writing the canonical spelling) and `_SECTION_KEYS_RETIRED` (the removed local-STT install paths, the retired `knowledge` folder-discovery keys — re-persisting them would keep offering a setting with nothing behind it). The Settings PATCH and PUT and `kirocrew config set` also drop the RETIRED keys (`drop_retired_section_keys`); other raw writers leave them in place. |
+| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it. The union of `_SECTION_KEYS_RENAMED` (`knowledge.auto_ingest_doc_links`: still read, so only `save()` drops it, writing the canonical spelling) and `_SECTION_KEYS_RETIRED` (the removed local-STT install paths, the retired `knowledge` folder-discovery keys — re-persisting them would keep offering a setting with nothing behind it). The Settings PATCH and PUT and `kirocrew config set` also drop the RETIRED keys (`drop_retired_section_keys`), and with them the retired entries of a map-valued key in `_MAP_ENTRIES_RETIRED` (`dashboard.feature_previews.layout_harness`); other raw writers leave them in place. |
 
 A key the schema DOES model but validation rejected also stays dropped, because
 re-emitting it would make the bad value permanent and re-warn on every load.
@@ -1972,7 +1991,8 @@ a present value the reader cannot use takes the reader's value:
   trusts no bot and a malformed `mcp.extra_path_dirs` adds no directory.
 - A narrowing or safe value that holds whatever the default is: `mention` for an
   invalid `slack.channels.<id>.activation`, `true` for a non-boolean
-  `dashboard.tailscale.bind_refresh_chains`, `node` for an unrecognised
+  `dashboard.tailscale.bind_refresh_chains` or `slack.show_in_session_list` (a
+  malformed value keeps Slack conversations listed, as before the field existed), `node` for an unrecognised
   `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
@@ -3740,6 +3760,7 @@ class DashboardConfig:
     preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
+    instance_label: str = ""       # a short name for this gateway: the browser tab title (`<detail> — <label> — <bot>`), a favicon of its initial on the theme accent, and the `origin` of a session transferred to another instance. Run through the bot-name sanitizer at load (letters, digits, space, `_-.`; 50 code points); empty = unset (title and favicon as before, a transfer names the host). Set it in `config.json` or with `kirocrew config set dashboard.instance_label` (not dashboard-editable); the SPA reads it from the authenticated GET /api/dashboard/branding, never /api/theme/boot, so a change shows on the next page load. A pod seed drops it.
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
@@ -4013,7 +4034,7 @@ pass `--profile`.
   else, a repository cloned inside the worktree included, matches as itself. A
   path with no `worktrees` folder in it runs no git, and a git failure leaves the
   path as it is.
-- **Injection.** `SessionAllocation._get_or_create_impl` resolves the binding
+- **Injection.** `SessionAllocationService._get_or_create_impl` resolves the binding
   against the final `effective_cwd`. This happens after capability preparation and
   before the warm-pool decision. `bound_profile_env` sets both `AWS_PROFILE` and
   `AWS_DEFAULT_PROFILE` in `extra_env` to the bound name, unless the caller's
@@ -4298,7 +4319,9 @@ the tightest host limit, and never set below 32768 unless that limit is itself
 lower. A failed host read falls back to the fixed 32768. The per-scope default
 stays a fixed 8192. `kirocrew doctor`'s
 Task ceilings section prints the values, their source and the live slice usage;
-it is advisory and never adds an issue.
+it is advisory and never adds an issue. Its headroom estimate divides by the
+observed per-runtime average, so it is left out when that average is 0 (scopes
+left behind by exited runtimes) rather than blanking the section.
 
 On macOS no mechanism bounds the agent tree's memory: the cgroup path is a no-op,
 and the session host's rlimit profile sets only `RLIMIT_NOFILE`, so `max_memory_mb`
@@ -5066,7 +5089,10 @@ corrupt existing document as described above.
 - Missing fields → individual defaults: each is the default declared on its DTO
   field, apart from the departures listed under "Defaults come from the DTO fields"
   above
-- An enum value outside its set → that field's default, with a logged line
+- An enum value outside its set → that field's default, with a logged line. A
+  nullable (`X | None`) enum field's schema `enum` carries `null` as a member, so
+  its unset default validates silently; the flattened `ConfigEntry.enum_values`
+  leaves `null` out and `nullable` says it instead
 - An out-of-range number → clamped (see "Security-Bounded Config Clamp")
 
 ### Editable choices (`enum`)
@@ -5118,7 +5144,10 @@ safety rules, and date/runtime identity stay whole. This does not change the fix
 
 Settings → Advanced (`website/src/pages/settings/AdvancedPanel.tsx`, rows in
 `website/src/components/allSettings/AllSettingsList.tsx`) lists every config key in
-one list, so a person can change one without editing `config.json`. A key with a
+one list, so a person can change one without editing `config.json`. The page is
+hidden: `SettingsPage.tsx` lists no `advanced` tab, so `/settings/advanced` opens
+the first tab, and Settings search has no entry for it. The panel code, the schema
+records below and the generic PATCH rule stay in place. A key with a
 control of its own elsewhere in Settings is a row with a link to it, never a second
 control. The frontend holds no list of keys. `GET /api/config/schema` adds an
 `allSettings` record to each entry the page lists, built by

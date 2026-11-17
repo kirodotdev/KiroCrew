@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 from kiro_crew.acp import batch_guard
+from kiro_crew.acp import client_antigravity as _client_antigravity
 from kiro_crew.acp import client_copilot as _client_copilot
 from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
@@ -54,6 +55,7 @@ from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
@@ -141,6 +143,8 @@ class AcpClient:
     # That turn's frames a claimed reader other than the turn has read, held for
     # the turn until that reader returns (see _claiming_stdout).
     _agent_turn_held: list[JsonRpcMessage] | None = None
+    # Set when that reader has put the held frames back; stream_unsolicited waits on it.
+    _agent_turn_hold_end: asyncio.Event | None = None
     # _install_idle_reader has bound its steps on this client.
     _idle_reader_installed: bool = False
     # Held by stream_unsolicited while it reads; a prompt waits on it (see
@@ -382,6 +386,13 @@ class AcpClient:
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
         self._session_key = session_key
+        # Set by ``runtime_ownership.acquire_session_lease`` once the gateway
+        # registers this client's session: the one tenant of its own process,
+        # where a runtime-backed session would take a lease instead.
+        self._registered_session = False
+        # The clock ``stream_events`` times a turn's start with. A test hands this
+        # one object a fake; the module's ``time`` stays the shared binding.
+        self._turn_clock: Callable[[], float] = time.monotonic
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
         # knowledge llm_pool) that have no external audit loop. Left None for
@@ -863,6 +874,7 @@ class AcpClient:
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
     _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
+    _antigravity_session_mcp_servers = _client_mcp_array._antigravity_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
@@ -923,6 +935,10 @@ class AcpClient:
             or self.backend in ACP_BACKENDS_META_IDENTITY
             or self._is_copilot
         )
+
+    @property
+    def _is_antigravity(self) -> bool:
+        return self.backend == ACP_BACKEND_ANTIGRAVITY
 
     @property
     def _is_mimocode(self) -> bool:
@@ -1350,6 +1366,9 @@ class AcpClient:
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
     _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
+    _refuse_unverified_antigravity_version = (
+        _client_antigravity._refuse_unverified_antigravity_version
+    )
     _tripwire_session_config = _client_permissions._tripwire_session_config
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
     _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed
@@ -1397,6 +1416,7 @@ class AcpClient:
     _stop_idle_reader = _client_transport._stop_idle_reader
     _cancel_idle_reader = _client_transport._cancel_idle_reader
     _agent_turn_pending = _client_transport._agent_turn_pending
+    has_pending_agent_turn = _client_transport.has_pending_agent_turn
     _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
     _idle_read_loop = _client_transport._idle_read_loop
     _note_advertised_commands = _client_transport._note_advertised_commands

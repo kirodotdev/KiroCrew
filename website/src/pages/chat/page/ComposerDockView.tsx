@@ -700,6 +700,8 @@ export default function ComposerDockView({
               optimizerMentionGuard={optimizerMentionGuard}
               mentionEditRange={mentionEditRange}
               project={currentSlot?.project || ''}
+              turnProject={currentSlot?.turn_project}
+              turnProjectFallback={currentSlot?.turn_project_fallback}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
               isMac={isMac}

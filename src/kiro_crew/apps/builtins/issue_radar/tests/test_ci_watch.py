@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.issue_radar.backend import (
@@ -107,10 +108,14 @@ def _run(run_id: int, conclusion: str | None, *, attempt: int = 1, status: str =
 class _Base(unittest.IsolatedAsyncioTestCase):
     """Shared fixtures: temp notification settings, in-memory CI record, gh fakes."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the notification settings."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        patcher = mock.patch("kiro_crew.notifications.settings.config_dir", lambda: Path(tmp.name))
+        config = self._tmp_path
+        patcher = mock.patch("kiro_crew.notifications.settings.config_dir", lambda: config)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.channel_settings = ChannelSettings()
@@ -484,6 +489,15 @@ class TestChannelControls(_Base):
 
 
 class TestSettingStore(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        A reader thread joined with a timeout can outlive the test body and
+        ``mkdir`` the root again; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def test_defaults_off_and_round_trips(self) -> None:
         self.assertIs(store.DEFAULT_REPO_SETTINGS["notify_on_own_pr_ci_failure"], False)
         self.assertIs(store._normalize_settings({})["notify_on_own_pr_ci_failure"], False)
@@ -543,23 +557,22 @@ class TestSettingStore(unittest.TestCase):
             self.assertEqual(store.read_ci_watch_state("o", "r", root)["notified"], {"7": 1})
 
     def test_the_paired_read_waits_for_a_reset_in_progress(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            store.write_ci_watch_state("o", "r", {"8": 1}, root)
-            before = store.ci_watch_generation("o", "r", root)
-            pairs: list[tuple[dict[str, Any], int]] = []
-            with store._ci_watch_lock:  # a reset holding the lock mid-way
-                reader = threading.Thread(
-                    target=lambda: pairs.append(store.read_ci_watch_record("o", "r", root)),
-                    daemon=True,
-                )
-                reader.start()
-                key = (str(root), "o", "r")
-                store._ci_watch_generations[key] = before + 1
-                store.ci_watch_state_path("o", "r", root).unlink()
-            reader.join(timeout=30)
-            self.assertFalse(reader.is_alive(), "the paired read never returned")
-            self.assertEqual(pairs, [({"seeded": False, "notified": {}}, before + 1)])
+        root = self._tmp_path
+        store.write_ci_watch_state("o", "r", {"8": 1}, root)
+        before = store.ci_watch_generation("o", "r", root)
+        pairs: list[tuple[dict[str, Any], int]] = []
+        with store._ci_watch_lock:  # a reset holding the lock mid-way
+            reader = threading.Thread(
+                target=lambda: pairs.append(store.read_ci_watch_record("o", "r", root)),
+                daemon=True,
+            )
+            reader.start()
+            key = (str(root), "o", "r")
+            store._ci_watch_generations[key] = before + 1
+            store.ci_watch_state_path("o", "r", root).unlink()
+        reader.join(timeout=30)
+        self.assertFalse(reader.is_alive(), "the paired read never returned")
+        self.assertEqual(pairs, [({"seeded": False, "notified": {}}, before + 1)])
 
     def test_ci_record_round_trips_and_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -977,7 +977,7 @@ class TestS3TransferDirection:
         "eval aws s3 cp --recursive s3://b/p ./d",
         "command aws s3 cp --recursive s3://b/p ./d",
         "/usr/bin/aws s3 cp --recursive s3://b/p ./d",
-        "AWS_PROFILE=p aws s3 cp --recursive s3://b/p ./d",
+        "AWS_CONFIG_FILE=./c aws s3 cp --recursive s3://b/p ./d",
         "bash <<EOF\naws s3 cp --recursive s3://b/p ./d\nEOF",
         "echo y | aws s3 cp --recursive s3://b/p ./d",
         "aws s3 cp --recursive s3://b/p ./d > log",

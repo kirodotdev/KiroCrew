@@ -61,11 +61,13 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    RECORDED_ALWAYS_ONLY,
     AcpEvent,
     JsonRpcMessage,
     rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
@@ -141,6 +143,10 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
     decision, so the scope lives in one place instead of being re-derived here.
     """
     backend = self.backend
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        # The pin exists for the mode checks below, so it is enforced here, before
+        # the mode write and before any prompt; Kiro never reaches this method.
+        self._refuse_unverified_antigravity_version()
     option_id, _required = acp_tool_gate.permission_config_for(backend)
     value = permission_value_for(backend, self._acp_config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
@@ -426,13 +432,19 @@ def _bridged_servers(client: AcpClient) -> tuple[str, ...]:
 def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
     """*resolved_id*, or the once id when it would answer allow-always.
 
-    The frame's own once id, or the canonical one when the frame recorded
-    allow-always in that slot too.
+    The answer is always an id the frame offered, when it offered a one-call
+    allow: a harness reads an id it never offered as a refusal, and KAS words
+    that refusal as "The user rejected this tool call." A frame with a single
+    allow option records it in both slots (KAS offers no allow-always on an
+    explicit ``ask`` rule, which is how every Crew-owned Connection call is
+    asked), and a one-call allow there is the answer. A frame that offered
+    allow-always alone, or recorded nothing, is answered with the canonical once
+    id, never with its allow-always.
     """
     if resolved_id not in (OPTION_ALLOW_ALWAYS, offered.get("always")):
         return resolved_id
     once = offered.get("once")
-    return once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+    return OPTION_ALLOW_ONCE if not once or offered.get(RECORDED_ALWAYS_ONLY) else once
 
 
 def _restore_withdrawn(
@@ -1175,7 +1187,11 @@ async def _unasked_call_is_expected(client: AcpClient, update: dict, tool_call_i
     backend's :data:`HARNESS_UNASKED_TOOL_IDS` row (MiMo Code's ``actor`` only when
     its input starts no subagent, :func:`mimocode_actor_asks_nothing`). Anything else,
     a file write, an MCP tool or a tool whose name was never recorded included, is not.
+    A call whose frame named an MCP server is an MCP tool whatever its title says, so a
+    server and tool that fuse into a listed name (``view`` + ``file``) never pass.
     """
+    if getattr(client, "_tool_call_mcp_server", {}).get(tool_call_id):
+        return False
     name = getattr(client, "_tool_call_harness_tool_name", {}).get(tool_call_id, "")
     if name == "actor" and client.backend == ACP_BACKEND_MIMOCODE:
         return mimocode_actor_asks_nothing(_completed_call_input(client, update, tool_call_id))
@@ -1487,6 +1503,14 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
             self._restore_copilot_edit_seed(restore)
     if event is None:
         return None
+    # Antigravity's tool_call frame presented an MCP identity half over the bound
+    # (its ``_meta.mcp`` row bounds both): the call names a tool Crew cannot
+    # retain, so every gate refuses it on this flag. Set here, not through the
+    # parser's store, which on that store's harness also folds KAS built-in ids.
+    if self.backend == ACP_BACKEND_ANTIGRAVITY and getattr(
+        self, "_tool_call_identity_unreadable", {}
+    ).get(event.tool_call_id):
+        event.mcp_identity_unreadable = True
     if _is_child_permission_frame(msg, getattr(self, "_session_id", "") or ""):
         # A native sub-agent's request: the dashboard keeps the parent's deny
         # overrides away from it (``dashboard.deny_override.slot_may_override``).

@@ -422,9 +422,11 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
                   <span className="ml-auto flex items-center gap-2 shrink-0">
                     <span className="text-[10px] text-muted tabular-nums">
                       {row.agentCount > 0
-                        ? `${i18nT('apps.workflows.workflowsRuns.agents', { count: row.agentCount })} · `
-                        : ''}
-                      {i18nT('apps.workflows.workflowsRuns.events', { count: row.eventCount })}
+                        ? i18nT('apps.workflows.workflowsRuns.agents_and_events', {
+                            agents: i18nT('apps.workflows.workflowsRuns.agents', { count: row.agentCount }),
+                            events: i18nT('apps.workflows.workflowsRuns.events', { count: row.eventCount }),
+                          })
+                        : i18nT('apps.workflows.workflowsRuns.events', { count: row.eventCount })}
                     </span>
                     <Badge variant={row.badge.variant}>{row.badge.label}</Badge>
                   </span>
@@ -435,7 +437,9 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
                     onClick={() => cancelRun(row.run_id)}
                     disabled={cancelling.has(row.run_id)}
                     className="flex shrink-0 items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border disabled:opacity-50"
-                    aria-label={i18nT('apps.workflows.workflowsRuns.cancel')}
+                    aria-label={cancelling.has(row.run_id)
+                      ? i18nT('apps.workflows.workflowsRuns.cancelling_run', { name: row.name })
+                      : i18nT('apps.workflows.workflowsRuns.cancel_run', { name: row.name })}
                   >
                     <Ban size={12} /> {cancelling.has(row.run_id) ? i18nT('apps.workflows.workflowsRuns.cancelling') : i18nT('apps.workflows.workflowsRuns.cancel')}
                   </button>

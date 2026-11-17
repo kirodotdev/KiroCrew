@@ -661,8 +661,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: layer reads a client-sent relay header, the
 #: deny-audit boundary is outer to every barrier that can refuse, the app web origin
 #: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
-#: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
-#: and the audit record, and the workflow and crewmate-prune gates, the Shared Crew
+#: audit is inner to them, the redaction audience sits right after token auth, the
+#: per-slot ownership checkpoint is inner to token auth and the audit record, and the
+#: workflow and crewmate-prune gates, the Shared Crew
 #: team-config gate and the change-card hook (innermost, after auth has classified
 #: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
@@ -678,6 +679,7 @@ _DASHBOARD_CHAIN = (
     ("no_cache_middleware", "_install_dashboard_middlewares.<locals>."),
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
+    ("redaction_audience_middleware", "redaction_audience_middleware"),
     ("sel_audit_middleware", "_install_dashboard_middlewares.<locals>."),
     ("card_turn_delegation_middleware", "card_turn_delegation_middleware"),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
@@ -696,6 +698,7 @@ _API_CHAIN = (
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
+    ("redaction_audience_middleware", "redaction_audience_middleware"),
     ("sel_audit_middleware", "_install_api_middlewares.<locals>."),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
     ("team_config_middleware", "team_config_middleware"),
@@ -728,7 +731,6 @@ _DASHBOARD_HOOKS = {
         "_local_decision_model_shutdown",
         "_decision_http_shutdown",
         "_config_watch_shutdown",
-        "_stop_remote_puller",
         "_instances_shutdown",
         "_crew_log_drain",
         "_harness_shutdown",
@@ -791,6 +793,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
+    _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor
     _register_deploy_routes
@@ -833,11 +836,10 @@ _DASHBOARD_BOOT = tuple("""
 _DASHBOARD_TEARDOWN = tuple("""
     current_context unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
-    _stop_remote_puller
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
-    S:_start_remote_puller S:_stt_idle_sweep
+    S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
     T:_take_prior_dropped_grant
@@ -879,6 +881,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
+    _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown

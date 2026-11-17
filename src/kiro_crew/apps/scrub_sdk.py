@@ -51,6 +51,7 @@ from dataclasses import dataclass
 
 from ..platform.context import redact_via_context as _redact_via_context
 from ..security import redact_with_findings as _redact_with_findings
+from ..security.blocked_links import replace_blocked_links as _replace_blocked_links
 
 
 @dataclass(frozen=True)
@@ -108,9 +109,12 @@ class ScrubSDK:
         # are dropped here, deliberately (see ScrubResult).
         stripped, credential_warnings, url_warnings = _redact_with_findings(text)
         final = _redact_via_context(stripped)
+        # An app's page has no Blocked link chip, so a link the dashboard would hold
+        # back leaves as the placeholder instead; every other URL stays value-masked.
+        final, blocked = _replace_blocked_links(final)
         return ScrubResult(
             text=final,
             credentials_removed=len(credential_warnings),
-            urls_removed=len(url_warnings),
+            urls_removed=len(url_warnings) + blocked,
             redacted=bool(credential_warnings or url_warnings) or final != stripped,
         )

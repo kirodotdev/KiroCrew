@@ -448,7 +448,7 @@ async def test_monitor_list_excludes_persistence_only_fields(
         "review_decision": "approved",
         "review_threads_complete": True,
         "state": "open",
-        "target": f"github.com/acme/widgets#7?token={secret}",
+        "target": f"https://github.com/acme/widgets/pull/7?token={secret}",
         "unresolved_review_threads": 0,
     }
     _svc(monkeypatch, _FakeSvc([loop]))

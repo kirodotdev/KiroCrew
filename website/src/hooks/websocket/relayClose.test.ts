@@ -7,6 +7,11 @@ describe('classifyClose', () => {
     expect(classifyClose(1012)).toBe('relay_drain')
     expect(classifyClose(4400)).toBe('refused')
     expect(classifyClose(4429)).toBe('refused')
+    // A host that is gone is an outage, still retried; the host turning access
+    // off (4410) and a replaced host connection (4409) stay refusals.
+    expect(classifyClose(4404)).toBe('offline')
+    expect(classifyClose(4409)).toBe('refused')
+    expect(classifyClose(4410)).toBe('refused')
     expect(classifyClose(4499)).toBe('refused')
     expect(classifyClose(1006)).toBe('offline')
     expect(classifyClose(1011)).toBe('offline')

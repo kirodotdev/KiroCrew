@@ -28,10 +28,10 @@ from kiro_crew.acp import session_provider_context as _sp_context
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
 from kiro_crew.acp import session_provider_native_children as _sp_children
+from kiro_crew.acp import session_provider_new_conversation as _sp_new_conversation
 from kiro_crew.acp import session_provider_shared as _sp_shared
 from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
-    DEFAULT_MODEL,
     AcpAuthRequired,
     AcpError,
     AcpModelUnavailable,
@@ -52,6 +52,7 @@ from kiro_crew.acp.runtime import (
     AcpSessionHandle,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
@@ -67,7 +68,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
-    ACP_BACKENDS_SESSION_EVICTION,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -166,6 +166,7 @@ class AcpSessionProvider(LLMProvider):
         agent: str = "",
         crew_agent: str | None = None,
         member_context: bool | None = None,
+        kas_memory_mode: str = "",
     ) -> None:
         self._handle = handle
         self._runtime = runtime
@@ -228,6 +229,9 @@ class AcpSessionProvider(LLMProvider):
         # did not start on (``kas_cli_settings.default_model_notice``); "" otherwise.
         self.kas_default_model_notice: str = ""
         self._channel_id: str | None = channel_id
+        # The mode stored on this exact SID. Reloads can resend the matching
+        # tool mount, but cannot change KAS's stored memory policy.
+        self.kas_memory_mode = kas_memory_mode
         # Set by a dashboard MCP write on a re-injecting host; applied at the
         # next turn boundary (``apply_pending_mcp_reinjection``).
         self._mcp_reinject_pending: bool = False
@@ -390,148 +394,20 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
 
-    async def new_conversation(self, *, member_session_key: str = "", channel_id: str = "") -> None:
-        """Reset to a fresh conversation on the SAME warm runtime (kiro path).
+    @property
+    def close_leaves_mcp_servers(self) -> bool:
+        """Whether ``session/close`` leaves the closed session's MCP servers running.
 
-        The cheap clean-slate reuse primitive a warm worker pool relies on for a
-        backend on the shared runtime; a backend on its own ``AcpClient`` has
-        ``AcpClient.new_conversation`` instead. Create a brand-new ``session/new``
-        on the *already-running* kiro-cli process (paying only session/new + the
-        MCP-init drain), then destroy the old session so its context/transcript
-        and MCP children are freed on the shared process. This SKIPS the expensive
-        parts of a cold start — subprocess spawn + the ACP ``initialize`` handshake
-        — which is exactly what makes pooled reuse faster than teardown+respawn.
-
-        If the runtime is dead there is nothing warm to reuse; the caller (pool)
-        detects that via ``is_alive()``/``is_process_alive()`` and replaces the
-        worker, so this raises rather than silently respawning a new process here
-        (the runtime is owned by this provider's lifecycle, not recreated in place).
-
-        Reuse is only cheap where the old session actually GOES AWAY, so this is
-        gated on ``ACP_BACKENDS_SESSION_EVICTION``. The whole primitive rests on
-        the ``old.destroy()`` below reclaiming the previous session's context and
-        MCP children on the shared process; on a backend whose teardown does not
-        evict, that call returns having freed nothing and each reset leaves one
-        more resident session behind. Nothing downstream collects them: such a
-        backend is off the eviction path by construction, and a recycle rule that
-        measures a narrower scope than where the sessions live never sees the
-        growth, so only the age ceiling ever reaps it. Refusing BEFORE creating
-        anything is what makes this safe --
-        ``WorkerPool.reset`` already treats an exception here as "no cheap path"
-        and falls back to a hard ``SessionManager.reset``, which is slower but
-        correct for every backend.
+        True on codex: its close evicts the session, but the stdio MCP servers it
+        started for it from ``config.toml`` keep running under the process, so a
+        fresh conversation on the same process would add one more set each time.
+        :meth:`new_conversation` refuses such a backend, and
+        ``AcpProvider.swaps_conversation_in_place`` reads this too.
         """
-        # A plain membership test, with no sentinel handling: kiro's own backend
-        # id IS the empty string (``ACP_BACKEND_KIRO = ""``), so an unset
-        # ``acp_backend`` is not a value awaiting resolution -- it already reads as
-        # the member this set admits. Every other value, including one no harness
-        # registered, is refused, which is the fail-closed direction.
-        if self.backend not in ACP_BACKENDS_SESSION_EVICTION:
-            # Raise before the fresh session/new: the caller's hard-reset
-            # fallback is the correct path, and creating a session first would
-            # leak the very session this refusal exists to prevent.
-            raise AcpError(
-                f"backend {self.backend!r} does not evict sessions on teardown, so "
-                "warm conversation reuse would accumulate resident sessions -- "
-                "use the hard-reset path instead"
-            )
-        if not self._runtime.is_alive():
-            raise AcpProcessDied("Runtime is not alive — cannot start a new conversation")
-        old = self._handle
-        # Create the fresh session BEFORE destroying the old one so a failure
-        # leaves the provider still pointing at a usable handle (no window where
-        # self._handle references a terminated session).
-        # A member DM's dispatch mount and a channel session's channel ride every
-        # session start (``AcpProvider._member_session_key`` / ``_owning_channel_id``),
-        # so a chat's fresh conversation carries the ones its cold start passed.
-        new_handle = await self._runtime.create_session(
-            cwd=self._runtime._work_dir,
-            agent=getattr(self, "_session_agent", "") or self._runtime._agent or None,
-            crew_agent=getattr(self, "_session_crew_agent", None),
-            member_context=getattr(self, "_session_member_context", None),
-            harness_options=self._harness_options,
-            memory_mode=self.memory_mode,
-            session_key=self._session_key,
-            member_session_key=member_session_key,
-            channel_id=channel_id,
-        )
-        # Re-apply the configured non-default model to the fresh session. A new
-        # session/new reverts to the agent-config default model, so a warm worker
-        # configured with a non-default model (via the cold-start set_model in
-        # AcpProvider._start_kiro_runtime_impl, recorded on the old handle) would
-        # silently run every reused task on the wrong model without this. Mirrors
-        # that cold-start handshake: skip the "auto" sentinel (let kiro pick).
-        #
-        # If the re-apply FAILS we must NOT commit the fresh handle — a
-        # wrong-model session would silently run every subsequent pooled step on
-        # the default model. Tear the fresh session down and raise so the caller
-        # (WorkerPool) performs its hard-reset fallback and the old, correctly
-        # configured handle is not destroyed below.
-        prior_model = getattr(old, "model", "")
-        if isinstance(prior_model, str) and prior_model and prior_model != DEFAULT_MODEL:
-            try:
-                await new_handle.set_model(prior_model)
-            except Exception as exc:
-                logger.warning(
-                    "new_conversation: failed to re-apply model %s to fresh session; "
-                    "tearing it down and signalling reset",
-                    prior_model,
-                    exc_info=True,
-                )
-                try:
-                    await new_handle.destroy()
-                except Exception:
-                    logger.debug(
-                        "new_conversation: fresh-session teardown after model "
-                        "re-apply failure also failed",
-                        exc_info=True,
-                    )
-                raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
-        elif isinstance(inherited := getattr(old, "inherited_model", ""), str) and inherited:
-            # An unpinned KAS session inherits kiro-cli's chat.defaultModel; the
-            # fresh session/new is back on KAS's own default, so re-apply it the
-            # same way. Not a pin, so a refusal leaves the default and is not fatal.
-            try:
-                await new_handle.set_model(inherited, inherit=True)
-            except Exception:
-                logger.warning(
-                    "new_conversation: failed to re-apply inherited model %s",
-                    inherited,
-                    exc_info=True,
-                )
-        # Accumulated across the swap: the old session's KAS launch snapshots are
-        # removed by this provider's shutdown, like the new one's.
-        new_handle.kas_launch_snapshots = [
-            *getattr(old, "kas_launch_snapshots", []),
-            *getattr(new_handle, "kas_launch_snapshots", []),
-        ]
-        # The fresh conversation is the same worker's, so its record waits as long as
-        # the previous one's did.
-        new_handle.delete_delay_secs = getattr(old, "delete_delay_secs", 0.0)
-        # Still the session the keepalive route's registry holds, if it was.
-        new_handle.keepalive_routed = getattr(old, "keepalive_routed", False) is True
-        self._handle = new_handle
-        self._rewatch_agent_turns()
-        old.mcp_session_report().hand_over(new_handle.mcp_session_report())  # its reader follows
-        # The fresh session/new restored nothing: a session/load observation from
-        # the old handle would make the next turn skip its history replay
-        # (``turn_dispatch_gates``) and run on an empty conversation. Same as
-        # ``AcpClient.new_conversation``; cleared only once the swap is committed.
-        self._resumed_flag = False
-        if getattr(self, "_shared_runtime", False):
-            new_handle.chat_shared = True
-        # The fresh session launched fresh stubs carrying a fresh token, and
-        # nothing has named it: an unnamed token is refused, not resolved from
-        # the shared runtime's tree. Claim it now, against the session this
-        # provider already serves (empty on a worker no session has claimed yet,
-        # where rekey() does the naming instead).
-        self.reclaim()
-        # Best-effort teardown of the old session on the shared process so its
-        # context doesn't linger (RSS growth). Never let cleanup mask success.
-        try:
-            await old.destroy()
-        except Exception:
-            logger.debug("new_conversation: old session destroy failed", exc_info=True)
+        return self.backend == ACP_BACKEND_CODEX
+
+    # A fresh conversation on the same runtime: ``kiro_crew.acp.session_provider_new_conversation``.
+    new_conversation = _sp_new_conversation.new_conversation
 
     @property
     def memory_mode(self) -> str:

@@ -6,9 +6,9 @@
  * answers 404 while `tunnel.relay_viewer_enabled` is off. Either one missing
  * hides the whole list, so the default dashboard is unchanged.
  */
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { api, ApiError, type RelayCrewEntry } from '../api/client'
+import { useCallback, useState } from 'react'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../api/client'
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { timeAgo } from '../utils/timeAgo'
@@ -113,18 +113,62 @@ export function relayCrewStatusText(entry: RelayCrewEntry): string {
 
 export const RELAY_VIEWER_CREWS_KEY = ['relay-viewer', 'crews'] as const
 
+/** The most IDs one seen request carries; the route's own cap (`_MAX_SEEN_IDS`). */
+const SEEN_BATCH = 200
+
+/** Tell the gateway the person saw these Crews: the IDs it confirmed it saved, and
+ *  whether any batch failed. A failed batch keeps its dots, which is true, and the
+ *  next open sends it again; the caller says it wasn't saved. */
+export async function recordRelayCrewsSeen(endpointIds: string[]): Promise<{ saved: string[]; failed: boolean }> {
+  const saved: string[] = []
+  let failed = false
+  for (let i = 0; i < endpointIds.length; i += SEEN_BATCH) {
+    const batch = endpointIds.slice(i, i + SEEN_BATCH)
+    try {
+      await api.relayViewerCrewsSeen(batch)
+      saved.push(...batch)
+    } catch {
+      failed = true
+    }
+  }
+  return { saved, failed }
+}
+
+/** Clear the dot of these Crews in the cached list now, without waiting for the
+ *  next read. A read already in flight is cancelled first: its answer predates the
+ *  save, so it would bring the dots back. */
+export async function clearRelayCrewsUnseen(queryClient: QueryClient, endpointIds: string[]): Promise<void> {
+  if (endpointIds.length === 0) return
+  await queryClient.cancelQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
+  const ids = new Set(endpointIds)
+  queryClient.setQueryData<{ crews: RelayCrewEntry[] }>(RELAY_VIEWER_CREWS_KEY, old =>
+    old ? { ...old, crews: old.crews.map(c => (ids.has(c.endpointId) ? { ...c, unseen: false } : c)) } : old)
+}
+
 const isOffError = (err: unknown) => err instanceof ApiError && err.status === 404
+
+/** How often the list is re-read: sooner while a listed Crew is not online, so a host
+ *  that just connected reads as online without a reload, and once a minute otherwise. */
+export const RELAY_CREWS_POLL_OFFLINE_MS = 15_000
+export const RELAY_CREWS_POLL_MS = 60_000
+/** Opening the switcher re-reads the list unless a successful read is this recent. */
+const OPEN_FRESH_MS = 5_000
 
 export function useRelayViewerCrews(): {
   hidden: boolean
   crews: RelayCrewEntry[]
+  /** The account the loaded list was read for; null on a refusal or when the gateway named none. */
+  account: RelayViewerAccount | null
   refusal: RelayListRefusal | null
   /** Read the list again now (the notice's Try again). */
   retry: () => void
   /** A read is in flight, so Try again waits for it. */
   retrying: boolean
+  /** Read a loaded list again unless the last read is under OPEN_FRESH_MS old (the menu opened). */
+  refreshOnOpen: () => void
 } {
   const hasBridge = relayCrewBridge() !== null
+  const queryClient = useQueryClient()
   const q = useQuery({
     queryKey: RELAY_VIEWER_CREWS_KEY,
     queryFn: () => api.relayViewerCrews(),
@@ -132,8 +176,18 @@ export function useRelayViewerCrews(): {
     // A 404 is the feature-off answer, not a blip to retry.
     retry: false,
     // Presence changes on the host's side, so re-read; stop once the route says the feature is off.
-    refetchInterval: query => (isOffError(query.state.error) ? false : 60_000),
+    refetchInterval: query => {
+      if (isOffError(query.state.error)) return false
+      return query.state.data?.crews.some(c => !isRelayCrewOnline(c)) ? RELAY_CREWS_POLL_OFFLINE_MS : RELAY_CREWS_POLL_MS
+    },
   })
+  // Stable, so the menu can call it once when it opens. Only a loaded list is read
+  // again: with none, a refetch puts a refusal back to pending, which is Try again's job.
+  const refreshOnOpen = useCallback(() => {
+    const s = queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)
+    if (!s?.data || s.fetchStatus === 'fetching' || Date.now() - s.dataUpdatedAt < OPEN_FRESH_MS) return
+    void queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY, exact: true })
+  }, [queryClient])
   // The refusal a Try again was clicked from. With no list yet, react-query puts
   // a refetched error back to pending, which would hide the notice mid-read.
   // `at` is the error's time when Try again was clicked. A newer error moves
@@ -159,9 +213,9 @@ export function useRelayViewerCrews(): {
   }
   if (hasBridge && !off && q.isPending && q.isFetching && held && held.at === q.errorUpdatedAt) {
     // Try again is reading: keep its refusal up, with Try again off, until the answer.
-    return { hidden: false, crews: [], refusal: held.refusal, retry, retrying: true }
+    return { hidden: false, crews: [], account: null, refusal: held.refusal, retry, retrying: true, refreshOnOpen }
   }
-  if (!hasBridge || off || q.isPending) return { hidden: true, crews: [], refusal: null, retry, retrying: false }
-  if (refusal) return { hidden: false, crews: [], refusal, retry, retrying: q.isFetching }
-  return { hidden: false, crews: q.data?.crews ?? [], refusal: null, retry, retrying: q.isFetching }
+  if (!hasBridge || off || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
+  if (refusal) return { hidden: false, crews: [], account: null, refusal, retry, retrying: q.isFetching, refreshOnOpen }
+  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
 }

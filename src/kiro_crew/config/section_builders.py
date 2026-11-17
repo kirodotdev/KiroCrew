@@ -149,7 +149,7 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
-from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN, coerce_dispatch_tags
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -245,6 +245,9 @@ def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
         remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
         remote_dispatch_retire_minutes=_positive_gb(
             work_ledger_data, "remote_dispatch_retire_minutes"
+        ),
+        remote_dispatch_tags=list(
+            coerce_dispatch_tags(work_ledger_data.get("remote_dispatch_tags"))
         ),
     )
 
@@ -663,10 +666,13 @@ def _handle_email_domains(raw: object) -> list[str]:
 
 
 def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
-    """The viewer's control plane URL, credential reference and Crew domain, or "" for a bad one.
+    """The viewer's control plane URL, credential reference and Crew domain, "" for a bad reference.
 
     The URL carries the person's sign-in, so it is held to the lease URL's rule:
-    https://, or http:// only for a loopback port-forward. The credential setting
+    https://, or http:// only for a loopback port-forward. A value that breaks it is
+    kept as set, with a warning, so the viewer refuses it as not set up instead of
+    reading it as empty (the built-in control plane); every reader checks it again.
+    The credential setting
     names where a credential is and never holds one, so a value that is not
     secret://NAME or an absolute path is dropped, and the warning does not repeat
     it. Imported here, not at module load, so config load pulls in no relay
@@ -683,7 +689,6 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
                 "tunnel.relay_viewer_cps_url ignored: %s",
                 problem.replace("lease service", "control plane"),
             )
-            url = ""
         if ref and credential_reference_problem(ref) is not None:
             logger.warning(
                 "tunnel.relay_viewer_credential ignored: it must be secret://NAME or the "
@@ -779,11 +784,16 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         use_tunnel_url=bool(section.get("use_tunnel_url")),
         show_thinking=bool(section.get("show_thinking")),
         dm_single_session=bool(section.get("dm_single_session")),
+        # Default True: a missing or non-boolean value keeps the built-in page.
+        home_tab_builtin=section.read("home_tab_builtin", _safe_bool),
         home_tab_sessions_per_kind=section.read("home_tab_sessions_per_kind", _safe_int),
         sessions_limit=section.read("sessions_limit", _safe_int),
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
+        # Default True: a missing or unparseable value keeps Slack conversations
+        # listed, as they were before the setting existed.
+        show_in_session_list=section.read("show_in_session_list", _safe_bool),
         # Default False for all three: an unparseable value must never declare the
         # app an agent, open code channels or let a code channel dispatch work.
         agent_sessions=section.read("agent_sessions", _safe_bool),

@@ -434,8 +434,8 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # name is on ``_CREW_READONLY_LEAVES`` and ``_CREW_CHILD_WITHHELD_LEAVES``, so no
     # sandbox mode can write it.
     "project_hooks_consent.json",
-    # The credential-redaction switch: ``redaction_switch.read_state`` reads
-    # absent, empty and unreadable alike as ENABLED, so a pre-created ``{}``
+    # The credential-redaction setting: ``redaction_switch.read_state`` reads an
+    # absent record and an empty one alike as the default, so a pre-created ``{}``
     # means exactly what an absent file means (criterion 1); the writer
     # rewrites an existing record in place (``redaction_switch.set_enabled``),
     # so the read-only mount stays on the same inode and a sandboxed reader

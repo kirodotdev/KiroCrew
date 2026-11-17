@@ -22,10 +22,23 @@ from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import coerce_dict_section, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.updates_verdict import _display_local_version
-from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate
+from kiro_crew.dashboard.sse_event_scope import (
+    _audit_allow_quietly,
+    log_reader_refusal,
+    log_scope_granted,
+    scope_note_for_app,
+    status_frame_for_reader,
+    stream_app,
+    stream_reader_admission,
+    unidentified_reader_refusal,
+)
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
-from kiro_crew.dashboard.ws_event_scope import app_origin_frame, audit_teammate_withheld
+from kiro_crew.dashboard.ws_event_scope import (
+    DASHBOARD_USER_AUDITEE,
+    audit_owner_only_withheld,
+    owner_only_note,
+)
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 
@@ -149,7 +162,7 @@ _REDACTING = threading.local()
 
 
 def _stream_safe(msg: str) -> str:
-    """*msg* as the live log stream may carry it: redacted, whatever the seams switch says.
+    """*msg* as the live log stream may carry it: redacted, whatever the owner's redaction setting says.
 
     The stream reaches every dashboard-user socket and ``log``-scoped apps, not only
     the owner, so it is not an output seam. The switch read here would not say how
@@ -285,7 +298,29 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
 
     On connect, replays the last *lines* log entries from the ring buffer
     so the client sees history even if the Logs page wasn't open.
+
+    An app token reads it only with the ``log`` (or ``log:all``) event scope
+    declared, checked before the stream starts and again before each replayed and
+    live entry,
+    as ``subscribe_logs`` and ``_safe_ws_send`` do on the WebSocket; a reader
+    marked neither a dashboard user nor an app is refused.
     """
+    if (refused := unidentified_reader_refusal(request, "log")) is not None:
+        return refused
+    log_app = stream_app(request)
+    connect_events: frozenset[str] = frozenset()
+    if log_app:
+        refused, connect_events = await log_reader_refusal(request, log_app)
+        if refused is not None:
+            return refused
+    else:
+        # The replay bypasses every chokepoint, so its grant is recorded here,
+        # as ``subscribe_logs`` records it for a dashboard user's socket.
+        _audit_allow_quietly(DASHBOARD_USER_AUDITEE, "log")
+
+    def still_granted() -> bool:
+        return not log_app or log_scope_granted(log_app, connect_events)
+
     try:
         lines_cap = min(max(int(request.query.get("lines", "200")), 1), _LOG_RING_SIZE)
     except (TypeError, ValueError):
@@ -302,6 +337,10 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
     # Replay buffered history first (capped by ?lines=N)
     ring_snapshot = list(_log_ring)
     for data in ring_snapshot[-lines_cap:]:
+        # Re-checked per entry: the scope can be revoked while prepare() or a
+        # write yields, and history is as private as a live line.
+        if not still_granted():
+            return resp
         try:
             await resp.write(f"data: {data}\n\n".encode())
         except ConnectionResetError:
@@ -318,6 +357,8 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
             while not log_queue.empty():
                 try:
                     data = log_queue.get_nowait()
+                    if not still_granted():
+                        return resp
                     await resp.write(f"data: {data}\n\n".encode())
                 except asyncio.QueueEmpty:
                     break
@@ -325,6 +366,8 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
             # Wait for new entries or keepalive timeout
             try:
                 data = await asyncio.wait_for(log_queue.get(), timeout=30)
+                if not still_granted():
+                    return resp
                 await resp.write(f"data: {data}\n\n".encode())
             except asyncio.TimeoutError:
                 await resp.write(b": keepalive\n\n")
@@ -374,6 +417,11 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     and avoids future leaks from asyncio.wait().
     """
     state: DashboardState = request.app["state"]
+    # Neither mark from the auth middleware: refused before the stream starts.
+    # ``api_ws`` admits such a socket but its chokepoint grants it nothing; an
+    # SSE queue has no chokepoint, so the refusal is made here.
+    if (refused := unidentified_reader_refusal(request, "stream")) is not None:
+        return refused
     # POSITIVE signal from the auth middleware, read once per connection (the
     # token cannot change mid-stream). Never inferred from the absence of an app
     # name, and defaulting to False keeps this deny-by-default: a refactor that
@@ -381,9 +429,22 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     # publishing it to an unscoped client. Mirrors `api_ws`'s
     # `ws["_is_dashboard_user"]`. Consumed by the chat_message arm below.
     is_dashboard_user: bool = bool(request.get("is_dashboard_user", False))
-    # A relayed teammate has no app surface: an app's push notification is withheld
-    # here as the WebSocket gate withholds it (``ws_event_scope.app_origin_frame``).
-    relay_teammate = is_relay_teammate(request)
+    # An app token, named POSITIVELY by the middleware's app claim: every note
+    # passes the WebSocket's scope decisions (``sse_event_scope``) before it is
+    # written. A dashboard user (relayed teammate included) keeps the full stream.
+    scoped_app = "" if is_dashboard_user else str(request.get("app", "") or "")
+    connect_events: frozenset[str] | None = frozenset()
+    if scoped_app:
+        # A disabled app is refused, as ``api_ws`` closes it; unreadable
+        # declarations (``None``) admit Tier 0 frames only.
+        refused, connect_events = await stream_reader_admission(request, scoped_app)
+        if refused is not None:
+            return refused
+    # Owner-only notes (``ws_event_scope.OWNER_ONLY_CHANNELS``) reach the machine
+    # owner alone; a Shared Crew teammate passes the owner gate but not this.
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+
+    host_owner = is_host_owner_dashboard_request(request)
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -393,6 +454,18 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     except ConnectionResetError:
         return resp
 
+    # Whether this reader is the owner alone, decided once: a note was built inside
+    # the owner's seam, so any other reader gets each event redacted in full.
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard.redaction_audience import for_reader, request_audience
+
+    owner_reader = redaction_seams.owner_alone(request_audience(request))
+
+    async def send(event: str, payload: str) -> None:
+        shown = for_reader(payload, owner=owner_reader)
+        if shown is not None:
+            await resp.write(f"event: {event}\ndata: {shown}\n\n".encode())
+
     # Register a per-client notification queue
     client_q = state.register_sse()
     try:
@@ -401,15 +474,22 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
             while not client_q.empty():
                 try:
                     note = client_q.get_nowait()
+                    if scoped_app:
+                        scoped = scope_note_for_app(
+                            note, app=scoped_app, connect_events=connect_events, state=state
+                        )
+                        if scoped is None:
+                            continue
+                        note = scoped
                     msg_type = note.get("_type", "")
                     if msg_type == "slots":
                         payload = note["slots"]
                         if not is_dashboard_user:
                             payload = _without_pin_ranks(payload)
-                        await resp.write(f"event: slots\ndata: {payload}\n\n".encode())
+                        await send("slots", payload)
                     elif msg_type == "slot_title":
                         payload = json.dumps({"key": note["key"], "title": note["title"]})
-                        await resp.write(f"event: slot_title\ndata: {payload}\n\n".encode())
+                        await send("slot_title", payload)
                     elif msg_type == "refresh":
                         await resp.write(f"event: refresh\ndata: {note['kinds']}\n\n".encode())
                     elif msg_type == "chat_message":
@@ -419,29 +499,29 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         # is how `meta` (the row's `meta.mid` dedup identity)
                         # goes missing on one transport while the other keeps it.
                         #
-                        # `include_metadata` is NOT True unconditionally. This
-                        # queue has no per-app filtering — `_broadcast()` fans
-                        # the raw note to every registered SSE client — so
-                        # `meta` (tool_input, a live oauth_url, approval_id)
-                        # would reach any app token granted this route whatever
-                        # its `slots:*` scope. Same class as leaking public-repo
-                        # status onto this endpoint. The WS
+                        # `include_metadata` is NOT True unconditionally. The
+                        # queue itself is unfiltered — `_broadcast()` fans the
+                        # raw note to every registered SSE client — and only an
+                        # app token's notes pass the slot gate above, so `meta`
+                        # (tool_input, a live oauth_url, approval_id) stays on
+                        # the dashboard user's frames. The WS
                         # door may pass True because it filters downstream; this
                         # one must decide here.
                         payload = json.dumps(
                             chat_message_frame(note, include_metadata=is_dashboard_user)
                         )
-                        await resp.write(f"event: chat_message\ndata: {payload}\n\n".encode())
+                        await send("chat_message", payload)
                     else:
-                        if relay_teammate and app_origin_frame(msg_type or "notification", note):
-                            audit_teammate_withheld(msg_type or "notification")
+                        if not host_owner and owner_only_note(note):
+                            # Names the machine owner's own accounts: their stream only.
+                            audit_owner_only_withheld(msg_type or "notification")
                             continue
                         payload = json.dumps(note)
-                        await resp.write(f"event: notification\ndata: {payload}\n\n".encode())
+                        await send("notification", payload)
                 except asyncio.QueueEmpty:
                     break
 
-            data = json.dumps(
+            status = status_frame_for_reader(
                 {
                     # The SSE stream is the THIRD status emitter. It routes the
                     # lesson/cron counts through the ONE gateway-wide cache all
@@ -452,8 +532,10 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     # tri-state update fields are not flattened.
                     **await cached_status_snapshot(state),
                     "version": _display_local_version(),
-                }
+                },
+                scoped_app,
             )
+            data = json.dumps(status)
             await resp.write(f"event: dashboard\ndata: {data}\n\n".encode())
 
             # Sleep in short intervals, wake early if notification arrives

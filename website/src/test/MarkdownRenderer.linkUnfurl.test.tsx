@@ -129,7 +129,9 @@ describe('MarkdownRenderer link unfurl — gates', () => {
 
   it('fetches nothing while streaming even for an already-complete URL', async () => {
     render(<MarkdownRenderer content={HREF} linkPreviews streaming />)
-    await waitFor(() => expect(screen.getByRole('link')).toHaveAttribute('href', HREF))
+    // A streaming reply draws the link as its text until its blocked-link records arrive.
+    await waitFor(() => expect(screen.getByText(HREF)).toBeTruthy())
+    expect(screen.queryByRole('link')).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
     expect(cardShown()).toBe(false)
   })

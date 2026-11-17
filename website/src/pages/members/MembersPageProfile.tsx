@@ -633,6 +633,7 @@ export function MembersPageProfileCard({
         // name made every such crewmate read as having no schedules and hid
         // a job the moment it was created here. See `wakesCrew`.
         memberId={activeSlug}
+        memberStore={activeView?.memory_store}
         // The job's `agent` field, which has to be passed: `JobForm` falls back
         // to `''`, so omitting it persisted a created schedule with no agent at
         // all and `/schedule` labelled this crewmate's own job as the default

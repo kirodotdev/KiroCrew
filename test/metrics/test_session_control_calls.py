@@ -461,6 +461,8 @@ class TestRouteOps:
             "/api/session-control/release": "release",
             "/api/session-control/read": "read_message",
             "/api/session-control/queue": "other",
+            "/api/session-control/crews": "other",
+            "/api/session-control/run-queued": "other",
             "/api/session-control/summary": "summary",
         }
 

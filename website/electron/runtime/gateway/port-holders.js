@@ -1,7 +1,7 @@
 "use strict";
 
 const { findKirocrewBin } = require("../../find-bin");
-const { forceStopPort, isKirocrewCommand } = require("../../gateway-stop");
+const { confirmedFree, forceStopPort, isKirocrewCommand } = require("../../gateway-stop");
 const {
   canonicalWindowsPath,
   windowsGatewayExecutablePaths,
@@ -95,8 +95,9 @@ function descendantPids(rootPid, psTable) {
  * @param {object} deps
  * @param {() => string[]} deps.getSpawnedExecutablePaths  executables the
  *        CURRENT child was spawned from, read at call time.
- * @param {(port:number) => Promise<boolean>} [deps.isPortBindable]  Windows
- *        force-stop's bind check for an empty netstat answer.
+ * @param {(port:number) => Promise<boolean>} [deps.isPortBindable]  force-stop's
+ *        bind check for an empty netstat answer on Windows, and for an lsof
+ *        probe that could not run on macOS and Linux.
  * @param {(ms:number) => Promise<void>} [deps.sleep]  the wait between bind
  *        checks while that answer stays refused.
  */
@@ -314,10 +315,11 @@ function createPortHolders({
   /**
    * @param {number} probePort
    * @param {{ onBindWait?: () => void, isAborted?: () => boolean }} [o]
-   *        `onBindWait` is called once when an ownerless port refuses a bind and
-   *        recovery starts waiting for it to free; `isAborted` ends that wait.
+   *        `onBindWait` is called once when a port with no known owner refuses
+   *        a bind and recovery starts waiting for it to free; `isAborted` ends
+   *        that wait.
    */
-  function forceStopGatewayPort(probePort, { onBindWait = null, isAborted = null } = {}) {
+  async function forceStopGatewayPort(probePort, { onBindWait = null, isAborted = null } = {}) {
     if (IS_WIN) {
       return forceStopPort(probePort, {
         // Recovery fails closed on a probe error, so one slow netstat spawn
@@ -333,6 +335,7 @@ function createPortHolders({
         failClosedOnProbeError: true,
         // netstat can leave a held port out of its table, so "no owner" is
         // checked with a real bind before recovery respawns into the port. A
+        // netstat that fails every attempt is settled by the same bind. A
         // gateway that served connections leaves the port refusing binds for a
         // while after it exits, so a refusal is waited out for as long as the
         // splash already allows a Windows gateway to start.
@@ -343,7 +346,7 @@ function createPortHolders({
         log: glog,
       });
     }
-    return forceStopPort(probePort, {
+    const result = await forceStopPort(probePort, {
       getListenPids: lsofListenPids,
       getCommand: psCommand,
       getPpid: psPpid,
@@ -351,8 +354,24 @@ function createPortHolders({
       isLaunchdJob: processObj.platform === "darwin" ? isLaunchdJob : null,
       kill: (pid, signal) => processObj.kill(pid, signal),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      failClosedOnProbeError: true,
       log: glog,
     });
+    if (!result.probeFailed) return result;
+    // lsof can be missing for good, so a failed probe is settled with a real
+    // bind: a port that opens within the wait the splash already allows is
+    // free, and one that never does goes to the restart-required dialog.
+    const bindable = await confirmedFree(probePort, {
+      confirmFree: (p) => isPortBindable(p),
+      waitMs: LOCAL_GATEWAY_WAIT_MS,
+      sleep,
+      onWait: onBindWait,
+      isAborted,
+      log: glog,
+    });
+    if (!bindable) return result;
+    const { probeFailed: _probeFailed, ...probed } = result;
+    return { ...probed, freed: true };
   }
 
   return {

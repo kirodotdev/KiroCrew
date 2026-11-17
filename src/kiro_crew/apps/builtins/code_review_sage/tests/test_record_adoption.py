@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 from sage_lib import results
 from sage_lib import review_driver as D
 from sage_lib import store
@@ -39,8 +38,13 @@ def _response(task: str, record: dict) -> str:
 
 
 class _Base(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.root = Path(self.tmp) / "app"
@@ -51,7 +55,6 @@ class _Base(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 class TestRecordContractAtRead(_Base):
@@ -183,13 +186,15 @@ class TestStagingResidue(unittest.TestCase):
     it is never re-reviewed there.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self.root = Path(self.tmp)
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_a_run_does_not_adopt_crash_residue_as_its_own_review(self):
         """A worker without an accepted response cannot claim a stale record."""

@@ -199,10 +199,9 @@ def _text_refusal(value: Any) -> str | None:
 def has_exfil_url(text: str) -> bool:
     """Whether the exfiltration-URL scan flags *text*: judged, never applied, so a
     flagged text is refused instead of being redacted into shape."""
-    from kiro_crew.security import redact_exfiltration_urls
+    from kiro_crew.security import scan_exfiltration_urls
 
-    cleaned, warnings = redact_exfiltration_urls(text)
-    return bool(warnings) or cleaned != text
+    return bool(scan_exfiltration_urls(text))
 
 
 def _strip_grants(value: Any) -> Any:

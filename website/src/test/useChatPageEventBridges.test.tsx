@@ -217,17 +217,19 @@ describe('redaction-card bridges', () => {
     expect(opts.dispatch).toHaveBeenCalledWith(setPendingInput('draft so far\n\nplease fetch it'))
   })
 
-  it('hands a reply card\'s text and chat to the page send and reports what the page did', () => {
-    const composeSend = vi.fn((_text: string, slot: string) => (slot === 'slot-a' ? 'staged' as const : null))
+  it('hands a reply card\'s text, chat and outcome callback to the page send and reports what the page did', () => {
+    const composeSend = vi.fn((_text: string, slot: string, _onOutcome: (o: string) => void) => (slot === 'slot-a' ? 'staged' as const : null))
     harness({ composeSend })
-    const mine = { text: '不用讨论了', slot: 'slot-a', result: null }
-    const other = { text: '不用讨论了', slot: 'slot-b', result: null }
-    const empty = { text: '', slot: 'slot-a', result: null }
-    const noSlot = { text: '不用讨论了', result: null }
-    const taken = { text: '不用讨论了', slot: 'slot-a', result: 'sent' }
-    for (const detail of [mine, other, empty, noSlot, taken]) act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
-    expect(composeSend.mock.calls).toEqual([['不用讨论了', 'slot-a'], ['不用讨论了', 'slot-b']])
-    expect([mine.result, other.result, empty.result, noSlot.result, taken.result]).toEqual(['staged', null, null, null, 'sent'])
+    const onOutcome = vi.fn()
+    const mine = { text: '不用讨论了', slot: 'slot-a', result: null, onOutcome }
+    const other = { text: '不用讨论了', slot: 'slot-b', result: null, onOutcome }
+    const empty = { text: '', slot: 'slot-a', result: null, onOutcome }
+    const noSlot = { text: '不用讨论了', result: null, onOutcome }
+    const noCallback = { text: '不用讨论了', slot: 'slot-a', result: null }
+    const taken = { text: '不用讨论了', slot: 'slot-a', result: 'pending', onOutcome }
+    for (const detail of [mine, other, empty, noSlot, noCallback, taken]) act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+    expect(composeSend.mock.calls).toEqual([['不用讨论了', 'slot-a', onOutcome], ['不用讨论了', 'slot-b', onOutcome]])
+    expect([mine.result, other.result, empty.result, noSlot.result, noCallback.result, taken.result]).toEqual(['staged', null, null, null, null, 'pending'])
   })
 
   it('reloads the named slot when a host is allowed, and ignores a malformed event', () => {
@@ -239,7 +241,7 @@ describe('redaction-card bridges', () => {
     expect(opts.dispatch).toHaveBeenCalledWith(expect.any(Function))
   })
 
-  it('asks the reload to re-serve the card\'s own reply when the event names it (#17023)', () => {
+  it('asks the reload to re-serve the card\'s own reply when the event names it', () => {
     const { opts } = harness()
     act(() => { window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'slot-b', messageTs: '2026-01-01T00:00:00Z' } })) })
     act(() => { window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'slot-b', messageTs: 7 } })) })

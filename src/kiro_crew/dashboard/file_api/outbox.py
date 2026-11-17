@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         logger,
         read_bounded_json,
         redact,
+        refuses,
         rehydrate_slot_from_history_async,
         summary_rows,
         wide_content_is_flagged,
@@ -94,8 +95,10 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    # Reject files whose names/paths contain sensitive patterns
-    if redact(raw_filename) != raw_filename or redact(raw_path) != raw_path:
+    # Reject files whose names/paths contain sensitive patterns. A safety decision, so
+    # the names are scanned in full whatever the owner's setting.
+    sensitive_name = refuses(raw_filename, redact) or refuses(raw_path, redact)
+    if sensitive_name:
 
         _sel().log_tool_invocation(
             session_key="api",
@@ -296,13 +299,15 @@ def _caller_is_owner(request: web.Request) -> bool:
 
     The outbox download route needs authentication, not owner identity: a Slack
     allow-listed non-owner running ``!dashboard`` authenticates too. So the owner
-    gets the bytes as-is, and anyone else still meets the content scan.
+    gets the bytes as-is, and anyone else still meets the content scan. The machine
+    owner alone: a Shared Crew teammate clears the owner gate but is scanned, as every
+    redaction seam treats them.
     """
     from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
     )
 
-    return bool(is_owner_dashboard_request(request))
+    return bool(is_host_owner_dashboard_request(request))
 
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:
@@ -360,9 +365,9 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         # NUL-interleaved ASCII, decodes as valid UTF-8 into this very branch, and
         # arrives with its characters separated so no contiguous-ASCII detector
         # matches. Short-circuited, so a file the text pass already flags pays no
-        # second scan.
-        redacted = redact(text)
-        narrow_flagged = redacted != text
+        # second scan. Both are safety decisions, scanned in full whatever the owner's
+        # setting; the wide pass reads the full verdicts ``platform.context`` keeps.
+        narrow_flagged = refuses(text, redact)
         if narrow_flagged or await asyncio.to_thread(wide_content_is_flagged, raw):
             _sel().log_tool_invocation(
                 session_key="api",
@@ -483,12 +488,15 @@ def _list_outbox_entries() -> list[dict[str, object]]:
     odir = outbox_dir()
     if not odir.is_dir():
         return entries
+    # Which names may be listed is a safety decision: scanned in full whatever the
+    # owner's setting.
     for f in odir.iterdir():
         try:
             st = f.stat()
         except FileNotFoundError:
             continue
-        if f.is_file() and redact(f.name) == f.name:
+        listable = not refuses(f.name, redact)
+        if f.is_file() and listable:
             entries.append({"filename": f.name, "size": st.st_size, "modified": st.st_mtime})
     entries.sort(key=lambda x: float(x["modified"]), reverse=True)  # type: ignore[arg-type]
     return entries

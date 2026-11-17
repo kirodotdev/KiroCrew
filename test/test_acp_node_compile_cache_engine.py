@@ -20,7 +20,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -333,7 +332,10 @@ def test_the_sandbox_denies_writes_outside_the_scratch(tmp_path, monkeypatch):
     node, _server = _ENGINE
     run_parent = Path(data_home()) / "run" / "node-prewarm-test"
     run_parent.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(dir=run_parent))
+    # The data home is this test's own isolation dir under pytest's basetemp, so a
+    # fixed name is unique and pytest removes it with the rest of the run.
+    scratch = run_parent / "scratch"
+    scratch.mkdir()
     outside_dir = Path(ncc.node_compile_cache_dir(ncc.ROUTE_ENGINE_BUNDLE))
     outside_dir.mkdir(parents=True, exist_ok=True)
 

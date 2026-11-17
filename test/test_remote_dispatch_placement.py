@@ -52,6 +52,7 @@ class Crews:
         self.waiting = 0
         self.both_waiting: asyncio.Event | None = None
         self.probe_cancelled = False
+        self.headroom_params: list[Any] = []
 
     def add(self, iid: str, mem: float = 50.0, disk: float = 200.0, **over: Any) -> None:
         room = {"mem_free_gb": mem, "disk_free_gb": disk, "load_per_cpu": 0.2}
@@ -80,6 +81,8 @@ class Crews:
 
     @asynccontextmanager
     async def proxy_request(self, iid, method, path, *, params=None, data=None, content_type=""):
+        if path == "api/chat/headroom":
+            self.headroom_params.append(params)
         if path == "api/chat/headroom" and self.crews[iid].get("stall"):
             try:
                 await asyncio.Event().wait()  # blocks until cancelled by wait_for
@@ -325,10 +328,10 @@ def test_a_stalling_crew_probe_is_skipped(recorded, crews, monkeypatch):
     crews.add("b", mem=4)
     real_candidate = placement._candidate
 
-    async def _candidate_stub(state, mgr, row, mem_gb, disk_gb):
+    async def _candidate_stub(state, mgr, row, mem_gb, disk_gb, requires):
         if getattr(row, "id", "") == "a":
             return None  # simulates _candidate timing out on a stalled probe
-        return await real_candidate(state, mgr, row, mem_gb, disk_gb)
+        return await real_candidate(state, mgr, row, mem_gb, disk_gb, requires)
 
     monkeypatch.setattr(placement, "_candidate", _candidate_stub)
 
@@ -526,3 +529,197 @@ def test_placement_of_a_never_retired_item_carries_no_previous_branch(recorded, 
         assert "previous_branch" not in result
 
     _run(crews, 1, body)
+
+
+# ── requires: capability filter before ranking (audit D2) ────────────────────
+
+
+async def _place_with(state: Any, item_id: str, requires: Any) -> tuple[dict[str, Any], str]:
+    return await placement.place(
+        state,
+        state.instances_manager,
+        CONDUCTOR,
+        {"work_item": item_id, "requires": requires},
+        board=CONDUCTOR,
+    )
+
+
+def _room(**caps: Any) -> dict[str, Any]:
+    return {"mem_free_gb": 50.0, "disk_free_gb": 200.0, "load_per_cpu": 0.2, **caps}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "gh",
+        {"logins": "gh"},
+        {"tags": ["GPU"]},
+        {"tags": ["/etc/passwd"]},
+        {"tags": ["lab.example.com"]},
+        {"tags": ["123456789012"]},
+        {"tags": [1]},
+        {"logins": ["aws"]},
+        {"tags": [f"t{i}" for i in range(17)]},
+        {"accounts": ["x"]},
+    ],
+)
+def test_a_malformed_requires_is_refused_before_any_crew_is_probed(recorded, crews, raw):
+    crews.add("a")
+
+    async def body(state, items):
+        with pytest.raises(routes.CrewCallError) as exc:
+            await _place_with(state, items[0], raw)
+        assert exc.value.code == placement.REQUIRES_INVALID
+
+    _run(crews, 1, body)
+    assert crews.creates == []
+
+
+def test_parse_requires_keeps_order_drops_repeats_and_reads_empty_as_nothing():
+    req = placement.parse_requires({"tags": ["gpu", "docker", "gpu"], "logins": ["gh"]})
+    assert req == placement.Requires(tags=("gpu", "docker"), logins=("gh",))
+    assert not placement.parse_requires(None)
+    assert not placement.parse_requires({})
+
+
+def test_a_crew_without_the_login_is_skipped_however_much_room_it_has(recorded, crews):
+    crews.add("a", headroom=_room(mem_free_gb=99.0, logins={"gh": "expired"}))
+    crews.add("b", headroom=_room(mem_free_gb=8.0, logins={"gh": "valid"}, tags=["gpu"]))
+
+    async def body(state, items):
+        _, name = await _place_with(state, items[0], {"logins": ["gh"], "tags": ["gpu"]})
+        assert name == "b"
+
+    _run(crews, 1, body)
+    assert crews.creates == ["b"]
+
+
+@pytest.mark.parametrize(
+    "logins, word",
+    [
+        ({"gh": "expired"}, "login gh (expired)"),
+        ({"gh": "unknown"}, "login gh (still checking; retry shortly)"),
+        ({"gh": "VALID"}, "login gh (not reported)"),
+        ({"gh": {"state": "valid"}}, "login gh (not reported)"),
+        ("gh=valid", "login gh (not reported)"),
+        (None, "login gh (not reported)"),
+    ],
+)
+def test_no_qualifying_crew_is_refused_naming_what_each_lacked(recorded, crews, logins, word):
+    crews.add("a", headroom=_room(logins=logins, tags="gpu"))  # tags not a list: none
+    crews.add("old")  # a peer older than tags/logins reports neither
+
+    async def body(state, items):
+        with pytest.raises(routes.CrewCallError) as exc:
+            await _place_with(state, items[0], {"logins": ["gh"], "tags": ["gpu"]})
+        assert exc.value.code == placement.CREW_REQUIREMENTS_UNMET
+        assert exc.value.status == 503
+        assert f"a lacks tag gpu, {word}" in exc.value.message
+        assert "old lacks tag gpu, login gh (not reported)" in exc.value.message
+        item = work_ledger.read_work_item(CONDUCTOR, items[0])
+        assert item is not None and not item.worker_instance_id
+
+    _run(crews, 1, body)
+    assert crews.creates == []  # no blind pick
+
+
+def test_a_qualifying_crew_with_no_room_answers_no_room_not_requirements(recorded, crews):
+    crews.add("a", headroom=_room(mem_free_gb=1.0, tags=["gpu"]))
+    crews.add("b", headroom=_room(tags=[]))
+
+    async def body(state, items):
+        with pytest.raises(routes.CrewCallError) as exc:
+            await _place_with(state, items[0], {"tags": ["gpu"]})
+        assert exc.value.code == placement.CREW_NONE_AVAILABLE
+        assert "b lacks tag gpu" in exc.value.message
+
+    _run(crews, 1, body)
+    assert crews.creates == []
+
+
+def test_requires_is_never_sent_to_the_peer(recorded, crews, monkeypatch):
+    crews.add("a", headroom=_room(tags=["gpu"]))
+    sent: list[Any] = []
+    real = crews._answer
+
+    def spy(iid, method, path, body):
+        if path == "api/chat/slots":
+            sent.append(body)
+        return real(iid, method, path, body)
+
+    monkeypatch.setattr(crews, "_answer", spy)
+
+    async def body(state, items):
+        await _place_with(state, items[0], {"tags": ["gpu"]})
+
+    _run(crews, 1, body)
+    assert sent and all("requires" not in b for b in sent)
+
+
+@pytest.mark.parametrize(
+    "requires, params",
+    [
+        (None, {"logins": "0"}),
+        ({"tags": ["gpu"]}, {"logins": "0"}),
+        ({"logins": ["gh"]}, {"logins": "1"}),
+        ({"tags": ["gpu"], "logins": ["gh"]}, {"logins": "1"}),
+    ],
+)
+def test_the_headroom_read_asks_for_logins_only_when_requires_names_one(
+    recorded, crews, requires, params
+):
+    crews.add("a", headroom=_room(logins={"gh": "valid"}, tags=["gpu"]))
+
+    async def body(state, items):
+        _, name = await _place_with(state, items[0], requires)
+        assert name == "a"
+        if requires:
+            await placement.check_crew_requires(crews, "a", "a", requires)
+
+    _run(crews, 1, body)
+    assert crews.headroom_params and all(p == params for p in crews.headroom_params)
+
+
+def test_an_explicit_crew_is_checked_against_requires(crews):
+    crews.add("a", headroom=_room(logins={"gh": "valid"}))
+    crews.add("down", headroom={}, headroom_status=500)
+
+    async def go():
+        await placement.check_crew_requires(crews, "a", "a", None)
+        await placement.check_crew_requires(crews, "a", "a", {"logins": ["gh"]})
+        with pytest.raises(routes.CrewCallError) as exc:
+            await placement.check_crew_requires(crews, "a", "a", {"tags": ["gpu"]})
+        assert exc.value.code == placement.CREW_REQUIREMENTS_UNMET
+        assert "a lacks tag gpu" in exc.value.message
+        with pytest.raises(routes.CrewCallError) as exc:
+            await placement.check_crew_requires(crews, "down", "down", {"tags": ["gpu"]})
+        assert exc.value.code == placement.CREW_REQUIREMENTS_UNMET
+        with pytest.raises(routes.CrewCallError) as exc:
+            await placement.check_crew_requires(crews, "a", "a", {"logins": ["aws"]})
+        assert exc.value.code == placement.REQUIRES_INVALID
+
+    asyncio.run(go())
+
+
+def test_the_tool_forwards_requires_and_refuses_it_on_a_local_create(monkeypatch):
+    from kiro_crew.mcp_dashboard_session_runs import _run_session_create
+
+    monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: True)
+    ctx = MagicMock()
+    ctx.client.post.return_value = {"target": "c", "crew": "lab", "placed": True}
+    _run_session_create({"work_item": "it_0000abcd", "requires": {"tags": ["gpu"]}}, ctx)
+    _, payload = ctx.client.post.call_args.args
+    assert payload == {"work_item": "it_0000abcd", "requires": {"tags": ["gpu"]}}
+    ctx.client.post.reset_mock()
+    out = _run_session_create({"requires": {"tags": ["gpu"]}}, ctx)
+    assert out == "Error: requires is taken only with crew or work_item."
+    ctx.client.post.assert_not_called()
+
+
+def test_the_schema_offers_requires_on_session_create_only():
+    from kiro_crew.mcp_session_crew import with_crew_schema
+
+    rows = [{"name": "session_create"}, {"name": "session_send"}]
+    out = {t["name"]: t["inputSchema"]["properties"] for t in with_crew_schema(rows, True)}
+    assert out["session_create"]["requires"]["additionalProperties"] is False
+    assert "requires" not in out["session_send"]
