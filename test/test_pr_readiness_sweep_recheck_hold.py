@@ -65,7 +65,7 @@ def test_a_hold_on_a_head_with_every_check_completed_is_refired(runner: Runner) 
     assert len(dispatched) == 1
     assert "pr=2064" in dispatched[0]
     assert "sha=4328fd0f941f09ff10f245fbdb4accf7c246febe" in dispatched[0]
-    assert "every check-run on the head completed" in runner.last_stdout
+    assert "every monitored check-run on the head completed" in runner.last_stdout
 
 
 def test_a_hold_with_a_check_still_running_waits_for_its_evidence(runner: Runner) -> None:
