@@ -29,7 +29,7 @@ import pytest
 from kiro_crew import _llama_lib_path, cli_doctor, loopback_http
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, agents, install, services
+from kiro_crew.doctor_checks import access, agents, install, mcp, services
 from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.service import live_target
 
@@ -63,6 +63,7 @@ _SECTIONS = (
     "_doctor_strict_identity",
     "_doctor_mcp_gateway_daemon",
     "_doctor_mcp_share_refused",
+    "_doctor_dropped_mcp_servers",
     "_doctor_unresolved_mcp_refs",
     "_doctor_backend_ability_cards",
     "_doctor_selected_backend_projection",
@@ -115,6 +116,7 @@ _FAMILY_ONLY = {
     "_doctor_signing_key": access,
     "_doctor_kiro_chat_delegate": services,
     "_doctor_service_launch": install,
+    "_doctor_dropped_mcp_servers": mcp,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -427,6 +429,7 @@ Configuration
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
   <<_doctor_mcp_share_refused>>
+  <<_doctor_dropped_mcp_servers>>
   <<_doctor_unresolved_mcp_refs>>
   <<_doctor_backend_ability_cards>>
   <<_doctor_selected_backend_projection>>
@@ -724,6 +727,7 @@ Configuration
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
   <<_doctor_mcp_share_refused>>
+  <<_doctor_dropped_mcp_servers>>
   <<_doctor_unresolved_mcp_refs>>
   <<_doctor_backend_ability_cards>>
   <<_doctor_selected_backend_projection>>

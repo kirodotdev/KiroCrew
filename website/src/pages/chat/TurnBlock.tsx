@@ -119,7 +119,7 @@ const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
   it.msg.meta?.kind === 'crew_dispatch_notice' || it.msg.meta?.kind === 'crew_paused_notice' ||
   it.msg.meta?.kind === 'agent_welcome' || it.msg.meta?.kind === 'agent_no_tools' ||
-  it.msg.meta?.kind === 'mcp_sign_in_unsupported' ||
+  it.msg.meta?.kind === 'mcp_sign_in_unsupported' || it.msg.meta?.kind === 'mcp_servers_left_out' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 

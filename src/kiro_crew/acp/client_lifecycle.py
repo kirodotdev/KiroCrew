@@ -15,7 +15,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_crew_bridge_snapshots``, ``_fork_request``, ``_kill_sent``, ``_last_activity``,
 ``_last_stop_reason``, ``_liveness_oracle``, ``_loaded_capability_template``,
 ``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mcp_report_frame_floor``,
-``_member_stub_allowlist``, ``_mimocode_governed_stop``, ``_oauth_emitted_servers``,
+``_mcp_spec_dropped``, ``_member_stub_allowlist``, ``_mimocode_governed_stop``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``, ``_pid``,
 ``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
@@ -693,6 +693,7 @@ def _reset_state(self: AcpClient) -> None:
     # what the next session's guard judges, not this one's.
     self._mcp_ref_spec = None
     self._mcp_json_names = ()
+    self._mcp_spec_dropped = ()
     self._spec_denied_tools = frozenset()
     self._spec_shell_allowlist = None
     self._spec_write_allowlist = None

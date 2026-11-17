@@ -895,6 +895,7 @@ def _doctor(
     mcp._doctor_strict_identity(cfg)
     mcp._doctor_mcp_gateway_daemon(issues)
     mcp._doctor_mcp_share_refused(cfg, issues)
+    mcp._doctor_dropped_mcp_servers(issues)
     mcp._doctor_unresolved_mcp_refs()
     mcp._doctor_authored_agent_mcp_refs(cfg)
     mcp._doctor_template_mcp_additions()

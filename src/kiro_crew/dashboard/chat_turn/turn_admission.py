@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.eager_spawn import _clear_eager_spawn_failures
     from kiro_crew.dashboard.chat_turn.mcp_session import (
         _drain_session_init_oauth_requests,
+        _notice_crew_left_out_mcp,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
         _watch_session_mcp_report,
@@ -1375,6 +1376,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         _notice_steer_upgrade(state, slot, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
+        _notice_crew_left_out_mcp(state, slot, client)
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early

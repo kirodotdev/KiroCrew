@@ -10,7 +10,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_env_snapshot``, ``_mcp_json_names``,
-``_mcp_ref_spec``.
+``_mcp_ref_spec``, ``_mcp_spec_dropped``.
 
 Instance fields read: ``_native_skill_projection``, ``_session_key``,
 ``_stub_session_token``, ``_work_dir``.
@@ -31,6 +31,7 @@ from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.launch import LaunchTools
+from kiro_crew.acp.mcp_prune import spec_dropped_servers
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -915,6 +916,9 @@ def _prepare_spawn_workspace(self: AcpClient) -> None:
         raise AcpError(str(exc)) from exc
     self._mcp_ref_spec = self._read_mcp_ref_spec()
     self._mcp_json_names = mcp_json_server_names(self._mcp_ref_spec, self.backend, self._work_dir)
+    # The servers the spec writer dropped for a command not found: the array never
+    # carries them, so the report names them (``_begin_session_report``).
+    self._mcp_spec_dropped = spec_dropped_servers(self._agent, self._mcp_ref_spec)
 
 
 def _agent_env_for_spawn(self: AcpClient) -> dict[str, str]:
