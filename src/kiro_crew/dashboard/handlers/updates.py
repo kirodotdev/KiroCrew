@@ -178,10 +178,19 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers import _update_image  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
     from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import _audit_allow_quietly  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import log_reader_refusal  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import log_scope_granted  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import scope_note_for_app  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import status_frame_for_reader  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import stream_app  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import stream_reader_admission  # noqa: F401
+    from kiro_crew.dashboard.sse_event_scope import unidentified_reader_refusal  # noqa: F401
     from kiro_crew.dashboard.state import DashboardState  # noqa: F401
     from kiro_crew.dashboard.state import chat_message_frame  # noqa: F401
     from kiro_crew.dashboard.status_counts import cached_status_snapshot  # noqa: F401
     from kiro_crew.dashboard.urls import is_loopback  # noqa: F401
+    from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE  # noqa: F401
     from kiro_crew.gateway_restart import resolve_restart_launcher  # noqa: F401
     from kiro_crew.git_divergence import DivergenceUnreadable  # noqa: F401
     from kiro_crew.git_divergence import count_divergence  # noqa: F401

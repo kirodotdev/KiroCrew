@@ -57,6 +57,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_precap_readings,
     persisted_replay_denial_reason,
     slots_envelope_extras,
+    strip_owner_only_status,
     visible_subagent_slot_keys,
 )
 from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
@@ -1146,10 +1147,10 @@ async def _serve_ws(
                     # path names the operator's home directory. Strip them here
                     # rather than moving the whole frame behind a declaration,
                     # which would silently cut every existing app off from the
-                    # version signal. ``/api/status`` and the SSE stream run on
-                    # dashboard-user tokens and keep the full snapshot.
-                    for _owner_only in ("branch", "commit", "update_policy_file"):
-                        data.pop(_owner_only, None)
+                    # version signal. ``/api/status`` runs on dashboard-user
+                    # tokens and keeps the full snapshot; the SSE stream strips
+                    # the same fields for its app readers with this helper.
+                    strip_owner_only_status(data)
                 # Tier 0 admits every socket unconditionally, but the decision
                 # is still a grant per ``AUTOSDE.yaml`` -- this frame is sent
                 # directly rather than through the broadcast chokepoint, so
