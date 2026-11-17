@@ -22,7 +22,8 @@ The ladder, in order:
    blocks. The first admitted hit is held;
 4. the interject may tear the request down;
 5. a held hit is approved; otherwise the first attended responder asks the
-   person; otherwise the unattended refusal answers.
+   person (a prompt whose window closes with nobody answering is the host's
+   refusal, ``approval_expired``); otherwise the unattended refusal answers.
 
 A policy with :attr:`Policy.stopping` reads it live before the first stage,
 before a person is asked, and at the commit point of an approval, with nothing
@@ -71,10 +72,14 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Protocol
 
 from kiro_crew import name_grant
-from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE, DENY_CAUSE_POLICY
+from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_BATCH_READ_WRITE,
+    DENY_CAUSE_POLICY,
+)
 from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, identity_grant_covers_child
-from kiro_crew.llm_helpers import _steer_host_deny
+from kiro_crew.llm_helpers import _steer_host_deny, approval_expiry_watch
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, ApprovalWithdrawn
 from kiro_crew.tool_gate_busy import TOOL_GATE_BUSY_REASON
 
@@ -167,9 +172,14 @@ class Notice:
 
 @dataclass(frozen=True)
 class Answer:
-    """A responder's answer: whether the person approved."""
+    """A responder's answer: whether the person approved.
+
+    *expired* is set when the prompt's window closed with nobody answering, so
+    the refusal is the host's, not the person's.
+    """
 
     approved: bool
+    expired: bool = False
 
 
 Outcome = Literal["approved", "auto_approved", "refused", "rejected", "floor_refused", "bailed"]
@@ -412,6 +422,12 @@ def _gate_unjudged(waited: float) -> Refusal:
     return Refusal.host("hook_deny", TOOL_GATE_BUSY_REASON, DENY_CAUSE_POLICY)
 
 
+#: A person's prompt that closed with nobody answering: the host declined.
+_APPROVAL_EXPIRED = Refusal.host(
+    "approval_expired", "the approval prompt went unanswered", DENY_CAUSE_APPROVAL_TIMEOUT
+)
+
+
 async def settle(ask: Ask, policy: Policy) -> Settled:
     """Decide, audit and answer *ask* under *policy*; see the module docstring."""
     if _stopping(policy):
@@ -461,6 +477,8 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
             answer = await responder.ask(ask)
         if answer.approved:
             return await _allow(ask, policy, responder.name, "approved", "person")
+        if answer.expired:
+            return await _refuse(ask, policy, _APPROVAL_EXPIRED)
         return await _refuse(ask, policy, Refusal.person(responder.name))
     if low:
         assert policy.child.unattended is not None  # Policy.__post_init__
@@ -740,7 +758,8 @@ class ApprovalWatch(Protocol):
     """Observes a person being asked: :meth:`opened` before the wait, :meth:`closed` after.
 
     *by* is ``""`` when a person answered and ``"host"`` when the wait ended with
-    no answer (the approver raised, or the wait was cancelled).
+    no answer (the approver raised, the wait was cancelled, or its prompt's
+    window closed unanswered).
     """
 
     def opened(self, ask: Ask) -> object: ...
@@ -784,12 +803,15 @@ class CallbackResponder:
         decision, by = "rejected", "host"
         try:
             try:
-                approved = bool(await approve(ask.event))
+                with approval_expiry_watch() as expired:
+                    approved = bool(await approve(ask.event))
             except Exception:
                 if self._on_error is None:
                     raise
                 self._on_error()
                 return Answer(approved=False)
+            if not approved and expired:
+                return Answer(approved=False, expired=True)
             decision, by = ("approved" if approved else "rejected"), ""
             return Answer(approved=approved)
         finally:
@@ -867,6 +889,7 @@ _SUBAGENT_REFUSALS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "child": ("child_interactive_rejected", ""),
         "factory": ("", "factory_rejected"),
         "callback": ("", ""),
+        "approval_expired": ("", "approval_expired"),
         "headless": ("", "no_policy_deny_default"),
         "turn_limit": ("turn_limit", ""),
         "child_escalation_limit": ("child_escalation_limit", ""),
@@ -952,6 +975,7 @@ _TASKRUNNER_REFUSALS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
         "hook_deny": ("denied", "hook_deny", ""),
         "context_overflow": ("rejected", "", "context_overflow"),
         "responder": ("rejected", "", ""),
+        "approval_expired": ("rejected", "", "approval_expired"),
         "headless": ("rejected", "", "headless_no_authorization"),
     }
 )

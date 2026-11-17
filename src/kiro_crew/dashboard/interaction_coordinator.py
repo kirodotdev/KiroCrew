@@ -200,6 +200,11 @@ class ApprovalCoordinator:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
+            # A tool permission request waiting on this prompt hears that nobody
+            # answered, rather than reading the ``False`` as a person's no.
+            from kiro_crew.llm_helpers import note_approval_expired
+
+            note_approval_expired()
             if on_host_decision is not None:
                 on_host_decision(DENY_CAUSE_APPROVAL_TIMEOUT)
             return False

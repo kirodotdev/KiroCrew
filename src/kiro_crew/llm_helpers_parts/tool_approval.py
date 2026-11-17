@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import LLMEvent, LLMProvider
 from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
@@ -116,6 +119,42 @@ class ToolApprovalPolicy(Enum):
 #: Rejects scheduled while a deny site was being CANCELLED mid-steer. Strongly
 #: referenced so the event loop cannot drop them before they answer the wire.
 _orphan_rejects: set[asyncio.Task[Any]] = set()
+
+#: Open while an interactive approver is awaited (``approval_expiry_watch``). The
+#: approver answers a bare ``bool``, so its ``False`` cannot say whether a person
+#: refused or the prompt's window closed with nobody answering; the code where a
+#: window closes says so here, through ``note_approval_expired``. A list rather
+#: than a flag, so a wait the approver runs in a task of its own (which holds a
+#: copy of this context) still marks the same holder.
+_approval_expired: ContextVar[list[bool] | None] = ContextVar("tool_approval_expired", default=None)
+
+
+@contextmanager
+def approval_expiry_watch() -> Iterator[list[bool]]:
+    """Watch one approver wait: the list it yields is non-empty once the wait expired.
+
+    Opened by the permission resolvers (``_resolve_permission``, and
+    ``tool_permission.CallbackResponder``) around the approver they await.
+    """
+    holder: list[bool] = []
+    token = _approval_expired.set(holder)
+    try:
+        yield holder
+    finally:
+        _approval_expired.reset(token)
+
+
+def note_approval_expired() -> None:
+    """Mark the approval being waited on as expired: nobody answered its prompt.
+
+    Called where an approval window closes unanswered. Inside an
+    ``approval_expiry_watch``, the refusal is then recorded as the host's and the
+    model is told nobody answered, instead of both reading a person's no.
+    Anywhere else it does nothing.
+    """
+    holder = _approval_expired.get()
+    if holder is not None:
+        holder.append(True)
 
 
 async def _steer_host_deny(
@@ -264,7 +303,8 @@ async def _resolve_permission(
     unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
     ``"policy_deny"`` (the governance ceiling, whether reached through the hook
     gate or through a regex-tier rule that only a governance PIN put back into
-    the effective set), or ``""`` for an approval or an interactive rejection.
+    the effective set), or ``""`` for an approval, an interactive rejection or an
+    approval prompt that expired unanswered.
     The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
     itself was the problem"; everything else describes policy state or an absent
     approver. Note that the same regex match can land under either label — what
@@ -965,11 +1005,25 @@ async def _resolve_permission(
 
     # Interactive approval if callback provided
     if on_tool_approval:
-        if _held:
-            with mate_held_rules.held_call(_held):
+        with approval_expiry_watch() as _expired:
+            if _held:
+                with mate_held_rules.held_call(_held):
+                    approved = await on_tool_approval(event)
+            else:
                 approved = await on_tool_approval(event)
-        else:
-            approved = await on_tool_approval(event)
+        if not approved and _expired:
+            # Nobody answered before the prompt's window closed: the host
+            # declined, so the model is told nobody refused it.
+            _log("rejected", metadata={"reason": "approval_expired"})
+            await _steer_host_deny(
+                provider,
+                event,
+                "the approval prompt went unanswered",
+                cause=DENY_CAUSE_APPROVAL_TIMEOUT,
+            )
+            await provider.reject_tool(event.request_id)
+            return False
+
         if not approved:
             # The person said no: no notice (kiro-cli's wording is the truth
             # here), but the audit still precedes the wire like every other deny.

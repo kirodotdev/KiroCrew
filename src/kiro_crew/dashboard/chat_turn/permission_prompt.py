@@ -1040,7 +1040,15 @@ async def _on_permission_prompt(
             tool_kind=event.tool_kind,
             outcome="rejected_once" if outcome == "rejected_once" else "rejected",
             request_id=event.request_id,
-            metadata={"reason": _safety_reason or "interactive"},
+            # An expired prompt is nobody's answer: the row says so, as the
+            # headless funnel's does, instead of reading as the person's no.
+            metadata={
+                "reason": (
+                    "approval_expired"
+                    if _host_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
+                    else _safety_reason or "interactive"
+                )
+            },
         )
         # Host-originated auto-declines (approval timeout, no
         # turn budget, Slack delivery failure) funnel into this

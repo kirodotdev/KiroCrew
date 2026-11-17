@@ -604,6 +604,9 @@ def _interactive_approval(
                     pass
 
                 if outcome == "expired":
+                    from kiro_crew.llm_helpers import note_approval_expired
+
+                    note_approval_expired()
                     return _by_host(False, DENY_CAUSE_APPROVAL_TIMEOUT)
                 return outcome == "approved"
             except Exception:
