@@ -589,7 +589,11 @@ in an oss build). One fetch is the Kiro control plane's
   `agents` list), and the on/off `messaging`, `cron`, `memory_writes`, `theme_persona`,
   `tailnet_origin`, `browser_use` and `theme_install` to `capabilities.messaging`,
   `.cron`, `.memory_writes`, `.theme_persona`, `.tailnet_origin`, `.browse` and
-  `.theme_install`. A rule on a meta-capability
+  `.theme_install`. Not read yet: `harness_use`, `app_use`, `script_hook` and
+  `embedding_model_use`, and `skill` / `mcp` / `subagent` for installs. RFC D13
+  records how each will map (a closed `kas` / `kiro` / `claude` list for
+  `harness_use`, installs following the item's own term), and each row lands with its
+  code. A rule on a meta-capability
   (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
   `acp/kas_permissions.py` `META_CAPABILITY_EXPANSION`; a deny on `all` reaches
   every managed capability, the stricter reading. An
@@ -3862,6 +3866,8 @@ Only the exact hosted default endpoint counts as `jev`, so a fleet that wants th
 ```json
 {"version": 1, "capabilities": {"decisions": {"scopes": {"providers": {"mode": "deny", "deny": ["jev"]}, "endpoints": {"mode": "deny", "deny": ["api.typesafe.ai"]}}}}}
 ```
+
+Planned for an LTS build (RFC D13, not in code yet): Jev locked off whatever policy or config says, endpoints written by hand refused, and the other providers allowed with no rule. Until that change lands, the LTS baseline keeps `capabilities.decisions` off.
 
 ### Extensions, app versions and developer mode — `capabilities.extension_install`, `app_versions`, `capabilities.app_dev_mode`
 
