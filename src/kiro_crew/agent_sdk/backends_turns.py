@@ -152,7 +152,11 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # denial drops nothing, and the steer is reported consumed when the turn ends
 # with ``end_turn``; a cancelled or failed turn queues it. claude runs one adapter per
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
-# advertised it.
+# advertised it. A LIVE capture against claude-agent-acp 0.94.0, driven through
+# ``AcpClient``: ``test/fixtures/acp_frames/claude/steering-live.jsonl``. A steer sent
+# while a Bash call ran was held until the call completed, then sent and answered
+# ``injected``; the model's next request carried the tool result and then the steered
+# text, and the turn ended ``end_turn``.
 #
 # pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.4.0, driven through
 # Crew's own ``AcpClient``: ``test/fixtures/acp_frames/pi/steering-live.jsonl``. pi-acp

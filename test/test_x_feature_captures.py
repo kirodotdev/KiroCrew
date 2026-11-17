@@ -22,7 +22,7 @@ sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
 # The ceiling only moves down. Raising it is the change this test exists to stop.
-X_CAPTURE_CEILING = 4
+X_CAPTURE_CEILING = 3
 KIRO_KAS_PAIR_CEILING = 0
 X_REGISTRATION_PENDING_CEILING = 6
 
@@ -132,6 +132,33 @@ def test_pi_in_steering_request_without_its_capture_fails() -> None:
     assert (name, "pi") in gaps
     assert (name, "pi") not in gate.X_CAPTURE_ALLOWLIST
     assert (name, "pi") not in gate.check_x_captures(sets, gate.set_comments())
+
+
+def test_claude_steering_request_needs_its_replayed_capture() -> None:
+    """claude's STEERING_REQUEST membership fails without its capture or its replay."""
+    sets, comments = gate.live_sets(), gate.set_comments()
+    name, rel = "ACP_BACKENDS_STEERING_REQUEST", "claude/steering-live.jsonl"
+    assert "claude" in sets[name]
+    assert f"acp_frames/{rel}" in comments[name]
+    assert (name, "claude") not in gate.X_CAPTURE_ALLOWLIST
+    assert (name, "claude") not in gate.check_x_captures(sets, comments)
+
+    def real(path):
+        return gate.read_capture(gate.REPO_ROOT, path)
+
+    def gone(path):
+        return None if path == rel else real(path)
+
+    def unreplayed(path):
+        got = real(path)
+        return (dict(got[0], replayed=False), got[1]) if path == rel else got
+
+    assert "does not exist" in gate.check_x_captures(sets, comments, gone)[(name, "claude")]
+    assert (
+        "no test replays it" in gate.check_x_captures(sets, comments, unreplayed)[(name, "claude")]
+    )
+    uncited = comments[name].replace("acp_frames/claude/", "acp_frames/opencode/")
+    assert (name, "claude") in gate.check_x_captures(sets, dict(comments, **{name: uncited}))
 
 
 def test_kas_citing_a_kiro_capture_fails() -> None:
