@@ -45,6 +45,7 @@ from kiro_crew.acp.mcp_start_wait import (
     first_prompt_brief_wait,
     left_to_first_turn,
     person_waits,
+    policy_hidden_servers,
 )
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
@@ -968,6 +969,8 @@ async def _wait_managed_mcp(
         # Read off the loop: the declaration is config I/O.
         governed = bool(required) and await asyncio.to_thread(_declared_governed)
         if required:
+            # Off the loop too: the agent's managed tool policy is read from its spec.
+            policy_hidden = await asyncio.to_thread(policy_hidden_servers, agent, required)
             await handle.wait_mcp_ready(
                 required,
                 timeout,
@@ -985,6 +988,7 @@ async def _wait_managed_mcp(
                 # with nothing named, the session starts instead; a server the host
                 # did name keeps the full budget and every readiness guard.
                 governed=governed,
+                policy_hidden=policy_hidden,
             )
         else:
             # An external-only agent still needs the ordinary OAuth/config

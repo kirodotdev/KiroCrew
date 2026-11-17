@@ -279,6 +279,10 @@ class KasMcpReadiness:
     required: tuple[str, ...]
     tool_policy: dict[str, Any] | None = None
     injected: frozenset[str] = frozenset()
+    #: Required servers whose every tool the agent's managed tool policy hides
+    #: (``mcp_start_wait.policy_hidden_servers``). Such a server lists nothing for
+    #: this session, so it is ready once connected, like a server ``tools`` hides.
+    policy_hidden: frozenset[str] = frozenset()
     states: dict[str, str] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     #: Exposure evidence, kept per source because each snapshot is authoritative
@@ -312,8 +316,11 @@ class KasMcpReadiness:
 
         ``permissions`` controls approval, not exposure. Read only the projected
         ``tools`` / ``excludedTools`` and the backend's per-tool disabled flags.
-        Missing or empty catalogs alone never establish an intentional restriction.
+        Missing or empty catalogs alone never establish an intentional restriction;
+        the managed tool policy (:attr:`policy_hidden`) does.
         """
+        if name in self.policy_hidden:
+            return False
         if self.tool_policy is None or "tools" not in self.tool_policy:
             return True
         raw = self.tool_policy["tools"]
