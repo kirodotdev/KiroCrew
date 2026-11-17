@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.portability_archive import (
@@ -29,6 +30,7 @@ from kiro_crew.portability_archive import (
     manifest_is_memory_only,
 )
 from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION, _staging_is_pinned
+from kiro_crew.user_json import loads_user_json
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 
@@ -180,6 +182,48 @@ def _installed_agent_names() -> frozenset[str]:
         return frozenset(_installed_template_names())
     except Exception:  # noqa: BLE001 -- an unreadable folder keeps no agent_id
         return frozenset()
+
+
+def _config_crew_aliases(config_file: Path) -> frozenset[str]:
+    """Crew alias names of the settings document *config_file*.
+
+    A cron may name one as its ``agent_id``. A read-only read, bounded by the settings
+    document cap; an unreadable, oversized or absent document adds none.
+    """
+    try:
+        with open(config_file, "rb") as fh:
+            raw = bounded_read(fh, _MAX_SETTINGS_DOCUMENT_BYTES + 1)
+        if len(raw) > _MAX_SETTINGS_DOCUMENT_BYTES:
+            return frozenset()  # the settings vet refuses it; never decoded here
+        doc = loads_user_json(raw.decode("utf-8"))
+        agents = doc.get("agents") if isinstance(doc, dict) else None
+        return (
+            frozenset(k for k, v in agents.items() if isinstance(k, str) and isinstance(v, dict))
+            if isinstance(agents, dict)
+            else frozenset()
+        )
+    except Exception:  # noqa: BLE001 -- an unreadable config keeps no alias
+        return frozenset()
+
+
+def _kept_crew_aliases(snap: Path, mc: Path, mode: str) -> frozenset[str]:
+    """Crew aliases of the settings the import leaves in effect.
+
+    Replace installs the archive's ``config.json`` and ``config.local.json`` where it
+    carries them. Merge keeps this install's, installing the archive's ``config.json``
+    only where this install has none, and never its ``config.local.json``.
+    """
+    names: set[str] = set()
+    for name in ("config.json", "config.local.json"):
+        live, incoming = mc / name, snap / name
+        if mode == "replace":
+            chosen = incoming if incoming.is_file() else live
+        elif name == "config.json" and not os.path.lexists(live):
+            chosen = incoming
+        else:
+            chosen = live
+        names |= _config_crew_aliases(chosen)
+    return frozenset(names)
 
 
 def _hold_back_foreign_skills(snap: Path, mc: Path, *, allow_unpinned: bool = False) -> bool:

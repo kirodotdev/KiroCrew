@@ -114,6 +114,7 @@ from kiro_crew.portability_templates import (
 from kiro_crew.portability_vetting import (
     _disable_imported_script_hooks,
     _hold_back_foreign_skills,
+    _kept_crew_aliases,
     _read_manifest_bytes,
     _sanitize_imported_crons,
     _strip_host_local_store_state,
@@ -855,6 +856,13 @@ def apply_import_zip(
         else:
             cleared = _move_home_paths(snap, summary)
 
+        # Before either branch, and before the crons below pick their agents from the
+        # settings the import leaves in effect: a settings document neither branch may
+        # install is removed from the extraction here, and reported. It reads only the
+        # staged settings files and *summary*, so nothing computed after the home-path
+        # move is needed.
+        vetted_settings = _vet_archive_settings(snap, summary)
+
         # Re-vet imported cron commands before ANY path below consumes
         # crons.json (merge, copy, or replace). An import archive is
         # attacker-influenced — the threat is a "settings backup" a user is
@@ -874,7 +882,8 @@ def apply_import_zip(
         dropped_crons, paused_crons = _sanitize_imported_crons(
             snap / "crons.json",
             hold_all=not include_crons,
-            extra_agents=_picked_template_names(zip_path, agent_templates),
+            extra_agents=_picked_template_names(zip_path, agent_templates)
+            | _kept_crew_aliases(snap, mc, mode),
         )
         paused_crons = [name for name in paused_crons if name not in live_cron_names]
         if dropped_crons:
@@ -908,10 +917,6 @@ def apply_import_zip(
         _refuse_corrupt_source_databases(
             snap, ["memory", "crew-teams"], mc_for_merge=None if mode == "replace" else mc
         )
-
-        # Before either branch too: a settings document neither branch may install is
-        # removed from the extraction here, and reported.
-        vetted_settings = _vet_archive_settings(snap, summary)
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
@@ -1224,6 +1229,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.portability_vetting import (  # noqa: F401
         _FOREIGN_JOB_FIELDS,
         _UNREADABLE_STORE,
+        _config_crew_aliases,
         _has_user_skills,
         _installed_agent_names,
         _publish_staged_cron_store,
@@ -1231,4 +1237,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_staged_store_bytes,
         _remove_staged_skills,
         _sanitize_cron_text,
+        loads_user_json,
     )
