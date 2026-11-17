@@ -849,6 +849,51 @@ Rules that decide whether one is worth having:
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
   globals through `monkeypatch`, never raw assignment.
 
+### Refusal tests: assert the refusal, name the rule only at its own bound
+
+A command, path or payload is often refused by more than one check: a gate-wide
+cap, then a floor, then a rule. Which one answers first is an ordering detail that
+another change may move. On 2026-11-16 #37820 added a test that sent a 128-level
+`$( )` nest and asserted the ssh floor's rule refused it, and #37875 added a
+32-level substitution cap to the gate. Each was green on its base; merged, the cap
+refused the nest first and the rule-name assertion went red on every PR (fixed in
+#37964). The command was still refused. Only the name was wrong.
+
+- **A test whose point is "this is refused" asserts the refusal and nothing more**:
+  the verdict is a refusal, and the call returned one rather than raising. It does
+  not name the rule. A new, earlier check then keeps it green, and a change that
+  lets the input through still turns it red.
+- **Name the rule only in a test of that rule's own boundary**, and put the input
+  inside every OTHER limit it passes on the way. Assert that precondition in the test
+  (`depth <= _MAX_SUBSTITUTION_DEPTH`), so a later, tighter cap fails as a broken
+  precondition with its own message instead of as a wrong rule name.
+- **Probe both sides of the bound** (refused at it, allowed one below it), so the
+  test pins the bound and not just "something refused".
+
+```python
+# WRONG: the point is "a deep nest is refused", but the test names the floor's rule.
+# A gate cap added later refuses it first, and the test goes red although nothing
+# got through.
+def test_the_gate_refuses_a_nest_past_the_bound_without_an_exception():
+    assert _denied_by(_nested_double_quoted(128, "true; echo ssh")) == "sandbox-escape-ssh-self"
+
+# RIGHT: "refused, and no exception" for the deep nest. The rule is named only at
+# the rule's own bound, with the input proved to be inside the gate's cap.
+def test_a_deep_nest_is_refused_without_an_exception():
+    assert security.is_denied(_nested_double_quoted(128, "true; echo ssh")) is not None
+
+def test_the_ssh_floor_refuses_at_its_reading_bound():
+    depth = ssh._MAX_SSH_READING_DEPTH
+    assert depth <= deny_gate._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
+    assert _denied_by(_nested_double_quoted(depth, "true; echo ssh")) == "sandbox-escape-ssh-self"
+    assert _denied_by(_nested_double_quoted(depth - 1, "true; echo ssh")) is None
+```
+
+`is_denied` returns a verdict or `None`, so the plain call is the "no exception"
+check: pytest fails the test on anything it raises. Do not wrap it in a
+`try`/`except` that turns an exception into a pass. Review flags this through
+`tests-are-deterministic` item 16 in `AUTOSDE.yaml`.
+
 ### Merge-safe ratchets and counts
 
 Each pull request's CI runs on its own base, and the repository merges without
