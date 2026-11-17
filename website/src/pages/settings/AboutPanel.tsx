@@ -1011,7 +1011,7 @@ export function AboutPanel() {
           // so it speaks in the app's own accent voice, and the anchor names
           // GitHub because the destination is a new-issue form — a surprise
           // worth spending four words to avoid.
-          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
+          <div className="mt-3 flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
                data-testid="prerelease-report-note">
             <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
             <span className="text-text leading-relaxed">
