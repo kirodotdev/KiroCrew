@@ -785,6 +785,10 @@ shell that started it has exited and nothing restarts it, so the app treats it
 as a plain local Kiro Crew gateway, which the failure dialog's force-retry and
 wedge recovery may stop. A job list that cannot be read keeps the
 service-managed verdict.
+On macOS and Linux, a port check that force-retry or wedge recovery cannot run
+(lsof missing, not executable or timed out) is settled with a real bind before
+the gateway starts again, and a port still in use after the start wait shows the
+restart-required dialog.
 A port held by a process this app cannot attribute to itself, which is what a
 local SSH forward to a remote gateway looks like, is reused only when a remote
 crew is recorded for that port; otherwise the supervisor refuses it
