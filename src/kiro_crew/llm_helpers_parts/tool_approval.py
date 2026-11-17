@@ -307,8 +307,10 @@ async def _resolve_permission(
     unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
     ``"policy_deny"`` (the governance ceiling, whether reached through the hook
     gate or through a regex-tier rule that only a governance PIN put back into
-    the effective set), or ``""`` for an approval, an interactive rejection or an
-    approval prompt that expired unanswered.
+    the effective set), ``"always_deny_transport"`` (the transport's security
+    floor refused an approval), ``"batch_write_guard"`` (the batch write guard
+    deferred an approval to the next step), or ``""`` for an approval, an
+    interactive rejection or an approval prompt that expired unanswered.
     The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
     itself was the problem"; everything else describes policy state or an absent
     approver. Note that the same regex match can land under either label — what
@@ -336,6 +338,18 @@ async def _resolve_permission(
             request_id=event.request_id,
             **extra,
         )
+
+    def _log_send_refused() -> None:
+        # ``approve_tool`` answers both the batch write guard and the security
+        # floor with False; only the floor is a security block.
+        from kiro_crew.agent_sdk import batch_guard_refusal_outcome, take_batch_guard_refusal
+
+        reason = take_batch_guard_refusal(provider, event.request_id)
+        if reason is None:
+            _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
+            return
+        outcome, metadata = batch_guard_refusal_outcome(reason)
+        _log(outcome, metadata=metadata)
 
     # Audit FIRST, before any wire I/O for this decision, at every deny below:
     # the steer and the rejection both await the ACP pipe, and a backend that
@@ -920,10 +934,7 @@ async def _resolve_permission(
                 if approval_sent is not False:
                     _log("auto_approved", metadata={"reason": "hook_auto_approve"})
                 else:
-                    _log(
-                        OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                        metadata={"mechanism": "always_deny_transport"},
-                    )
+                    _log_send_refused()
                 return approval_sent is not False
             if name_grant.should_log_decline(session_key, _ng_refusal):
                 logger.warning(
@@ -1046,5 +1057,5 @@ async def _resolve_permission(
     if approval_sent is not False:
         _log("auto_approved")
     else:
-        _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
+        _log_send_refused()
     return approval_sent is not False
