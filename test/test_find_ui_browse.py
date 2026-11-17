@@ -20,6 +20,7 @@ pins it): every mapped location below is generated or curated.
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Any
@@ -322,6 +323,19 @@ def _reachable(area: str, lang: str) -> set[str]:
     return ids
 
 
+@functools.lru_cache(maxsize=None)
+def _recall_reach(area: str, lang: str) -> frozenset[str]:
+    """:func:`_reachable` once per ``(area, lang)`` for the recall params below.
+
+    Over a hundred ``(task, lang)`` params share a few dozen areas, and each listing is
+    a full page walk of the real index. Every one of those params reads it in the same
+    state (the autouse fixture's empty auto tier, the default page cap), so the answer
+    for an area cannot differ between them. Tests that change the cap call
+    :func:`_listing` directly and never read this.
+    """
+    return frozenset(_reachable(area, lang))
+
+
 # ------------------------------------------------------------ corpus coverage
 
 
@@ -339,12 +353,12 @@ def test_each_indexed_task_is_in_its_corpus_area_listing(task: str, lang: str) -
     as related."""
     area = _tasks()[task]
     target = TASK_LOCATION[task]
-    reach = _reachable(area, lang)
+    reach = _recall_reach(area, lang)
     if task in RELATED_ONLY:
         via = RELATED_ONLY[task]
         assert target not in reach, (task, "now listed directly: drop it from RELATED_ONLY")
         assert via in ui_index.browse_ui(area, lang).get("related", []), (task, area, via)
-        assert target in _reachable(via, lang), (task, via)
+        assert target in _recall_reach(via, lang), (task, via)
     else:
         assert target in reach, (task, area)
 
