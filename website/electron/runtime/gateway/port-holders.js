@@ -333,6 +333,7 @@ function createPortHolders({
         failClosedOnProbeError: true,
         // netstat can leave a held port out of its table, so "no owner" is
         // checked with a real bind before recovery respawns into the port. A
+        // netstat that fails every attempt is settled by the same bind. A
         // gateway that served connections leaves the port refusing binds for a
         // while after it exits, so a refusal is waited out for as long as the
         // splash already allows a Windows gateway to start.
