@@ -139,7 +139,7 @@ async def _get(
 ) -> web.Response:
     with (
         patch(
-            "kiro_crew.dashboard.handlers.source_providers.schedule_expanded_check_refresh",
+            "kiro_crew.dashboard.source_providers.chip_refresh.schedule_expanded_check_refresh",
             refresh if refresh is not None else MagicMock(),
         ),
         patch(
@@ -300,7 +300,9 @@ class TestAppTokenIsolation:
                 "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
                 return_value=True,
             ),
-            patch("kiro_crew.dashboard.handlers.source_providers.schedule_expanded_check_refresh"),
+            patch(
+                "kiro_crew.dashboard.source_providers.chip_refresh.schedule_expanded_check_refresh"
+            ),
         ):
             resp = await api_chat_slot_source_links(_request("s1", {"s1": slot}, app=""))
 

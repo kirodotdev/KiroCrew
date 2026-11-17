@@ -45,6 +45,8 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.source_providers import (
         ensure_gitlab_hosts_loaded,
         is_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.source_providers.chip_refresh import (
         schedule_expanded_check_refresh,
     )
 
