@@ -68,6 +68,7 @@ class TestPageAndAssets:
         body = json.loads(resp.body)
         assert body == {
             "bot_name": "Kiro Crew",
+            "instance_label": "",
             "avatar": "/logo.png",
             "direct_local": True,
             "desktop_launcher": True,
