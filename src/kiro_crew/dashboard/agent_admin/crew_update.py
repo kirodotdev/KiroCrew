@@ -289,6 +289,28 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         # Stripped, NOT normalized: "auto" stays a pin here (workers on the
         # backend default) where the crew's own `model` would fold it to "".
         pending_worker_model = body["worker_model"].strip()
+    if "worker_environment" in body:
+        # Shape only, the same check as `session_environments.default_profile`
+        # ("" is this machine): whether the id names a profile the Bot's workers
+        # may use is judged at each create, since profiles change after a save.
+        from kiro_crew.config.session_environments import (
+            SessionEnvironmentsError,
+            validate_default_profile,
+        )
+
+        raw_env = body["worker_environment"]
+        try:
+            if not isinstance(raw_env, str):
+                raise SessionEnvironmentsError("worker_environment must be a string")
+            pending_worker_environment = validate_default_profile(raw_env.strip())
+        except SessionEnvironmentsError:
+            return web.json_response(
+                {
+                    "error": "worker_environment must be a session environment profile id or empty",
+                    "code": "invalid_worker_environment",
+                },
+                status=400,
+            )
     # Same placement rule as reasoning_effort: validated up here, before the
     # lock and before any field or avatar-file mutation. A body that pairs a
     # bad `starred` with an avatar promotion would otherwise move the staged
@@ -626,6 +648,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if "worker_environment" in body:
+            # Validated above. "" = the Bot's workers run on this machine.
+            agent.worker_environment = pending_worker_environment
+            changed.append("worker_environment")
         if "max_workers" in body:
             # Validated above. Only this owner route writes it: no Bot tool does.
             agent.max_workers = body["max_workers"]

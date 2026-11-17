@@ -858,6 +858,44 @@ reasoning effort**, `CrewProfileSettings`), written through
 `PUT /api/agents/{name}` under the crew pin's own validators and shipped on
 `GET /api/members` (not on `GET /api/agents`: the crew editor never shows them).
 
+**A bot's workers' session environment.** `agents.<name>.worker_environment`
+(default `""` = this machine) names the session environment profile the bot's
+workers run on; the bot's own thread is never bound by it. `create_session`
+reads it off the same dispatcher record, under the same rule (a caller that is
+a bot, a child that is not one), and after the slot is persisted binds the
+child with `apply_default_environment(slot, ..., profile=...)` before the eager
+spawn, which it then skips (a local prewarm would run on the wrong machine; the
+remote start waits for the first message, as an owner chat bound to
+`default_profile` does). The child is bound only when it starts on the harness
+`bot_worker_backend` names for its bot (`crewmate_worker_backend`, the harness the
+Settings readout is computed for) and that harness is KAS, the one
+`check_remote_workspace_supported` lets onto a remote workspace; so a bot that
+names another harness on the call, or a child on `agent.acp_backend` while the
+bot's workers run elsewhere, stays local. The provider is judged by
+`apply_default_environment(..., allowed_providers=...)` on the same `_profiles()`
+read the recorded choice takes its provider from: a Coder, Sprites or boxd
+profile (none with session environments off). Kiro Cloud is never used: its
+sandbox gets no MCP servers, so the worker could not `work_report` to its bot.
+Any other id (a removed profile, a Kiro Cloud one, a non-KAS worker, the flag
+off) or a bind that does not land leaves the child local, and the create's SEL
+record names it as `worker_environment_dropped` (the bound one as
+`worker_environment`). A code channel's conductor bot is a dispatching bot too,
+so its workers are bound the same way. The Profile card's **Workers run on** row
+offers `worker_environments` from `GET /api/agents/resolved-model` (the
+owner-only harness half of the readout, computed through `bot_worker_backend`).
+It shows while that list is not empty, and while a stored choice is no longer
+offered, so the owner can still see and clear it. `PUT /api/agents/{name}`
+checks only the id's shape (`validate_default_profile`), since profiles change
+after a save. The bot chat's composer draws no environment chip
+(`environmentSlot` is in `SESSION_CHROME_PROPS`); a bot thread already bound to
+a profile shows read-only on the Settings page from
+`GET /api/chat/slots/{slot}/environment`, with **Move back to this machine**
+only while that read says `locked: false`. A bot thread opened in the chat page
+draws no chip either: `ComposerDockView` passes `environmentChipHidden` for a
+slot whose `mode` is `member`. Its `environmentSlot` still reaches `ChatInput`,
+so a bot thread already on a profile keeps this machine's project picker
+hidden, as any remote chat does.
+
 `session_create` also takes an optional `autocompact_pct`: the compaction
 threshold the child starts with, set as the same per-session override the
 context meter's "Auto-compact at" slider sets. It is checked before anything is

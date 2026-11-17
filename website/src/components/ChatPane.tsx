@@ -124,6 +124,7 @@ export default function ChatPane({
   agentLocked,
   composerInput: ComposerInput = ChatInput,
   frameless,
+  environmentChipHidden = false,
   topInset = 0,
   followContentWidth,
   pushToTalk = false,
@@ -1350,6 +1351,9 @@ export default function ChatPane({
           busyMode={composerBusyMode}
           autoFocusKey={slotKey}
           environmentSlot={slotKey}
+          // A bot's own thread draws no environment chip in any pane (split
+          // view included): its workers' environment is a bot setting.
+          environmentChipHidden={environmentChipHidden || paneSlot?.mode === 'member'}
           agentName={paneAgentName}
           // The chip shows the inherited-default marker; `agentName` stays the
           // raw resolved alias for the skills query and switch title. Uses the

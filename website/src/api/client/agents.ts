@@ -98,6 +98,9 @@ export interface MemberRosterRow {
   worker_model?: string
   /** Same for the reasoning effort; '' = the crewmate's own level. */
   worker_reasoning_effort?: string
+  /** The session environment profile those sessions run on; '' = this machine.
+   *  The Bot's own chat is never moved by it. */
+  worker_environment?: string
   /** How many worker sessions this Bot may have open at once: 1-32, or 0 (the
    *  default) for no limit. Only the owner sets it; the session verbs refuse past it. */
   max_workers?: number
@@ -200,6 +203,10 @@ export interface AgentResolvedModel {
   harnesses?: string[]
   /** The harnesses a crewmate's worker sessions can run on. */
   worker_harnesses?: string[]
+  /** The session environment profiles this Bot's workers may run on (Coder,
+   *  Sprites or boxd, and only while they run on KAS); empty when there are
+   *  none, which hides the Workers run on row. */
+  worker_environments?: { id: string; name: string; provider: string }[]
   /** The harness whose own model list the editor offers, when it is not the configured one. */
   models_backend?: string
   /** The id that harness serves the pin as (`''` for none); absent until a session advertises. */

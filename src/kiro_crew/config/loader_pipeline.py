@@ -1072,6 +1072,9 @@ def build_config(
                         else crew.default("worker_model")
                     ),
                     worker_reasoning_effort=coerce_effort(crew.get("worker_reasoning_effort")),
+                    # A profile id, checked against the saved profiles only when
+                    # a worker is created: one that is gone leaves it local.
+                    worker_environment=crew.read("worker_environment", _safe_str).strip(),
                     max_workers=crew.read(
                         "max_workers", _safe_int, lo=BOT_MAX_WORKERS_MIN, hi=BOT_MAX_WORKERS_MAX
                     ),

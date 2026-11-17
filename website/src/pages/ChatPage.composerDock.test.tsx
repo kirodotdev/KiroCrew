@@ -99,6 +99,18 @@ describe('ComposerDockView', () => {
     expect(setPrefillHint).toHaveBeenCalledWith(false)
   })
 
+  // Where a bot's work runs is its Settings page's choice: a bot's own thread,
+  // opened in the chat page, draws no environment chip under its input. Its
+  // placement is still read, so a remote bot thread keeps the project picker hidden.
+  it('hides the environment chip for a bot thread but keeps its placement read', () => {
+    render(<ComposerDockView {...dockProps({ currentSlot: { key: 'slot-a', mode: 'member', agent: 'kiro' } as never })} />)
+    expect(seen.chatInput!.environmentSlot).toBe('slot-a')
+    expect(seen.chatInput!.environmentChipHidden).toBe(true)
+    render(<ComposerDockView {...dockProps()} />)
+    expect(seen.chatInput!.environmentSlot).toBe('slot-a')
+    expect(seen.chatInput!.environmentChipHidden).toBe(false)
+  })
+
   it('injects or skips knowledge results', () => {
     const inject = vi.fn()
     const clearResults = vi.fn()

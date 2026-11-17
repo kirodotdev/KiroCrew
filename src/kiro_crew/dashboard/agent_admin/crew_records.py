@@ -267,6 +267,18 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             out.update({"harness": "", "harness_error": str(exc)})
             return out
         out["harness"] = backend_to_stored(runtime)
+        # The profiles the bot's workers may run on, judged for the harness
+        # `bot_worker_backend` names, the one `create_session` binds against:
+        # the Workers run on picker's choices.
+        from kiro_crew.dashboard.handlers.session_environments import (
+            bot_worker_backend,
+            worker_environment_profiles,
+        )
+
+        out["worker_environments"] = [
+            {"id": p["id"], "name": p["name"], "provider": p["provider"]}
+            for p in worker_environment_profiles(bot_worker_backend(cfg, crew))
+        ]
         if pin is not None:
             out["model"] = resolve_effective_model(cfg, crew, backend=runtime, **app_kw)
         if session_backend is not None:

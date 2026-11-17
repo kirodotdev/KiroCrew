@@ -32,6 +32,8 @@ const mockApi = vi.hoisted(() => ({
   harnessModels: vi.fn(),
   memberDashboard: vi.fn(),
   kirocrewConfig: vi.fn(),
+  chatSlotEnvironment: vi.fn(),
+  setChatSlotEnvironment: vi.fn(),
 }))
 vi.mock('../../api/client', () => ({ api: mockApi }))
 const modelsState = vi.hoisted(() => ({ isDegraded: false }))
@@ -108,6 +110,8 @@ beforeEach(() => {
   mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
   mockApi.kirocrewConfig.mockResolvedValue({ dashboard: {} })
   mockApi.harnessModels.mockResolvedValue([{ model_name: 'auto' }, { model_name: 'sonnet-cc' }])
+  mockApi.chatSlotEnvironment.mockResolvedValue({ profile: null, profiles: [] })
+  mockApi.setChatSlotEnvironment.mockResolvedValue({ profile: null, applies: 'next_start' })
 })
 afterEach(() => { cleanup(); hosts?.forEach((h) => h.remove()) })
 
@@ -648,6 +652,106 @@ describe('CrewProfileSettings worker model and effort', () => {
     setup(member({ model: 'claude-opus-5' }))
     pick('worker_model', 'Auto (cheaper model)')
     await waitFor(() => expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].worker_model).toBe('auto'))
+  })
+})
+
+/* Where the Bot's WORKERS run (`worker_environment`). The row exists only while
+ * the readout names a profile those workers can use, which the server answers
+ * as [] with session environments off, with none saved, or off KAS. The Bot's
+ * own chat is not moved by it; where that chat runs is a read-only line. */
+describe('CrewProfileSettings workers run on', () => {
+  const CODER = { id: 'cdr', name: 'Coder box', provider: 'coder' }
+  const withEnvs = (envs = [CODER]) => mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5', worker_environments: envs })
+
+  it('has no row while no profile is offered for the workers', async () => {
+    setup(member())
+    await waitFor(() => expect(mockApi.agentResolvedModel).toHaveBeenCalled())
+    await screen.findByTestId('crew-profile-setting-max_workers')
+    expect(within(group()).queryByTestId('crew-profile-setting-worker_environment')).toBeNull()
+  })
+
+  it('reads This machine by default and says what a remote worker loses', async () => {
+    withEnvs()
+    setup(member())
+    await waitFor(() => expect(rowValue('worker_environment')).toHaveTextContent('This machine'))
+    const p = open('worker_environment')
+    expect(within(p).getAllByRole('radio').map((r) => r.textContent)).toEqual(['This machineThe computer Kiro Crew runs on.', 'Coder boxA Coder workspace.'])
+    expect(p).toHaveTextContent("oncall's own chat stays where it is.")
+    expect(p).toHaveTextContent("workers get no scheduled jobs, can't use file paths on this machine, and each worker starts one billed workspace.")
+    // "This machine" says which machine it is.
+    expect(within(p).getByRole('radio', { name: /This machine/ })).toHaveTextContent('The computer Kiro Crew runs on.')
+  })
+
+  it('keeps a stored choice visible and clearable while none is offered', async () => {
+    setup(member({ worker_environment: 'cdr' }))
+    await waitFor(() => expect(rowValue('worker_environment')).toHaveTextContent('cdr (not available)'))
+    // Its page says where the workers run meanwhile; an offered choice says nothing of it.
+    expect(open('worker_environment')).toHaveTextContent('Workers run on this machine until you pick another.')
+    pick('worker_environment', /This machine/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { worker_environment: '' }))
+  })
+
+  it('says nothing of an unavailable choice while the stored one is offered', async () => {
+    withEnvs()
+    setup(member({ worker_environment: 'cdr' }))
+    await waitFor(() => expect(rowValue('worker_environment')).toHaveTextContent('Coder box'))
+    expect(open('worker_environment')).not.toHaveTextContent('until you pick another')
+  })
+
+  it('saves the pick on the record alone and touches no chat', async () => {
+    withEnvs()
+    setup(member())
+    await waitFor(() => expect(rowValue('worker_environment')).toBeInTheDocument())
+    pick('worker_environment', /^Coder box/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { worker_environment: 'cdr' }))
+    expect(mockApi.setChatSlotEnvironment).not.toHaveBeenCalled()
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+    await waitFor(() => expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].worker_environment).toBe('cdr'))
+  })
+
+  it('names a stored profile that is no longer offered', async () => {
+    withEnvs()
+    setup(member({ worker_environment: 'gone' }))
+    await waitFor(() => expect(rowValue('worker_environment')).toHaveTextContent('gone (not available)'))
+  })
+
+  it("shows where the Bot's own chat runs, read-only, once it is fixed", async () => {
+    mockApi.chatSlotEnvironment.mockResolvedValue({ profile: 'cdr', profiles: [{ ...CODER, workdir: '/w' }], locked: true })
+    setup(member())
+    const line = await within(group()).findByTestId('crew-profile-thread-environment')
+    expect(line).toHaveTextContent("oncall's chat runs on Coder box")
+    expect(line).toHaveTextContent("A chat's environment is fixed once it has started")
+    expect(within(group()).queryByTestId('crew-profile-thread-environment-move-home')).toBeNull()
+    expect(mockApi.chatSlotEnvironment).toHaveBeenCalledWith('member-oncall')
+  })
+
+  it('offers Move back only while the gateway says the choice is not fixed', async () => {
+    mockApi.chatSlotEnvironment.mockResolvedValue({ profile: 'cdr', profiles: [{ ...CODER, workdir: '/w' }], locked: false })
+    setup(member())
+    fireEvent.click(await within(group()).findByTestId('crew-profile-thread-environment-move-home'))
+    await waitFor(() => expect(mockApi.setChatSlotEnvironment).toHaveBeenCalledWith('member-oncall', null))
+  })
+
+  it('has no line for a chat on this machine', async () => {
+    setup(member())
+    await waitFor(() => expect(mockApi.chatSlotEnvironment).toHaveBeenCalled())
+    expect(within(group()).queryByTestId('crew-profile-thread-environment')).toBeNull()
+    expect(within(group()).queryByTestId('crew-profile-thread-environment-read-error')).toBeNull()
+  })
+
+  it('says so when the chat placement cannot be read, rather than reading as this machine', async () => {
+    mockApi.chatSlotEnvironment.mockRejectedValue(new ApiError(500, 'Internal Server Error', '{"code":"choices_unreadable"}'))
+    setup(member())
+    expect(await within(group()).findByTestId('crew-profile-thread-environment-read-error', {}, { timeout: 3000 }))
+      .toHaveTextContent("Couldn't read where oncall's chat runs. Reload the page to try again.")
+    expect(within(group()).queryByTestId('crew-profile-thread-environment')).toBeNull()
+  })
+
+  it("stays quiet on the read's owner-only refusal", async () => {
+    mockApi.chatSlotEnvironment.mockRejectedValue(new ApiError(403, 'Forbidden', '{"code":"owner_only"}'))
+    setup(member())
+    await waitFor(() => expect(lastQc.getQueryState(['slot-environment', 'member-oncall'])?.status).toBe('error'))
+    expect(within(group()).queryByTestId('crew-profile-thread-environment-read-error')).toBeNull()
   })
 })
 
