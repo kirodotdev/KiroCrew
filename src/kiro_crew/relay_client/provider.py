@@ -12,8 +12,8 @@ which calls it only when ``kiro_crew.edition_locks.relay_selected`` says
 ``tunnel.relay_enabled`` is on (off by default) and the build does not lock local
 enables, and installs the no-op ``DefaultTunnelProvider`` otherwise. That rule lives
 outside this package so a composition with the relay off never imports it. The
-provider's host token source is the lease client when ``tunnel.relay_lease_url``
-names a lease service, and the refusing default otherwise. An edition that composes
+provider's host token source is the lease client, on ``tunnel.relay_lease_url`` or,
+when that is empty, on the built-in Kiro control plane URL. An edition that composes
 its own context puts its own provider in the slot and never reaches this function,
 so the relay client is never chosen over an edition's provider.
 """
@@ -67,8 +67,8 @@ class RelaySettings:
     The lease answer's ``hostUrl`` and ``crewUrl`` take precedence over
     ``host_url`` and ``crew_domain``, which ``config.json`` never sets: an edition
     with its own host token source passes them when it builds the settings.
-    ``lease_url`` names the lease service; while it is empty there is no host
-    token source. ``lease_credential`` says where the Crew's credential for that
+    ``lease_url`` names the lease service; while it is empty the Crew leases from
+    the built-in URL, unless an edition named the relay. ``lease_credential`` says where the Crew's credential for that
     service is, never the credential itself.
     """
 
@@ -103,10 +103,11 @@ class RelaySettings:
 
         With a lease service the relay's names come from each lease answer
         (``hostUrl`` and ``crewUrl``), so ``host_url`` and ``crew_domain`` may stay
-        empty. Without one, only an edition that builds the settings names the
-        relay, so both must be set: no name is guessed.
+        empty. With no lease URL and neither name, the Crew leases from the built-in
+        URL (:func:`~kiro_crew.relay_client.lease.built_in_lease_url`). An edition
+        that names the relay must name both: no name is guessed.
         """
-        if not self.lease_url:
+        if not self.lease_url and not self.uses_built_in_lease:
             for name, value in (
                 ("the relay host URL", self.host_url),
                 ("the relay Crew domain", self.crew_domain),
@@ -129,6 +130,7 @@ class RelaySettings:
             problem = lease_url_problem(self.lease_url)
             if problem is not None:
                 raise RelaySettingsError(f"tunnel.relay_lease_url: {problem}")
+        if self.lease_url or self.uses_built_in_lease:
             if self.lease_credential == SIGN_IN_CREDENTIAL:
                 # The sign-in names its own TokenType.
                 if self.lease_token_type:
@@ -146,6 +148,14 @@ class RelaySettings:
                     "tunnel.relay_lease_token_type must be empty or one of "
                     + ", ".join(sorted(TOKEN_TYPES))
                 )
+
+    @property
+    def uses_built_in_lease(self) -> bool:
+        """Whether the Crew leases from the built-in URL: no lease URL and no relay names.
+
+        An edition that sets ``host_url`` or ``crew_domain`` never gets it.
+        """
+        return not (self.lease_url or self.host_url or self.crew_domain)
 
     @property
     def is_team_crew(self) -> bool:
@@ -355,12 +365,13 @@ def _crew_version() -> str:
 
 
 def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
-    """The lease client for *settings*, or ``None`` while no lease service is set.
+    """The lease client for *settings*, or ``None`` when an edition names the relay.
 
+    An empty ``lease_url`` leases from the built-in URL, which each call reads.
     Construction does no I/O: the credential, the instance ID and the first call
     all wait for the relay client's first request for a host token.
     """
-    if not settings.lease_url:
+    if not settings.lease_url and not settings.uses_built_in_lease:
         return None
     if settings.lease_credential == SIGN_IN_CREDENTIAL:
         return _sign_in_lease_source(settings)

@@ -1166,9 +1166,10 @@ class TunnelConfig:
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
             "the caller named by the relay. Off by default. It connects only when "
-            "Relay Lease Service URL and Relay Lease Credential are set, so the Crew "
-            "can hold a lease. Without them no relay client starts and the tunnel "
-            "status names the missing setting. While it is off, "
+            "Relay Lease Credential is set, so the Crew can hold a lease (from Relay "
+            "Lease Service URL, or the built-in one when that is empty). Without it no "
+            "relay client starts and the tunnel status names the missing setting. While "
+            "it is off, "
             "Crew starts no "
             "relay client, strips every x-kiro-relay-* header from every request and "
             "trusts none of them. To reach the relay and the lease service through a "
@@ -1183,8 +1184,9 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Service URL",
             "The base URL of the lease service this Crew calls RenewCrewLease on, to "
-            "hold its lease and get host tokens. Empty (the default) means no host "
-            "token source, so the relay client cannot connect. Must be https:// "
+            "hold its lease and get host tokens. Empty (the default) uses the built-in "
+            "Kiro control plane URL: the one for the sign-in profile's region with "
+            "kiro-sign-in, and us-east-1 otherwise. Must be https:// "
             "(http:// only for a loopback port-forward).",
             restart=True,
         ),

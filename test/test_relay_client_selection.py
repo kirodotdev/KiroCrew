@@ -133,7 +133,8 @@ class TestSettings:
     @pytest.mark.parametrize(
         ("names", "missing"),
         [
-            ({"host_url": "", "crew_domain": ""}, "relay host URL"),
+            # Neither name: the built-in lease service, which needs the credential.
+            ({"host_url": "", "crew_domain": ""}, "tunnel.relay_lease_credential is not set"),
             ({"crew_domain": ""}, "relay Crew domain"),
             ({"host_url": ""}, "relay host URL"),
         ],
@@ -475,10 +476,10 @@ class TestThroughTheTunnelWrapper:
     @pytest.mark.parametrize(
         ("tunnel", "names"),
         [
-            ({}, "relay host URL"),
+            ({}, "tunnel.relay_lease_credential is not set"),
             ({"relay_lease_url": "https://lease.example"}, "tunnel.relay_lease_credential"),
         ],
-        ids=["no-lease", "lease-without-credential"],
+        ids=["built-in-lease-without-credential", "lease-without-credential"],
     )
     async def test_the_relay_enable_help_matches_a_start_without_a_lease(
         self, tunnel: dict, names: str
