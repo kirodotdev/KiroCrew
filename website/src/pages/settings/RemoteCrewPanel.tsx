@@ -90,7 +90,7 @@ import { Trans } from 'react-i18next'
 import { AddInstanceForm } from './InstancesPanel'
 import { RemoteCrewRestartBanner } from './RemoteCrewPanelRestartBanner'
 import { CrewVersionsReadError } from './CrewVersionStatus'
-import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
+import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, envCredentialsSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   instanceFormFromView,
 } from './InstanceFormFields'
@@ -1454,12 +1454,14 @@ export function RemoteCrewPanel() {
                       // leads; the CLI's own error sits under it (failureDetail)
                       // for anything the sentence misses.
                       ? credentialHelperMissingSentence(preflight.credential_helper_missing)
+                    : preflight.env_credentials
+                      ? envCredentialsSentence()
                       : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
                   failureDetail={preflight.reachable && preflight.account
                     ? undefined
                     : cliRefusal
                       ? cliRefusal.failureDetail
-                      : (preflight.credential_helper_missing && preflight.detail) || undefined}
+                      : ((preflight.credential_helper_missing || preflight.env_credentials) && preflight.detail) || undefined}
                   failureReport={cliRefusal ? awsCliRefusalReport(preflight, cliRefusal) : undefined}
                   steps={cliRefusal?.steps}
                   onRecheck={runCheck}

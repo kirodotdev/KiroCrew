@@ -21477,6 +21477,7 @@
         "copy_turn_url": "Chat-API-URL von {{name}} kopieren",
         "copy_word": "Kopieren",
         "credentials_bad": "Mit diesem Profil ist AWS nicht erreichbar. Prüfe deine Zugangsdaten und prüfe dann erneut.",
+        "credentials_env_vars": "Lege ein AWS-Profil an: Führe {{sso}} oder {{configure}} in einem Terminal auf dem Computer aus, auf dem {{productName}} läuft, trage den Namen des Profils im Feld „AWS-Profil“ ein und prüfe dann erneut. Deine Zugangsdaten stehen in Umgebungsvariablen, und {{productName}} gibt geheime AWS-Schlüssel und Sitzungstoken von dort nicht an die AWS CLI weiter.",
         "credentials_helper_missing": "Trage in der credential_process-Zeile deiner AWS-Konfigurationsdatei (meist {{file}}) den vollständigen Pfad von {{name}} ein und prüfe dann erneut. Die AWS CLI hat es im PATH des Gateways nicht gefunden. Den vollständigen Pfad zeigt {{command}} in einem Terminal auf dem Computer, auf dem {{productName}} läuft, unter dem Konto, unter dem es läuft.",
         "credentials_ok": "Profil {{profile}} → Konto {{account}}.",
         "credentials_ok_default": "Deine Standard-AWS-Anmeldedaten werden verwendet → Konto {{account}}.",

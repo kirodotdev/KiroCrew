@@ -22009,6 +22009,7 @@
         "copy_turn_url": "Copiar a URL da API de chat de {{name}}",
         "copy_word": "Copiar",
         "credentials_bad": "Não foi possível conectar à AWS com este perfil. Confira suas credenciais e verifique de novo.",
+        "credentials_env_vars": "Crie um perfil da AWS: execute {{sso}} ou {{configure}} em um terminal no computador em que o {{productName}} roda, digite o nome do perfil no campo “Perfil da AWS” e verifique de novo. Suas credenciais estão em variáveis de ambiente, e o {{productName}} não repassa de lá chaves secretas nem tokens de sessão da AWS para a AWS CLI.",
         "credentials_helper_missing": "Escreva o caminho completo de {{name}} na linha credential_process do seu arquivo de configuração da AWS (normalmente {{file}}) e verifique de novo. A AWS CLI não o encontrou no PATH do gateway. Para ver o caminho completo, execute {{command}} em um terminal no computador em que o {{productName}} roda, com a conta que o executa.",
         "credentials_ok": "Usando o perfil {{profile}} → conta {{account}}.",
         "credentials_ok_default": "Usando suas credenciais padrão da AWS → conta {{account}}.",

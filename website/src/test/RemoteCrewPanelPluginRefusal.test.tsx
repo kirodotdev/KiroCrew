@@ -13,6 +13,7 @@ import {
   awsCliRefusalCopy,
   awsCliRefusalReport,
   credentialHelperMissingSentence,
+  envCredentialsSentence,
   pluginRefusalCopy,
   pluginRefusalReport,
 } from '../pages/settings/remoteCrewPluginRefusal'
@@ -328,5 +329,37 @@ describe('RemoteCrewPanel refused AWS CLI', () => {
   it('has nothing to say once credentials resolve or when no CLI was refused', () => {
     expect(awsCliRefusalCopy(cliRefused({ reachable: true, account: '1234' }))).toBeNull()
     expect(awsCliRefusalCopy(cliRefused({ aws_cli_refused_path: '' }))).toBeNull()
+  })
+})
+
+describe('RemoteCrewPanel env-var AWS credentials', () => {
+  const PARTIAL = 'aws: [ERROR]: Partial credentials found in env, missing: AWS_SECRET_ACCESS_KEY'
+  const failed = (over: Partial<CloudPreflight>): CloudPreflight => ({
+    ...PREFLIGHT_OK, reachable: false, account: '', detail: PARTIAL, ...over,
+  })
+
+  async function credentialsRow(preflight: CloudPreflight) {
+    vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    return (await screen.findByText('AWS credentials')).closest('li') as HTMLElement
+  }
+
+  it('leads with the profile to create and puts the CLI’s own error under it', async () => {
+    const row = await credentialsRow(failed({ env_credentials: true }))
+    const lead = within(row).getByText(envCredentialsSentence())
+    expect(lead).toHaveTextContent(/^Create an AWS profile: run aws configure sso or aws configure in a terminal/)
+    expect(lead).not.toHaveTextContent(/Partial credentials/)
+    const notice = lead.closest('[role="alert"]') as HTMLElement
+    expect(notice).not.toBeNull()
+    const raw = within(notice).getByText(PARTIAL)
+    expect(raw.className).toMatch(/\bfont-mono\b/)
+  })
+
+  it('still shows the CLI’s error as the failure when the credentials are not env vars', async () => {
+    const row = await credentialsRow(failed({ env_credentials: false, detail: 'aws: [ERROR]: Unable to locate credentials' }))
+    expect(within(row).getByText(/^aws: \[ERROR\]: Unable to locate credentials/)).toBeInTheDocument()
+    expect(row).not.toHaveTextContent(/Create an AWS profile/)
   })
 })

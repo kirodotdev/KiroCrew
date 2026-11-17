@@ -45,6 +45,9 @@ export interface CloudPreflight {
   /** The bare program name the AWS CLI could not find while resolving
    *  credentials (usually the profile's `credential_process` command), or "". */
   credential_helper_missing?: string
+  /** True when the check failed without a profile and the gateway's own
+   *  credentials are environment variables, which are not passed to the CLI. */
+  env_credentials?: boolean
   session_manager_plugin: boolean
   /** Copy-pasteable install command for the GATEWAY's platform, resolved
    *  server-side (the browser cannot know that host's OS). "" when the platform

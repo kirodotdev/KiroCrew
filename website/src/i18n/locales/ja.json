@@ -20945,6 +20945,7 @@
         "copy_turn_url": "{{name}} のチャット API の URL をコピー",
         "copy_word": "コピー",
         "credentials_bad": "このプロファイルでは AWS に接続できませんでした。認証情報を確認してから、もう一度確認してください。",
+        "credentials_env_vars": "AWS プロファイルを作成してください。{{productName}} が動いているコンピューターのターミナルで {{sso}} または {{configure}} を実行し、プロファイル名を「AWS プロファイル」欄に入力してから、もう一度確認してください。認証情報は環境変数にあり、{{productName}} はそこにある AWS のシークレットキーやセッショントークンを AWS CLI に渡しません。",
         "credentials_helper_missing": "AWS 設定ファイル（通常は {{file}}）の credential_process の行に {{name}} のフルパスを書いてから、もう一度確認してください。AWS CLI はゲートウェイの PATH でこれを見つけられませんでした。フルパスは、{{productName}} が動いているコンピューターのターミナルで、それを動かしているアカウントから {{command}} を実行すると確認できます。",
         "credentials_ok": "プロファイル {{profile}} → アカウント {{account}} を使用しています。",
         "credentials_ok_default": "既定の AWS 認証情報を使用中 → アカウント {{account}}。",

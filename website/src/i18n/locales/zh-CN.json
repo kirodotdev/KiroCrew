@@ -20945,6 +20945,7 @@
         "copy_turn_url": "复制 {{name}} 的聊天 API URL",
         "copy_word": "复制",
         "credentials_bad": "Could not reach AWS with this profile. Check your credentials, then re-check.",
+        "credentials_env_vars": "请创建一个 AWS 配置文件：在运行 {{productName}} 的电脑上打开终端，运行 {{sso}} 或 {{configure}}，在“AWS 配置文件”字段中输入该配置文件的名称，然后重新检查。你的凭证位于环境变量中，而 {{productName}} 不会把其中的 AWS 私密访问密钥或会话令牌传给 AWS CLI。",
         "credentials_helper_missing": "请在 AWS 配置文件（通常是 {{file}}）的 credential_process 行中写上 {{name}} 的完整路径，然后重新检查。AWS CLI 在网关的 PATH 中找不到它。要查看完整路径，请在运行 {{productName}} 的电脑上，用运行它的账户在终端中运行 {{command}}。",
         "credentials_ok": "Using profile {{profile}} → account {{account}}.",
         "credentials_ok_default": "使用默认 AWS 凭证 → 账户 {{account}}。",
