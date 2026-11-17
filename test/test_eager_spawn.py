@@ -32,9 +32,9 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.session import FirstTurnState
+from kiro_crew.session import FirstTurnState, SessionManager
 from kiro_crew.start_priority import StartPriority
-from kiro_crew.testing.wait import until_parked
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 def _cfg_with_store(name: str, *, version: int, owner: str = "") -> KiroCrewConfig:
@@ -463,8 +463,8 @@ class TestEagerSpawn:
         assert chat_runner._armed_prefetches == {}
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.remove.assert_awaited_once_with(key)
-        # Semaphore still released before teardown.
-        state.sessions.release.assert_called_once_with(key)
+        # The permit is left to ``remove``, which releases it in the hold that pops it.
+        state.sessions.release.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_removes_session_when_bindings_change_mid_handshake(self, tmp_path):
@@ -489,8 +489,110 @@ class TestEagerSpawn:
         assert chat_runner._armed_prefetches == {}
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.remove.assert_awaited_once_with(key)
-        # Semaphore still released before teardown.
-        state.sessions.release.assert_called_once_with(key)
+        # The permit is left to ``remove``, which releases it in the hold that pops it.
+        state.sessions.release.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arm", ["vanished", "bindings", "pending_reset"])
+    async def test_a_cancel_mid_teardown_still_ends_the_process(self, tmp_path, arm):
+        """Every later slot signal cancels the pending eager task. A cancel that
+        lands while one of its teardowns is in flight (a guard arm's ``remove``,
+        the deferred project reset's ``reset``), after the registry pop and
+        before ``provider.shutdown()``, must not abandon it: the popped session's
+        process would keep the native session lock with nothing left that can
+        find it, and every later turn on the chat is refused."""
+        slot = _ChatSlot("t1")
+        slot.project = str(tmp_path / "a")
+        state = _mock_state(slot)
+        popped = asyncio.Event()
+        resume_teardown = asyncio.Event()
+        teardown_ended = asyncio.Event()
+        outcome: dict[str, bool] = {}
+
+        async def _pop_then_shut_down(key, **_kw):
+            try:
+                popped.set()
+                await resume_teardown.wait()
+                outcome["shut_down"] = True
+            except asyncio.CancelledError:
+                outcome["shut_down"] = False
+                raise
+            finally:
+                teardown_ended.set()
+
+        if arm == "pending_reset":
+            slot._pending_reset_history_key = "dashboard:t1"
+            state.sessions.reset = AsyncMock(side_effect=_pop_then_shut_down)
+        else:
+            state.sessions.remove = AsyncMock(side_effect=_pop_then_shut_down)
+
+        async def _create_then_change(*a, **kw):
+            if arm == "vanished":
+                state.get_slot.return_value = None
+            else:
+                slot.project = str(tmp_path / "b")
+            return (MagicMock(), True, False)
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_create_then_change)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            task = asyncio.create_task(_eager_spawn(state, slot))
+            try:
+                await await_until(popped, what="the teardown's pop")
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                assert task.cancelled()
+                resume_teardown.set()
+                await await_until(teardown_ended, what="the teardown's end")
+            finally:
+                resume_teardown.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        assert outcome == {"shut_down": True}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arm", ["vanished", "bindings"])
+    async def test_a_claim_parked_on_a_stale_session_starts_its_own(self, tmp_path, arm):
+        """A real claim parked on the eager start's permit when a guard arm finds
+        the session stale must not be handed that session: ``remove`` shuts its
+        provider down under the real turn. The claim wakes to find it gone and
+        starts a session with the current bindings."""
+        cfg = KiroCrewConfig()
+        cfg.agent.provider = "acp"
+        cfg.session.pool_size = 0
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        slot = _ChatSlot("t1")
+        slot.project = str(tmp_path / "a")
+        state = _mock_state(slot)
+        state.sessions.release = mgr.release
+        state.sessions.remove = mgr.remove
+        stale: dict[str, AsyncMock] = {}
+        claims: list[asyncio.Future] = []
+
+        async def _create_park_then_change(key, *_a, **_kw):
+            result = await mgr.get_or_create(key, speculative=True)
+            stale["provider"] = result[0]
+            claims.append(asyncio.ensure_future(mgr.get_or_create(key)))
+            await until_parked(mgr._sessions[key].semaphore)
+            if arm == "vanished":
+                state.get_slot.return_value = None
+            else:
+                slot.project = str(tmp_path / "b")
+            return result
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_create_park_then_change)
+        try:
+            with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+                await _eager_spawn(state, slot)
+                provider, _, _ = await await_until(claims[0], what="the parked claim")
+            key = state.sessions.get_or_create.await_args.args[0]
+            assert provider is not stale["provider"]
+            stale["provider"].shutdown.assert_awaited()
+            assert mgr._sessions[key].provider is provider
+            mgr.release(key)
+        finally:
+            for claim in claims:
+                claim.cancel()
+            await asyncio.gather(*claims, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_unchanged_bindings_keep_the_session(self, tmp_path):
