@@ -1046,14 +1046,20 @@ def _projection_with_disabled_tool():
     )
 
 
-def test_the_hooks_ruling_is_withheld() -> None:
-    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+def test_the_hooks_ruling_has_no_channel_for_pre_tool_use() -> None:
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    )
     from kiro_crew.providers.mirrors import Concern, Disposition, mirror_for
 
+    # Crew fires the non-gating events; preToolUse has no channel on this harness.
     assert ACP_BACKEND_MIMOCODE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert ACP_BACKEND_MIMOCODE in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS
     rulings = mirror_for(ACP_BACKEND_MIMOCODE).rulings()
-    assert rulings[Concern.HOOKS].disposition is Disposition.WITHHELD
+    assert rulings[Concern.HOOKS].disposition is Disposition.NO_CHANNEL
     assert "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS" in rulings[Concern.HOOKS].reason
+    assert "ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS" in rulings[Concern.HOOKS].reason
     assert set(rulings) == set(mirror_for(ACP_BACKEND_OPENCODE).rulings())
     for ruling in rulings.values():
         assert "opencode 1.18" not in ruling.reason

@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -1243,7 +1244,10 @@ def test_entries_matching_a_file_anchors_like_kiro_cli(tmp_path, monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE])
+@pytest.mark.parametrize(
+    "backend",
+    [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_MIMOCODE],
+)
 def test_the_resources_ruling_says_no_reader_not_injected_steering(backend):
     from kiro_crew.agent_sdk.backend_mcp_ability import OFF_CARD_CONCERNS
     from kiro_crew.providers.mirrors import mirror_for

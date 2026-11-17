@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -299,6 +300,7 @@ def test_member_capabilities_are_opt_in() -> None:
             ACP_BACKEND_CODEX,
             ACP_BACKEND_DEEPSEEK,
             ACP_BACKEND_PI,
+            ACP_BACKEND_MIMOCODE,
         }
     )
     assert ACP_BACKENDS_MEMBER_CAPABILITIES is not ACP_BACKENDS_SESSION_SHARING
@@ -328,7 +330,13 @@ def test_the_mate_worker_takes_the_member_rule() -> None:
         source = inspect.getsource(provider.mate_worker_kit_supported.fget)
         assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
     assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset(
-        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
+        {
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_PI,
+            ACP_BACKEND_MIMOCODE,
+        }
     )
     assert ACP_BACKENDS_MATE_WORKER_KIT <= ACP_BACKENDS_MEMBER_CAPABILITIES
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MATE_WORKER_KIT
@@ -410,15 +418,22 @@ def test_mcp_wire_reinject_is_opt_in() -> None:
 def test_mcp_relaunch_reload_is_opt_in() -> None:
     """H6: the THIRD way a dashboard MCP write skips the reset is its own membership.
 
-    Strands reads its MCP servers once, at launch, so Crew relaunches the process and
-    loads the same session. The declaration and the mark read the set, and the
-    writer's gate and marker both consult the relaunch declaration.
+    Strands reads its MCP servers once, at launch, and MiMo Code mounts the array of
+    each load, so Crew relaunches the process and loads the same session. The
+    declaration and the mark read the set, and the writer's gate and marker both
+    consult the relaunch declaration.
     """
     from kiro_crew import mcp_hot_reload
     from kiro_crew.acp import relaunch_reload
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_STRANDS, ACP_BACKENDS_MCP_RELAUNCH_RELOAD
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_STRANDS,
+        ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
+    )
 
-    assert ACP_BACKENDS_MCP_RELAUNCH_RELOAD == frozenset({ACP_BACKEND_STRANDS})
+    assert ACP_BACKENDS_MCP_RELAUNCH_RELOAD == frozenset(
+        {ACP_BACKEND_STRANDS, ACP_BACKEND_MIMOCODE}
+    )
     assert not (ACP_BACKENDS_MCP_RELAUNCH_RELOAD & ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD)
     assert not (ACP_BACKENDS_MCP_RELAUNCH_RELOAD & ACP_BACKENDS_MCP_WIRE_REINJECT)
     declaration = inspect.getsource(relaunch_reload.mcp_config_relaunch_reload)
