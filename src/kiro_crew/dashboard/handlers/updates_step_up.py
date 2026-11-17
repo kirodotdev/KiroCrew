@@ -687,7 +687,20 @@ async def api_update_approve(request: web.Request) -> web.Response:
             return await _refuse(
                 web.json_response({"error": error, "code": "restart_first"}, status=409)
             )
-        await asyncio.to_thread(update_next_start.arm, pending.version)
+        try:
+            await asyncio.to_thread(update_next_start.arm, pending.version)
+        except OSError as exc:
+            # The approval is already consumed (single-use): record why nothing was
+            # armed, and end the progress the panel and the CLI wait on.
+            logger.warning(
+                "update.approve: the armed-update record stayed unreadable", exc_info=True
+            )
+            error = "the update record is busy, so nothing was armed: approve the update again"
+            await _audit("failed", error=f"{error} ({exc})", resources=f"v{pending.version}")
+            state.push_update_progress("failed", error)
+            return await _refuse(
+                web.json_response({"error": error, "code": "update_record_busy"}, status=503)
+            )
         await _audit("success", resources=f"v{pending.version} armed for the next start")
         # The terminal frame the approval consumers render: the panel shows it as
         # staged, and the CLI prints it, instead of waiting on an install that

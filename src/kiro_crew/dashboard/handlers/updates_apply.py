@@ -364,6 +364,21 @@ async def _read_update_request(
     return str(when), version.strip(), None if armed_at is None else float(armed_at)
 
 
+def _update_record_busy() -> web.Response:
+    """The armed-update record stayed unreadable past the read retry; the client retries.
+
+    Call this inside the ``except`` block, where ``exc_info`` still sees it.
+    """
+    logger.warning("update: the armed-update record stayed unreadable", exc_info=True)
+    return web.json_response(
+        {
+            "error": "The update record is busy, so nothing changed: try again",
+            "code": "update_record_busy",
+        },
+        status=503,
+    )
+
+
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update: ARM the update for the next start; install nothing now.
 
@@ -388,7 +403,10 @@ async def api_update_apply(request: web.Request) -> web.Response:
         return parsed
     when, named_version, named_armed_at = parsed
     if when == WHEN_CANCEL:
-        removed = await asyncio.to_thread(update_next_start.disarm, named_armed_at)
+        try:
+            removed = await asyncio.to_thread(update_next_start.disarm, named_armed_at)
+        except OSError:
+            return _update_record_busy()
         if removed is None:
             # The record was re-armed since the caller read it: not the one it named.
             return web.json_response(
@@ -430,7 +448,10 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # The desktop app owns its own update feed and apply (this gateway often cannot
     # see the release at all), so a gateway it hosts records the version it names.
     if named_version and update_boot_apply.hosted_by_desktop():
-        armed = await asyncio.to_thread(update_next_start.arm, named_version)
+        try:
+            armed = await asyncio.to_thread(update_next_start.arm, named_version)
+        except OSError:
+            return _update_record_busy()
         state.push_refresh("update_available")
         return web.json_response(
             {"ok": True, "armed": True, "version": armed.armed_version}, status=202
@@ -478,9 +499,12 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
     behind = _update_info.get("commits_behind")
-    armed = await asyncio.to_thread(
-        lambda: update_next_start.arm(version, behind=behind if isinstance(behind, int) else 0)
-    )
+    try:
+        armed = await asyncio.to_thread(
+            lambda: update_next_start.arm(version, behind=behind if isinstance(behind, int) else 0)
+        )
+    except OSError:
+        return _update_record_busy()
     state.push_refresh("update_available")
     return web.json_response(
         {"ok": True, "armed": True, "version": armed.armed_version}, status=202

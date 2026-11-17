@@ -73,10 +73,38 @@ def _state_path() -> Path:
 
 
 def read() -> NextStartState:
-    """The record, or an empty one when it is absent or unreadable."""
+    """The record, or an empty one when it is absent or unreadable.
+
+    For display. A change to the record starts from :func:`_read_for_update`.
+    """
     try:
-        raw = json.loads(_state_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = _state_path().read_bytes()
+    except OSError:
+        return NextStartState()
+    return _parse(data)
+
+
+def _read_for_update() -> NextStartState:
+    """The record a change starts from: empty only when the file is absent.
+
+    Any other read error propagates, after the Windows sharing-violation retry,
+    so a change is abandoned instead of writing an empty record over the arm.
+    Damaged content still parses as empty, as in :func:`read`: no retry can fix
+    it, and refusing would leave the person unable to arm again.
+    """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+
+    try:
+        data = read_bytes_with_retry(_state_path())
+    except FileNotFoundError:
+        return NextStartState()
+    return _parse(data)
+
+
+def _parse(data: bytes) -> NextStartState:
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except ValueError:
         return NextStartState()
     if not isinstance(raw, dict):
         return NextStartState()
@@ -132,7 +160,7 @@ def arm(version: str, *, behind: int = 0) -> NextStartState:
         raise ValueError("an armed update needs a version")
     behind = max(0, behind)
     with _lock:
-        old = read()
+        old = _read_for_update()
         if old.armed and old.armed_version == version:
             state = NextStartState(version, time.time(), old.attempts, "", behind)
         else:
@@ -149,7 +177,7 @@ def disarm(armed_at: float | None = None) -> bool | None:
     since returns ``None`` and stays. Without it the cancel is unconditional.
     """
     with _lock:
-        old = read()
+        old = _read_for_update()
         if not old.armed:
             return False
         if armed_at is not None and old.armed_at != armed_at:
@@ -164,9 +192,12 @@ def disarm(armed_at: float | None = None) -> bool | None:
 
 
 def note_boot_attempt() -> NextStartState:
-    """Count one boot-time apply against the arm, and return the record."""
+    """Count one boot-time apply against the arm, and return the record.
+
+    Raises ``OSError`` when the record cannot be read, leaving it as it was.
+    """
     with _lock:
-        old = read()
+        old = _read_for_update()
         state = NextStartState(
             old.armed_version, old.armed_at, old.attempts + 1, "", old.armed_behind
         )

@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from windows_sim import read_sharing_violation, read_text_sharing_violation
 
-from kiro_crew import update_next_start
+from kiro_crew import atomic_write, platform_compat, update_next_start
 from kiro_crew.testing.clock import ManualClock
 
 
@@ -132,6 +133,79 @@ def test_boot_attempts_are_counted_per_arm() -> None:
     assert update_next_start.read().attempts == 2
     update_next_start.arm("10.0.0")
     assert update_next_start.read().attempts == 0
+
+
+@pytest.fixture
+def windows(monkeypatch):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+
+
+def _on_disk(home) -> dict:
+    return json.loads((home / update_next_start.STATE_FILE).read_text())
+
+
+def test_a_short_sharing_lock_does_not_disarm_the_boot_counter(_home, windows) -> None:
+    update_next_start.arm("9.9.9")
+    update_next_start.note_boot_attempt()
+
+    with (
+        read_sharing_violation(match=update_next_start.STATE_FILE, times=2) as sim,
+        read_text_sharing_violation(match=update_next_start.STATE_FILE, times=2),
+    ):
+        state = update_next_start.note_boot_attempt()
+
+    assert sim["n"] == 3
+    assert (state.armed_version, state.attempts) == ("9.9.9", 2)
+    assert (_on_disk(_home)["armed_version"], _on_disk(_home)["attempts"]) == ("9.9.9", 2)
+
+
+def test_a_lock_past_the_retry_budget_raises_and_leaves_the_record(_home, windows) -> None:
+    update_next_start.arm("9.9.9")
+    before = _on_disk(_home)
+
+    with read_sharing_violation(match=update_next_start.STATE_FILE, times=1000):
+        with pytest.raises(PermissionError):
+            update_next_start.note_boot_attempt()
+        with pytest.raises(PermissionError):
+            update_next_start.arm("9.9.9")
+        with pytest.raises(PermissionError):
+            update_next_start.disarm()
+
+    assert _on_disk(_home) == before
+
+
+def test_a_short_sharing_lock_keeps_a_re_arms_attempts(_home, windows) -> None:
+    update_next_start.arm("9.9.9")
+    update_next_start.note_boot_attempt()
+
+    with (
+        read_sharing_violation(match=update_next_start.STATE_FILE, times=2) as sim,
+        read_text_sharing_violation(match=update_next_start.STATE_FILE, times=2),
+    ):
+        state = update_next_start.arm("9.9.9")
+
+    assert sim["n"] == 3
+    assert state.attempts == 1
+    assert _on_disk(_home)["attempts"] == 1
+
+
+def test_a_cancel_in_a_short_sharing_lock_still_disarms(_home, windows) -> None:
+    update_next_start.arm("9.9.9")
+
+    with read_sharing_violation(match=update_next_start.STATE_FILE, times=2):
+        assert update_next_start.disarm() is True
+
+    assert update_next_start.read().armed is False
+
+
+@pytest.mark.parametrize("garbage", ["not json", b"\xff\xfe"])
+def test_an_arm_over_a_damaged_record_still_arms(_home, garbage) -> None:
+    path = _home / update_next_start.STATE_FILE
+    path.write_bytes(garbage if isinstance(garbage, bytes) else garbage.encode())
+
+    assert update_next_start.arm("9.9.9").attempts == 0
+    assert update_next_start.read().armed_version == "9.9.9"
 
 
 def test_a_git_arm_keeps_its_commit_distance_across_attempts_and_error_clears() -> None:

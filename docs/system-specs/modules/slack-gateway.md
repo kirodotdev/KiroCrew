@@ -779,7 +779,9 @@ take the hold in `cli.main` after argument parsing.
   invalid_body`; a legacy `force` is read as nothing. It never records an arm without a
   version: with no succeeded check yet it awaits the shared check (30 s bound), then answers `409
   arm_check_failed` (the check failed) or `409 update_check_pending` (it has not finished, or named
-  no version); `409 no_update` when the check succeeded and found none. `update_next_start.arm` itself
+  no version); `409 no_update` when the check succeeded and found none; `503 update_record_busy` when the
+  record stays unreadable past the Windows sharing-violation retry, for an arm or a cancel, which then changes
+  nothing (the step-up approval answers the same, audited as failed). `update_next_start.arm` itself
   raises on a blank version, and a boot that finds a record with none drops it. A gateway the desktop hosts
   (`KIROCREW_DESKTOP_GATEWAY`) records the optional `version` string (64 chars at most, else `400 invalid_body`) in the
   body, which `gateway-arm.js` sends, without a check; any other gateway ignores it. The desktop's quit-time apply

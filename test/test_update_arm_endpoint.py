@@ -359,3 +359,24 @@ async def test_cancel_works_on_any_layout(tmp_path, monkeypatch, spies) -> None:
     resp, _state = await _post(tmp_path, monkeypatch, {"when": "cancel"})
 
     assert resp.status == 200 and not update_next_start.read().armed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{"when": "next-start"}, {"when": "cancel"}])
+async def test_a_record_held_past_the_read_retry_is_a_retryable_busy_answer(
+    tmp_path, monkeypatch, spies, body
+) -> None:
+    from kiro_crew import atomic_write
+
+    await _post(tmp_path, monkeypatch, {"when": "next-start"})
+    before = (tmp_path / update_next_start.STATE_FILE).read_text()
+
+    def held(path, **kwargs):
+        raise PermissionError("[WinError 32] the record is held open")
+
+    monkeypatch.setattr(atomic_write, "read_bytes_with_retry", held)
+    resp, _state = await _post(tmp_path, monkeypatch, body)
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "update_record_busy"
+    assert (tmp_path / update_next_start.STATE_FILE).read_text() == before
