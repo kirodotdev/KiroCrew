@@ -579,6 +579,7 @@ def main() -> None:
     cli_parser_gateway.register_open_parser(sub)
     cli_parser_gateway.register_logout_parser(sub)
     cli_parser_gateway.register_status_parser(sub)
+    cli_parser_gateway.register_usage_parser(sub)
 
     # mcp-cron (MCP server — spawned by the agent backend, not user-facing)
     sub.add_parser("mcp-cron")
@@ -1193,6 +1194,10 @@ def main() -> None:
         from kiro_crew.cli_server import _status
 
         _status(args)
+    elif args.command == "usage":
+        from kiro_crew.cli_commands import _usage_report
+
+        _usage_report(args)
     elif args.command == "consolidate":
         _consolidate_cmd(args)
     elif args.command == "config":

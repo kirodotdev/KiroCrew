@@ -49,8 +49,8 @@ contract.
 ### `cli_commands.py` and its owners
 
 `main()` takes the handlers of `cron`, `spawn`, `learn`, `artifact`, `memory`, `app`,
-`eval`, `security`, `policy`, `tailnet`, `telemetry`, `secrets`, `pod`, `agent` and
-`workspace`, and the `mcp-<app>` server of a built-in app, from
+`eval`, `security`, `policy`, `tailnet`, `telemetry`, `secrets`, `pod`, `agent`,
+`workspace` and `usage`, and the `mcp-<app>` server of a built-in app, from
 `kiro_crew/cli_commands.py`, through a function-local import (see
 [Import Weight Contract](#import-weight-contract)). That module keeps the `tailnet`,
 `telemetry`, `secrets` and `pod` handlers and the config-shape guards `tailnet` runs
@@ -68,9 +68,10 @@ new work for one of those commands goes to its module:
 | `cli_commands_security.py` | `security` and `policy` |
 | `cli_commands_eval.py` | `eval` |
 | `cli_commands_learn.py` | `learn` |
+| `cli_commands_usage.py` | `usage`: the terminal spend report (see [Usage Command](#usage-command)) |
 
-`kiro_crew.cli_commands` is a mirror facade (`kiro_crew._facade_mirror`) over those
-nine owners, lowest layer first in the order of the table. It keeps its whole import
+`kiro_crew.cli_commands` is a mirror facade (`kiro_crew._facade_mirror`) over the
+owners its `_OWNERS` lists, lowest layer first in the order of the table. It keeps its whole import
 block, so every name it held before the split still resolves as
 `kiro_crew.cli_commands.<name>` and is the same object, and a patch through it reaches
 every owner that binds the name. An owner never imports the facade, and imports
@@ -379,6 +380,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits; a successful update ends with the restart hint on every install layout) |
 | `kirocrew status` | Show runtime stats from running gateway |
+| `kirocrew usage [--days N \| --since YYYY-MM-DD] [--by model\|agent\|channel\|session] [--json]` | Print the install's recent spend (credits, turns, and cost / tokens where reported) per day or per bucket, read from the usage store with no gateway; see [Usage Command](#usage-command) |
 | `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). When systemd refuses the stop in any scope that runs the unit (`systemctl stop` exits non-zero: sudo or polkit denied), it reports no stop — exit 1, no port fallback, since `Restart=always` would bring a signalled gateway back — prints that scope's command to run by hand (`sudo systemctl stop kirocrew` or `systemctl --user stop kirocrew`), and audits `reason=service_stop_refused`. When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit (a systemd `Alias=` an operator declared on their own unit), it refuses before the foreground path — exit 1, nothing signalled — printing that unit, its scope, and the scope-correct remedy (`systemctl --user stop <unit>` for a user-scope alias, `sudo systemctl stop <unit>` for system), and audits `reason=service_name_is_alias`. A stopped (`inactive`/`failed`) alias is not refused, since its down target cannot be the thing to stop. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. When the desktop app supervises this home's gateway (the `gateway.lock` holder runs from the app's `backend-dist` bundle and its first ancestor outside the bundle runs from the same app install; on Windows, where the lock hides the holder's pid, the holder is the pid in this port's fresh `run/gateway-<port>.pid` record), it refuses before the port lookup — exit 1, nothing signalled — says to quit the app, and audits `reason=desktop_app_supervised`; with `--port N` this applies only when that gateway listens on N, and `--expect-pid` (the app's own stop) is never refused. Any probe miss keeps the existing path. |
 | `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active — on Linux in whichever scope runs the unit, confirming it stays up afterwards and reporting a unit that lands in `activating (auto-restart)` as a failed restart — otherwise terminates the foreground gateway and respawns it detached). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit, it refuses before the foreground path — exit 1, nothing signalled or spawned — printing that unit, its scope, and the scope-correct remedy (`restart` verb), and audits `reason=service_name_is_alias`. A stopped alias is not refused. When our own unit (the manager's canonical `Id` is `kirocrew.service`, so a stopped alias does not count, and a system-scope alias does not hide our per-user unit beside it) or launchd agent is installed but not running (after `kirocrew stop`, or a failed unit) AND no gateway is running (nothing listens on the port and `gateway.lock` is free), it refuses the same way — exit 1, nothing spawned, audit `reason=service_installed_not_running` — and prints one hint naming the unit file and its scope (`system`, `user` or `launchd`) with "start it with your service manager"; no exact command is printed, since each one fails in some shell (no sudo, no user bus, the wrong launchd domain). The crew page's remote Restart and Update pass `stdout_tail=True`, so this hint reaches the dashboard, because a detached gateway would run outside the unit. A foreground gateway already running beside a stopped unit is restarted as before. Pass `--port N` to bypass the service short-circuit AND both refusals and target a specific gateway. A gateway the desktop app supervises is refused the same way `stop` refuses it (nothing signalled or spawned, `reason=desktop_app_supervised`), naming the in-app restart (Settings → About → Restart gateway) or quitting the app first. |
 | `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. On a Linux host that systemd did not boot (`/run/systemd/system` absent: a container whose PID 1 is something else, WSL without systemd) it refuses before any `sudo` or write, exit 1, and says to run `kirocrew gateway` under the host's own supervisor or boot script. The unit's `User=` is `$SUDO_USER` when it names a non-root account, else `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid (so a non-interactive `ssh host kirocrew service install` with neither variable set still resolves the account); it refuses when none resolves, and refuses an account that resolves to `root`. |
@@ -3580,6 +3582,45 @@ printed as "not running"), so a script or health check can gate on `$?`
 without parsing stdout. It exits 0 whenever a gateway answers: the stats
 view, a failed owner sign-in, another HTTP error, a busy timeout or an
 unexpected body.
+
+## Usage Command
+
+`kirocrew usage` prints the install's recent spend from the terminal, for a host with
+no browser and for a script. Its population is the whole install's: every billed
+turn in the per-turn usage shards, background and subagent turns included, read
+through `usage_series.load_rows()` -- the rows the Usage tab's "Spend over time" chart
+reads -- not the Spend panel's narrower session population. It reads the store
+directly, needs no running gateway, and writes nothing.
+
+The window is whole local days ending today: `--days N` (default 7) or `--since
+YYYY-MM-DD` (mutually exclusive; both together exit 2), clamped to `[1, WINDOW_DAYS]`
+(30, the window the series reader covers). The header names the window it covered. With no
+`--by` there is one row per day, oldest first, zero-filled; `--by model|agent|channel|session`
+gives one row per bucket, credits descending then key, with every bucket shown and no
+top-N fold. `session` is the report's own dimension (the series route does not offer
+it): a row keys by its session slot, and a slot that is not a session in its own right
+(a `subagent:*` fragment) keys by its channel, so all subagent turns form one
+`subagent` row and stay in the total. A row with no value for the dimension lands in
+`__unattributed__`, printed as `(unattributed)`. Every admitted row counts one turn,
+a zero-credit turn included.
+
+A figure a cell's harness does not report is not printed as zero: the Daily History
+table's per-day rule (see [learn-cron-dashboard](learn-cron-dashboard.md), "Every shard
+row records both `credits` and the dollar `cost`") applied to every cell -- each day,
+each bucket, and the totals. `credits` is `null` when the cell's credits sum to zero
+while its cost is positive, otherwise a number; `cost` and `tokens` (input + output +
+cache create + cache read) are `null` when they sum to zero, since kiro-cli and KAS
+write both as a hard zero. The table prints `null` as `-` and shows the Cost and
+Tokens columns only when some row carries one. The decision is made from the rows,
+never from config, because a crew member on another harness writes to the same store.
+
+`--json` prints one JSON document, `usage_series.build_report`'s payload (`by`, `days`,
+`from`, `to`, `totals`, `rows`, `truncated`, `complete_from`), and nothing else. When
+the reader's row cap may have shortened this window (`truncated`), the table says the
+window may undercount and that every turn from `complete_from` on is counted (no day
+is named when even the newest shard was not read whole). Past the cap the shared
+reader also logs its own warning on stderr; that line describes the 30-day scan, not
+this window.
 
 ## App Dev Mode
 

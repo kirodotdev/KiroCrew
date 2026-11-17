@@ -234,7 +234,16 @@ first so a window past the cap keeps its newest rows, and the payload discloses
 the shortening (`truncated`, `dropped_rows`, and `complete_from`, the oldest
 day every row of which was kept, never reaching past an unreadable shard --
 `null` when the cap tripped inside the newest shard) instead of serving a
-partial window as the whole one. The chart stacks
+partial window as the whole one. Each retained row also carries `tokens`, the sum of
+its input, output, cache-create and cache-read counts (the figure the daily
+token chart draws; a non-numeric or non-finite part counts 0), which the chart
+ignores. `build_report`, beside `build_series`, is the second reader of these
+rows: the pure aggregator behind `kirocrew usage` (see
+[cli](cli.md#usage-command)). It differs from `build_series` in three ways: it
+skips no zero-value row (every admitted row is one turn), it folds no bucket
+into `other`, and it applies the Daily History table's not-reported rule to
+every cell (credits `null` on dollar-billed spend, cost and tokens `null` when
+they sum to zero). The chart stacks
 and, in its default cumulative view,
 prefix-sums the series client-side (`pages/overview/TokenStackedAreaChart.tsx`,
 `d3`'s `stack`/`area`, axis top rounded to a nice number); its view choices

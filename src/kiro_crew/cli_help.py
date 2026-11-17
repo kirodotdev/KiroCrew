@@ -39,6 +39,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "Run the gateway",
         (
             ("status", "Show runtime stats"),
+            ("usage", "Report recent credit spend per day, model, agent, channel or session"),
             ("restart", "Restart a running gateway (service-aware)"),
             ("stop", "Stop a running gateway"),
             ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
