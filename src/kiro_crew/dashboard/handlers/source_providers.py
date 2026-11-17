@@ -456,6 +456,7 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "_refresh_check_status",
         "request_check_refresh_now",
         "schedule_check_refresh",
+        "schedule_expanded_check_refresh",
     ),
     "mutations": (
         "comment_on_pull_request",
@@ -1328,6 +1329,7 @@ if TYPE_CHECKING:  # the public surface and what production imports, for type ch
         CHECK_STATUS_PENDING_MAX,
         request_check_refresh_now,
         schedule_check_refresh,
+        schedule_expanded_check_refresh,
     )
     from kiro_crew.dashboard.source_providers.chip_status import (  # noqa: F401
         CHECK_STATUS_TTL_SECS,

@@ -20,7 +20,7 @@ import { forgetUnobservedMemberThreads, MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECT
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../../api/threads'
-import { applyStatusDelta, parseStatusDelta } from '../../utils/pullRequestStatusDelta'
+import { applyStatusDelta, applyStatusDeltaToLinks, parseStatusDelta } from '../../utils/pullRequestStatusDelta'
 import { GUIDE_PENDING_QUERY_KEY } from '../../api/guide'
 import { CHANGE_CARDS_QUERY_PREFIX } from '../../api/cards'
 import { slotChangeUrls } from '../../utils/pullRequestLinks'
@@ -634,6 +634,13 @@ export function handleSourceStatus(dispatch: AppDispatch, queryClient: QueryClie
   // stale until an unrelated slots broadcast — the same chip↔panel
   // divergence this feature removes, recreated on the sidebar.
   dispatch(patchSlotSourceLinks({ url: delta.url, state: delta.state, ci: delta.ci, ciPending: delta.ciPending }))
+  // The expanded "+N" list is a react-query read, not part of the slots payload,
+  // so the patch above never reaches those chips either. The gateway reads their
+  // status when the list is fetched, and this delta is how the result lands.
+  queryClient.setQueriesData<NonNullable<ChatSlot['source_links']>>(
+    { queryKey: ['session-source-links'] },
+    links => applyStatusDeltaToLinks(links, delta),
+  )
   // Invalidate the detail payload for EVERY changed delta, regardless
   // of origin. A 'detail'-origin delta is produced by one window's full
   // fetch; only that window received the fresh HTTP payload, so other
