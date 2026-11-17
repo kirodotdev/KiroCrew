@@ -668,16 +668,110 @@ def test_run_dry_builds_a_throwaway_clone_and_honors_data_dir(tmp_path, git, mon
     root = tmp_path / "ephemeral"
     root.mkdir()
     monkeypatch.setattr(drv, "tempfile", types.SimpleNamespace(mkdtemp=lambda prefix="": str(root)))
-    monkeypatch.setattr(drv.Driver, "run", lambda self, **kwargs: drv.Stats(cycles=1))
+    seen: list[bool] = []
+
+    def _run(self, **kwargs):
+        seen.append((root / "clone" / "src" / "mesh_pkg" / "__init__.py").exists())
+        return drv.Stats(cycles=1)
+
+    monkeypatch.setattr(drv.Driver, "run", _run)
     args = types.SimpleNamespace(data_dir=tmp_path / "data")
 
     assert drv._run_dry(args, drv.BudgetCaps(max_cycles=1), LOG) == 0
 
-    assert (root / "clone" / "src" / "mesh_pkg" / "__init__.py").exists()
+    assert seen == [True]
     assert git.seen("init -q -b auto_improvement/trunk-base")
     assert git.seen("remote add origin DISABLED_NO_PUSH")
     out = capsys.readouterr().out
     assert str(tmp_path / "data" / "results") in out
+
+
+def _dry_root(tmp_path, monkeypatch, name):
+    root = tmp_path / name
+    root.mkdir()
+    monkeypatch.setattr(drv, "tempfile", types.SimpleNamespace(mkdtemp=lambda prefix="": str(root)))
+    return root
+
+
+def test_a_bare_dry_run_removes_its_run_root(tmp_path, git, monkeypatch, capsys):
+    root = _dry_root(tmp_path, monkeypatch, "ephemeral5")
+
+    def _run(self, **kwargs):
+        (root / "data" / "state").mkdir(parents=True, exist_ok=True)
+        (root / "data" / "state" / "ledger.jsonl").write_text("{}\n")
+        return drv.Stats()
+
+    monkeypatch.setattr(drv.Driver, "run", _run)
+
+    assert drv._run_dry(types.SimpleNamespace(data_dir=None), drv.BudgetCaps(), LOG) == 0
+    assert not root.exists()
+    assert f"removed the throwaway data under {root / 'data'}" in capsys.readouterr().out
+
+
+def test_a_dry_run_that_raises_still_removes_its_run_root(tmp_path, git, monkeypatch):
+    root = _dry_root(tmp_path, monkeypatch, "ephemeral6")
+
+    def _boom(self, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(drv.Driver, "run", _boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        drv._run_dry(types.SimpleNamespace(data_dir=None), drv.BudgetCaps(), LOG)
+    assert not root.exists()
+
+
+def test_a_dry_run_keeps_an_explicit_data_dir_and_removes_the_run_root(tmp_path, git, monkeypatch):
+    root = _dry_root(tmp_path, monkeypatch, "ephemeral7")
+    chosen = tmp_path / "chosen"
+
+    def _run(self, **kwargs):
+        (chosen / "state").mkdir(parents=True, exist_ok=True)
+        (chosen / "state" / "ledger.jsonl").write_text("{}\n")
+        return drv.Stats()
+
+    monkeypatch.setattr(drv.Driver, "run", _run)
+
+    assert drv._run_dry(types.SimpleNamespace(data_dir=chosen), drv.BudgetCaps(), LOG) == 0
+    assert (chosen / "state" / "ledger.jsonl").read_text() == "{}\n"
+    assert not root.exists()
+
+
+def test_a_dry_run_keeps_only_the_clone_it_retired_as_unsafe(tmp_path, git, monkeypatch, capsys):
+    root = _dry_root(tmp_path, monkeypatch, "ephemeral8")
+    retired = root / ".clone.unsafe-0123456789abcdef" / "clone"
+
+    def _run(self, **kwargs):
+        retired.parent.mkdir()
+        (root / "clone").rename(retired)
+        (root / "data").mkdir(exist_ok=True)
+        (root / "stray.txt").write_text("x")
+        return drv.Stats()
+
+    monkeypatch.setattr(drv.Driver, "run", _run)
+
+    assert drv._run_dry(types.SimpleNamespace(data_dir=None), drv.BudgetCaps(), LOG) == 0
+    assert (retired / "src" / "mesh_pkg" / "__init__.py").exists()
+    assert sorted(p.name for p in root.iterdir()) == [retired.parent.name]
+    assert f"kept the clone retired as unsafe: {retired.parent}" in capsys.readouterr().out
+
+
+def test_a_dry_run_names_a_run_root_it_could_not_remove(tmp_path, git, monkeypatch, capsys):
+    import kiro_crew.platform_compat as platform_compat
+
+    root = _dry_root(tmp_path, monkeypatch, "ephemeral9")
+    removed: list = []
+
+    def _fail(path):
+        removed.append(path)
+        return False
+
+    monkeypatch.setattr(platform_compat, "rmtree_force", _fail)
+    monkeypatch.setattr(drv.Driver, "run", lambda self, **kwargs: drv.Stats())
+
+    assert drv._run_dry(types.SimpleNamespace(data_dir=None), drv.BudgetCaps(), LOG) == 0
+    assert removed == [root]
+    assert f"run root not fully removed: {root}" in capsys.readouterr().out
 
 
 def test_run_dry_falls_back_to_an_ephemeral_data_dir(tmp_path, git, monkeypatch, capsys):
