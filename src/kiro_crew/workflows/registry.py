@@ -18,6 +18,8 @@ to callers are plain dicts (JSON-serializable, never the live objects).
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
@@ -79,6 +81,16 @@ def _stored_limit(value: Any) -> Optional[int]:
     return value
 
 
+def _stored_time(value: Any) -> Optional[float]:
+    """A stored epoch time, or None when absent or not a positive finite number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if math.isfinite(value) and value > 0 else None
+    except OverflowError:  # an integer too large for a float is no time at all
+        return None
+
+
 def _int_key(k: Any) -> Any:
     """agent_results is keyed by call_index (int); JSON object keys are strings,
     so coerce back to int on load (keep non-numeric keys as-is, defensively)."""
@@ -130,6 +142,9 @@ class RunHandle:
     # The limits the run was launched with, kept so a rerun runs under them too.
     timeout_secs: Optional[int] = None
     budget_total: Optional[int] = None
+    # When the run was admitted (epoch seconds): the one start time every run has, kept
+    # across a restart so the run list keeps its order. None on an older record.
+    admitted_at: Optional[float] = field(default_factory=time.time)
     agent_results: dict = field(default_factory=dict)  # call_index → result (resume cache)
     # call_index → bounded reason that call failed. Kept next to agent_results so a
     # missing payload always comes with an explanation instead of a bare ok=False.
@@ -338,6 +353,7 @@ class RunHandle:
             "fallback_folder_id": self.fallback_folder_id,
             "timeout_secs": self.timeout_secs,
             "budget_total": self.budget_total,
+            "admitted_at": self.admitted_at,
             "workflow_id": self.workflow_id,
             "workflow_slug": self.workflow_slug,
             "workflow_revision": self.workflow_revision,
@@ -396,6 +412,7 @@ class RunHandle:
             fallback_folder_id=obj.get("fallback_folder_id", ""),
             timeout_secs=_stored_limit(obj.get("timeout_secs")),
             budget_total=_stored_limit(obj.get("budget_total")),
+            admitted_at=_stored_time(obj.get("admitted_at")),
             workflow_id=obj.get("workflow_id", ""),
             workflow_slug=obj.get("workflow_slug", ""),
             workflow_revision=int(obj.get("workflow_revision") or 0),
