@@ -5943,6 +5943,17 @@ which asks it of the list plus one path and of a bare
 every request the members send is admitted by the documented list, the create without
 `embed_app`, both decide routes, the decide outcomes and the forged approval.
 
+The wheel pins Agent Worlds (`apps/adoption-pins.json`, § 33) at
+`KiroCrewCaptain/kirocrew-app-agent-worlds` with `minAppSdkLevel` 8, the level of this
+export, which its page calls (`adoption_pin.py` reads only the manifest and Python, so
+on its own it finds the exact `permissions.api` entries at level 7). A host whose record
+is builtin-owned swaps it in place onto that tree at a restart, keeping `data/`,
+`.app_secret`, the approved grants and `enabled`; the rail keeps `/worlds` and the
+`Gamepad2` glyph, the scene a person chose comes back from the same saved-state keys, and
+the wheel copy's `version` is the pinned one (D12). Its repository's `app.json` declares
+the list above and nothing else, so E9 holds nothing back. A fix to the app lands in that
+repository first; a change to the wheel copy needs its `App repo:` line.
+
 Writers: `website/src/app-sdk/hostSessions.ts`, `website/src/app-sdk/index.ts`,
 `website/src/app-sdk/scopedApi.ts` (`permissionDenied`, the one refusal both share),
 `website/src/api/client/approvals.ts` (`decideApprovalPath`, the route both the decide and
