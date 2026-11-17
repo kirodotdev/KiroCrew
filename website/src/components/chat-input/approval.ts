@@ -80,7 +80,12 @@ function decisionReceipt(decision: string, ttlSeconds: number | undefined, fullC
     components: { mono: createElement('span', { className: 'bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border' }, truncateCommandLabel(fullCommand, 80)) },
   })
   const time = ttlSeconds !== undefined ? fmtTime(Date.now() + ttlSeconds * 1000) : ''
-  const base = baseCommandLabel(baseCommand)
+  // The family as the Trust menu's family row prints it (a mono span, no
+  // quotes), so the receipt names it the same way the row did.
+  const baseLine = (i18nKey: string, values?: Record<string, string>) => createElement(Trans, {
+    i18nKey, values,
+    components: { mono: createElement('span', { className: 'font-mono' }, baseCommandLabel(baseCommand)) },
+  })
   switch (decision) {
     case 'approved':
       return { kind: 'granted', standing: false, line: i18nT('components.chatInput.receipt_allowed_once') }
@@ -90,8 +95,8 @@ function decisionReceipt(decision: string, ttlSeconds: number | undefined, fullC
         : commandLine('components.chatInput.receipt_trusted_command_session') }
     case 'trust_base':
       return { kind: 'granted', standing: true, line: time
-        ? i18nT('components.chatInput.trusted_base_until', { base, time })
-        : i18nT('components.chatInput.receipt_trusted_base_session', { base }) }
+        ? baseLine('components.chatInput.trusted_base_until', { time })
+        : baseLine('components.chatInput.receipt_trusted_base_session') }
     case 'trust_reads':
       return { kind: 'granted', standing: true, line: i18nT('components.chatInput.receipt_trusted_reads') }
     case 'trust':
@@ -105,9 +110,19 @@ function decisionReceipt(decision: string, ttlSeconds: number | undefined, fullC
   }
 }
 
+/** One request's key: its approval id and the row it was shown on, and for a
+ *  coordinator request, which has no row, the instance minted for it (the
+ *  identity `approvalTargetKey` uses). The card's status pill and the receipt
+ *  for that request share a layout id built on it, and the card's per-request
+ *  parts are keyed on it. */
+export const approvalRequestKey = (id: string | null | undefined, mid: string | undefined, instance?: string) => `${id ?? ''}:${mid ?? ''}${instance ? `:${instance}` : ''}`
+
 /** The card's one filled control (Allow once). A sibling of `approvalBtnClass`
- *  so the two share geometry and only the fill ranks them. */
-export const approvalPrimaryBtnClass = 'inline-flex items-center justify-center gap-1 px-3 py-1 rounded-md bg-accent border border-transparent text-accent-fg text-[12px] font-medium cursor-pointer font-body hover:bg-accent-hover transition-colors disabled:opacity-50'
+ *  so the two share geometry and only the fill ranks them. Disabled (a cramped
+ *  card, a decision in flight), it drops the fill for an outline in the text
+ *  colour at the same half opacity as the held Trust beside it, so it reads as
+ *  held too: a dimmed accent fill still read as live. */
+export const approvalPrimaryBtnClass = 'inline-flex items-center justify-center gap-1 px-3 py-1 rounded-md bg-accent border border-transparent text-accent-fg text-[12px] font-medium cursor-pointer font-body hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-transparent disabled:border-border disabled:text-text disabled:font-normal'
 
 export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch }: {
   slotId: string | null
@@ -170,6 +185,11 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // approval that expired (nothing failed on our side) and a FAILED decision
   // submit (a rejected request). Only the latter is an error surface.
   const [approvalNoticeKind, setApprovalNoticeKind] = useState<'status' | 'settled' | 'error' | 'granted' | 'rejected'>('status')
+  /** Which request the current receipt answers (`approvalRequestKey`), and the
+   *  slot it was made in: the receipt shows only over that slot's composer, so a
+   *  session switch drops it in the same render rather than one late. */
+  const [approvalReceiptKey, setApprovalReceiptKey] = useState('')
+  const [approvalReceiptSlot, setApprovalReceiptSlot] = useState<string | null>(null)
 
   const activeSlot = slotId
   // Someone else settled the card this tab was showing: say how it ended, once.
@@ -217,6 +237,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  coordinator one. */
   const approvalTarget = useMemo(() => permissionRowTarget(approvalMeta, slotId), [approvalMeta, slotId])
   const approvalMid = typeof approvalMeta?.mid === 'string' ? approvalMeta.mid : undefined
+  /** The request the card shows now. A one-shot receipt belongs to the card it
+   *  answered: when this tab's own resolve frame has already moved the card to
+   *  the next request before the reply lands, that receipt is not shown. */
+  const approvalKey = approvalRequestKey(approvalId, approvalMid, approvalTarget?.origin === 'coordinator' ? approvalTarget.instance : undefined)
+  const shownRequest = useRef('')
+  shownRequest.current = pendingApproval ? approvalKey : ''
   const approvalToolInput = (approvalMeta?.tool_input as string) || ''
   const approvalIsReadOnly = !!(approvalMeta?.is_read_only)
   const approvalFullCommand = (approvalMeta?.full_command as string) || ''
@@ -320,22 +346,27 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     mcpServer: (approvalMeta?.mcp_server as string) || '',
   })
   const approvalLabel = pickToolLabel({ simplified, purpose: approvalPurpose, rawLabel: approvalLabelRaw, derivedTitle: approvalDerived.title, uiLang })
-  // The card's heading: the agent's own one-line description of the request
-  // when the approval carries one. It is optional on the wire (the permission
-  // row's `tool_purpose`, else the tool log entry's) and is withheld when its
-  // script is not the interface language's, so the fallback is the label the
-  // bar has always shown. Nothing is composed here: no description, no heading
-  // beyond that label.
+  // The card's heading: with simplified tool names on, the agent's own
+  // one-line description of the request when the approval carries one; with
+  // them off, the tool label, as the transcript's row shows it. The description
+  // is optional on the wire (the permission row's `tool_purpose`, else the tool
+  // log entry's) and is withheld when its script is not the interface
+  // language's, so the fallback is the label the bar has always shown. Nothing
+  // is composed here: no description, no heading beyond that label.
   const approvalDescription = sanitizeLlmOutput(typeof approvalMeta?.tool_purpose === 'string' ? approvalMeta.tool_purpose : '') || approvalPurpose
-  const approvalTitle = pickToolLabel({ simplified: true, purpose: approvalDescription, rawLabel: approvalLabel, uiLang })
+  const approvalTitle = pickToolLabel({ simplified, purpose: approvalDescription, rawLabel: approvalLabel, uiLang })
   /** The MCP server the tool belongs to, from the gateway's trusted identity. */
   const approvalMcpServer = typeof approvalMeta?.mcp_server === 'string' ? approvalMeta.mcp_server : ''
+  /** The tool's own name, from the same identity, else the gateway's title.
+   *  The heading may be agent-written, so the card names the tool apart from it. */
+  const approvalToolName = (typeof approvalMeta?.tool_name === 'string' && approvalMeta.tool_name) || approvalLabelRaw
 
-  // Subscribe to the inline pill's viewport visibility. While the pill is in
-  // view, the bar collapses to just the always-visible button row; the moment
-  // the pill scrolls past the top, a "ghost pill" mirror slides into the bar
-  // so the user keeps full context (timestamp, purpose, input preview)
-  // alongside the action buttons. See src/store/toolPillRegistry.ts.
+  // Subscribe to the inline pill's viewport visibility. The card shows the
+  // whole request either way; what changes is how it sits. While the
+  // transcript's row for this call is in view, the card is fused to the
+  // composer and offers the approval-mode hint. Once that row scrolls out of
+  // view (`showGhost`), the card stands on its own (fully rounded) and offers
+  // "Show in chat" to scroll back to the row. See src/store/toolPillRegistry.ts.
   const pillVisible = useToolPillVisible(approvalToolCallId)
 
   // Settle guard: when a new approval arrives, suppress the ghost for a brief
@@ -404,13 +435,18 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       const receipt = decisionReceipt(effective, effective === decision ? ttlSeconds : undefined, approvalFullCommand, approvalBaseCommand)
       // Not shown when the composer has moved to another session since the
       // click: the line would sit over a session it says nothing about.
-      if (receipt && shownSlot.current === activeSlot) {
+      const answered = approvalKey
+      const movedOn = !!shownRequest.current && shownRequest.current !== answered
+      if (receipt && shownSlot.current === activeSlot && !(movedOn && !receipt.standing)) {
         setApprovalNoticeKind(receipt.kind)
+        setApprovalReceiptKey(answered)
+        setApprovalReceiptSlot(activeSlot)
         setApprovalNotice(receipt.line)
         // A one-shot answer's line belongs to the card it answered, so the next
         // card clears it, as it does a line about a card settled elsewhere. A
-        // standing grant's line keeps its full time in this session: it is the
-        // only place the grant's end is stated once the card is gone.
+        // standing grant's line is not cleared by the next card: it stays for
+        // the notice's usual 8 seconds, since it is the only place the grant's
+        // end is stated once the card is gone.
         resolvedLine.current = receipt.standing ? '' : receipt.line
         grantLine.current = receipt.standing ? receipt.line : ''
       }
@@ -510,7 +546,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     } else {
       api.decideApproval(approvalTarget, toApiDecision(decision), responseId).then(finish).catch(fail)
     }
-  }, [approvalId, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled, qc])
+  }, [approvalId, approvalKey, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled, qc])
 
   // The reject-approval chord reaches this pane's bar as an event on its action
   // row (`rejectPendingApproval`). State, not a ref: the row mounts with the
@@ -526,12 +562,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, approvalReceiptKey, approvalReceiptSlot, showApprovalError, showApprovalStatus,
+    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid, approvalKey,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalBrowserTrustClass, approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalTitle, approvalMcpServer, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalTitle, approvalMcpServer, approvalToolName, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
     approvalActionsRef,
   }
 }
