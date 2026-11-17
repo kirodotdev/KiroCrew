@@ -1,11 +1,10 @@
 /**
- * A crewmate's Sessions tab: the mate's sessions in the Crew panel's groups, and a
- * click that expands the row IN PLACE with a records-only recap
- * (rfc-mate-sessions-folder-or-lineage.md, "Owner decision: a click shows the recap
- * in place"). No navigation, no side panel, no model-written summary.
+ * A crewmate's Sessions list: the mate's sessions in the Crew panel's groups, and a
+ * row click handed to the host (`onOpen`), which opens the session in the side
+ * panel. The recap is records-only, with no model-written summary.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ChatSlot, CrewWorker, CrewWorkerRecap } from '../../types'
 
@@ -22,7 +21,7 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-import MateSessionsList, { RecapBody } from './MateSessionsList'
+import MateSessionsList, { MateSessionRecap, RecapBody } from './MateSessionsList'
 import { ApiError } from '../../api/apiError'
 
 const MATE = 'dm-ada'
@@ -40,12 +39,21 @@ const RECAP: CrewWorkerRecap = {
   open_approvals: 1, approvals: [{ tool: 'Shell', requested_at: '' }], open_questions: 2, live: true,
 }
 
-function mount(live: Partial<ChatSlot>[] = []) {
+function mount(live: Partial<ChatSlot>[] = [], onOpen: (w: CrewWorker) => void = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <MateSessionsList root={MATE} mateName="Ada" liveSlots={live as ChatSlot[]} slotsLoaded
-        empty={<p data-testid="empty">empty</p>} />
+        empty={<p data-testid="empty">empty</p>} onOpen={onOpen} />
+    </QueryClientProvider>,
+  )
+}
+
+function mountRecap() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={qc}>
+      <MateSessionRecap root={MATE} worker="m1" rowTitle="Release notes" />
     </QueryClientProvider>,
   )
 }
@@ -105,49 +113,31 @@ describe('MateSessionsList', () => {
     expect(crewWorkers).not.toHaveBeenCalled()
   })
 
-  it('expands a row in place, never navigates, and reads the recap only', async () => {
+  it('hands a row click to the host, never navigates, and reads no recap', async () => {
     crewWorkers.mockResolvedValue({ root: MATE, workers: [worker('m1', { title: 'Release notes' })] })
-    crewWorkerRecap.mockResolvedValue(RECAP)
+    const onOpen = vi.fn()
     const before = window.location.href
     const pushState = vi.spyOn(window.history, 'pushState')
-    mount()
-    const toggle = await screen.findByTestId('mate-session-toggle')
-    expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    // The row says it opens details, so a click under "Approval needed" never reads as approving.
-    expect(toggle.textContent).toContain('Details')
-    fireEvent.click(toggle)
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    const recap = await screen.findByTestId('mate-recap')
-    expect(crewWorkerRecap).toHaveBeenCalledWith(MATE, 'm1')
-    // In place: inside the row, no route change, no history entry.
-    expect(screen.getByTestId('mate-session-row').contains(recap)).toBe(true)
+    mount([], onOpen)
+    fireEvent.click(await screen.findByTestId('mate-session-open'))
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ key: 'm1' }))
+    expect(screen.queryByTestId('mate-recap')).toBeNull()
+    expect(crewWorkerRecap).not.toHaveBeenCalled()
     expect(window.location.href).toBe(before)
     expect(pushState).not.toHaveBeenCalled()
-    // Records only: neither summary route is read or generated.
-    expect(sessionSummary).not.toHaveBeenCalled()
-    expect(generateSessionSummary).not.toHaveBeenCalled()
-    // A second click folds it again.
-    fireEvent.click(toggle)
-    await waitFor(() => expect(screen.queryByTestId('mate-recap')).toBeNull())
     pushState.mockRestore()
   })
 
-  it('shows the open recap as plain text behind a left rule, apart from its hovered header', async () => {
-    crewWorkers.mockResolvedValue({ root: MATE, workers: [worker('m1', { title: 'Release notes' })] })
+  it('reads the recap from records only, as plain text behind a left rule', async () => {
     crewWorkerRecap.mockResolvedValue(RECAP)
-    mount()
-    const toggle = await screen.findByTestId('mate-session-toggle')
-    fireEvent.click(toggle)
+    mountRecap()
     const recap = await screen.findByTestId('mate-recap')
-    // The recap sits under the toggle, which fills on hover: a fill or box of
-    // its own would make the two read as one block, so it paints neither, and a
-    // left rule marks it as this row's recap instead.
-    expect(toggle.className.split(/\s+/).some(c => c.startsWith('hover:bg-'))).toBe(true)
+    expect(crewWorkerRecap).toHaveBeenCalledWith(MATE, 'm1')
+    expect(sessionSummary).not.toHaveBeenCalled()
+    expect(generateSessionSummary).not.toHaveBeenCalled()
     const recapClasses = recap.className.split(/\s+/)
     expect(recapClasses.filter(c => /^(bg-|rounded)/.test(c))).toEqual([])
     expect(recapClasses).toContain('border-l-2')
-    // And a top gap, so the hovered header's edge never touches the text.
-    expect(screen.getByRole('region', { name: 'Release notes' }).className.split(/\s+/)).toContain('pt-2')
   })
 })
 
@@ -163,10 +153,8 @@ describe('MateSessionsList polling', () => {
   })
   it('keeps a loaded recap on screen and polling while the mate thread restores', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    crewWorkers.mockResolvedValue({ root: MATE, workers: [worker('m1', { title: 'Release notes' })] })
     crewWorkerRecap.mockResolvedValueOnce(RECAP)
-    mount()
-    fireEvent.click(await screen.findByTestId('mate-session-toggle'))
+    mountRecap()
     await screen.findByTestId('mate-recap')
     crewWorkerRecap.mockRejectedValue(new ApiError(404, 'not a root', '{"code":"not_crew_mode_root"}'))
     await vi.advanceTimersByTimeAsync(10_500)

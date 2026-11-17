@@ -2779,9 +2779,8 @@ with the Bot's `GET .../crew-workers` answer, which adds closed sessions, the
 ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). While
 the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
 Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
-`crew_mode.list_view`) unless the Bot's Settings switch **Show in my Sessions list**
-(`show_sessions_in_list`, off by default, stamped on the thread's slot row) is on.
-The Sessions tab lists them either way. The tab keeps its name (a recorded decision), but its empty
+`crew_mode.list_view`). There is no switch to keep them listed; a stored
+`show_sessions_in_list` value is ignored. The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a Bot would "drive sessions", so the box says session, chat or
 driving nowhere. The
@@ -2794,8 +2793,8 @@ Bot, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
 workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
 is an opacity, never a recolour, and reads on both palettes (#23003). Rows are grouped as the Crew panel groups them (approval, working,
 "Waiting on <mate>" for `with_conductor`, waiting, done), with Done folded. A click
-expands the row IN PLACE (the row says **Details**, and its chevron points down)
-and shows its recap: no navigation, no side panel, no drawer. The list counts only
+opens that session in the side panel's **Sessions** tab (below), revealing the
+panel; a docked Profile column closes behind the schedule-draft question. The list counts only
 rows stamped `mate_root`: a session adopted or released away keeps its birth
 `created_by` but is no longer the Bot's. A list 404 naming `not_crew_mode_root`
 (the Bot thread still restoring) keeps polling; any other 404 is a gateway that
@@ -2808,8 +2807,23 @@ else a reported artifact that `urlsplit` parses as a GitHub pull-request page), 
 `last_report_at` (else the session's newest `turn/completed`), plus the pending
 requests of its `approvals` fold and the count of open `ask_question` calls in
 its `tools` fold. With none of the report lines it says "No report yet"; open
-approvals and questions still show. The full transcript is not reached from
-this click.
+approvals and questions still show.
+
+The side panel's **Sessions** tab (`BotSessionsPanelTab`, `CREW_SESSIONS_TAB_ID`)
+is the second host-owned leading tab, after Dashboard and before Workspace.
+Dashboard stays first, the load and preview focus target, and is unchanged. The
+Sessions chip counts the Bot's open sessions waiting on the person (a tool
+approval or an open question). The tab renders the same list as Profile >
+Sessions; a row click opens the session inside the tab: a header (back to
+Sessions, status dot, title, a Recap toggle that shows the recap above, and
+Open in chat, which leaves for `/chat` on that slot) over a `ChatPane` bound to
+the worker's slot, so the person reads and types to it while the Bot's thread
+stays on the left. Back or Escape returns to the list. Which session is open is
+kept per Bot (`openSessionBy` in `useMembersPageSidePanel`), so it survives a
+switch to Dashboard and back. A session that is not open offers **Reopen
+session**, through the resume route (`POST .../resume`) without making it the
+chat page's active session; a session
+on another crew says where it runs.
 Child subagent runs remain presence for the roster but are not dashboard
 sessions. Every page-level request to open Profile — including a second use of
 the quiet-chat Sessions link after the reader changed card tabs or pushed a
@@ -3546,7 +3560,7 @@ transcript-fed views (Changes / Issues / Links / Pins, plus the session
 Summary), Subagents, Workflows and Git (a Bot hands its work to workers), the
 diagnostics group (Logs / Context / Crew log), the chat page's Command Center,
 and Artifacts — a pinned standing
-tab on the chat page that has no place in this page's Dashboard + Files set
+tab on the chat page that has no place in this page's Dashboard, Sessions + Files set
 (`MEMBERS_WITHHELD_VIEWS`). Withholding that LIST does not withhold an
 artifact DOCUMENT: `SidePanel.isWithheld` ties every document tab (file, diff,
 folder, artifact) to `'files'`, which this page withholds only while the

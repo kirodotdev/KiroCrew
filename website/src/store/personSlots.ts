@@ -1,4 +1,4 @@
-import { crewModeEnabled, crewModeView, mateThreadsHidingSessions } from '../lib/crewMode'
+import { crewModeEnabled, crewModeView, liveMateThreads } from '../lib/crewMode'
 import type { ChatSlot } from '../types'
 import { selectSlotsWithLiveLastTs } from './slotLastTs'
 
@@ -38,8 +38,8 @@ export function selectPersonSlots(state: Parameters<typeof selectSlotsWithLiveLa
   return personSlots
 }
 
-/** The live mate threads of the full slot store whose sessions leave the
- *  person's lists (`mateThreadsHidingSessions`), for a list
+/** The live mate threads of the full slot store, whose sessions leave the
+ *  person's lists (`liveMateThreads`), for a list
  *  that `crewModeView` filters after the chat page left the mate threads out.
  *  Memoized on the raw rows, so a reader re-renders only when they change. */
 let mateThreadsOf: unknown = null
@@ -48,7 +48,7 @@ export function selectMateThreadsHidingSessions(state: { dashboard: { slots: Cha
   const slots = state.dashboard.slots
   if (slots !== mateThreadsOf) {
     mateThreadsOf = slots
-    mateThreads = mateThreadsHidingSessions(slots)
+    mateThreads = liveMateThreads(slots)
   }
   return mateThreads
 }

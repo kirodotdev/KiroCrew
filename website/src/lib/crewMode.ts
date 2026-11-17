@@ -65,14 +65,6 @@ export function liveMateThreads(rows: readonly { key?: string; mode?: string }[]
   return new Set(rows.filter(r => r.mode === 'member' && r.key).map(r => r.key as string))
 }
 
-/** The live mate threads among `rows` whose sessions leave the person's lists for
- *  the Bot's Sessions tab: every one but those whose Bot turned on "Show in my
- *  Sessions list" (the server's `show_sessions_in_list` stamp on the thread's row).
- *  Read over the FULL slot store, like `liveMateThreads`. */
-export function mateThreadsHidingSessions(rows: readonly { key?: string; mode?: string; show_sessions_in_list?: boolean }[]): ReadonlySet<string> {
-  return new Set(rows.filter(r => r.mode === 'member' && r.key && r.show_sessions_in_list !== true).map(r => r.key as string))
-}
-
 /** The slot keys that are busy, each slot's own key plus the mate thread it was
  *  dispatched from (`mate_root`): a mate is working while ANY session in its tree
  *  is, as a waiting worker already badges the mate as needing you. A slot is busy
@@ -281,7 +273,7 @@ export function crewApprovalDecidableHere(
  *  it on. A worker whose root is closed keeps its row: no panel lists it, and its
  *  own approval or question must still reach the person. `rootsOnly` keeps just
  *  the roots, for the session filter's Crew Mode chip. */
-export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string; show_sessions_in_list?: boolean; slack_list_hidden?: boolean; pending_approval?: boolean; needs_input?: boolean }>(
+export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string; slack_list_hidden?: boolean; pending_approval?: boolean; needs_input?: boolean }>(
   rows: T[], rootsOnly = false, mateThreads?: ReadonlySet<string>, activeKey?: string | null,
 ): T[] {
   // With `slack.show_in_session_list` off, a conversation that started in Slack
@@ -290,10 +282,9 @@ export function crewModeView<T extends { key?: string; mode?: string; crew_root?
   if (rows.some(r => r.slack_list_hidden)) rows = rows.filter(r => !slackRowHidden(r, activeKey))
   if (rootsOnly) return rows.filter(r => crewModeRoot(r))
   // A mate's session leaves the list while its mate thread is live (the mate's
-  // Sessions tab lists it), unless its Bot shows its sessions in the person's list,
-  // before the Crew Mode return so that branch is unchanged. `mateThreads` is the
-  // full store's (`mateThreadsHidingSessions`); without it, those among `rows`.
-  const mates = mateThreads ?? mateThreadsHidingSessions(rows)
+  // Sessions tab lists it), before the Crew Mode return so that branch is unchanged. `mateThreads` is the
+  // full store's (`liveMateThreads`); without it, those among `rows`.
+  const mates = mateThreads ?? liveMateThreads(rows)
   if (mates.size) rows = rows.filter(r => { const mate = mateRootOf(r); return !mate || !mates.has(mate) })
   if (!crewModeEnabled()) return rows
   const listed = new Set<string>()
