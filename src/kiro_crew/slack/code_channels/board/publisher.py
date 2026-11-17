@@ -277,9 +277,9 @@ MIN_EDIT_GAP_SECS = 20.0
 STALE_SECS = 60.0
 #: How often a live board's pin is put back (someone may have unpinned it).
 REPIN_SECS = 600.0
-#: Backoff for a failed edit or post: first, then x3 per failure, capped.
 #: Shortest gap between two pages for one item, whatever its worker reports.
 PAGE_GAP_SECS = 60.0
+#: Backoff for a failed edit or post: first, then x3 per failure, capped.
 _RETRY_FIRST_SECS = 5.0
 _RETRY_CAP_SECS = 300.0
 #: 5 s x 3**4 = 405 s, already past the cap: no larger power is ever needed.
@@ -520,7 +520,12 @@ async def _alert(
     waiting = [row for row in snapshot.rows if row.needs_owner]
     record = await get_async(channel)
     unsaved = _unsaved_alerts.get(channel)
-    sent = list(unsaved) if unsaved is not None else list(record.board_alerts) if record else []
+    if unsaved is not None:
+        sent = list(unsaved)
+    elif record:
+        sent = list(record.board_alerts)
+    else:
+        sent = []
     # A spell ends when its item stops waiting (an approval when it is answered):
     # its token is forgotten, so the item's NEXT wait pages again.
     live = {alert_token(row) for row in waiting}
