@@ -17,7 +17,7 @@ import re
 import shutil
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from kiro_crew import platform_compat
@@ -87,6 +87,22 @@ def _running_checkout() -> Path | None:
     return Path(own) if own else None
 
 
+def _service_checkout(raw: str | None) -> str | None:
+    """*raw* resolved, when ``live_target.validate`` accepts it as a checkout; else None.
+
+    A service definition can name a directory that is not a checkout: the unit that
+    ``kirocrew service install`` writes sets ``WorkingDirectory`` to the home
+    directory. Reporting that as live would hide the checkout the gateway runs
+    from. Blocking (it stats the path), so callers run it off the loop.
+    """
+    if not raw:
+        return None
+    try:
+        return str(live_target.validate(raw))
+    except live_target.InvalidTarget:
+        return None
+
+
 def _staged_target() -> str | None:
     """The pointer target when a cutover is staged but NOT yet in effect.
 
@@ -124,7 +140,11 @@ _GATEWAY_START_ID_CACHE: tuple[float, str | None] | None = None
 # The single in-flight read. A read can spawn two `systemctl` scopes, so
 # concurrent health requests await this one task instead of each starting one.
 _GATEWAY_START_ID_INFLIGHT: asyncio.Task[str | None] | None = None
-_LIVE_GATEWAY_UNIT = "kirocrew-gateway.service"
+# The live gateway's systemd user unit, in lookup order. ``kirocrew.service`` is
+# the unit that the setup guide and the user-scope remedy of
+# ``kirocrew service install`` write; ``kirocrew-gateway.service`` is a name a
+# host can give its unit by hand. See :func:`_live_gateway_unit`.
+_LIVE_GATEWAY_UNITS = ("kirocrew.service", "kirocrew-gateway.service")
 # The launchd counterpart of the live systemd unit. Same agent
 # `kirocrew service install` writes (kiro_crew.service.common.LAUNCHD_LABEL);
 # duplicated as a literal rather than imported so this module keeps importing
@@ -132,12 +152,167 @@ _LIVE_GATEWAY_UNIT = "kirocrew-gateway.service"
 _LIVE_GATEWAY_LABEL = "dev.kirocrew.gateway"
 
 
+def _user_unit_dir() -> Path:
+    """The systemd user unit directory: ``$XDG_CONFIG_HOME/systemd/user``.
+
+    Falls back to ``~/.config`` when the variable is unset. systemd --user reads
+    units under ``$XDG_CONFIG_HOME`` when it is set, so a literal ``~/.config``
+    would be the WRONG directory on such a host."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else (Path.home() / ".config")
+    return base / "systemd" / "user"
+
+
+def _present_gateway_units() -> list[str]:
+    """The names in ``_LIVE_GATEWAY_UNITS`` whose unit file is in :func:`_user_unit_dir`.
+
+    In lookup order. Blocking (it stats the files), so callers run it off the loop."""
+    unit_dir = _user_unit_dir()
+    present = []
+    for name in _LIVE_GATEWAY_UNITS:
+        try:
+            if (unit_dir / name).is_file():
+                present.append(name)
+        except OSError:
+            continue
+    return present
+
+
+# The unit that :func:`_settle_live_gateway_unit` last found running while BOTH
+# unit files exist, else None. :func:`_live_gateway_unit` reads it, so the status,
+# the restart and the drop-in all name the unit that runs.
+_LIVE_GATEWAY_UNIT_RUNNING: str | None = None
+# The ``systemctl is-active`` states for which it exits 0. Newer systemd versions
+# add ``refreshing``. A unit that relaunches after its process exits is
+# ``activating`` between attempts, so that state is out.
+_UNIT_RUNNING_STATES = frozenset({"active", "reloading", "refreshing"})
+# The most bytes read from one ``/proc/<pid>/cgroup`` or ``/proc/<pid>/stat``.
+# A real file is a few lines.
+_PROC_READ_LIMIT = 64 * 1024
+# How many processes :func:`_own_gateway_unit` reads: this one and its parents.
+_CGROUP_WALK = 6
+
+
+def _read_cgroup(pid: str) -> str:
+    """The text of ``/proc/<pid>/cgroup``, or "" when it cannot be read (off Linux)."""
+    try:
+        with open(f"/proc/{pid}/cgroup", "rb") as handle:
+            return handle.read(_PROC_READ_LIMIT).decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _parent_pid(pid: str) -> str | None:
+    """The parent of *pid* in ``/proc/<pid>/stat``, else None (off Linux, or no parent)."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat = handle.read(_PROC_READ_LIMIT).decode("utf-8", "replace")
+        # The command name is in parentheses and can hold any byte, so the
+        # parent pid is the second field after the last ")".
+        parent = int(stat.rpartition(")")[2].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return str(parent) if parent > 0 else None
+
+
+def _user_unit_in_cgroup(cgroup_text: str, present: list[str]) -> str | None:
+    """The name in *present* that a cgroup path puts under a ``user@<uid>.service``.
+
+    Each line is ``<id>:<controllers>:<path>``. systemd keeps the processes of a
+    user unit in ``.../user@<uid>.service/<slice>/<unit>``, so a system unit
+    with the same name does not match. Every line is read, because on a cgroup
+    v1 host a controller line can end at ``user@<uid>.service`` before the line
+    that names the unit."""
+    for line in cgroup_text.splitlines():
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        parts = PurePosixPath(fields[2]).parts
+        for index, part in enumerate(parts):
+            if part.startswith("user@") and part.endswith(".service"):
+                unit = next((name for name in parts[index + 1 :] if name in present), None)
+                if unit is not None:
+                    return unit
+                break
+    return None
+
+
+def _own_gateway_unit(present: list[str]) -> str | None:
+    """The name in *present* whose cgroup holds this gateway, else None.
+
+    This module runs in the gateway process and in the Dev Fleet backend. The
+    gateway starts the backend in a transient scope, through a wrapper. So this
+    reads ``/proc/<pid>/cgroup`` for this process and up to five parents, and
+    the first user unit in *present* answers. A unit that relaunches into a
+    refusal holds only the process that refuses, which is not this process or a
+    parent of it, so that unit never answers, whatever its state. None when no
+    read finds a unit. Blocking (file reads), so callers run it off the loop."""
+    pid: str | None = "self"
+    for _ in range(_CGROUP_WALK):
+        if pid is None:
+            return None
+        unit = _user_unit_in_cgroup(_read_cgroup(pid), present)
+        if unit is not None:
+            return unit
+        pid = _parent_pid(pid)
+    return None
+
+
+def _live_gateway_unit() -> str:
+    """The systemd user unit the live gateway runs as.
+
+    The one name in ``_LIVE_GATEWAY_UNITS`` whose unit file is in
+    :func:`_user_unit_dir`, else the first name. When both files exist, the one
+    that :func:`_settle_live_gateway_unit` last found running, else the first
+    name. This is a file stat and a module read only, so it starts no
+    ``systemctl``. ``systemctl --user cat`` in the backend's ``status()`` still
+    decides whether the manager knows that unit.
+    """
+    present = _present_gateway_units()
+    if len(present) > 1 and _LIVE_GATEWAY_UNIT_RUNNING in present:
+        return _LIVE_GATEWAY_UNIT_RUNNING
+    return present[0] if present else _LIVE_GATEWAY_UNITS[0]
+
+
+async def _settle_live_gateway_unit() -> str:
+    """:func:`_live_gateway_unit`, after it asks the manager which unit runs when both files exist.
+
+    A host can keep a ``kirocrew.service`` file that is stopped, or that relaunches
+    into a refusal, beside the ``kirocrew-gateway.service`` that runs. A stat cannot
+    tell them apart, and a relaunch is ``active`` for a moment of each attempt. So
+    the unit whose cgroup holds this gateway (:func:`_own_gateway_unit`) is
+    recorded for :func:`_live_gateway_unit`. When the gateway runs outside both
+    units, one ``systemctl --user is-active <both>`` prints a state per unit, in
+    argument order, and the first unit in :data:`_UNIT_RUNNING_STATES` is
+    recorded. With one unit file or none, neither runs.
+    """
+    global _LIVE_GATEWAY_UNIT_RUNNING
+    present = await gateway_service._off_loop(_present_gateway_units)
+    if len(present) > 1:
+        own = await gateway_service._off_loop(_own_gateway_unit, present)
+        if own is not None:
+            _LIVE_GATEWAY_UNIT_RUNNING = own
+            return await gateway_service._off_loop(_live_gateway_unit)
+        _rc, out, _err = await runtime._run_cmd(
+            ["systemctl", "--user", "is-active", *present], timeout=5
+        )
+        # is-active exits 3 when no unit is active, so read the states, not rc.
+        states = out.split()
+        if len(states) == len(present):
+            _LIVE_GATEWAY_UNIT_RUNNING = next(
+                (name for name, state in zip(present, states) if state in _UNIT_RUNNING_STATES),
+                None,
+            )
+    return await gateway_service._off_loop(_live_gateway_unit)
+
+
 def _gateway_unit_name() -> str:
     """Resolve the systemd unit of the gateway THIS backend belongs to.
 
     Inside a pod (config home under ``.kirocrew-pods/<name>``) the owning unit
-    is the pod template instance — restarting the hardcoded live unit from a
-    pod would bounce the user's LIVE gateway across planes.
+    is the pod template instance — restarting the live unit from a pod would
+    bounce the user's LIVE gateway across planes. Outside a pod it is
+    :func:`_live_gateway_unit`.
     """
     try:
         from kiro_crew.config.loader import config_dir
@@ -147,7 +322,7 @@ def _gateway_unit_name() -> str:
             return f"kirocrew-pod@{home.name}.service"
     except Exception:  # noqa: BLE001 — fall through to the live unit
         pass
-    return _LIVE_GATEWAY_UNIT
+    return _live_gateway_unit()
 
 
 def _gateway_label() -> str:
@@ -192,7 +367,16 @@ def _gateway_backend() -> "gateway_service.GatewayServiceBackend | None":
         # control the systemd rendering (see SystemdBackend's docstring).
         dropin_path=_dropin_path,
         dropin_content=_dropin_content,
+        settle_unit=_settle_gateway_unit,
     )
+
+
+async def _settle_gateway_unit() -> None:
+    """Settle the live unit (:func:`_settle_live_gateway_unit`) for a backend outside a pod.
+
+    Inside a pod the backend's unit is the pod's own, so no live probe runs."""
+    if not await gateway_service._off_loop(_in_pod):
+        await _settle_live_gateway_unit()
 
 
 def _foreground_backend() -> "gateway_service.ForegroundBackend | None":
@@ -399,13 +583,10 @@ def _in_pod() -> bool | None:
 def _dropin_path() -> Path:
     """Absolute path of the make-live systemd drop-in for the live unit.
 
-    Honours ``$XDG_CONFIG_HOME`` (systemd --user reads units there when set)
-    and falls back to ``~/.config`` — a literal ``~/.config`` would be the
-    WRONG directory on a host that sets XDG_CONFIG_HOME, and the override
-    would silently never take effect."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else (Path.home() / ".config")
-    return base / "systemd" / "user" / f"{_LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
+    Under :func:`_user_unit_dir`, beside the unit file of
+    :func:`_live_gateway_unit`, so the override applies to the unit the live
+    gateway actually runs as."""
+    return _user_unit_dir() / f"{_live_gateway_unit()}.d" / "make-live.conf"
 
 
 #: A path/value cannot be safely serialised into a service definition.
@@ -458,14 +639,14 @@ def _dropin_content(worktree: Path, kcbin: Path) -> str:
     replacement — systemd otherwise APPENDS, and a Type=simple service with
     two ExecStart values is a fatal unit error. ``~`` is NOT expanded inside
     ``Environment=``, so the operator bin dir is materialised to an absolute
-    path here (a literal ``~/.local/bin`` would corrupt PATH).
+    path here (a literal ``~/.local/bin`` would corrupt PATH). The ``PATH``
+    comes from ``gateway_service.cutover_path``, so the unit's own entries stay
+    on it.
 
     Every interpolated value passes through ``_sd_value`` so a worktree path
     with spaces, ``%`` specifiers, or quotes is escaped (and a control-char
     path rejected) rather than silently splitting/expanding the directive."""
-    venv_bin = worktree / ".venv" / "bin"
-    local_bin = Path.home() / ".local" / "bin"
-    path_env = ":".join([str(venv_bin), str(local_bin), "/usr/local/bin", "/usr/bin", "/bin"])
+    path_env = ":".join(gateway_service.cutover_path(worktree / ".venv" / "bin"))
     return (
         "[Service]\n"
         f"WorkingDirectory={_sd_value(str(worktree))}\n"

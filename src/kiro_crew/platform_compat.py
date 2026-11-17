@@ -758,6 +758,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _WINDOWS_GIT_DIRS,
         _X11_SOCKET_DIR,
         _XAUTHORITY_CHARS,
+        POSIX_DEFAULT_BIN_DIRS,
         _acl_admits_another_account,
         _ascii_digits,
         _desktop_session_cache,

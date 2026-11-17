@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +34,25 @@ _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only Dev Fleet make-live/cancel/sync semantics",
 )
+
+
+def simulate_live_platform(monkeypatch, platform: str) -> None:
+    """Pin the platform the make-live code and ``live_target`` both see.
+
+    ``live_mod.sys`` is replaced by a mock, but ``live_target`` keeps its own
+    ``sys`` binding, and ``live_target.target_bin`` picks ``.venv/Scripts/kirocrew.exe``
+    or ``.venv/bin/kirocrew`` from it. Patching only ``live_mod`` leaves a simulated
+    Linux or macOS checkout validated against the host layout, which a Windows host
+    rejects. The namespace copies the real ``sys`` attributes (``argv``, ``stderr``)
+    and overrides only ``platform``; the real ``sys`` module is never mutated.
+    """
+    monkeypatch.setattr(live_mod, "sys", MagicMock(platform=platform))
+    real = live_mod.live_target.sys
+    namespace = SimpleNamespace(
+        **{k: getattr(real, k) for k in dir(real) if not k.startswith("__")}
+    )
+    namespace.platform = platform
+    monkeypatch.setattr(live_mod.live_target, "sys", namespace)
 
 
 @pytest.fixture(autouse=True)
@@ -374,7 +394,7 @@ def _stub_make_live(
     systemd expectation deterministic everywhere, and the launchd twins pin
     ``"darwin"`` explicitly.
     """
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform=platform))
+    simulate_live_platform(monkeypatch, platform)
     tool = "/usr/bin/systemctl" if platform == "linux" else "/bin/launchctl"
     monkeypatch.setattr(live_mod, "shutil", MagicMock(which=MagicMock(return_value=tool)))
     monkeypatch.setattr(
@@ -386,7 +406,7 @@ def _stub_make_live(
     monkeypatch.setattr(live_mod, "_in_pod", lambda: in_pod)
     monkeypatch.setattr(live_mod, "_live_user_unit_status", AsyncMock(return_value=unit_status))
     sandbox_root = Path(wt).parent
-    sandbox_dropin = sandbox_root / "_systemd" / f"{mod._LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
+    sandbox_dropin = sandbox_root / "_systemd" / f"{mod._live_gateway_unit()}.d" / "make-live.conf"
     _assert_sandboxed(sandbox_dropin, "_dropin_path", sandbox_root)
     monkeypatch.setattr(live_mod, "_dropin_path", lambda: sandbox_dropin)
     monkeypatch.setattr(runtime_mod, "_run_cmd", AsyncMock(return_value=(0, "", "")))
@@ -425,3 +445,14 @@ async def _sync_step_argvs(monkeypatch) -> list:
         res = await mod._sync()
     assert res["ok"] is True
     return captured
+
+
+def _checkout(root: Path) -> Path:
+    """A directory ``live_target.validate`` accepts: an executable venv entry point
+    and ``src/kiro_crew``."""
+    kcbin = root / ".venv" / "bin" / "kirocrew"
+    kcbin.parent.mkdir(parents=True)
+    kcbin.write_text("#!/bin/sh\n")
+    kcbin.chmod(0o755)
+    (root / "src" / "kiro_crew").mkdir(parents=True)
+    return root

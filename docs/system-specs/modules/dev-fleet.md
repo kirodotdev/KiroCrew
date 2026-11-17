@@ -36,7 +36,7 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
    detection + abort (refused while that base is a guess — see Base Branch Resolution)
 6. **GitHub PR status** — TTL-cached `gh pr list` queries for merge state
 7. **Make Live** — repoint the live gateway at another worktree via a
-   live-target pointer file (no service definition is ever mutated)
+   live-target pointer file (the installed unit file is never edited)
 
 ## Backend component boundaries
 
@@ -1804,8 +1804,9 @@ Dev Fleet backend — repoints the live gateway at a different worktree by writi
 **live-target pointer file** (`live_target.json`). The gateway resolves this
 pointer at startup and `execve`s into the named checkout's own `kirocrew` binary
 — moving the working directory and `PATH` with it. An `execve` that fails leaves
-the installed build booting in the directory it started in. No service definition is
-ever mutated.
+the installed build booting in the directory it started in. The installed unit file is
+never edited. When Dev Fleet can drive a systemd user unit, the cutover also restages
+that unit's drop-in (see *Three outcomes*).
 
 The exec's `PATH` is the checkout's venv `bin`, then the inherited `PATH`, or, when
 none is inherited, the platform's default search path (`os.defpath`) without its
@@ -1901,7 +1902,8 @@ choose the gateway's next image. Instead:
   (`repository._find_worktree_by_path`) and the live-path resolution
   (`_live_worktree_path`'s pointer/running-checkout comparison and the launchd
   link read) hop to the subprocess executor, and the service backends' own
-  filesystem work (the systemd drop-in write, the launchd launcher write, plist
+  filesystem work (the systemd drop-in write, the stat that picks the live unit's
+  name, the launchd launcher write, plist
   probes before status and restart, the foreground confinement/marker scan and
   detached spawn) does the same inside `gateway_service.py`; only in-memory state
   and the `_MAKE_LIVE_LOCK` checks stay inline.
@@ -2019,10 +2021,14 @@ choose the gateway's next image. Instead:
 ### Live-worktree resolution
 
 `_live_worktree_path()` checks `live_target.read_target()` FIRST (after the
-TTL cache), before any launchd/systemd service-definition probe. A cutover
-writes the pointer and never touches the service definition, so the unit's
+TTL cache), before any launchd/systemd service-definition probe. A staged-only
+cutover writes the pointer and does not restage the service definition, so the unit's
 `WorkingDirectory` still names the checkout the gateway was installed from.
 Reading the definition first would report that stale checkout as live.
+A service definition answers only with a path that `live_target.validate` accepts
+as a checkout (`_service_checkout`). The unit that `kirocrew service install`
+writes sets `WorkingDirectory` to the home directory, so the probe goes on to the
+`path=` of `ExecStart`, and then to the running checkout.
 When neither the pointer nor a service definition names a checkout (a gateway
 started by hand on a host with no installed service), the answer is the
 checkout the gateway is executing (`_running_checkout`). Like any other answer it
@@ -2115,6 +2121,31 @@ Fleet can also bounce the gateway:
   `StartLimitBurst` counts operator-requested starts too, so a few cutovers in a
   row would otherwise leave it stopped with `start-limit-hit`. A crash loop after
   the restart is still capped.
+  On Linux the live unit is the first of `kirocrew.service` (the name the setup
+  guide and the user-scope remedy of `kirocrew service install` write) and
+  `kirocrew-gateway.service` whose unit file is in `$XDG_CONFIG_HOME/systemd/user/`
+  (`~/.config/systemd/user/` when the variable is unset), else `kirocrew.service`.
+  When both unit files exist, the user unit whose cgroup holds the gateway is the
+  answer, in any state. The gateway reads its own `/proc/self/cgroup`. The Dev
+  Fleet backend runs in a transient scope, so it reads its parents up to the
+  gateway. A unit that relaunches is `active` for a moment of each attempt, so its
+  state cannot decide. When no read finds a unit, one `systemctl --user is-active
+  kirocrew.service kirocrew-gateway.service` picks the first that is `active`,
+  `reloading` or `refreshing`, else `kirocrew.service`. The status, the restart and
+  the drop-in then name that unit.
+  Inside a pod the unit is the pod's own. With one unit file or none, the choice is a
+  file stat that runs off the loop, so the fleet poll starts no `systemctl` for it.
+  `systemctl --user cat` still decides whether the manager knows that unit. Before the restart the
+  cutover restages the unit's `make-live.conf` drop-in, so `WorkingDirectory` and
+  `ExecStart` name the target. The drop-in's `PATH` is the target's venv `bin`,
+  then the gateway's own `PATH` (the unit's entries, because the cutover runs in
+  the gateway the unit started), then `~/.local/bin`, `/usr/local/bin`, `/usr/bin`
+  and `/bin`. Each entry is kept once, in its first place. An inherited entry that
+  is not absolute, or that has a control character, is left out. The venv `bin`
+  that holds the gateway's interpreter, which is the venv `bin` of the checkout the
+  cutover replaces, is left out too, so each cutover adds no entry. On macOS the
+  launcher that the cutover writes for the LaunchAgent gets its `PATH` the same
+  way (`gateway_service.cutover_path`), so the agent's own entries stay on it.
 - **Foreground last resort**: when the manager probe reports one of
   `no_systemd` / `no_user_unit` / `no_launchd` / `no_agent` — nothing to drive at
   all, e.g. a terminal-launched gateway on a host whose per-user systemd cannot
