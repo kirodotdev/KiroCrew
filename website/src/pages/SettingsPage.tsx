@@ -52,6 +52,10 @@ const AgentRunSettings = lazy(() =>
 /** Lazy: the Connections gallery (cards, connect flow, OAuth app parts) is
  *  only needed when that tab opens, so it stays out of the Settings chunk. */
 const ConnectionsPage = lazy(() => import('./connections/ConnectionsPage'))
+/** Lazy for the same reason: the MCP sign-ins switch is drawn only on the Connections tab. */
+const McpSignInsSection = lazy(() =>
+  import('./settings/McpSignInsSection').then(m => ({ default: m.McpSignInsSection })),
+)
 /** Lazy: the list-detail Secrets panel draws only behind the Secrets vault
  *  redesign preview. The default panel stays in this chunk, as it is on main. */
 const SecretsPanel = lazy(() =>
@@ -416,6 +420,7 @@ export default function SettingsPage() {
             {connectionsUiPending
               ? <ContentSkeleton rows={6} />
               : <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
+            <McpSignInsSection />
           </Suspense>
         )}
         {tab === 'secrets' && (

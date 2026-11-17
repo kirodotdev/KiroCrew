@@ -79,7 +79,6 @@ READONLY_REASONS: dict[str, str] = {
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
-    "agent.kas_persist_mcp_sign_in": WHY_SIGN_IN,
     "agent.kas_refuse_plain_http_mcp_headers": WHY_SIGN_IN,
     "agent.mcp_registry_mode": WHY_SIGN_IN,
     "dashboard.sso_login_flags": WHY_SIGN_IN,

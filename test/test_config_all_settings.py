@@ -131,8 +131,15 @@ async def test_the_role_efforts_settings_chat_writes_are_not_listed() -> None:
     assert [p for p in listed if p.startswith("agent.role_efforts")] == []
 
 
-def test_a_key_with_no_control_says_why_it_is_read_only() -> None:
+def test_the_mcp_sign_ins_switch_is_a_link_row() -> None:
     assert all_settings.descriptor(_BY_PATH["agent.kas_persist_mcp_sign_in"]) == {
+        "mode": "control",
+        "settingId": "connections.remember-mcp-sign-ins-across-sessions",
+    }
+
+
+def test_a_key_with_no_control_says_why_it_is_read_only() -> None:
+    assert all_settings.descriptor(_BY_PATH["agent.kas_refuse_plain_http_mcp_headers"]) == {
         "mode": "readonly",
         "reason": all_settings.WHY_SIGN_IN,
     }
