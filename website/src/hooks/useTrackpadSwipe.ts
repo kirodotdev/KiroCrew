@@ -9,8 +9,8 @@
  * drives its panel's offset from that sum and decides the release itself.
  *
  * A run is wheel events with no gap longer than {@link SWIPE_GESTURE_IDLE_MS}.
- * Its owner is decided by its FIRST event and held for the whole run, as the
- * browser latches a scroll's axis:
+ * Its owner is decided by its FIRST event and held for the whole run (a
+ * waiting reveal excepted, below), as the browser latches a scroll's axis:
  * - vertical-first, or a pinch (`ctrlKey`), is never ours;
  * - horizontal-first over something that can still scroll that way (a code
  *   block, a wide table, a sideways list) belongs to that scroller;
@@ -20,7 +20,9 @@
  *   its first event, but starts only once the fingers' own travel (never its
  *   tail) reaches {@link SWIPE_THRESHOLD_PX} its way, and moves from there: a
  *   stray run shorter than that, such as a mouse's thumb wheel creeping a pixel
- *   at a time, never moves a closed panel;
+ *   at a time, never moves a closed panel; until then, a run that has gone as
+ *   far vertically as its furthest reach sideways (a scroll's drift) is handed
+ *   back to the browser for the rest of it, the one owner that changes mid-run;
  * A new run right after a drag ended (even mid-settle) is a new drag: the
  * page continues it from wherever the panel is, as a phone's drag can grab a
  * settling panel. A momentum tail never starts one: it stays in its own run.
@@ -190,7 +192,8 @@ export function createTrackpadSwipeReader(
 ) {
   let lastAt = -Infinity
   let owner: RunOwner | null = null
-  /** Bumped when a run starts, whoever owns it. */
+  /** Bumped when a run starts, whoever owns it, and when a waiting reveal is
+   *  handed back to the browser. */
   let runNo = 0
   let sumX = 0
   let sumY = 0
@@ -199,6 +202,9 @@ export function createTrackpadSwipeReader(
    *  `lead`: its (sum, time) per applied event, handed over with the start. */
   let waiting = false
   let origin = 0
+  /** A waiting reveal's furthest sideways travel its way: a turn back does
+   *  not shrink it, so only vertical travel can hand the run back. */
+  let reach = 0
   let lead: { sum: number; at: number }[] = []
   let dir: TrackpadSwipeDir = 'left'
   /** Step ratios of the shrinking streak that may be the tail, newest last. */
@@ -252,7 +258,18 @@ export function createTrackpadSwipeReader(
    *  speed, so a flick just past it is not read as standing still). */
   const report = (out: WheelVerdict, at: number) => {
     if (waiting) {
-      if ((dir === 'left' ? sumX : -sumX) < SWIPE_THRESHOLD_PX) {
+      const way = dir === 'left' ? sumX : -sumX
+      if (way > reach) reach = way
+      // As far vertically as its furthest reach sideways: a scroll's drift,
+      // not a swipe. The browser gets the rest of the run, so the content
+      // keeps scrolling.
+      if (Math.abs(sumY) >= reach) {
+        owner = 'other'
+        runNo += 1
+        out.consume = false
+        return
+      }
+      if (way < SWIPE_THRESHOLD_PX) {
         lead.push({ sum: sumX, at })
         if (lead.length > LEAD_MAX) lead.shift()
         return
@@ -311,6 +328,7 @@ export function createTrackpadSwipeReader(
         sumX = 0
         sumY = 0
         origin = 0
+        reach = 0
         lead = []
         ratios = []
         lastAbs = 0
@@ -451,7 +469,7 @@ export function createTrackpadSwipeReader(
     /** When the last event arrived. */
     lastEventAt: () => lastAt,
     /** Which run the last event belonged to: changes when a new one starts,
-     *  including one the page leaves to the browser. */
+     *  including one the page leaves to the browser, or hands back to it. */
     runId: () => runNo,
   }
 }
@@ -632,11 +650,12 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       const runBefore = reader.runId()
       const v = reader.feed(s)
       if (reader.runId() !== runBefore) {
-        // A new run: the old one is over (the feed ended it), so its quiet
-        // check must not end this one. A run the page leaves to the browser
-        // would otherwise be reset by it, and a later sideways drift would
-        // start a drag in the middle of a scroll. The old run's hold goes too;
-        // a run the page takes holds again below.
+        // A new run, or a waiting reveal handed back: the old one is over
+        // (the feed ended it), so its quiet check must not end this one. A
+        // run the page leaves to the browser would otherwise be reset by it,
+        // and a later sideways drift would start a drag in the middle of a
+        // scroll. The old run's hold goes too; a run the page takes holds
+        // again below.
         window.clearTimeout(quiet)
         quiet = undefined
         if (quietFrame !== undefined) cancelAnimationFrame(quietFrame)
