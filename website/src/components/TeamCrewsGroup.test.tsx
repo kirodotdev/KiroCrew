@@ -458,6 +458,56 @@ describe('TeamCrewsGroup', () => {
     expect(screen.queryByText(/req-old/)).toBeNull()
   })
 
+  describe('re-reading the list', () => {
+    // A fake clock moved by hand; shouldAdvanceTime keeps findBy and react-query moving.
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
+    const offline = crew({ endpointId: 'ep-2', name: 'Off box', relayConnectionStatus: 'DISCONNECTED' })
+
+    it('reads the list again when the menu opens, unless the last read is under 5 s old', async () => {
+      withBridge()
+      const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+      mount()
+      const u = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      await openGroup(u)
+      // The read that showed the bar is seconds old, so this open reads nothing new.
+      expect(spy).toHaveBeenCalledTimes(1)
+      await u.keyboard('{Escape}')
+      await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000) })
+      await openGroup(u)
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    })
+
+    it('re-reads every 15 s while a listed Crew is not online', async () => {
+      withBridge()
+      const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({}), offline] })
+      mount()
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    })
+
+    it('re-reads every 60 s while every listed Crew is online', async () => {
+      withBridge()
+      const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+      mount()
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+      expect(spy).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(45_000) })
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    })
+
+    it('stops re-reading once the crews route answers 404', async () => {
+      withBridge()
+      const spy = vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(404, 'off', '{}'))
+      const client = mount()
+      await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
+      expect(spy).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('marks only the resend-safe codes retryable', () => {
     expect(['SERVICE_ERROR', 'THROTTLED', 'UNREACHABLE', 'BAD_ANSWER', 'CREW_OFFLINE', 'UNAVAILABLE', 'service_error']
       .every(relayRetryable)).toBe(true)
