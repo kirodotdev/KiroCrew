@@ -1389,7 +1389,7 @@ export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, 
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
-  selectSlotTurnFromWake, selectTurnInterrupted,
+  selectResumeInterrupted, selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,
 } from './chat/selectors'
 export { clearSwitchSlotGone, setSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'

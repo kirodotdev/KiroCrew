@@ -48,6 +48,7 @@ import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
 import { useRowDeliveryWatchdog } from './websocket/rowDeliveryWatchdog'
+import { attachReturnResync } from './websocket/paneResync'
 import { useApprovalRegistry } from './websocket/approvals'
 import { useComposerCards } from './websocket/composerCards'
 import { useAutomationSeed } from './websocket/automationSeed'
@@ -1244,6 +1245,9 @@ export function useWebSocket() {
     })
     const detachAppWatch = onAppWatchedSlotsChange(chunkWatch.sync)
     document.addEventListener('visibilitychange', chunkWatch.sync)
+    // A page that comes back may hold a socket that died while it was frozen;
+    // re-read what is on screen over HTTP rather than wait for the watchdog.
+    const detachReturnResync = attachReturnResync(dispatch, queryClient)
     connect()
     const detachQuestionRetirements = store.subscribe(cards.onQuestionStateChange)
     const detachVoice = voice.attachWindowEvents()
@@ -1267,9 +1271,10 @@ export function useWebSocket() {
       detachAppWatch()
       document.removeEventListener('visibilitychange', chunkWatch.sync)
       chunkWatch.dispose()
+      detachReturnResync()
       if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
-  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot])
+  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot, dispatch])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }
