@@ -229,8 +229,12 @@
   position: relative;
 }
 
-/* `> ` prompt glyph at the left edge of the textarea. */
-[data-ui="cli"] [data-chat-scope] [data-testid="input-wrapper"]::before {
+/* `> ` prompt glyph at the left edge of the textarea. On the one-row shape
+   (`data-inline-toolbar`, the crewmate DM composer) the attach cluster is the
+   box's first flex item and holds its left edge, so the glyph rides the text
+   column instead and stays in front of the text. */
+[data-ui="cli"] [data-chat-scope] [data-testid="input-wrapper"]:not([data-inline-toolbar="true"])::before,
+[data-ui="cli"] [data-chat-scope] [data-testid="input-wrapper"][data-inline-toolbar="true"] > :has([data-composer-input])::before {
   content: ">";
   position: absolute;
   left: 8px;
