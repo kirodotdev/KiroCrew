@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from source_corpus import untraced
 
 from kiro_crew.dashboard.origin import is_direct_local_request, is_ssm_request
 from kiro_crew.shared_crew.contracts import SSM_GUEST_REQUEST_KEY, SSM_REQUEST_KEY
@@ -141,21 +142,24 @@ RAW_LOOPBACK_SITES = {
 def _call_sites() -> tuple[dict[str, int], dict[str, int]]:
     direct: collections.Counter[str] = collections.Counter()
     raw: collections.Counter[str] = collections.Counter()
-    for path in SRC.rglob("*.py"):
-        rel = path.relative_to(SRC).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if name == "is_direct_local_request":
-                direct[rel] += 1
-            elif (
-                name == "is_loopback"
-                and node.args
-                and "request.remote" in ast.unparse(node.args[0])
-            ):
-                raw[rel] += 1
+    # The walk only parses source text and runs no package code, so pausing the
+    # coverage tracer loses no measured line.
+    with untraced():
+        for path in SRC.rglob("*.py"):
+            rel = path.relative_to(SRC).as_posix()
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if name == "is_direct_local_request":
+                    direct[rel] += 1
+                elif (
+                    name == "is_loopback"
+                    and node.args
+                    and "request.remote" in ast.unparse(node.args[0])
+                ):
+                    raw[rel] += 1
     return dict(direct), dict(raw)
 
 
