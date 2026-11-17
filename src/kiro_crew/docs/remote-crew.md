@@ -402,6 +402,37 @@ machine. No token, sign-in or credential is logged.
 credential is kept, as `secret://NAME` or the absolute path of a file, and the
 viewer then uses that credential instead of your Kiro sign-in. Leave it empty.
 
+### Hosting this Crew on the relay
+
+To let people open this Crew through the Kiro relay, turn Remote Control on where
+the Crew runs, then restart. It is off by default:
+
+```bash
+kirocrew remote-control on
+kirocrew restart
+```
+
+A personal Crew needs nothing else. A Crew is personal when it sets no
+`tunnel.relay_lease_token_type` and its host has no agent workload identity. It
+holds its lease with the Crew's own Kiro
+sign-in, which must be IAM Identity Center or your organization's identity
+provider with a Kiro profile. Builder ID and social sign-ins can't host a Crew.
+While the sign-in can't be used, the tunnel status says why and tries again, so
+signing in resumes hosting without another restart.
+
+A team Crew leases with its crew API key. Store the key under **Settings →
+Secrets**, then name it:
+
+```bash
+kirocrew config set tunnel.relay_lease_credential secret://<name>
+kirocrew config set tunnel.relay_lease_token_type API_KEY
+```
+
+Without the key, a team Crew does not connect, and the tunnel status names
+`tunnel.relay_lease_credential`. A host with a workload identity follows the same
+rule: it never falls back to the sign-in. `kirocrew remote-control off` turns hosting off
+and stops the relay within a few seconds, with no restart.
+
 ## The four things called "crew"
 
 The product's own name is in three of these, which is exactly why they get

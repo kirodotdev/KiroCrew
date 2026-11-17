@@ -1165,9 +1165,11 @@ class TunnelConfig:
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Off by default. It connects only when "
-            "Relay Lease Credential is set, so the Crew can hold a lease (from Relay "
-            "Lease Service URL, or the built-in one when that is empty). Without it no "
+            "the caller named by the relay. Off by default. It holds a lease (from Relay "
+            "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
+            "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
+            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
+            "connects only when Relay Lease Credential names its credential: without it no "
             "relay client starts and the tunnel status names the missing setting. While "
             "it is off, "
             "Crew starts no "
@@ -1185,8 +1187,8 @@ class TunnelConfig:
             "Relay Lease Service URL",
             "The base URL of the lease service this Crew calls RenewCrewLease on, to "
             "hold its lease and get host tokens. Empty (the default) uses the built-in "
-            "Kiro control plane URL: the one for the sign-in profile's region with "
-            "kiro-sign-in, and us-east-1 otherwise. Must be https:// "
+            "Kiro control plane URL: the one for the sign-in profile's region on the Kiro "
+            "sign-in, and us-east-1 otherwise. Must be https:// "
             "(http:// only for a loopback port-forward).",
             restart=True,
         ),
@@ -1199,6 +1201,9 @@ class TunnelConfig:
             "for a secret stored under Settings > Secrets, the absolute path of a file "
             "holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity "
             "Center or your organization's identity provider), refreshed automatically. "
+            "Empty (the default) uses that sign-in too, on a personal Crew: one with no "
+            "Relay Lease Token Type, on a host with no agent workload identity. "
+            "A team Crew must name its crew API key here. "
             "Never the credential itself; it is read for each call and never logged.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.

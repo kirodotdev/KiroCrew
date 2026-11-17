@@ -808,8 +808,10 @@ class LeaseHostTokenSource:
         except LeaseCredentialReferenceError as exc:
             self._stop(f"tunnel.relay_lease_credential names no credential: {exc}")
         except LeaseCredentialError as exc:
-            # A file briefly missing or half written during a rotation: read again
-            # on the backoff steps rather than stop until a restart.
+            # A file briefly missing or half written during a rotation, or a sign-in
+            # to redo: read again on the backoff steps rather than stop until a restart.
+            if self._sign_in is not None:
+                self._back_off(f"the Crew's Kiro sign-in could not be used: {exc}")
             self._back_off(
                 f"the credential tunnel.relay_lease_credential names could not be read: {exc}"
             )
