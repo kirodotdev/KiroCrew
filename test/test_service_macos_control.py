@@ -241,6 +241,7 @@ class TestMacOSControlPaths:
         plist_path = tmp_path / "agent.plist"
         plist_path.write_text("<plist/>")
         monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
+        monkeypatch.setattr(svc_macos, "_BOOTOUT_SETTLE_SECS", 0.0)
         ok = MagicMock(returncode=0, stdout="", stderr="")
         with patch("kiro_crew.service.macos.subprocess.run", return_value=ok) as run:
             assert svc_macos.stop() is True

@@ -288,6 +288,11 @@ def register_service_parser(sub: _Commands) -> None:
     )
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
+    svc_sub.add_parser(
+        "disable",
+        help="Stop the service and keep it from starting at boot or login (stays installed)",
+    )
+    svc_sub.add_parser("enable", help="Start the service and have it start at boot or login again")
 
 
 def register_sandbox_parser(sub: _Commands) -> None:

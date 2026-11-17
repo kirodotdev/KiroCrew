@@ -583,7 +583,11 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             resources=f"port={port} via=service",
         )
         _refuse_if_gateway_outlived_service_stop()
-        print("✅ Stopped kirocrew service. To remove it: kirocrew service uninstall")
+        # The unit stays enabled, so the service manager starts it again on its
+        # own; say so, and name the lasting stop that keeps it installed.
+        print("✅ Stopped kirocrew service. It starts again at the next boot or login.")
+        print("   To keep it stopped: kirocrew service disable")
+        print("   To remove it:       kirocrew service uninstall")
         _stop_mcp_gateway_daemon()
         return
 
