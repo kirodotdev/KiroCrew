@@ -22,6 +22,7 @@ from kiro_crew.acp.client import (
     classify_provider_error,
 )
 from kiro_crew.acp.structured_error_data import provider_data_text, structured_data_prose
+from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE
 from kiro_crew.taskq.adapters import acp_provider
 from kiro_crew.taskq.dependency import KIND_DEPENDENCY_UNAVAILABLE, KIND_QUOTA_EXHAUSTED
 
@@ -167,3 +168,45 @@ class TestTheOtherShapesAreUnchanged:
     def test_not_a_dict_reads_as_empty(self):
         assert provider_data_text("boom") == ""
         assert structured_data_prose(None) == ""
+
+
+# opencode relays a provider failure as -32603 with the provider text after
+# "Internal error: " in ``message`` and an ``errorName`` object in ``data``.
+# Recorded off a live opencode turn against a provider that answered the
+# many-image pixel cap.
+_MANY_IMAGE_SENTENCE = (
+    "messages.1.content.1.image.source.base64.data: At least one of the image "
+    "dimensions exceed max allowed size for many-image requests: 2000 pixels"
+)
+OPENCODE_MANY_IMAGE = {
+    "code": -32603,
+    "message": f"Internal error: {_MANY_IMAGE_SENTENCE}",
+    "data": {"errorName": "APIError", "service": "session"},
+}
+
+
+class TestOpencodeErrorNameShape:
+    def test_the_many_image_cap_gets_the_message_codex_shows(self):
+        out = _format_acp_error(OPENCODE_MANY_IMAGE, backend=ACP_BACKEND_OPENCODE)
+        codex = _format_acp_error(
+            {"code": -32603, "message": "Internal error", "data": _MANY_IMAGE_SENTENCE},
+            backend=ACP_BACKEND_CODEX,
+        )
+        assert out == codex
+        assert "Start a new conversation" in out
+        assert "Internal error" not in out
+
+    def test_the_many_image_cap_is_terminal_and_structural(self):
+        assert _is_transient_raw_error(OPENCODE_MANY_IMAGE) is False
+        with pytest.raises(AcpError) as excinfo:
+            _raise_acp_error(OPENCODE_MANY_IMAGE, backend=ACP_BACKEND_OPENCODE)
+        err = excinfo.value
+        assert err.transient is False
+        assert err.structural_terminal is True
+        # The in-place repair is kiro-cli's alone.
+        assert err.image_dimension_wedge is False
+
+    def test_boilerplate_message_reads_as_before(self):
+        frame = {"code": -32603, "message": "Internal error", "data": {"errorName": "APIError"}}
+        assert structured_data_prose(frame) == ""
+        assert provider_data_text(frame) == str(frame["data"])
