@@ -337,3 +337,95 @@ def test_spawned_group_refuses_a_child_that_does_not_lead_its_group() -> None:
     if platform_compat.IS_POSIX and os.getpgid(0) == os.getpid():
         pytest.skip("this test process happens to lead its own group")
     assert _SshTunnel._spawned_group(_Proc()) is None  # type: ignore[arg-type]
+
+
+class _Pipe:
+    def __init__(self, eof: bool) -> None:
+        self._eof = eof
+
+    def at_eof(self) -> bool:
+        return self._eof
+
+
+class _ExitedWrapper:
+    """An ``aws`` wrapper that has exited; *eof* says whether its pipes closed."""
+
+    returncode = 0
+    pid = 4242
+
+    def __init__(self, eof: bool) -> None:
+        self.stdout = _Pipe(eof)
+        self.stderr = _Pipe(eof)
+
+    async def wait(self) -> int:
+        return 0
+
+
+class TestWindowsSurvivorWarning:
+    """Windows records no group, so a plugin holding the pipes is only logged."""
+
+    @pytest.fixture
+    def signals(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        sent: list[str] = []
+        # Zero: a pipe still open fails the very first settle check, deterministically.
+        monkeypatch.setattr(child_mod, "_EXITED_SETTLE_SECS", 0)
+        monkeypatch.setattr(
+            platform_compat, "kill_process_group", lambda pgid, sig: sent.append("group")
+        )
+
+        async def _tree(pid: int, sig: Any = None) -> bool:
+            sent.append("tree")
+            return True
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree_async", _tree)
+        return sent
+
+    @staticmethod
+    async def _stop(eof: bool, caplog: pytest.LogCaptureFixture) -> list[str]:
+        tunnel = _ssm_tunnel()
+        tunnel._proc = _ExitedWrapper(eof)  # type: ignore[assignment]
+        tunnel._ssm_pgid = None
+        tunnel.status.state = TunnelState.CONNECTED
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.instances.ssh_tunnel_manager"):
+            await tunnel.stop()
+        assert tunnel.status.state == TunnelState.STOPPED
+        return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    @pytest.mark.asyncio
+    async def test_open_pipes_after_stop_log_the_held_port(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        signals: list[str],
+    ) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        warnings = await self._stop(False, caplog)
+        assert len(warnings) == 1
+        assert "cd-1" in warnings[0]
+        assert "127.0.0.1:53997 may still be held" in warnings[0]
+        assert signals == []
+
+    @pytest.mark.asyncio
+    async def test_closed_pipes_after_stop_log_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        signals: list[str],
+    ) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        assert await self._stop(True, caplog) == []
+        assert signals == []
+
+    @pytest.mark.asyncio
+    async def test_posix_without_a_group_still_counts_as_settled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        signals: list[str],
+    ) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        assert await self._stop(False, caplog) == []
+        assert signals == []

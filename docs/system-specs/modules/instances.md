@@ -2032,7 +2032,10 @@ Two SSM-specific behaviours:
   `session-manager-plugin` grandchild is what actually holds the forwarded port:
   `terminate()` on the `aws` wrapper alone orphans it and wedges the port. Doing
   this with raw `os.killpg`/`os.getpgid` would silently degrade to
-  wrapper-only termination on Windows, which Kiro Crew supports.
+  wrapper-only termination on Windows, which Kiro Crew supports. Windows records
+  no process group, so a plugin that outlives an already-exited wrapper is not
+  reaped there; when either pipe is still open after the settle wait, teardown
+  logs a WARNING naming the instance and `127.0.0.1:<port>`, and signals nothing.
 - **Readiness timeout.** `session-manager-plugin` completes a WebSocket handshake
   with the SSM service before binding, so the SSM transport uses a longer default
   connect timeout than a direct ssh TCP connect. An explicit caller-supplied
